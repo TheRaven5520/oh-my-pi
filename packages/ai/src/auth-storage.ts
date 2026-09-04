@@ -5645,11 +5645,17 @@ export class AuthStorage {
 	 * credit (the given `creditId`, else the first redeemable one), spends it,
 	 * and invalidates the cached usage report so the next `/usage` reflects the
 	 * reset. Never throws for business outcomes — inspect the returned `code`.
+	 *
+	 * `redeemRequestId` is the provider idempotency key. Supply a stable value
+	 * when a caller may retry the same logical redeem (e.g. an HTTP client
+	 * retrying a timeout) so the backend collapses the duplicate instead of
+	 * spending a second credit; omitted, each call mints a fresh UUID.
 	 */
 	async redeemResetCredit(options: {
 		target: ResetCreditTarget;
 		provider?: string;
 		creditId?: string;
+		redeemRequestId?: string;
 		baseUrlResolver?: (provider: string) => string | undefined;
 		signal?: AbortSignal;
 	}): Promise<ResetCreditRedeemOutcome> {
@@ -5692,6 +5698,7 @@ export class AuthStorage {
 			creditId,
 			accessToken: match.accessToken,
 			accountId: match.accountId,
+			redeemRequestId: options.redeemRequestId,
 			baseUrl,
 			fetch: this.#usageFetch,
 			signal: options.signal,

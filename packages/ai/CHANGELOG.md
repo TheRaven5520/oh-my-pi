@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `GET /v1/usage/reset-credits` and `POST /v1/usage/reset-credits/redeem` to the auth gateway, exposing OpenAI Codex saved rate-limit resets to HTTP callers. The listing is live (it bypasses the 5-minute usage-report cache) and reports each stored account's durable `credentialId`, available count, and per-credit expiries without any token material; the redeem accepts `{ credentialId, creditId?, redeemRequestId? }` and targets accounts only by `credentialId`, because `AuthStorage.redeemResetCredit` ORs its target fields and one email can span several stored accounts. Outcome codes map to distinct statuses (`no_account` 404, spent/absent credits 409, `credit_list_failed` 502, `account_unavailable` 503) and a transport rejection answers 502 rather than 500
+- Added an optional `redeemRequestId` to `AuthStorage.redeemResetCredit`, forwarded to `consumeCodexResetCredit` as the provider idempotency key, so an HTTP caller retrying a redeem cannot spend a second credit
+
 ## [17.3.0] - 2026-08-13
 
 ### Breaking Changes

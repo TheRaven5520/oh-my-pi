@@ -12,6 +12,8 @@
  *   GET  /healthz                          → unauth; ok + version
  *   GET  /v1/usage                         → aggregated provider usage (5-min per-credential cache via AuthStorage)
  *   GET  /v1/credentials/check             → per-credential auth probe (diagnose 401s in a multi-account pool)
+ *   GET  /v1/usage/reset-credits           → live saved rate-limit resets per stored account (Codex)
+ *   POST /v1/usage/reset-credits/redeem    → spend one saved reset for one credentialId
  *   GET  /v1/models                        → list known models from the registry
  *   POST /v1/chat/completions              → OpenAI chat-completions in/out
  *   POST /v1/messages                      → Anthropic messages in/out
@@ -21,7 +23,7 @@
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "../auth-retry";
-import type { AuthStorage } from "../auth-storage";
+import type { AuthStorage, ResetCreditRedeemOutcome } from "../auth-storage";
 import * as AIError from "../error";
 import { classifyGatewayError } from "../error/gateway";
 import { isUsageLimitOutcome } from "../error/rate-limit";
@@ -730,6 +732,81 @@ async function handleCredentialsCheck(storage: AuthStorage, signal: AbortSignal)
 	return json(200, { generatedAt: Date.now(), credentials });
 }
 
+/**
+ * Live saved-reset inventory for `GET /v1/usage/reset-credits`.
+ *
+ * Deliberately bypasses the usage-report cache that backs `/v1/usage`: a
+ * caller about to spend a credit needs the authoritative count, and the
+ * cached report can be stale or predate the feature. Each entry carries the
+ * durable `credentialId` row id, which is the only stable handle a client can
+ * send back to redeem — one email can span several stored accounts.
+ */
+async function handleResetCreditsList(storage: AuthStorage, signal: AbortSignal): Promise<Response> {
+	const accounts = await storage.listResetCredits({ signal });
+	return json(200, { generatedAt: Date.now(), accounts });
+}
+
+/** Outcome code → HTTP status. Anything unmapped is an upstream failure. */
+const RESET_REDEEM_STATUS: Record<string, number> = {
+	reset: 200,
+	no_account: 404,
+	no_credit: 409,
+	already_redeemed: 409,
+	nothing_to_reset: 409,
+	credit_list_failed: 502,
+	account_unavailable: 503,
+};
+
+/**
+ * Spend one saved reset via `POST /v1/usage/reset-credits/redeem`.
+ *
+ * Body: `{ credentialId, creditId?, redeemRequestId? }`. `credentialId` is the
+ * only accepted account selector: `AuthStorage.redeemResetCredit` matches its
+ * target fields with OR semantics, so also accepting email/accountId would let
+ * a mismatched pair spend the wrong account's credit. `redeemRequestId` is
+ * forwarded as the provider idempotency key so a client retrying the same
+ * request cannot double-spend.
+ */
+async function handleResetCreditRedeem(storage: AuthStorage, req: Request): Promise<Response> {
+	let body: unknown;
+	try {
+		body = await req.json();
+	} catch {
+		return json(400, { error: "invalid JSON body" });
+	}
+	if (typeof body !== "object" || body === null) {
+		return json(400, { error: "body must be a JSON object" });
+	}
+	const { credentialId, creditId, redeemRequestId } = body as Record<string, unknown>;
+	if (typeof credentialId !== "number" || !Number.isSafeInteger(credentialId) || credentialId <= 0) {
+		return json(400, { error: "credentialId must be a positive integer" });
+	}
+	if (creditId !== undefined && (typeof creditId !== "string" || !creditId || creditId.length > 200)) {
+		return json(400, { error: "creditId must be a non-empty string" });
+	}
+	if (
+		redeemRequestId !== undefined &&
+		(typeof redeemRequestId !== "string" || !/^[0-9a-f-]{8,64}$/i.test(redeemRequestId))
+	) {
+		return json(400, { error: "redeemRequestId must be a uuid-shaped string" });
+	}
+	let outcome: ResetCreditRedeemOutcome;
+	try {
+		outcome = await storage.redeemResetCredit({
+			target: { credentialId },
+			creditId,
+			redeemRequestId,
+			signal: req.signal,
+		});
+	} catch (error) {
+		// Business outcomes come back as codes, but the consume call still
+		// rejects on transport failure — that is an upstream 502, not a 500.
+		logger.info("auth-gateway reset redeem failed", { credentialId, error: String(error) });
+		return json(502, { ok: false, code: "redeem_failed" });
+	}
+	return json(RESET_REDEEM_STATUS[outcome.code] ?? 502, outcome);
+}
+
 function handleModelsList(opts: AuthGatewayBootOptions): Response {
 	const seen = new Set<string>();
 	const data: Array<{ id: string; object: "model"; owned_by: string; api: Api }> = [];
@@ -786,6 +863,15 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 				// credentials, so we need a separate endpoint that captures errors.
 				if (req.method === "GET" && pathname === "/v1/credentials/check") {
 					return withCors(await handleCredentialsCheck(opts.storage, req.signal), req);
+				}
+
+				// Saved rate-limit resets: live inventory, plus an explicit spend.
+				// Both address accounts by durable credential row id, never email.
+				if (req.method === "GET" && pathname === "/v1/usage/reset-credits") {
+					return withCors(await handleResetCreditsList(opts.storage, req.signal), req);
+				}
+				if (req.method === "POST" && pathname === "/v1/usage/reset-credits/redeem") {
+					return withCors(await handleResetCreditRedeem(opts.storage, req), req);
 				}
 
 				// Provider-format dispatch.
