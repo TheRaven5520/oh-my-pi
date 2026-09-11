@@ -39,7 +39,7 @@ import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { routeWriteThroughBridge } from "./acp-bridge";
 import { resolveToolTier, truncateForPrompt } from "./approval";
 import { assertEditableFile } from "./auto-generated-guard";
-import { formatHashlineHeader, stripHashlinePrefixes } from "./hashline-format";
+import { formatHashlineHeader, splitAddressableFileLines, stripHashlinePrefixes } from "./hashline-format";
 import {
 	type ConflictEntry,
 	conflictRegionPresent,
@@ -107,6 +107,9 @@ import {
 } from "./xdev";
 
 const LOOSE_HASHLINE_HEADER_RE = /^\s*\[[^#\r\n]+#[^ \t\r\n]*\]\s*$/;
+const READ_RANGE_NOTICE_RE = /^\[Showing lines ([1-9]\d*)-([1-9]\d*) of ([1-9]\d*)\. Use :([1-9]\d*) to continue\]$/;
+const READ_MORE_NOTICE_RE = /^\[([1-9]\d*) more lines? in file\. Use :([1-9]\d*) to continue\]$/;
+const READ_ELISION_NOTICE_RE = /^\[(?:…|\.\.\.)([1-9]\d*)ln elided; re-read needed ranges(?: with |, e\.g\. ).+\]$/;
 const EXECUTABLE_NOTICE = "[Notice: Made executable via chmod +x]";
 const URI_LIKE_WRITE_PATH_RE = /^([a-z][a-z0-9+.-]*):\/{1,2}(.*)$/i;
 const XD_MISSING_DELIMITER_RE = /^xd\/+(.*)$/i;
@@ -362,6 +365,85 @@ function stripWriteContent(session: ToolSession, content: string): { text: strin
 		return { text: content, stripped: false };
 	}
 	return stripWriteContentWithPotentialLooseHeader(content.split("\n"));
+}
+interface ReadProjectionLineCounts {
+	visible: number;
+	total: number;
+}
+
+/**
+ * Recognize a complete read projection ending in one of read's own truncation
+ * notices. The line-count checks keep ordinary documentation containing the
+ * same text writable.
+ */
+function readProjectionLineCounts(content: string, cleanContent: string): ReadProjectionLineCounts | undefined {
+	const rawLines = splitAddressableFileLines(normalizeToLF(content));
+	const noticeIndex = rawLines.findLastIndex(line => line.trim().length > 0);
+	if (noticeIndex === -1 || rawLines.slice(noticeIndex + 1).some(line => line.trim().length > 0)) return undefined;
+	const notice = rawLines[noticeIndex]!.trim();
+	const range = READ_RANGE_NOTICE_RE.exec(notice);
+	const more = range ? null : READ_MORE_NOTICE_RE.exec(notice);
+	const elision = range || more ? null : READ_ELISION_NOTICE_RE.exec(notice);
+	if (!range && !more && !elision) return undefined;
+
+	const projectedLines = splitAddressableFileLines(normalizeToLF(cleanContent));
+	const cleanNoticeIndex = projectedLines.findLastIndex(line => line.trim() === notice);
+	if (cleanNoticeIndex !== -1) {
+		projectedLines.splice(cleanNoticeIndex, 1);
+		if (cleanNoticeIndex > 0 && projectedLines[cleanNoticeIndex - 1]!.trim().length === 0) {
+			projectedLines.splice(cleanNoticeIndex - 1, 1);
+		}
+	} else if (projectedLines.at(-1)?.trim().length === 0) {
+		// Prefix stripping removed the notice; drop its blank display separator.
+		projectedLines.pop();
+	}
+	const headerIndex = projectedLines.findIndex(line => line.trim().length > 0);
+	if (headerIndex !== -1 && LOOSE_HASHLINE_HEADER_RE.test(projectedLines[headerIndex]!)) {
+		projectedLines.splice(headerIndex, 1);
+	}
+
+	const visible = projectedLines.length;
+	if (range) {
+		const start = Number(range[1]);
+		const end = Number(range[2]);
+		const total = Number(range[3]);
+		const next = Number(range[4]);
+		if (end < start || next !== end + 1 || visible !== end - start + 1 || total <= visible) return undefined;
+		return { visible, total };
+	}
+	if (more) {
+		const omitted = Number(more[1]);
+		const next = Number(more[2]);
+		const total = next - 1 + omitted;
+		if (visible === 0 || visible >= next || total <= visible) return undefined;
+		return { visible, total };
+	}
+
+	const omitted = Number(elision![1]);
+	return { visible, total: visible + omitted };
+}
+
+async function assertNotTruncatedReadProjection(
+	absolutePath: string,
+	displayPath: string,
+	content: string,
+	cleanContent: string,
+): Promise<void> {
+	const projection = readProjectionLineCounts(content, cleanContent);
+	if (!projection) return;
+	let existingContent: string;
+	try {
+		existingContent = await Bun.file(absolutePath).text();
+	} catch (error) {
+		if (isEnoent(error)) return;
+		throw error;
+	}
+	const existingLines = splitAddressableFileLines(normalizeToLF(existingContent)).length;
+	if (existingLines !== projection.total) return;
+	const omitted = projection.total - projection.visible;
+	throw new ToolError(
+		`Refusing to overwrite '${displayPath}' with an incomplete read projection: the content contains an omp read truncation notice and covers only ${projection.visible} of ${projection.total} lines, which would discard ${omitted} existing lines. Re-read the omitted ranges and write the complete file, or use edit for a partial change.`,
+	);
 }
 
 /**
@@ -1286,14 +1368,15 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			await assertNotReadSelectorMisfire(path, cleanContent, this.session.cwd);
 			enforcePlanModeWrite(this.session, path, { op: "create" });
 			const absolutePath = resolvePlanPath(this.session, path);
+			const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 			const batchRequest = getLspBatchRequest(context?.toolCall);
 
 			// Check if file exists and is auto-generated before overwriting
 			if (await fs.exists(absolutePath)) {
 				await assertEditableFile(absolutePath, path, this.session.settings);
+				await assertNotTruncatedReadProjection(absolutePath, displayPath, content, cleanContent);
 			}
 
-			const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 			emitWriteProgress(onUpdate, cleanContent, displayPath, absolutePath);
 
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
