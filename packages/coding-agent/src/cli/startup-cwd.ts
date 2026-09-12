@@ -1,10 +1,13 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { directoryExists, getProjectDir, normalizePathForComparison, setProjectDir } from "@oh-my-pi/pi-utils";
+import { WRAPPER_ALLOW_HOME_KEY } from "../process-supervisor";
 import type { Args } from "./args";
 
 async function maybeAutoChdir(parsed: Args): Promise<void> {
-	if (parsed.allowHome || parsed.cwd) {
+	const wrapperAllowsHome = Reflect.get(globalThis, WRAPPER_ALLOW_HOME_KEY) === true;
+	Reflect.deleteProperty(globalThis, WRAPPER_ALLOW_HOME_KEY);
+	if (parsed.allowHome || parsed.cwd || wrapperAllowsHome) {
 		return;
 	}
 

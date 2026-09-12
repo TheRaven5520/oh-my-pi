@@ -179,6 +179,8 @@ export class InputController {
 	#btwBranchListenerInstalled = false;
 	#btwCopyListenerInstalled = false;
 	#expandToolsListenerInstalled = false;
+	#backgroundToolListenerInstalled = false;
+	#pendingStreamingSubmissions = new Set<Promise<void>>();
 	// Tap counter for the double-← gesture; reset whenever a quiet gap
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.
@@ -238,6 +240,33 @@ export class InputController {
 
 	setupKeyHandlers(): void {
 		this.ctx.editor.setActionKeys("app.interrupt", this.ctx.keybindings.getKeys("app.interrupt"));
+		// Pi-style compact subagent dock: from an empty main editor, Down enters
+		// the child list, Up/Down selects, Enter focuses that transcript, and x
+		// interrupts a running child. Agent Hub remains the detailed control view.
+		this.ctx.ui.addInputListener(data => {
+			if (this.ctx.ui.getFocused() !== this.ctx.editor || this.ctx.editor.getText().trim()) return undefined;
+			if (matchesKey(data, "down")) {
+				return this.ctx.moveSubagentDockSelection("next") ? { consume: true } : undefined;
+			}
+			if (!this.ctx.hasSubagentDockSelection) return undefined;
+			if (matchesKey(data, "up")) {
+				this.ctx.moveSubagentDockSelection("previous");
+				return { consume: true };
+			}
+			if (matchesKey(data, "enter")) {
+				void this.ctx.openSelectedSubagentDock();
+				return { consume: true };
+			}
+			if (matchesKey(data, "x")) {
+				void this.ctx.interruptSelectedSubagentDock();
+				return { consume: true };
+			}
+			if (matchesKey(data, "escape")) {
+				this.ctx.clearSubagentDockSelection();
+				return { consume: true };
+			}
+			return undefined;
+		});
 		if (!this.#focusedLeftTapListenerInstalled) {
 			this.#focusedLeftTapListenerInstalled = true;
 			this.ctx.ui.addInputListener(data => {
@@ -295,6 +324,26 @@ export class InputController {
 				if (this.ctx.ui.getFocused() instanceof TreeSelectorComponent && matchesKey(data, "ctrl+o"))
 					return undefined;
 				this.toggleToolOutputExpansion();
+				return { consume: true };
+			});
+		}
+		if (!this.#backgroundToolListenerInstalled) {
+			this.#backgroundToolListenerInstalled = true;
+			// `app.tool.background` (Ctrl+B) asks the running tool batch to hand its
+			// work to the background job manager, so a long `bash` command stops
+			// holding the turn and a queued prompt is serviced at once. Like the
+			// expand chord it fires regardless of focus, but never while an overlay
+			// owns the screen (its own keys win there).
+			//
+			// The key is consumed ONLY when a batch actually accepts the request:
+			// Ctrl+B is also the shipped `tui.editor.cursorLeft` chord, and input
+			// listeners preempt the focused component, so an unconditional consume
+			// would break cursor-left whenever nothing is backgroundable.
+			this.ctx.ui.addInputListener(data => {
+				if (!this.ctx.keybindings.matches(data, "app.tool.background")) return undefined;
+				if (this.ctx.ui.hasOverlay()) return undefined;
+				if (!this.ctx.viewSession.agent.requestToolBackground()) return undefined;
+				this.ctx.showStatus("Backgrounding the running command; its result arrives when it finishes.");
 				return { consume: true };
 			});
 		}
@@ -629,7 +678,7 @@ export class InputController {
 	}
 
 	setupEditorSubmitHandler(): void {
-		this.ctx.editor.onSubmit = async (text: string) => {
+		const submit = async (text: string): Promise<void> => {
 			text = text.trim();
 			const hasPendingImages = this.ctx.editor.pendingImages.length > 0;
 			if ((!isSettingsInitialized() || settings.get("emojiAutocomplete")) && text) text = expandEmoticons(text);
@@ -642,10 +691,14 @@ export class InputController {
 				return;
 			}
 
-			// Empty submit while streaming with queued messages: abort the active
-			// turn and let the post-unwind drain deliver the agent-core queue.
-			if (!text && !hasPendingImages && this.ctx.session.isStreaming) {
-				if (this.ctx.session.queuedMessageCount > 0) {
+			// A second Enter can arrive before the first submit finishes input hooks
+			// or image normalization. Preserve its flush intent until those messages
+			// reach the queue, then let the normal post-abort drain deliver them.
+			if (!text && !hasPendingImages) {
+				if (this.ctx.session.queuedMessageCount === 0 && this.#pendingStreamingSubmissions.size > 0) {
+					await Promise.allSettled([...this.#pendingStreamingSubmissions]);
+				}
+				if (this.ctx.session.isStreaming && this.ctx.session.queuedMessageCount > 0) {
 					const aborting = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 					await aborting;
 					this.ctx.updatePendingMessagesDisplay();
@@ -653,8 +706,6 @@ export class InputController {
 				}
 				return;
 			}
-
-			if (!text && !hasPendingImages) return;
 
 			// Continue shortcuts: "." or "c" resume the agent with a hidden agent-authored
 			// developer directive (no visible user message) instead of an empty turn, so the
@@ -956,6 +1007,16 @@ export class InputController {
 				this.ctx.ui.requestRender();
 			}
 			this.ctx.editor.addToHistory(text);
+		};
+		this.ctx.editor.onSubmit = (text: string) => {
+			const trackSubmission =
+				!this.ctx.focusedAgentId &&
+				this.ctx.session.isStreaming &&
+				(text.trim().length > 0 || this.ctx.editor.pendingImages.length > 0);
+			const submission = submit(text);
+			if (!trackSubmission) return submission;
+			this.#pendingStreamingSubmissions.add(submission);
+			return submission.finally(() => this.#pendingStreamingSubmissions.delete(submission));
 		};
 	}
 
@@ -1862,11 +1923,8 @@ export class InputController {
 	}
 
 	cycleThinkingLevel(): void {
-		if (this.ctx.focusedAgentId) {
-			this.ctx.showStatus("Model/thinking apply to the main session — press ←← to return first");
-			return;
-		}
-		const newLevel = this.ctx.session.cycleThinkingLevel();
+		const target = this.ctx.viewSession;
+		const newLevel = target.cycleThinkingLevel();
 		if (newLevel === undefined) {
 			this.ctx.showStatus("Current model does not support thinking");
 		} else {
@@ -1876,13 +1934,9 @@ export class InputController {
 	}
 
 	async cycleRoleModel(direction: "forward" | "backward" = "forward"): Promise<void> {
-		if (this.ctx.focusedAgentId) {
-			this.ctx.showStatus("Model/thinking apply to the main session — press ←← to return first");
-			return;
-		}
 		try {
 			const cycleOrder = settings.get("cycleOrder");
-			const result = await this.ctx.session.cycleRoleModels(cycleOrder, direction);
+			const result = await this.ctx.viewSession.cycleRoleModels(cycleOrder, direction);
 			if (!result) {
 				this.ctx.showStatus("Only one role model available");
 				return;

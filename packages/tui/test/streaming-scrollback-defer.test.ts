@@ -5,6 +5,8 @@ import {
 	type Component,
 	type NativeScrollbackCommittedRows,
 	type NativeScrollbackLiveRegion,
+	type RenderScheduler,
+	type RenderTimer,
 	TUI,
 } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -41,6 +43,12 @@ class LineList implements Component {
 
 	setLines(lines: string[]): void {
 		this.#lines = [...lines];
+	}
+}
+
+class InputLine extends LineList {
+	handleInput(data: string): void {
+		this.setLines([`input:${data}`]);
 	}
 }
 
@@ -104,6 +112,48 @@ class CommittedRowsWireProbe extends CommittedRowsProbe {
 	override setNativeScrollbackCommittedRows(rows: number): void {
 		this.received.push(rows);
 		super.setNativeScrollbackCommittedRows(rows);
+	}
+}
+
+class ControlledRenderScheduler implements RenderScheduler {
+	#now = 0;
+	#immediates: Array<() => void> = [];
+	#timers: Array<{ callback: () => void; canceled: boolean; delayMs: number }> = [];
+
+	now(): number {
+		this.#now += 20;
+		return this.#now;
+	}
+
+	scheduleImmediate(callback: () => void): void {
+		this.#immediates.push(callback);
+	}
+
+	scheduleRender(callback: () => void, delayMs: number): RenderTimer {
+		const timer = { callback, canceled: false, delayMs };
+		this.#timers.push(timer);
+		return {
+			cancel: () => {
+				timer.canceled = true;
+			},
+		};
+	}
+
+	async flushThrough(maxDelayMs: number, term: VirtualTerminal): Promise<void> {
+		let rounds = 0;
+		while (
+			this.#immediates.length > 0 ||
+			this.#timers.some(timer => !timer.canceled && timer.delayMs <= maxDelayMs)
+		) {
+			if (++rounds > 20) throw new Error("Controlled render scheduler did not settle");
+			const immediates = this.#immediates;
+			this.#immediates = [];
+			for (const callback of immediates) callback();
+			const ready = this.#timers.filter(timer => !timer.canceled && timer.delayMs <= maxDelayMs);
+			this.#timers = this.#timers.filter(timer => !timer.canceled && timer.delayMs > maxDelayMs);
+			for (const timer of ready) timer.callback();
+		}
+		await term.flush();
 	}
 }
 
@@ -348,6 +398,96 @@ describe("streaming scrollback — visual record", () => {
 			tui.requestRender();
 			await settle(term);
 			expect(tape(term)).toEqual(rows("text-", 10));
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("coalesces mutable live frames for tmux profiles using outer native scrollback", async () => {
+		const term = new VirtualTerminal(32, 4);
+		const scheduler = new ControlledRenderScheduler();
+		const tui = new TUI(term, undefined, {
+			renderScheduler: scheduler,
+			outerScrollbackStreamingCoalesce: true,
+		});
+		const live = new SeamLineList(["settled", "partial"]);
+		live.seam = 1;
+		const input = new InputLine(["input:"]);
+
+		try {
+			tui.addChild(live);
+			tui.addChild(input);
+			tui.setFocus(input);
+			tui.start();
+			await scheduler.flushThrough(249, term);
+			const initial = term.getViewport();
+			const writes = capture(term);
+
+			live.setLines(["settled", "partial-more"]);
+			tui.requestRender();
+			await scheduler.flushThrough(249, term);
+
+			expect(writes).toEqual([]);
+			expect(term.getViewport()).toEqual(initial);
+
+			// A quiet partial is delayed, never dropped.
+			await scheduler.flushThrough(250, term);
+			expect(writes.length).toBeGreaterThan(0);
+			expect(
+				term
+					.getViewport()
+					.map(line => line.trimEnd())
+					.slice(0, 3),
+			).toEqual(["settled", "partial-more", "input:"]);
+
+			// Input bypasses the coalescer and publishes both the editor update
+			// and the latest assistant tail immediately.
+			writes.length = 0;
+			live.setLines(["settled", "partial-input"]);
+			tui.requestRender();
+			await scheduler.flushThrough(249, term);
+			expect(writes).toEqual([]);
+			term.sendInput("x");
+			await scheduler.flushThrough(249, term);
+			expect(writes.length).toBeGreaterThan(0);
+			expect(
+				term
+					.getViewport()
+					.map(line => line.trimEnd())
+					.slice(0, 3),
+			).toEqual(["settled", "partial-input", "input:x"]);
+
+			// A completed rendered row also bypasses the time gate.
+			writes.length = 0;
+			live.setLines(["settled", "next-settled", "partial-input"]);
+			live.seam = 2;
+			tui.requestRender();
+			await scheduler.flushThrough(249, term);
+
+			expect(writes.length).toBeGreaterThan(0);
+			expect(term.getViewport().map(line => line.trimEnd())).toEqual([
+				"settled",
+				"next-settled",
+				"partial-input",
+				"input:x",
+			]);
+
+			writes.length = 0;
+			live.setLines(["settled", "next-settled", "partial-final"]);
+			tui.requestRender();
+			await scheduler.flushThrough(249, term);
+			expect(writes).toEqual([]);
+
+			live.seam = undefined;
+			tui.requestRender();
+			await scheduler.flushThrough(249, term);
+			expect(writes.length).toBeGreaterThan(0);
+			expect(term.getViewport().map(line => line.trimEnd())).toEqual([
+				"settled",
+				"next-settled",
+				"partial-final",
+				"input:x",
+			]);
 		} finally {
 			tui.stop();
 		}

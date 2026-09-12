@@ -26,26 +26,51 @@ while [ -L "$self" ]; do
 	esac
 done
 scripts_dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)
-cli=$scripts_dir/../src/cli.ts
+cli=$scripts_dir/../src/launcher.ts
 preload=$scripts_dir/omp.ts
 timing_preload=$scripts_dir/../../utils/src/module-timer.ts
 
 launch_dir=${OMP_DEV_LAUNCH_DIR:-${HOME}/.omp/.dev-cwd}
 mkdir -p "$launch_dir"
 
-OMP_LAUNCH_CWD=$PWD
-export OMP_LAUNCH_CWD
+OMP_LAUNCH_CWD=$HOME
+# Let `/refresh` re-enter this wrapper rather than invoking Bun directly;
+# that preserves the clean-CWD/preload isolation described above.
+OMP_REFRESH_COMMAND=$self
+OMP_SUPERVISOR_SPAWN_CWD=$launch_dir
+export OMP_LAUNCH_CWD OMP_REFRESH_COMMAND OMP_SUPERVISOR_SPAWN_CWD
+
+# Pi injects these live-session selectors into commands it launches. They are
+# meaningful to Pi's own model runtime, but must never leak into a standalone
+# OMP process: otherwise a Codex request can inherit the parent harness's
+# system/tool context (including a restricted tool slate).
+unset PI_CODING_AGENT PI_SESSION_FILE PI_SESSION_ID PI_PROVIDER PI_MODEL PI_REASONING_LEVEL
+unset OMP_WRAPPER_ALLOW_HOME
+# Never enable OpenTelemetry export merely because the parent environment has
+# an OTLP endpoint configured. Model-provider traffic remains necessary.
+export OTEL_SDK_DISABLED=true
+
 cd "$launch_dir"
 # Herdr 0.7.5 validates the foreground process name. The macOS shell can
 # preserve OMP's identity while still running the development CLI through Bun.
+# Prefer the standard Bun install path so this dev launcher works in a clean
+# login/non-interactive shell before ~/.bashrc has amended PATH.
+BUN_BIN=${BUN_INSTALL:-$HOME/.bun}/bin/bun
+if [ ! -x "$BUN_BIN" ]; then
+	BUN_BIN=bun
+fi
 run_bun() {
 	if [ "${HERDR_ENV:-}" = 1 ] && [ "$(uname -s)" = Darwin ]; then
-		exec -a omp bun "$@"
+		exec -a omp "$BUN_BIN" "$@"
 	fi
-	exec bun "$@"
+	exec "$BUN_BIN" "$@"
 }
 
+# The launcher strips this private marker before command dispatch. Unlike the
+# public --allow-home launch flag, it is safe in front of service subcommands
+# and survives supervised refreshes without entering a daemon's environment.
+allow_home_arg=__omp_wrapper_allow_home
 if [ -n "${PI_TIMING:-}" ]; then
-	run_bun --preload "$preload" --preload "$timing_preload" "$cli" "$@"
+	run_bun --preload "$preload" --preload "$timing_preload" "$cli" "$allow_home_arg" "$@"
 fi
-run_bun --preload "$preload" "$cli" "$@"
+run_bun --preload "$preload" "$cli" "$allow_home_arg" "$@"

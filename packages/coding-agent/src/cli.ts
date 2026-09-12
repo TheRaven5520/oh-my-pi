@@ -34,6 +34,7 @@ import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbou
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 import { TERMINAL_OUTPUT_WORKER_ARG } from "./launch/terminal-output-worker-protocol";
 import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
+import { WRAPPER_ALLOW_HOME_ARG, WRAPPER_ALLOW_HOME_KEY } from "./process-supervisor";
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 import { smokeTestComputerWorker } from "./tools/computer/supervisor";
 import { startComputerWorker } from "./tools/computer/worker-entry";
@@ -53,7 +54,8 @@ setProcessName(APP_NAME);
 // (`B:/~BUN/root/cli.js`), so Bun's internal match fails. `bun build --compile`
 // CLI builds are unaffected. A compiled binary's entry module is by definition
 // the process entry, so the define-folded PI_COMPILED marker stands in.
-const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
+const isProcessEntry =
+	import.meta.main || (process.env.PI_COMPILED === "true" && process.env.OMP_LAUNCHER_OWNS_CLI !== "true");
 
 // Worker-host entry declaration (Worker threads and worker subprocesses
 // re-enter `Bun.main` with a hidden argv selector instead of loading separate
@@ -327,7 +329,10 @@ async function runTinyWorker(): Promise<void> {
 
 /** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
+	Reflect.deleteProperty(globalThis, WRAPPER_ALLOW_HOME_KEY);
 	let resolvedArgv = argv;
+	const wrapperAllowsHome = resolvedArgv[0] === WRAPPER_ALLOW_HOME_ARG;
+	if (wrapperAllowsHome) resolvedArgv = resolvedArgv.slice(1);
 	try {
 		const extracted = extractProfileFlags(resolvedArgv);
 		resolvedArgv = extracted.argv;
@@ -408,6 +413,9 @@ export async function runCli(argv: string[]): Promise<void> {
 		process.stderr.write(`error: ${resolved.error}\n`);
 		process.exitCode = 1;
 		return;
+	}
+	if (wrapperAllowsHome && resolved.argv[0] === "launch") {
+		Reflect.set(globalThis, WRAPPER_ALLOW_HOME_KEY, true);
 	}
 	return run({ bin: APP_NAME, version: VERSION, argv: resolved.argv, commands, metadataHelp: showHelp });
 }

@@ -96,8 +96,9 @@ async function main(): Promise<void> {
 		// 128KiB per-argv-string cap, so it can never be passed as a CLI
 		// `--define` (posix_spawn fails with E2BIG).
 		const output = await Bun.build({
-			entrypoints: [path.join(packageDir, "src/cli.ts")],
+			entrypoints: [path.join(packageDir, "src/launcher.ts")],
 			outdir: outDir,
+			naming: "cli.js",
 			target: "bun",
 			external: [...ALWAYS_EXTERNAL, ...RUNTIME_EXTERNAL],
 			define: {

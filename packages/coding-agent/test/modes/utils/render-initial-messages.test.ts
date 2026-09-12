@@ -5,10 +5,9 @@
  * `sessionManager.buildSessionContext()` — the LLM-context builder — must not be
  * consulted for display.
  *
- * Also guards the cold-launch terminal cleanup: `omp` / `omp -c` leave the
- * previous run's transcript in native scrollback because the TUI's initial
- * paint preserves it, so the cold-launch render must request a
- * scrollback-clearing repaint (`clearTerminalHistory`).
+ * Also guards cold-launch and session-switch terminal cleanup: transcript
+ * replacement clears native scrollback, then follows the replacement's tail
+ * so the user lands on the editor rather than the replay's first row.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
@@ -245,11 +244,11 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 });
 
 describe("UiHelpers.renderInitialMessages — clearTerminalHistory", () => {
-	it("requests a scrollback-clearing repaint when clearTerminalHistory is set", async () => {
+	it("clears scrollback and follows the replacement transcript tail", async () => {
 		await Settings.init({ inMemory: true });
 		const { ctx } = makeCtx();
 		await new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
-		expect(ctx.ui.requestRender).toHaveBeenCalledWith(true, { clearScrollback: true });
+		expect(ctx.ui.requestRender).toHaveBeenCalledWith(true, { clearScrollback: true, followTail: true });
 	});
 
 	it("never clears scrollback when clearTerminalHistory is unset", async () => {
@@ -322,7 +321,9 @@ describe("UiHelpers.renderInitialMessages — responsiveness", () => {
 		const afterReplay = Bun.stripANSI(chatContainer.render(100).join("\n"));
 		expect(afterReplay).not.toContain("VISIBLE_OLD_TRANSCRIPT");
 		expect(afterReplay).toContain("replacement 255");
-		expect(requestRender.mock.calls.filter(([force]) => force === true)).toEqual([[true, { clearScrollback: true }]]);
+		expect(requestRender.mock.calls.filter(([force]) => force === true)).toEqual([
+			[true, { clearScrollback: true, followTail: true }],
+		]);
 	});
 
 	it("yields across a large parallel read-result batch", async () => {
@@ -506,7 +507,7 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 
 		expect(countImageComponents(chatContainer)).toBe(2);
 		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Read reopened.png");
-		expect(ctx.ui.requestRender).toHaveBeenCalledWith(true, { clearScrollback: true });
+		expect(ctx.ui.requestRender).toHaveBeenCalledWith(true, { clearScrollback: true, followTail: true });
 	});
 });
 

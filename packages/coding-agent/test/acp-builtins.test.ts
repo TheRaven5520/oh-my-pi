@@ -1,13 +1,8 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it, spyOn, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type {
-	ResetCreditAccountStatus,
-	ResetCreditRedeemOutcome,
-	ResetCreditTarget,
-	UsageReport,
-} from "@oh-my-pi/pi-ai";
+import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome, ResetCreditTarget } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -313,39 +308,16 @@ describe("ACP builtin slash commands", () => {
 		expect(output[0]).toContain("123.45 usd used");
 		expect(output[0]).toContain("Daily quota — 24 hours");
 	});
-	it("/usage show renders the same report as plain /usage", async () => {
-		const now = 1_700_000_000_000;
-		const nowSpy = spyOn(Date, "now").mockReturnValue(now);
-		try {
-			const reports: UsageReport[] = [
-				{
-					provider: "openai-codex",
-					fetchedAt: now - 5_000,
-					limits: [
-						{
-							id: "codex-5h",
-							label: "5 hours",
-							scope: { provider: "openai-codex", tier: "prolite", accountId: "account-1" },
-							window: { id: "5h", label: "5 hours", resetsAt: now + 60 * 60 * 1000 },
-							amount: { used: 0.24, usedFraction: 0.24, unit: "unknown" },
-						},
-					],
-					metadata: { email: "user@example.com" },
-				},
-			];
-			const plain = createRuntime();
-			const show = createRuntime();
-			plain.runtime.session.fetchUsageReports = async () => reports;
-			show.runtime.session.fetchUsageReports = async () => reports;
+	it("rejects /usage show with current help without fetching reports", async () => {
+		const { output, runtime } = createRuntime();
+		const fetchUsageReports = vi.fn(async () => []);
+		runtime.session.fetchUsageReports = fetchUsageReports;
 
-			const plainResult = await executeAcpBuiltinSlashCommand("/usage", plain.runtime);
-			const showResult = await executeAcpBuiltinSlashCommand("/usage show", show.runtime);
+		const result = await executeAcpBuiltinSlashCommand("/usage show", runtime);
 
-			expect(showResult).toEqual(plainResult);
-			expect(show.output).toEqual(plain.output);
-		} finally {
-			nowSpy.mockRestore();
-		}
+		expect(result).toEqual({ consumed: true });
+		expect(output).toEqual(["Usage: /usage [reset [account|active]]"]);
+		expect(fetchUsageReports).not.toHaveBeenCalled();
 	});
 
 	it("routes saved reset redemption through /usage reset", async () => {

@@ -409,6 +409,12 @@ export interface Terminal {
 	// so the TUI re-pushes this after entering the alternate screen.
 	get kittyEnableSequence(): string | null;
 
+	/**
+	 * Sequences that make an xterm-compatible terminal follow output during one
+	 * intentional transcript replacement. Optional for custom Terminal adapters.
+	 */
+	getTransientScrollToBottomSequences?(): { before: string; after: string } | undefined;
+
 	// The active modified-key reporting sequence to reassert on alternate-screen
 	// entry, or null when no enhanced keyboard mode is active. Optional so custom
 	// Terminals built against older pi-tui versions keep working.
@@ -623,6 +629,11 @@ export class ProcessTerminal implements Terminal {
 
 	get kittyEnableSequence(): string | null {
 		return this.#kittyProtocolActive ? this.#kittyEnableSeq : null;
+	}
+
+	getTransientScrollToBottomSequences(): { before: string; after: string } | undefined {
+		if (this.#privateModeSupport.get(1010) !== true) return undefined;
+		return { before: "\x1b[?1010h", after: "\x1b[?1010l" };
 	}
 
 	get keyboardEnhancementEnterSequence(): string | null {

@@ -34,6 +34,7 @@ const codexModelEntrySchema = type({
 	"supported_reasoning_levels?": "unknown",
 	"input_modalities?": "unknown",
 	"visibility?": "unknown",
+	"supported_in_api?": "unknown",
 	"priority?": "unknown",
 	"prefer_websockets?": "unknown",
 	"use_responses_lite?": "unknown",
@@ -218,7 +219,9 @@ function normalizeCodexModelEntry(entry: unknown, baseUrl: string): NormalizedCo
 	}
 
 	const visibility = toNonEmptyString(payload.visibility)?.toLowerCase();
-	if (visibility === "hide" || visibility === "hidden") {
+	const hidden = visibility === "hide" || visibility === "hidden";
+	const hiddenApiModel = slug === "gpt-6-astra" && toBoolean(payload.supported_in_api) === true;
+	if (hidden && !hiddenApiModel) {
 		return null;
 	}
 

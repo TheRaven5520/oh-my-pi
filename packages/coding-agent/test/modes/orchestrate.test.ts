@@ -91,6 +91,11 @@ describe("orchestrate notice", () => {
 		expect(notice.startsWith("<system-notice>")).toBe(true);
 		expect(notice.endsWith("</system-notice>")).toBe(true);
 		expect(notice).toContain("orchestrator");
+		expect(notice).toContain("expected information or value per unit time");
+		expect(notice).toContain("treat proposed ideas as hypotheses");
+		expect(notice).toContain("Do not introduce or require hashes");
+		expect(notice).not.toContain("Parallelize maximally");
+		expect(notice).not.toContain("Verify each phase before the next");
 		// The contract must not retain the slash-command input placeholder.
 		expect(notice).not.toContain("$@");
 	});
@@ -116,6 +121,12 @@ describe("orchestrate notice", () => {
 		const editOnly = renderOrchestrateNotice({ tools: ["read", "edit"] });
 		expect(editOnly).toContain("with `edit`");
 		expect(editOnly).not.toContain("`edit`/`write`");
+	});
+
+	it("names edit and write exactly once when both are available", () => {
+		const notice = renderOrchestrateNotice({ tools: ["read", "edit", "write"] });
+		expect(notice).toContain("with `edit`/`write`.");
+		expect(notice).not.toContain("`write``write`");
 	});
 });
 

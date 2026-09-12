@@ -151,6 +151,11 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			leadingSlashStart !== null && !hasPromptTextBeforeCursorLine
 				? textBeforeCursor.slice(leadingSlashStart)
 				: null;
+		// A bare slash is frequently the first character of normal prose or a
+		// path. Keep the editor quiet until the user has begun a command name;
+		// `/r` and onward retain the usual command filtering behavior.
+		if (commandText === "/") return null;
+
 		const spaceIndex = commandText?.indexOf(" ") ?? -1;
 		if (commandText !== null && spaceIndex !== -1) {
 			const commandName = commandText.slice(1, spaceIndex);
