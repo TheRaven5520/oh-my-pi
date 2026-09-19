@@ -27,6 +27,8 @@ At session start, if a consolidated summary or manually captured lesson exists f
 - Cite the memory artifact path when memory changes the plan, and pair it with current-repo evidence before acting.
 - Prefer repo state and user instruction when they conflict with memory; treat conflicting memory as stale.
 
+The local extractor and consolidator keep only future-actionable memory: durable operational knowledge, durable user preferences, and general lessons about research or verification. They exclude individual experiment results, benchmark numbers, checkpoint inventories, transient machine state, and run-specific conclusions. An experiment may contribute a generalized procedure or failure mode, but not its result record.
+
 ### Reading memory artifacts
 
 The agent can read memory files directly using `memory://` URLs with the `read` tool:
@@ -64,6 +66,8 @@ autolearn:
 ```
 
 With the local backend active, `learn` saves explicit durable lessons to the project's `learned.md`. Lessons are newest-first, deduplicated, secret-redacted, capped at 100 entries, and injected starting with the next session; a `learn` call does not mutate the active session's prompt-cache prefix. Each lesson's content is capped at 2,000 characters and optional context at 400 characters. Structured memory search, `recall`, `retain`, `reflect`, and `memory_edit` are not available for the local backend.
+
+The `learn` tool uses the same admission policy as automatic extraction. It should save operational knowledge, durable preferences, and generalized research or verification lessons—not a record of an individual experiment.
 
 ## How it works
 

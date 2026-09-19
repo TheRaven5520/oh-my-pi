@@ -274,6 +274,20 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	waitForSteeringMessages?: (signal?: AbortSignal) => Promise<void>;
 
 	/**
+	 * Subscribes a sink invoked when the host asks the in-flight tool batch to
+	 * move its work to the background (the TUI's `app.tool.background` chord,
+	 * Ctrl+B by default). Returns an unsubscribe function; the loop unsubscribes
+	 * when the batch settles.
+	 *
+	 * The request is cooperative and never kills anything: the loop raises
+	 * {@link ToolCallContext.backgroundSignal} and tools that can detach their
+	 * work (e.g. `bash` handing its running child to the async job manager)
+	 * return a "backgrounded" result early, so queued steering injects at the
+	 * now-immediate batch boundary. Tools that ignore it keep running.
+	 */
+	subscribeBackgroundRequests?: (sink: () => void) => () => void;
+
+	/**
 	 * Peeks whether IRC messages should interrupt an interruptible waiting tool.
 	 *
 	 * Uses the same delivery rules as steering: the poll is non-consuming, only
@@ -582,6 +596,14 @@ export interface ToolCallContext {
 	 * always safe (the message injects at the next batch boundary).
 	 */
 	steeringSignal?: AbortSignal;
+	/**
+	 * Cooperative background signal: aborted when the user explicitly asks for
+	 * the running tool work to be moved to the background (`app.tool.background`,
+	 * Ctrl+B). Like {@link steeringSignal} it NEVER kills the tool — a tool that
+	 * can detach its work SHOULD return a result describing the background
+	 * handle; ignoring it is always safe.
+	 */
+	backgroundSignal?: AbortSignal;
 }
 
 /** A single tool-call content block emitted by an assistant message. */
@@ -1035,6 +1057,17 @@ export interface AgentTool<
 	 * batch boundary. Honored only when `interruptMode` is "immediate".
 	 */
 	interruptible?: boolean | ((args: Partial<Static<TParameters>>) => boolean);
+	/**
+	 * Whether this tool can hand its in-flight work to a background job when the
+	 * user asks for it (`app.tool.background`, Ctrl+B). Tools that set this
+	 * MUST observe {@link ToolCallContext.backgroundSignal} and return a result
+	 * describing the background handle instead of continuing to block the turn.
+	 *
+	 * The loop only raises the background signal for batches containing at least
+	 * one such tool, so the host can tell an accepted request from a no-op (and
+	 * leave the chord to its normal editor binding when nothing can background).
+	 */
+	backgroundable?: boolean;
 	/**
 	 * Controls how the INTENT_FIELD (`i`) is handled for this tool.
 	 * - `"require"` (default): `i` is injected and required in the parameter schema.

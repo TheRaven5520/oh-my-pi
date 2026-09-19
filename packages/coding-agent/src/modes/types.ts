@@ -164,6 +164,12 @@ export interface InteractiveModeContext {
 	applyPinnedAgentsSetting(): void;
 	/** Point the inline hover band at a click-candidate id (or clear it). */
 	setClickHoverId(id: string | undefined): void;
+	/** Pi-style below-editor subagent dock controls. */
+	moveSubagentDockSelection(direction: "next" | "previous"): boolean;
+	readonly hasSubagentDockSelection: boolean;
+	clearSubagentDockSelection(): boolean;
+	openSelectedSubagentDock(): Promise<boolean>;
+	interruptSelectedSubagentDock(): Promise<boolean>;
 	/** Clear loader, transient HUD/pending containers, streaming state, and pending tools. */
 	clearTransientSessionUi(): void;
 	settings: Settings;
@@ -267,6 +273,8 @@ export interface InteractiveModeContext {
 	// Lifecycle
 	init(options?: InteractiveModeInitOptions): Promise<void>;
 	playWelcomeIntro(): void;
+	/** Restart the CLI and reopen this exact persisted session/branch. */
+	refresh(): Promise<void>;
 	shutdown(): Promise<void>;
 	/** Tear down like {@link shutdown}, then relaunch the CLI with the original launch flags, resuming this session. */
 	restart(): Promise<void>;

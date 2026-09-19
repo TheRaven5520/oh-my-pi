@@ -616,10 +616,10 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 
 		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-		expect(hud).toContain("BurstAgent0: Burst job 0");
-		expect(hud).toContain("BurstAgent2: Burst job 2");
-		expect(hud).not.toContain("BurstAgent3: Burst job 3");
-		expect(hud).toContain("3 more — expand");
+		expect(hud).toContain("BurstAgent0 · Burst job 0");
+		expect(hud).toContain("BurstAgent3 · Burst job 3");
+		expect(hud).not.toContain("BurstAgent4 · Burst job 4");
+		expect(hud).toContain("2 more — expand");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});

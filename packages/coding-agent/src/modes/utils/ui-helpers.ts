@@ -1025,7 +1025,10 @@ export class UiHelpers {
 				this.ctx.showStatus(`Session compacted ${times}`);
 			}
 			if (options.clearTerminalHistory) {
-				this.ctx.ui.requestRender(true, { clearScrollback: true });
+				// A focused-subagent switch and an in-process reload replace the
+				// transcript rather than append to it. Follow the new tail so a long
+				// replay lands on the editor instead of leaving the reader at its top.
+				this.ctx.ui.requestRender(true, { clearScrollback: true, followTail: true });
 			} else {
 				this.ctx.ui.requestRender();
 			}

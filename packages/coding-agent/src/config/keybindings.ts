@@ -31,6 +31,7 @@ interface AppKeybindings {
 	"app.model.selectTemporary": true;
 	"app.tools.expand": true;
 	"app.tools.toggleVisibility": true;
+	"app.tool.background": true;
 	"app.editor.external": true;
 	"app.message.followUp": true;
 	"app.retry": true;
@@ -129,6 +130,10 @@ export const KEYBINDINGS = {
 	"app.tools.toggleVisibility": {
 		defaultKeys: "ctrl+shift+o",
 		description: "Show or hide tool activity",
+	},
+	"app.tool.background": {
+		defaultKeys: "ctrl+b",
+		description: "Move the running command to the background",
 	},
 	"app.editor.external": {
 		defaultKeys: "ctrl+g",

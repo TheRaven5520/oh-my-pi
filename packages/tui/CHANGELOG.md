@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Support graphical display equations, opt-in tmux scrollback frame coalescing, and following the latest line after transcript replacement.
+
 ## [18.1.17] - 2026-09-10
 
 ### Added

@@ -2497,6 +2497,173 @@ function b() {
 			await asyncJobManager.dispose();
 		});
 
+		it("hands a plain foreground command to the job manager when the background signal fires", async () => {
+			const deliveries: Array<{ jobId: string; text: string }> = [];
+			const updates: string[] = [];
+			const asyncJobManager = new AsyncJobManager({
+				onJobComplete: async (jobId, text) => {
+					deliveries.push({ jobId, text });
+				},
+			});
+			// Auto-background is OFF: this is the ordinary foreground bash path,
+			// the one Ctrl+B has to be able to detach mid-run.
+			const foregroundBashTool = wrapToolWithMetaNotice(
+				new BashTool(
+					createTestToolSession(testDir, Settings.isolated({ "bash.autoBackground.enabled": false }), {
+						getSessionId: () => "test-session",
+						asyncJobManager,
+					}),
+				),
+			);
+
+			// Press the chord as soon as the child has produced output — an event,
+			// not a guessed delay, so the command is provably mid-run.
+			const started = Promise.withResolvers<void>();
+			const background = new AbortController();
+			const resultPromise = foregroundBashTool.execute(
+				"test-call-ctrl-b-foreground",
+				{ command: "printf 'start\\n'; sleep 0.3; printf 'done\\n'" },
+				undefined,
+				update => {
+					updates.push(update.content?.find(block => block.type === "text")?.text ?? "");
+					started.resolve();
+				},
+				{
+					...createTestToolContext([]),
+					toolCall: {
+						batchId: "batch-1",
+						index: 0,
+						total: 1,
+						toolCalls: [{ id: "test-call-ctrl-b-foreground", name: "bash" }],
+						backgroundSignal: background.signal,
+					},
+				},
+			);
+			await started.promise;
+			background.abort();
+
+			const result = await resultPromise;
+			expect(result.details?.async?.state).toBe("running");
+			expect(result.details?.async?.type).toBe("bash");
+			expect(getTextOutput(result)).toContain("Moved to the background at the user's request");
+			const jobId = result.details?.async?.jobId;
+			if (!jobId) {
+				throw new Error("expected a background job id");
+			}
+			// The child was adopted, not restarted or killed: it keeps running and
+			// its full output is delivered when it finishes.
+			const job = asyncJobManager.getJob(jobId);
+			expect(job?.status).toBe("running");
+			const updatesAtBackground = updates.slice();
+			await job?.promise;
+			expect(asyncJobManager.getJob(jobId)?.status).toBe("completed");
+			await asyncJobManager.drainDeliveries({ timeoutMs: 1 });
+			expect(deliveries).toHaveLength(1);
+			expect(deliveries[0]?.jobId).toBe(jobId);
+			expect(deliveries[0]?.text).toContain("start");
+			expect(deliveries[0]?.text).toContain("done");
+			// Post-adoption output belongs to the job, not the settled tool call.
+			expect(updates).toEqual(updatesAtBackground);
+			await asyncJobManager.dispose();
+		});
+
+		it("keeps an adopted command alive when the tool call is aborted afterwards", async () => {
+			const asyncJobManager = new AsyncJobManager({});
+			const foregroundBashTool = wrapToolWithMetaNotice(
+				new BashTool(
+					createTestToolSession(testDir, Settings.isolated({ "bash.autoBackground.enabled": false }), {
+						getSessionId: () => "test-session-abort",
+						asyncJobManager,
+					}),
+				),
+			);
+			const marker = path.join(testDir, "ctrl-b-survived.txt");
+			// The command announces itself before sleeping, so the chord lands
+			// while the child is provably still running.
+			const started = Promise.withResolvers<void>();
+			const background = new AbortController();
+			const toolAbort = new AbortController();
+			const resultPromise = foregroundBashTool.execute(
+				"test-call-ctrl-b-survives-abort",
+				{ command: `printf 'go\\n'; sleep 0.3; printf 'ok' > ${JSON.stringify(marker)}` },
+				toolAbort.signal,
+				() => started.resolve(),
+				{
+					...createTestToolContext([]),
+					toolCall: {
+						batchId: "batch-1",
+						index: 0,
+						total: 1,
+						toolCalls: [{ id: "test-call-ctrl-b-survives-abort", name: "bash" }],
+						backgroundSignal: background.signal,
+					},
+				},
+			);
+			await started.promise;
+			background.abort();
+			const result = await resultPromise;
+			const jobId = result.details?.async?.jobId;
+			if (!jobId) {
+				throw new Error("expected a background job id");
+			}
+			// Aborting the turn after the hand-off must not kill work the user
+			// deliberately moved aside; only cancelling the job does that.
+			toolAbort.abort();
+			await asyncJobManager.getJob(jobId)?.promise;
+			expect(asyncJobManager.getJob(jobId)?.status).toBe("completed");
+			expect(await Bun.file(marker).text()).toBe("ok");
+			await asyncJobManager.dispose();
+		});
+
+		it("backgrounds an auto-background candidate on an explicit background request", async () => {
+			const asyncJobManager = new AsyncJobManager({});
+			const autoBackgroundBashTool = wrapToolWithMetaNotice(
+				new BashTool(
+					createTestToolSession(
+						testDir,
+						Settings.isolated({
+							"bash.autoBackground.enabled": true,
+							// High threshold: only the background request can background this.
+							"bash.autoBackground.thresholdMs": 60_000,
+						}),
+						{
+							getSessionId: () => "test-session",
+							asyncJobManager,
+						},
+					),
+				),
+			);
+
+			const background = new AbortController();
+			background.abort();
+			const result = await autoBackgroundBashTool.execute(
+				"test-call-ctrl-b-managed",
+				{ command: "printf 'start\\n'; sleep 0.05; printf 'done\\n'" },
+				undefined,
+				undefined,
+				{
+					...createTestToolContext([]),
+					toolCall: {
+						batchId: "batch-1",
+						index: 0,
+						total: 1,
+						toolCalls: [{ id: "test-call-ctrl-b-managed", name: "bash" }],
+						backgroundSignal: background.signal,
+					},
+				},
+			);
+
+			expect(result.details?.async?.state).toBe("running");
+			expect(getTextOutput(result)).toContain("Moved to the background at the user's request");
+			const jobId = result.details?.async?.jobId;
+			if (!jobId) {
+				throw new Error("expected a background job id");
+			}
+			await asyncJobManager.getJob(jobId)?.promise;
+			expect(asyncJobManager.getJob(jobId)?.status).toBe("completed");
+			await asyncJobManager.dispose();
+		});
+
 		it("should background instead of timing out when auto-background wait exceeds the effective timeout", async () => {
 			const deliveries: Array<{ jobId: string; text: string }> = [];
 			const asyncJobManager = new AsyncJobManager({

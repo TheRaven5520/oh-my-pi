@@ -99,11 +99,14 @@ import {
 import { humanizePlanTitle, type PlanApprovalDetails, resolvePlanTitle } from "../plan-mode/approved-plan";
 import { autosaveApprovedPlan, planSaveFileName } from "../plan-mode/plan-autosave";
 import { resolvePlanModelTransition } from "../plan-mode/model-transition";
+import { buildRefreshInvocation, type RefreshInvocation } from "../process-refresh";
+import { requestSupervisedRefresh, SUPERVISED_REFRESH_EXIT_CODE } from "../process-supervisor";
 import guidedGoalInterviewPrompt from "../prompts/goals/guided-goal-interview.md" with { type: "text" };
 import planFilenamePrompt from "../prompts/system/plan-filename.md" with { type: "text" };
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with { type: "text" };
-import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { AgentRegistry, type AgentRegistry as AgentRegistryType, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { registerPersistedSubagents } from "../registry/persisted-agents";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -238,6 +241,7 @@ import { createSessionTeardown, type SessionTeardown } from "./session-teardown"
 import { runProviderSetupWizard } from "./setup-wizard/lazy";
 import { sanitizeStatusText } from "./shared";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
+import { initializeMathJaxRenderer } from "./theme/mathjax-cache";
 import { clearMermaidCache } from "./theme/mermaid-cache";
 import { type ShimmerPalette, shimmerEnabled, shimmerText } from "./theme/shimmer";
 import type { Theme } from "./theme/theme";
@@ -246,6 +250,7 @@ import {
 	getMarkdownTheme,
 	onTerminalAppearanceChange,
 	onThemeChange,
+	setMarkdownMathRenderer,
 	setMarkdownMermaidRendering,
 	startMacOSAppearanceReprobeFallback,
 	theme,
@@ -517,7 +522,12 @@ export class SubagentHudComponent implements Component {
 	readonly #order: readonly string[];
 	readonly #toggleLine: number | undefined;
 	#physicalOwner: (string | undefined)[] = [];
-	constructor(lines: readonly string[], order: readonly string[], toggleRow?: number) {
+	constructor(
+		lines: readonly string[],
+		order: readonly string[],
+		toggleRow?: number,
+		readonly rowOwners?: readonly (string | undefined)[],
+	) {
 		this.#text = new Text(lines.join("\n"), 1, 0);
 		this.#lines = lines;
 		this.#order = order;
@@ -541,7 +551,8 @@ export class SubagentHudComponent implements Component {
 		for (let index = 0; index < this.#lines.length; index++) {
 			const height = wrapTextWithAnsi(replaceTabs(this.#lines[index]!), contentWidth).length;
 			let id: string | undefined;
-			if (this.#toggleLine !== undefined && index === this.#toggleLine) id = PINNED_HUD_TOGGLE_ID;
+			if (this.rowOwners) id = this.rowOwners[index];
+			else if (this.#toggleLine !== undefined && index === this.#toggleLine) id = PINNED_HUD_TOGGLE_ID;
 			else {
 				const orderIndex = index - 2;
 				id = orderIndex >= 0 && orderIndex < this.#order.length ? this.#order[orderIndex] : undefined;
@@ -550,6 +561,7 @@ export class SubagentHudComponent implements Component {
 		}
 		if (owner.length !== renderedRows) {
 			this.#physicalOwner = this.#lines.map((_line, index) => {
+				if (this.rowOwners) return this.rowOwners[index];
 				if (this.#toggleLine !== undefined && index === this.#toggleLine) return PINNED_HUD_TOGGLE_ID;
 				const orderIndex = index - 2;
 				return orderIndex >= 0 && orderIndex < this.#order.length ? this.#order[orderIndex] : undefined;
@@ -601,6 +613,66 @@ export function layoutPinnedHud(runningTotal: number, expanded: boolean): Pinned
  * calls alike — so the pinned block doubles as a click jump list.
  * Returns an empty array when nothing is running so the container can clear.
  */
+const SUBAGENT_HUD_VISIBLE_LIMIT = 4;
+
+export function renderSubagentDockLines(
+	sessions: ObservableSession[],
+	columns: number,
+	selectedId?: string,
+	expanded = false,
+): string[] {
+	// Retain completed children like Pi's panel so their result remains easy to
+	// enter. Aborted rows are deliberately omitted; Agent Hub remains available
+	// for their tombstones and diagnostics.
+	const children = sessions.filter(session => session.kind === "subagent" && session.status !== "aborted");
+	if (children.length === 0) return [];
+	const visibleLimit = expanded ? children.length : SUBAGENT_HUD_VISIBLE_LIMIT;
+
+	const selectedChildIndex = selectedId ? children.findIndex(session => session.id === selectedId) : -1;
+	const firstVisibleChildIndex =
+		selectedChildIndex === -1
+			? 0
+			: Math.min(Math.max(0, selectedChildIndex - visibleLimit + 1), Math.max(0, children.length - visibleLimit));
+	const visible = children.slice(firstVisibleChildIndex, firstVisibleChildIndex + visibleLimit);
+	const aboveCount = firstVisibleChildIndex;
+	const belowCount = children.length - aboveCount - visible.length;
+	const active = children.filter(session => session.status === "active").length;
+	// Pi's dock has an explicit main root before the retained child rows.
+	const mainSelected = selectedId === MAIN_AGENT_ID;
+	const rows = [
+		`${mainSelected ? theme.fg("accent", "›") : " "} ${theme.fg("accent", "●")} ${theme.fg(
+			mainSelected ? "accent" : "toolTitle",
+			mainSelected ? theme.bold("main") : "main",
+		)}`,
+		...(aboveCount > 0 ? [theme.fg("dim", `… ${aboveCount} above`)] : []),
+		...visible.map(session => {
+			const selected = session.id === selectedId;
+			const pointer = selected ? theme.fg("accent", "›") : " ";
+			const glyph =
+				session.status === "active"
+					? theme.fg("accent", "●")
+					: session.status === "completed"
+						? theme.fg("success", "✓")
+						: theme.fg("error", "×");
+			const displayId = formatTaskId(session.id);
+			const description =
+				session.description?.trim() || session.progress?.description?.trim() || session.progress?.task?.trim();
+			const model = session.progress?.resolvedModel ?? session.progress?.modelRole;
+			const detail = [description, model].filter((value): value is string => Boolean(value)).join(" · ");
+			const budget = Math.max(12, columns - visibleWidth(`${pointer} ${glyph} ${displayId} · `) - 4);
+			const label = theme.fg(selected ? "accent" : "toolTitle", selected ? theme.bold(displayId) : displayId);
+			return `${pointer} ${glyph} ${label}${detail ? theme.fg("dim", ` · ${truncateToWidth(replaceTabs(detail), budget)}`) : ""}`;
+		}),
+		...(belowCount > 0 ? [theme.fg("dim", `… ${belowCount} more — expand`)] : []),
+		...(expanded && children.length > SUBAGENT_HUD_VISIBLE_LIMIT ? [theme.fg("dim", "… show less")] : []),
+	];
+	if (selectedId && selectedId !== MAIN_AGENT_ID) {
+		rows.push(theme.fg("dim", "↑/↓ select · Enter open · x interrupt · Esc cancel"));
+	}
+	const header = `${active > 0 ? `${active} active · ` : ""}${children.length} agents`;
+	return ["", theme.bold(theme.fg("accent", `agents · main · ${header}`)), ...rows.map(line => ` ${line}`)];
+}
+
 export function renderSubagentHudLines(sessions: ObservableSession[], columns: number, expanded = false): string[] {
 	const running = sessions.filter(isHudSubagent);
 	if (running.length === 0) return [];
@@ -1034,8 +1106,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#observerUiSyncTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
+	#subagentDockRenderedLineCount = 0;
+	/** Selected Pi-style child row in the compact below-editor dock. */
+	#subagentDockSelectedId: string | undefined;
 	#agentRegistryUnsubscribe?: () => void;
-	#agentRegistrySubscriptionTarget?: AgentRegistry;
+	#agentRegistrySubscriptionTarget?: AgentRegistryType;
 	#mcpStatusOrder: string[] = [];
 	#mcpPendingServers = new Set<string>();
 	#mcpConnectedServers = new Set<string>();
@@ -1127,8 +1202,14 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		setTuiTight(settings.get("tui.tight"));
 		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
-		// A cold-start composer already owns the terminal. Reuse it so input
-		// buffered during startup remains in the same editor instance.
+		setMarkdownMathRenderer(settings.get("tui.mathRenderer"));
+		if (settings.get("tui.mathRenderer") === "mathjax") {
+			void initializeMathJaxRenderer().then(initialized => {
+				if (!initialized) return;
+				this.ui.invalidate();
+				this.ui.requestRender();
+			});
+		}
 		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
 		this.ui.setShowHardwareCursor(settings.get("showHardwareCursor"));
 		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
@@ -1456,6 +1537,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.syncRunningSubagentBadge();
 		this.#observerRegistry.onChange(kind => {
 			this.#scheduleObserverUiSync(kind);
+		});
+		// Task workers have their own persisted JSONL sidecars. Re-register them
+		// on resume so the compact dock has the same retained children Pi shows,
+		// rather than only the task events emitted since this process started.
+		void registerPersistedSubagents(AgentRegistry.global(), this.sessionManager.getSessionFile(), {
+			shouldContinue: () => !this.isShuttingDown,
+		}).then(() => {
+			this.#renderSubagentList();
+			this.syncRunningSubagentBadge();
+			this.ui.requestRender();
 		});
 		// Let the transient todo tool result light up pending todos executed by a
 		// live subagent, matching the sticky HUD's active set (#5873).
@@ -2587,6 +2678,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#agentRegistrySubscriptionTarget = registry;
 			this.#agentRegistryUnsubscribe = registry.onChange(() => {
 				this.syncRunningSubagentBadge();
+				this.#renderSubagentList();
 			});
 		}
 		const agentIds = getRunningSubagentBadgeAgentIds(registry);
@@ -2919,15 +3011,25 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#flushObserverUiSync(): void {
+		const needsFullRender = this.#observerUiSyncNeedsTodoReconcile;
+		this.#observerUiSyncNeedsTodoReconcile = false;
 		this.syncRunningSubagentBadge({ requestRender: false });
-		if (this.#observerUiSyncNeedsTodoReconcile) {
-			this.#observerUiSyncNeedsTodoReconcile = false;
+		if (needsFullRender) {
 			this.#reconcileTodosWithSubagents();
 		}
 		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
-		this.#renderSubagentList();
-		this.ui.requestRender();
+		const dockGeometryChanged = this.#renderSubagentList();
+		if (needsFullRender || dockGeometryChanged) {
+			this.ui.requestRender();
+			return;
+		}
+		// Progress snapshots update only anchored HUD roots. Keep the long,
+		// immutable transcript out of the 10 Hz compose path while preserving
+		// badge, todo-highlight, and subagent-row updates.
+		this.ui.requestComponentRender(this.statusLine);
+		this.ui.requestComponentRender(this.todoContainer);
+		this.ui.requestComponentRender(this.subagentContainer);
 	}
 
 	#cancelObserverUiSyncTimer(): void {
@@ -3059,6 +3161,80 @@ export class InteractiveMode implements InteractiveModeContext {
 		return rows < TODO_COMPACT_TERMINAL_ROWS_THRESHOLD;
 	}
 
+	/**
+	 * Anchored HUD of in-flight subagents, mirroring the Todos block above the
+	 * editor. Driven entirely by observer-registry change events, so rows appear
+	 * on spawn and the whole block clears itself once the last subagent leaves
+	 * the "active" state.
+	 */
+	#dockSessions(): ObservableSession[] {
+		const byId = new Map(this.#observerRegistry.getSessions().map(session => [session.id, session]));
+		for (const ref of AgentRegistry.global().list()) {
+			if (ref.id === MAIN_AGENT_ID || ref.kind !== "sub" || byId.has(ref.id)) continue;
+			byId.set(ref.id, {
+				id: ref.id,
+				kind: "subagent",
+				label: ref.displayName,
+				description: ref.activity,
+				status: ref.status === "running" ? "active" : ref.status === "aborted" ? "aborted" : "completed",
+				sessionFile: ref.sessionFile ?? undefined,
+				lastUpdate: ref.lastActivity,
+				detached: true,
+			});
+		}
+		return [...byId.values()];
+	}
+
+	/** Pi-style compact subagent panel navigation from an empty main editor. */
+	moveSubagentDockSelection(direction: "next" | "previous"): boolean {
+		const children = this.#dockSessions().filter(
+			session => session.kind === "subagent" && session.detached === true && session.status !== "aborted",
+		);
+		if (children.length === 0) return false;
+		const rows = [MAIN_AGENT_ID, ...children.map(session => session.id)];
+		const current = this.#subagentDockSelectedId ? rows.indexOf(this.#subagentDockSelectedId) : -1;
+		const index =
+			direction === "next" ? (current + 1 + rows.length) % rows.length : (current - 1 + rows.length) % rows.length;
+		this.#subagentDockSelectedId = rows[index]!;
+		this.#renderSubagentList();
+		this.ui.requestRender();
+		return true;
+	}
+
+	get hasSubagentDockSelection(): boolean {
+		return this.#subagentDockSelectedId !== undefined;
+	}
+
+	clearSubagentDockSelection(): boolean {
+		if (!this.#subagentDockSelectedId) return false;
+		this.#subagentDockSelectedId = undefined;
+		this.#renderSubagentList();
+		this.ui.requestRender();
+		return true;
+	}
+
+	async openSelectedSubagentDock(): Promise<boolean> {
+		const id = this.#subagentDockSelectedId;
+		if (!id) return false;
+		try {
+			await this.focusAgentSession(id);
+			return true;
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+			return true;
+		}
+	}
+
+	async interruptSelectedSubagentDock(): Promise<boolean> {
+		const id = this.#subagentDockSelectedId;
+		if (id === MAIN_AGENT_ID) return false;
+		const ref = id ? AgentRegistry.global().get(id) : undefined;
+		if (!ref?.session || ref.status !== "running") return false;
+		await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
+		this.showStatus(`Interrupted agent ${id}`);
+		return true;
+	}
+
 	renderCompactStatusLine(width: number, childLines: readonly string[]): readonly string[] {
 		const phases = this.todoPhases.filter(phase => phase.tasks.length > 0);
 		if (phases.length === 0) return childLines;
@@ -3163,18 +3339,39 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * on spawn and the whole block clears itself once the last subagent leaves
 	 * the "active" state.
 	 */
-	#renderSubagentList(): void {
+	#renderSubagentList(): boolean {
 		this.subagentContainer.clear();
 		const mode = settings.get("display.pinnedAgents");
-		if (mode === "off") return;
-		const sessions = this.#observerRegistry.getSessions();
-		const running = sessions.filter(isHudSubagent);
+		const sessions = this.#dockSessions();
+		const children = sessions.filter(session => session.kind === "subagent" && session.status !== "aborted");
+		if (
+			this.#subagentDockSelectedId !== MAIN_AGENT_ID &&
+			!children.some(child => child.id === this.#subagentDockSelectedId)
+		) {
+			this.#subagentDockSelectedId = undefined;
+		}
 		const expanded = this.#pinnedHudOverride ?? mode === "full";
-		const lines = renderSubagentHudLines(sessions, this.ui.terminal.columns, expanded);
-		if (lines.length === 0) return;
-		const layout = layoutPinnedHud(running.length, expanded);
-		const order = running.map(session => session.id);
-		this.subagentContainer.addChild(new SubagentHudComponent(lines, order, layout.toggleRow));
+		const lines =
+			mode === "off"
+				? []
+				: renderSubagentDockLines(sessions, this.ui.terminal.columns, this.#subagentDockSelectedId, expanded);
+		const changed = lines.length !== this.#subagentDockRenderedLineCount;
+		this.#subagentDockRenderedLineCount = lines.length;
+		if (lines.length > 0) {
+			const limit = expanded ? children.length : SUBAGENT_HUD_VISIBLE_LIMIT;
+			const selected = children.findIndex(child => child.id === this.#subagentDockSelectedId);
+			const first =
+				selected < 0 ? 0 : Math.min(Math.max(0, selected - limit + 1), Math.max(0, children.length - limit));
+			const visible = children.slice(first, first + limit);
+			const owners: (string | undefined)[] = [undefined, undefined, MAIN_AGENT_ID];
+			if (first > 0) owners.push(PINNED_HUD_TOGGLE_ID);
+			owners.push(...visible.map(child => child.id));
+			if (children.length > first + visible.length || (expanded && children.length > SUBAGENT_HUD_VISIBLE_LIMIT)) {
+				owners.push(PINNED_HUD_TOGGLE_ID);
+			}
+			this.subagentContainer.addChild(new SubagentHudComponent(lines, [], undefined, owners));
+		}
+		return changed;
 	}
 
 	#vibeParentSession(): VibeParentSession {
@@ -5318,7 +5515,35 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.isInitialized = false;
 	}
 
-	async shutdown(): Promise<void> {
+	async refresh(): Promise<void> {
+		if (this.session.isStreaming) {
+			this.showWarning("Wait for the current response to finish or abort it before refreshing.");
+			return;
+		}
+		const runningJobs = this.session.asyncJobManager?.getRunningJobs().length ?? 0;
+		const runningSubagents = AgentRegistry.global()
+			.list()
+			.filter(agent => agent.kind === "sub" && agent.status === "running").length;
+		if (runningJobs > 0 || runningSubagents > 0) {
+			this.showWarning("Wait for active background jobs and subagents to finish before refreshing.");
+			return;
+		}
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile) {
+			this.showWarning("Refresh requires a saved session; in-memory sessions cannot be resumed.");
+			return;
+		}
+		let invocation: RefreshInvocation;
+		try {
+			invocation = buildRefreshInvocation(sessionFile);
+		} catch (error) {
+			this.showError(`Refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		await this.shutdown({ refresh: invocation });
+	}
+
+	async shutdown(options: { refresh?: RefreshInvocation } = {}): Promise<void> {
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
 		try {
@@ -5327,6 +5552,33 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#isShuttingDown = false;
 			this.showError(`Could not close session: ${error instanceof Error ? error.message : String(error)}`);
 			return;
+		}
+
+		if (options.refresh) {
+			const cwd = this.sessionManager.getCwd();
+			if (await requestSupervisedRefresh(options.refresh.sessionFile, cwd)) {
+				await postmortem.quit(SUPERVISED_REFRESH_EXIT_CODE);
+				return;
+			}
+			try {
+				// Direct cli.ts/SDK launches have no stable supervisor. Preserve
+				// their legacy child-wait handoff rather than racing the shell.
+				const child = Bun.spawn([options.refresh.command, ...options.refresh.args], {
+					cwd,
+					env: options.refresh.env,
+					stdin: "inherit",
+					stdout: "inherit",
+					stderr: "inherit",
+				});
+				await postmortem.quit(await child.exited);
+				return;
+			} catch (error) {
+				process.stderr.write(
+					`\n${chalk.red(`Refresh failed to relaunch: ${error instanceof Error ? error.message : String(error)}`)}\n`,
+				);
+				await postmortem.quit(1);
+				return;
+			}
 		}
 
 		// Print resumption hint only if the session was actually materialized to

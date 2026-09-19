@@ -30,6 +30,7 @@ export {
 	highlightCode,
 	setMarkdownMermaidRendering,
 	warmHighlighter,
+	setMarkdownMathRenderer,
 } from "./tui-adapters";
 
 /** Appearance detected via OSC 11 background color query, or undefined if not yet available. */

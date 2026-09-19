@@ -8,6 +8,7 @@ import {
 	type Tokens,
 } from "@oh-my-pi/pi-utils/marked";
 import { mathBlockAt, mathSpanAt, mathStartIndex } from "@oh-my-pi/pi-utils/math-delimiters";
+import { Image, type ImageBudget } from "./image";
 import { latexToBlock } from "../latex-block";
 import { isBareMathEnvironment, latexToUnicode } from "../latex-to-unicode";
 import type { SymbolTheme } from "../symbols";
@@ -1388,6 +1389,20 @@ export interface MarkdownTheme {
 	 * Return null to fall back to fenced code rendering.
 	 */
 	resolveMermaidAscii?: (source: string, maxWidth?: number) => string | null;
+	/**
+	 * Resolve display LaTeX to a raster image for graphics-capable terminals.
+	 * Return null to retain the built-in Unicode layout.
+	 */
+	resolveDisplayMath?: (
+		source: string,
+		maxWidthCells: number,
+	) => {
+		data: string;
+		mimeType: "image/png";
+		widthPx: number;
+		heightPx: number;
+		key: string;
+	} | null;
 	symbols: SymbolTheme;
 }
 
@@ -1751,6 +1766,8 @@ export class Markdown implements Component {
 	#defaultStylePrefix?: string;
 	/** Number of spaces used to indent code block content. */
 	#codeBlockIndent: number;
+	#imageBudget?: ImageBudget;
+	#displayMathImages = new Map<string, Image>();
 
 	// Cache for rendered output. Cached arrays are shared and returned by
 	// reference (render contract: results are component-owned and immutable to
@@ -1822,6 +1839,7 @@ export class Markdown implements Component {
 		theme: MarkdownTheme,
 		defaultTextStyle?: DefaultTextStyle,
 		codeBlockIndent: number = 2,
+		imageBudget?: ImageBudget,
 	) {
 		this.#text = normalizeOsc8Terminators(text);
 		this.#oscPartialEscape = trailingOsc8Partial(this.#text);
@@ -1830,6 +1848,36 @@ export class Markdown implements Component {
 		this.#theme = theme;
 		this.#defaultTextStyle = defaultTextStyle;
 		this.#codeBlockIndent = Math.max(0, Math.floor(codeBlockIndent));
+		this.#imageBudget = imageBudget;
+	}
+
+	#usesGraphicDisplayMath(): boolean {
+		if (!TERMINAL.imageProtocol || !this.#theme.resolveDisplayMath) return false;
+		return this.#text.includes("$$") || this.#text.includes("\\[") || this.#text.includes("\\begin{");
+	}
+
+	#renderDisplayMath(source: string, width: number): RenderedLine[] | null {
+		if (!TERMINAL.imageProtocol || !this.#theme.resolveDisplayMath) return null;
+		const resolved = this.#theme.resolveDisplayMath(source, width);
+		if (!resolved) return null;
+		let image = this.#displayMathImages.get(resolved.key);
+		if (!image) {
+			image = new Image(
+				resolved.data,
+				resolved.mimeType,
+				{
+					fallbackColor: () => this.#applyDefaultStyle(latexToUnicode(source).replace(/\n+/g, " ")),
+				},
+				{
+					maxWidthCells: width,
+					budget: this.#imageBudget,
+					imageKey: `mathjax:${resolved.key}`,
+				},
+				{ widthPx: resolved.widthPx, heightPx: resolved.heightPx },
+			);
+			this.#displayMathImages.set(resolved.key, image);
+		}
+		return image.render(width).map(line => renderedLine(line, true));
 	}
 	/** Return bounded source text and layout state for debug inspection. */
 	debugState(): Record<string, unknown> {
@@ -2051,9 +2099,13 @@ export class Markdown implements Component {
 	render(width: number): readonly string[] {
 		// L1: per-instance cache — fastest path for repeated renders of the same
 		// instance at the same width (e.g. resize debounce, repeated redraws).
-		// Returning the cached reference is load-bearing: parents memoize their
-		// concatenation on reference equality.
-		if (this.#cachedLines && this.#cachedText === this.#text && this.#cachedWidth === width) {
+		// Graphic math must render every pass so the shared image budget observes it.
+		if (
+			!this.#usesGraphicDisplayMath() &&
+			this.#cachedLines &&
+			this.#cachedText === this.#text &&
+			this.#cachedWidth === width
+		) {
 			return this.#cachedLines;
 		}
 
@@ -2221,7 +2273,7 @@ export class Markdown implements Component {
 		// theme.heading is used as the representative theme probe — it's required
 		// by MarkdownTheme and is one of the most styling-sensitive entries.
 		let cacheKey: string | undefined;
-		if (!this.transientRenderCache) {
+		if (!this.#usesGraphicDisplayMath() && !this.transientRenderCache) {
 			cacheKey = this.#renderCacheKey(normalizedText, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
@@ -2895,10 +2947,14 @@ export class Markdown implements Component {
 	): RenderedLine[] {
 		const lines: RenderedLine[] = [];
 
-		// Display math block (own-line `$$…$$` / `\[…\]`): stack `\frac` vertically
-		// and keep `\\` row breaks, so fractions and matrices span multiple lines.
 		if (isMathToken(token)) {
-			for (const mathLine of latexToBlock(token.text)) lines.push(renderedLine(this.#applyDefaultStyle(mathLine)));
+			const graphic = this.#renderDisplayMath(token.text, width);
+			if (graphic) {
+				lines.push(...graphic);
+			} else {
+				for (const mathLine of latexToBlock(token.text))
+					lines.push(renderedLine(this.#applyDefaultStyle(mathLine)));
+			}
 			if (nextTokenType && nextTokenType !== "space") lines.push(renderedLine(""));
 			return lines;
 		}
@@ -2935,12 +2991,16 @@ export class Markdown implements Component {
 				}
 				break;
 			}
-
 			case "paragraph": {
 				const displayMath = soleDisplayMath(token.tokens);
 				if (displayMath) {
-					for (const mathLine of latexToBlock(displayMath.text))
-						lines.push(renderedLine(this.#applyDefaultStyle(mathLine)));
+					const graphic = this.#renderDisplayMath(displayMath.text, width);
+					if (graphic) {
+						lines.push(...graphic);
+					} else {
+						for (const mathLine of latexToBlock(displayMath.text))
+							lines.push(renderedLine(this.#applyDefaultStyle(mathLine)));
+					}
 					if (nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") lines.push(renderedLine(""));
 					break;
 				}

@@ -384,6 +384,8 @@ export class Agent {
 	#steeringQueue: AgentMessage[] = [];
 	#followUpQueue: AgentMessage[] = [];
 	#steeringWaiters = new Set<() => void>();
+	/** Per-batch sinks installed by the tool loop; see {@link Agent.requestToolBackground}. */
+	readonly #backgroundRequestSinks = new Set<() => void>();
 
 	#steeringMode: "all" | "one-at-a-time";
 	#followUpMode: "all" | "one-at-a-time";
@@ -1126,6 +1128,23 @@ export class Agent {
 		this.#abortController?.abort(reason);
 	}
 
+	/**
+	 * Ask the in-flight tool batch to move its work to the background.
+	 *
+	 * Cooperative and non-destructive: it raises the batch's
+	 * `ToolCallContext.backgroundSignal`, which a tool that owns detachable work
+	 * (today: `bash`, which hands its running child to the async job manager)
+	 * observes to return a background handle immediately. Nothing is killed and
+	 * tools that ignore the signal simply run to completion.
+	 *
+	 * Returns `false` when no tool batch is currently executing.
+	 */
+	requestToolBackground(): boolean {
+		if (this.#backgroundRequestSinks.size === 0) return false;
+		for (const sink of this.#backgroundRequestSinks) sink();
+		return true;
+	}
+
 	waitForIdle(): Promise<void> {
 		return this.#runningPrompt ?? Promise.resolve();
 	}
@@ -1537,6 +1556,12 @@ export class Agent {
 				return { queued: true, source: hasAgentSteering ? "agent" : "system" };
 			},
 			waitForSteeringMessages: signal => this.#waitForSteeringMessages(signal),
+			subscribeBackgroundRequests: sink => {
+				this.#backgroundRequestSinks.add(sink);
+				return () => {
+					this.#backgroundRequestSinks.delete(sink);
+				};
+			},
 			hasIrcInterrupts: this.hasIrcInterrupts,
 			getFollowUpMessages: signal => this.#dequeueFollowUpMessagesAfterHooks(signal),
 			getAsideMessages: async () => (await this.#asideMessageProvider?.()) ?? [],

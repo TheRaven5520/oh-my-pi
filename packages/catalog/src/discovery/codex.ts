@@ -66,6 +66,7 @@ const codexModelEntrySchema = type({
 	"supported_reasoning_levels?": "unknown",
 	"input_modalities?": "unknown",
 	"visibility?": "unknown",
+	"supported_in_api?": "unknown",
 	"priority?": "unknown",
 	"prefer_websockets?": "unknown",
 	"use_responses_lite?": "unknown",
@@ -312,7 +313,14 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 	}
 
 	const visibility = toNonEmptyString(payload.visibility)?.toLowerCase();
-	if (visibility === "hide" || visibility === "hidden") {
+	const hidden = visibility === "hide" || visibility === "hidden";
+	const identity = classifyModel("openai-codex", slug, { lenient: true });
+	const hiddenApiModel =
+		identity.class === "openai" &&
+		identity.family === "gpt" &&
+		identity.revision === "6.0.0" &&
+		toBoolean(payload.supported_in_api) === true;
+	if (hidden && !hiddenApiModel) {
 		return null;
 	}
 

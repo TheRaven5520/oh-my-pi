@@ -526,6 +526,75 @@ describe("agentLoop with AgentMessage", () => {
 		expect(contexts[1]?.index).toBe(1);
 	});
 
+	it("raises the background signal only for batches containing a backgroundable tool", async () => {
+		const toolSchema = type({ value: "string" });
+		const observed: Array<{ name: string; backgroundAborted: boolean }> = [];
+		let requestBackground: (() => void) | undefined;
+		const makeTool = (name: string, backgroundable: boolean): AgentTool<typeof toolSchema, { value: string }> => ({
+			name,
+			label: name,
+			description: `${name} tool`,
+			parameters: toolSchema,
+			backgroundable,
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				// `getToolContext` below builds the context, so this call's ctx is
+				// exactly the `{ toolCall }` object that factory returned.
+				const toolContext = ctx as { toolCall?: ToolCallContext } | undefined;
+				// The host chord fires while the tool is executing.
+				requestBackground?.();
+				observed.push({
+					name,
+					backgroundAborted: toolContext?.toolCall?.backgroundSignal?.aborted === true,
+				});
+				return {
+					content: [{ type: "text", text: params.value }],
+					details: { value: params.value },
+				};
+			},
+		});
+
+		const context: AgentContext = {
+			systemPrompt: [""],
+			messages: [],
+			tools: [makeTool("detachable", true), makeTool("plain", false)],
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "plain", arguments: { value: "a" } }] },
+				{ content: [{ type: "toolCall", id: "tool-2", name: "detachable", arguments: { value: "b" } }] },
+				{ content: ["done"] },
+			],
+		});
+		let sinkCount = 0;
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			getToolContext: toolCall => ({ toolCall }) as AgentToolContext,
+			subscribeBackgroundRequests: sink => {
+				sinkCount++;
+				requestBackground = sink;
+				return () => {
+					sinkCount--;
+					requestBackground = undefined;
+				};
+			},
+		};
+
+		const stream = agentLoop([createUserMessage("run both")], context, config, undefined, mock.stream);
+		for await (const _ of stream) {
+			// drain
+		}
+
+		// No sink is armed for the non-backgroundable batch, so a host chord has
+		// nothing to fire and can fall back to its normal key handling.
+		expect(observed).toEqual([
+			{ name: "plain", backgroundAborted: false },
+			{ name: "detachable", backgroundAborted: true },
+		]);
+		// Every armed sink is removed once its batch settles.
+		expect(sinkCount).toBe(0);
+	});
+
 	it("should handle tool calls and results", async () => {
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];

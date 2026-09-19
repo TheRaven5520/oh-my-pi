@@ -94,7 +94,7 @@ async function main(): Promise<void> {
 		try {
 			await compileCodingAgent({
 				repoRoot,
-				entrypoint: path.join(packageDir, "src", "cli.ts"),
+				entrypoint: path.join(packageDir, "src", "launcher.ts"),
 				outfile: outputPath,
 				transformersVersion,
 				target: crossBuild?.target,

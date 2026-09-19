@@ -201,6 +201,16 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 	},
 	{
+		name: "refresh",
+		description: "Restart OMP and resume this exact saved session",
+		getTuiAutocompleteDescription: runtime =>
+			runtime.ctx.session.isStreaming ? "Refresh: unavailable while streaming" : "Refresh: restart and resume",
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.refresh();
+		},
+	},
+	{
 		name: "fresh",
 		icon: "restart",
 		description: "Reset provider stream state without changing the local transcript",

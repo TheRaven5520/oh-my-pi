@@ -213,10 +213,6 @@ function resetUsageCost(usage: Usage | undefined): void {
 	usage.premiumRequests = undefined;
 }
 
-function isAssistantEntry(entry: SessionEntry): boolean {
-	return entry.type === "message" && entry.message.role === "assistant";
-}
-
 function isDraftOnlyMetadataEntry(entry: SessionEntry): boolean {
 	// Startup-recorded selector state that does not survive as user intent
 	// once the draft is cleared. `mode_change` covers the `plan.defaultOnStartup`
@@ -237,6 +233,49 @@ function isDraftOnlyMetadataEntry(entry: SessionEntry): boolean {
 	}
 }
 
+function assistantPersistenceKey(entry: SessionMessageEntry): string | undefined {
+	const message = entry.message;
+	if (message.role !== "assistant") return undefined;
+	return `${message.timestamp}:${message.provider}:${message.model}:${message.responseId ?? ""}`;
+}
+
+function resolveStreamingCheckpoints(entries: SessionEntry[]): SessionEntry[] {
+	const completed = new Set<string>();
+	const latestCheckpointByKey = new Map<string, SessionMessageEntry>();
+	for (const entry of entries) {
+		if (entry.type !== "message") continue;
+		const key = assistantPersistenceKey(entry);
+		if (!key) continue;
+		if (entry.streamingCheckpoint) {
+			latestCheckpointByKey.set(key, entry);
+		} else {
+			completed.add(key);
+		}
+	}
+	let changed = false;
+	const resolved: SessionEntry[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message" || !entry.streamingCheckpoint) {
+			resolved.push(entry);
+			continue;
+		}
+		changed = true;
+		const key = assistantPersistenceKey(entry);
+		if (key && (completed.has(key) || latestCheckpointByKey.get(key) !== entry)) continue;
+		const message = entry.message;
+		if (message.role !== "assistant") continue;
+		resolved.push({
+			...entry,
+			streamingCheckpoint: undefined,
+			message: {
+				...message,
+				stopReason: "aborted",
+				errorMessage: "Previous OMP process exited before completing the turn.",
+			},
+		});
+	}
+	return changed ? resolved : entries;
+}
 function orderedByTimestamp(a: SessionTreeNode, b: SessionTreeNode): number {
 	return new Date(a.entry.timestamp).getTime() - new Date(b.entry.timestamp).getTime();
 }
@@ -269,7 +308,7 @@ class SessionEntryIndex {
 
 	insert(entry: SessionEntry): void {
 		this.#entriesById.set(entry.id, entry);
-		this.#leaf = entry.id;
+		if (!(entry.type === "message" && entry.streamingCheckpoint)) this.#leaf = entry.id;
 
 		const bucket = this.#children.get(entry.parentId);
 		if (bucket) bucket.push(entry);
@@ -833,12 +872,19 @@ export class SessionManager {
 		return body;
 	}
 
-	#historyContainsAssistantMessage(): boolean {
-		return this.#entries.some(isAssistantEntry);
-	}
-
 	#shouldHaveSessionFile(): boolean {
-		return this.#forceFileCreation || this.#fileIsCurrent || this.#historyContainsAssistantMessage();
+		return (
+			this.#forceFileCreation ||
+			this.#fileIsCurrent ||
+			this.#entries.some(
+				entry =>
+					entry.type === "message" &&
+					(entry.message.role === "user" ||
+						entry.message.role === "developer" ||
+						entry.message.role === "assistant" ||
+						entry.message.role === "toolResult"),
+			)
+		);
 	}
 
 	/**
@@ -978,9 +1024,8 @@ export class SessionManager {
 			this.#rewriteRequired = true;
 		}
 
-		// Lazy gate: a brand-new session is not written until it has an assistant
-		// message (or someone forced creation), so sessions that never produce
-		// output never create a file.
+		// Lazy gate: startup-only metadata stays in memory, but accepted user
+		// intent and every completed conversation entry materialize immediately.
 		if (!this.#shouldHaveSessionFile()) {
 			this.#fileIsCurrent = false;
 			return;
@@ -1166,12 +1211,12 @@ export class SessionManager {
 
 	#applyEntries(header: SessionHeader, entries: SessionEntry[]): void {
 		this.#header = header;
-		this.#entries = entries;
+		this.#entries = resolveStreamingCheckpoints(entries);
 		this.#sessionId = header.id;
 		this.#sessionName = header.title;
 		this.#titleSource = header.titleSource;
 		this.#titleUpdatedAt = header.timestamp;
-		this.#index.rebuild(entries);
+		this.#index.rebuild(this.#entries);
 	}
 
 	#freshEntryFields(): { id: string; parentId: string | null; timestamp: string } {
@@ -1667,10 +1712,9 @@ export class SessionManager {
 					this.#additionalDirectories.length > 0 ? this.#additionalDirectories : undefined;
 			}
 
-			// Rewrite at the new location when the file already existed (update cwd) or
-			// there is in-memory output worth materializing; otherwise stay lazy.
-			const hasAssistant = this.#historyContainsAssistantMessage();
-			if (this.#persist && this.#sessionFile && (sessionFileExisted || hasAssistant)) {
+			// Rewrite at the new location when the file already existed or durable
+			// conversational state has accumulated; otherwise stay lazy.
+			if (this.#persist && this.#sessionFile && (sessionFileExisted || this.#shouldHaveSessionFile())) {
 				this.#forceFileCreation = true;
 				await this.#rewriteAtomically();
 			}
@@ -2305,6 +2349,22 @@ export class SessionManager {
 	}
 
 	/**
+	 * Append a recovery snapshot without advancing the active conversation leaf.
+	 * A normal completion with the same provider response supersedes it on reload.
+	 */
+	appendStreamingAssistantCheckpoint(message: SessionMessageEntry["message"]): string {
+		if (message.role !== "assistant") throw new Error("Streaming checkpoints require an assistant message.");
+		const entry: SessionMessageEntry = {
+			type: "message",
+			streamingCheckpoint: true,
+			...this.#freshEntryFields(),
+			message,
+		};
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	/**
 	 * Append to a non-active branch without changing the current leaf.
 	 * Used by work that retains ownership of a branch across tree navigation.
 	 */
@@ -2467,6 +2527,18 @@ export class SessionManager {
 		const entry: CustomEntry = { type: "custom", customType, data, ...this.#freshEntryFields() };
 		this.#recordEntry(entry);
 		return entry.id;
+	}
+
+	/**
+	 * Atomically publish the latest in-memory value of an existing message entry.
+	 * Streaming assistant messages mutate in place, so callers provide the entry
+	 * id only to prove the snapshot still belongs to this session and branch.
+	 */
+	async checkpointMessageEntry(id: string): Promise<boolean> {
+		const entry = this.#index.get(id);
+		if (this.#released || entry?.type !== "message") return false;
+		await this.rewriteEntries();
+		return true;
 	}
 
 	/**

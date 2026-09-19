@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Restored `/refresh`, Ctrl+B command backgrounding, keyboard navigation of retained subagents, and optional MathJax display equations from the personal fork.
+
+### Fixed
+
+- Preserve rapid steering submissions and recover partial assistant output after a process interruption.
+
+### Changed
+
+- Restore durable-memory filtering and the personal orchestration guidance while retaining the existing Sprilicred configuration and usage commands.
+
 ## [18.1.21] - 2026-09-14
 
 ### Fixed

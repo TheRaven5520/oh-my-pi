@@ -1243,6 +1243,19 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tui.mathRenderer": {
+		type: "enum",
+		values: ["unicode", "mathjax"] as const,
+		default: "unicode",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Display Math Renderer",
+			description:
+				"Render display LaTeX as MathJax-generated terminal images when graphics are supported, with Unicode fallback",
+		},
+	},
+
 	"tui.codexResetFireworks": {
 		type: "boolean",
 		default: false,

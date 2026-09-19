@@ -30,7 +30,7 @@ import type {
 	ClientBridgeTerminalHandle,
 	ClientBridgeTerminalOutput,
 } from "../session/client-bridge";
-import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
+import { DEFAULT_MAX_BYTES, enforceInlineByteCap, TailBuffer } from "../session/streaming-output";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent, outputBlockContentWidth } from "../tui/output-block";
@@ -64,6 +64,10 @@ import { extractLeadingCdTarget, extractLiteralAndChainSegments, tokenizeShellSe
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
+
+/** Notice appended when the user explicitly moved the command to the background (Ctrl+B). */
+const BACKGROUND_ON_REQUEST_NOTICE =
+	"Moved to the background at the user's request; the command keeps running and its result will be delivered when it finishes.";
 
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
 
@@ -710,6 +714,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	readonly concurrency = (args: Partial<BashToolInput>): "shared" | "exclusive" =>
 		args.pty === true ? "exclusive" : "shared";
 	readonly strict = true;
+	readonly backgroundable = true;
 	readonly #asyncEnabled: boolean;
 	readonly #autoBackgroundEnabled: boolean;
 	readonly #autoBackgroundThresholdMs: number;
@@ -1001,6 +1006,126 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		};
 	}
 
+	/**
+	 * Turn a settled non-async bash run into a tool result. A cancelled result is
+	 * either a timeout (the command's deadline fired) or a user/system abort:
+	 * timeouts flow through {@link #buildCompletedResult}, which returns a
+	 * non-throwing error result with `details.timedOut = true` so the renderer
+	 * shows a warning border instead of error red; aborts throw. Both the
+	 * interactive and non-interactive results carry an explicit `timedOut` field
+	 * from the executor/PTY layer.
+	 */
+	async #finalizeBashResult(
+		result: BashResult | BashInteractiveResult,
+		options: {
+			wallTimeMs: number;
+			timeoutSec: number | undefined;
+			requestedTimeoutSec?: number;
+			notices: readonly string[];
+			aborted: boolean;
+		},
+	): Promise<AgentToolResult<BashToolDetails>> {
+		if (result.cancelled && result.timedOut !== true) {
+			const out = normalizeResultOutput(result);
+			// The local executor already prepends `[Command cancelled]`; PTY
+			// output does not, so preserve one cancellation notice in either case.
+			const message = out.startsWith("[Command cancelled]")
+				? out
+				: out
+					? `${out}\n\n[Command aborted]`
+					: "Command aborted";
+			if (options.aborted) {
+				throw new ToolAbortError(message);
+			}
+			throw new ToolError(message);
+		}
+		return this.#buildCompletedResult(result, options.timeoutSec, {
+			requestedTimeoutSec: options.requestedTimeoutSec,
+			notices: options.notices,
+			wallTimeMs: options.wallTimeMs,
+		});
+	}
+
+	/**
+	 * Hand an already-running foreground command to the async job manager after
+	 * an explicit background request (`app.tool.background`, Ctrl+B).
+	 *
+	 * The child is never restarted or killed: the job simply awaits the in-flight
+	 * `executeBash` promise, so the command keeps its shell session and its
+	 * output artifact, and its result is delivered to the model when it finishes.
+	 * Returns `undefined` when the manager refuses the job (at capacity or
+	 * disposed), leaving the caller to keep waiting in the foreground.
+	 */
+	#adoptRunningBash(options: {
+		command: string;
+		execPromise: Promise<BashResult | BashInteractiveResult>;
+		execController: AbortController;
+		wallTimeStart: number;
+		timeoutSec: number | undefined;
+		requestedTimeoutSec?: number;
+		notices: readonly string[];
+		getLatestText: () => string;
+		onAdopted: (reportProgress: (text: string) => void) => void;
+	}): AgentToolResult<BashToolDetails> | undefined {
+		const manager = this.session.asyncJobManager;
+		if (!manager) return undefined;
+		const label = options.command.length > 120 ? `${options.command.slice(0, 117)}...` : options.command;
+		const notices = [...options.notices, BACKGROUND_ON_REQUEST_NOTICE];
+		let jobId: string;
+		try {
+			jobId = manager.register(
+				"bash",
+				label,
+				async ({ jobId: registeredJobId, signal: runSignal, reportProgress }) => {
+					// Cancelling the job now kills the adopted child, the same way
+					// cancelling a natively-async bash job does.
+					if (runSignal.aborted) options.execController.abort();
+					else runSignal.addEventListener("abort", () => options.execController.abort(), { once: true });
+					options.onAdopted(text => {
+						void reportProgress(text, { async: { state: "running", jobId: registeredJobId, type: "bash" } });
+					});
+					try {
+						const result = await options.execPromise;
+						const finalResult = await this.#finalizeBashResult(result, {
+							wallTimeMs: performance.now() - options.wallTimeStart,
+							timeoutSec: options.timeoutSec,
+							requestedTimeoutSec: options.requestedTimeoutSec,
+							notices,
+							aborted: runSignal.aborted,
+						});
+						const finalText = this.#extractTextResult(finalResult);
+						if (finalResult.isError === true) {
+							// A non-zero exit is a completed command that failed:
+							// re-enter the failure path so the manager records the job
+							// as failed and still delivers the output.
+							throw new ToolError(finalText);
+						}
+						await reportProgress(finalText, {
+							async: { state: "completed", jobId: registeredJobId, type: "bash" },
+						});
+						return finalText;
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						await reportProgress(message, {
+							async: { state: "failed", jobId: registeredJobId, type: "bash" },
+						});
+						throw error;
+					}
+				},
+				{ ownerId: this.session.getAgentId?.() ?? undefined },
+			);
+		} catch (error) {
+			logger.warn("Background request could not adopt the running command", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return undefined;
+		}
+		return this.#buildBackgroundStartResult(jobId, options.getLatestText(), options.timeoutSec, {
+			requestedTimeoutSec: options.requestedTimeoutSec,
+			notices,
+		});
+	}
+
 	async execute(
 		_toolCallId: string,
 		{
@@ -1190,6 +1315,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				autoBackgroundWaitMs,
 				signal,
 				ctx?.toolCall?.steeringSignal,
+				ctx?.toolCall?.backgroundSignal,
 			);
 			if (waitResult.kind === "completed") {
 				return waitResult.result;
@@ -1208,7 +1334,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			const notices =
 				waitResult.kind === "steer"
 					? [...pendingNotices, "Backgrounded early to handle an incoming message; the command keeps running."]
-					: pendingNotices;
+					: waitResult.kind === "background"
+						? [...pendingNotices, BACKGROUND_ON_REQUEST_NOTICE]
+						: pendingNotices;
 			return this.#buildBackgroundStartResult(job.jobId, job.getLatestText(), timeoutSec, {
 				requestedTimeoutSec,
 				notices,
@@ -1511,61 +1639,116 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			pendingNotices.push("pty requested but unavailable in this environment; ran without a terminal");
 		}
 		const wallTimeStart = performance.now();
-		const result: BashResult | BashInteractiveResult = interactiveUi
-			? await runInteractiveBashPty(interactiveUi, {
-					// PTY bypasses executeBash, so feed it the direnv-transformed
-					// command + merged env (backendPreflight is defined whenever this
-					// branch runs, since both gate on canUseInteractiveBashPty).
-					command: backendPreflight?.command ?? command,
-					cwd: commandCwd,
-					timeoutMs,
-					signal,
-					env: backendPreflight?.env ?? resolvedEnv,
-					artifactPath,
-					artifactId,
-				})
-			: // executeBash runs its OWN direnv preflight internally — pass the RAW
-				// command + resolvedEnv here so the unset prefix / env merge is not
-				// applied twice.
-				await executeBash(command, {
-					cwd: commandCwd,
-					sessionKey: this.session.getSessionId?.() ?? undefined,
-					timeout: timeoutMs ?? 0,
-					signal,
-					env: resolvedEnv,
-					artifactPath,
-					artifactId,
-					onChunk: streamTailUpdates(tailBuffer, onUpdate),
-					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
-				});
-		const wallTimeMs = performance.now() - wallTimeStart;
-		if (result.cancelled) {
-			// A cancelled result is either a timeout (the command's deadline fired)
-			// or a user/system abort. Timeouts are handled by #buildCompletedResult
-			// which returns a non-throwing error result with details.timedOut=true
-			// so the renderer can show a warning border instead of error red.
-			// Both interactive and non-interactive results carry an explicit
-			// `timedOut` field from the executor/PTY layer.
-			const isTimeout = result.timedOut === true;
-			if (!isTimeout) {
-				const out = normalizeResultOutput(result);
-				// The local executor already prepends `[Command cancelled]`; PTY
-				// output does not, so preserve one cancellation notice in either case.
-				const message = out.startsWith("[Command cancelled]")
-					? out
-					: out
-						? `${out}\n\n[Command aborted]`
-						: "Command aborted";
-				if (signal?.aborted) {
-					throw new ToolAbortError(message);
-				}
-				throw new ToolError(message);
-			}
+		if (interactiveUi) {
+			// The PTY owns the terminal UI, so it cannot be handed to the job
+			// manager: an explicit background request is ignored on this route.
+			const ptyResult = await runInteractiveBashPty(interactiveUi, {
+				// PTY bypasses executeBash, so feed it the direnv-transformed
+				// command + merged env (backendPreflight is defined whenever this
+				// branch runs, since both gate on canUseInteractiveBashPty).
+				command: backendPreflight?.command ?? command,
+				cwd: commandCwd,
+				timeoutMs,
+				signal,
+				env: backendPreflight?.env ?? resolvedEnv,
+				artifactPath,
+				artifactId,
+			});
+			return this.#finalizeBashResult(ptyResult, {
+				wallTimeMs: performance.now() - wallTimeStart,
+				timeoutSec,
+				requestedTimeoutSec,
+				notices: pendingNotices,
+				aborted: signal?.aborted === true,
+			});
 		}
-		return this.#buildCompletedResult(result, timeoutSec, {
+
+		// The child's lifetime rides an internal controller rather than the
+		// tool-call signal directly: when the user asks to background the command
+		// (`app.tool.background`, Ctrl+B) the still-running child is handed to the
+		// async job manager, and from that point the job's cancel signal — not
+		// this tool call — owns it.
+		const execController = new AbortController();
+		let ownsExecSignal = true;
+		const onToolAbort = () => {
+			if (ownsExecSignal) execController.abort(signal?.reason);
+		};
+		if (signal?.aborted) execController.abort(signal.reason);
+		else signal?.addEventListener("abort", onToolAbort, { once: true });
+		// Set once a background job adopts the run: output then belongs to the
+		// job's progress channel, since the tool result is already final.
+		let reportJobProgress: ((text: string) => void) | undefined;
+
+		// executeBash runs its OWN direnv preflight internally — pass the RAW
+		// command + resolvedEnv here so the unset prefix / env merge is not
+		// applied twice.
+		const execPromise = executeBash(command, {
+			cwd: commandCwd,
+			sessionKey: this.session.getSessionId?.() ?? undefined,
+			timeout: timeoutMs ?? 0,
+			signal: execController.signal,
+			env: resolvedEnv,
+			artifactPath,
+			artifactId,
+			onChunk: chunk => {
+				tailBuffer.append(chunk);
+				const text = tailBuffer.text();
+				if (reportJobProgress) {
+					reportJobProgress(text);
+					return;
+				}
+				onUpdate?.({ content: [{ type: "text", text }], details: {} });
+			},
+			onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
+		});
+
+		const backgroundSignal = ctx?.toolCall?.backgroundSignal;
+		let execResult: BashResult | BashInteractiveResult;
+		if (backgroundSignal && this.session.asyncJobManager) {
+			const { promise: backgroundRequested, resolve: resolveBackgroundRequest } =
+				Promise.withResolvers<"background">();
+			const onBackgroundRequest = () => resolveBackgroundRequest("background");
+			if (backgroundSignal.aborted) onBackgroundRequest();
+			else backgroundSignal.addEventListener("abort", onBackgroundRequest, { once: true });
+			let raced: BashResult | BashInteractiveResult | "background";
+			try {
+				raced = await Promise.race([execPromise, backgroundRequested]);
+			} finally {
+				backgroundSignal.removeEventListener("abort", onBackgroundRequest);
+			}
+			if (raced === "background") {
+				const backgrounded = this.#adoptRunningBash({
+					command,
+					execPromise,
+					execController,
+					wallTimeStart,
+					timeoutSec,
+					requestedTimeoutSec,
+					notices: pendingNotices,
+					getLatestText: () => tailBuffer.text(),
+					onAdopted: sink => {
+						reportJobProgress = sink;
+						// The tool call no longer owns the child: a later abort of
+						// this turn must not kill a command the user moved aside.
+						ownsExecSignal = false;
+						signal?.removeEventListener("abort", onToolAbort);
+					},
+				});
+				// Adoption fails only when the job manager refuses the job (at
+				// capacity / disposed); in that case keep waiting in the foreground.
+				if (backgrounded) return backgrounded;
+			}
+			execResult = raced === "background" ? await execPromise : raced;
+		} else {
+			execResult = await execPromise;
+		}
+		signal?.removeEventListener("abort", onToolAbort);
+		return this.#finalizeBashResult(execResult, {
+			wallTimeMs: performance.now() - wallTimeStart,
+			timeoutSec,
 			requestedTimeoutSec,
 			notices: pendingNotices,
-			wallTimeMs,
+			aborted: signal?.aborted === true,
 		});
 	}
 }

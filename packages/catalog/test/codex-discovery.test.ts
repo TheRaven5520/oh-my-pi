@@ -318,7 +318,7 @@ describe("Codex model discovery", () => {
 		expect(legacy?.contextWindow).toBe(272_000);
 	});
 
-	it("keeps account-listed API-unsupported models while pruning hidden and absent models", async () => {
+	it("keeps explicitly API-supported models while pruning other hidden and absent models", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-codex-authoritative-"));
 		const staticOnlyModel: ModelSpec<"openai-codex-responses"> = {
 			id: "unsupported-static",
@@ -353,6 +353,25 @@ describe("Codex model discovery", () => {
 								input_modalities: ["text"],
 							},
 							{
+								slug: "gpt-6-astra",
+								display_name: "GPT-6-Astra",
+								visibility: "hide",
+								supported_in_api: true,
+								context_window: 272_000,
+								default_reasoning_level: "low",
+								supported_reasoning_levels: [
+									{ effort: "low" },
+									{ effort: "medium" },
+									{ effort: "high" },
+									{ effort: "xhigh" },
+									{ effort: "max" },
+								],
+								input_modalities: ["text", "image"],
+								prefer_websockets: true,
+								use_responses_lite: true,
+								priority: 1,
+							},
+							{
 								slug: "hidden-model",
 								display_name: "Hidden model",
 								visibility: "hidden",
@@ -382,10 +401,12 @@ describe("Codex model discovery", () => {
 				"online",
 			);
 
-			expect(result.models.map(model => model.id)).toEqual(["gpt-5.3-codex-spark"]);
-			expect(result.models[0]).toMatchObject({
-				contextWindow: 128_000,
+			expect(result.models.map(model => model.id)).toEqual(["gpt-5.3-codex-spark", "gpt-6-astra"]);
+			expect(result.models.find(model => model.id === "gpt-6-astra")).toMatchObject({
+				contextWindow: 272_000,
 				maxTokens: 128_000,
+				preferWebsockets: true,
+				useResponsesLite: true,
 			});
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });

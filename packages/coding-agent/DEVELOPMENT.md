@@ -32,6 +32,9 @@ with `bun run gen:tool-views`.
 process argv
    │
    ▼
+src/launcher.ts                ── constant-space process supervisor; keeps the
+   │                              shell waiting while /refresh replaces one child
+   ▼
 src/cli.ts (runCli)            ── worker-host dispatch + Bun version guard;
    │  default subcommand: launch    argv normalization
    ▼
@@ -51,6 +54,11 @@ createAgentSession(...)        ── src/sdk.ts → AgentSession
 `cli.ts` doubles as the worker host: it declares itself via `declareWorkerHostEntry()`
 and dispatches the hidden `__omp_worker_*` argv selectors before loading the command
 registry (see `AGENTS.md` → *Worker scripts*).
+
+Normal launchers keep one lightweight supervisor process for the session lifetime.
+`/refresh` sends the durable session path and cwd over the child IPC channel, exits
+with the reserved refresh code, and is replaced under the same supervisor. Direct
+`cli.ts`/SDK launches have no supervisor and retain the legacy child-wait fallback.
 
 ## Source layout (`src/`)
 

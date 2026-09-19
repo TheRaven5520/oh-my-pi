@@ -39,6 +39,7 @@ import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
 import { STATS_ACTIVITY_WORKER_ARG } from "./stats/activity-protocol";
 import rootLicense from "./tools/browser/relay/extension-assets/LICENSE.txt" with { type: "text" };
 import thirdPartyNotices from "./tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt" with { type: "text" };
+import { WRAPPER_ALLOW_HOME_ARG, WRAPPER_ALLOW_HOME_KEY } from "./process-supervisor";
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 
 if (Bun.semver.order(Bun.version, MIN_BUN_VERSION) < 0) {
@@ -56,7 +57,8 @@ setProcessName(APP_NAME);
 // (`B:/~BUN/root/cli.js`), so Bun's internal match fails. `bun build --compile`
 // CLI builds are unaffected. A compiled binary's entry module is by definition
 // the process entry, so the define-folded PI_COMPILED marker stands in.
-const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
+const isProcessEntry =
+	import.meta.main || (process.env.PI_COMPILED === "true" && process.env.OMP_LAUNCHER_OWNS_CLI !== "true");
 
 function formatLicenseOutput(): string {
 	return `OMP License and Third-Party Notices\n\n${rootLicense.trimEnd()}\n\n${thirdPartyNotices.trimEnd()}\n`;
@@ -416,7 +418,10 @@ async function runTinyWorker(): Promise<void> {
 
 /** Run the CLI with the given argv (no `process.argv` prefix). */
 export async function runCli(argv: string[]): Promise<void> {
+	Reflect.deleteProperty(globalThis, WRAPPER_ALLOW_HOME_KEY);
 	let resolvedArgv = argv;
+	const wrapperAllowsHome = resolvedArgv[0] === WRAPPER_ALLOW_HOME_ARG;
+	if (wrapperAllowsHome) resolvedArgv = resolvedArgv.slice(1);
 	try {
 		const extracted = extractProfileFlags(resolvedArgv);
 		resolvedArgv = extracted.argv;
@@ -467,7 +472,9 @@ export async function runCli(argv: string[]): Promise<void> {
 	// browser workers onto the same-realm inline fallback.
 	// This must run before worker selector dispatch so that worker subprocesses
 	// (e.g. stats activity) are registered as hosts and can themselves spawn worker threads.
-	if (isProcessEntry) declareWorkerHostEntry();
+	if (isProcessEntry || (Bun.isMainThread && process.env.OMP_LAUNCHER_OWNS_CLI === "true")) {
+		declareWorkerHostEntry();
+	}
 
 	// Worker-thread entry dispatch must run before the first `await`: the
 	// stats sync worker's buffering onmessage handler is installed in the
@@ -529,6 +536,7 @@ export async function runCli(argv: string[]): Promise<void> {
 			process.exitCode = 1;
 			return;
 		}
+		if (wrapperAllowsHome && resolved.argv[0] === "launch") Reflect.set(globalThis, WRAPPER_ALLOW_HOME_KEY, true);
 		await run({ bin: APP_NAME, version: VERSION, argv: resolved.argv, commands, metadataHelp: showHelp });
 	} finally {
 		stopStartupComposer?.();

@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { AskDialogComponent } from "@oh-my-pi/pi-coding-agent/modes/components/ask-dialog";
+import { Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -71,6 +72,7 @@ async function createContext() {
 		"app.clipboard.pasteImage": ["ctrl+v"],
 		"app.tools.toggleVisibility": ["ctrl+shift+o"],
 		"app.tools.expand": ["ctrl+o"],
+		"app.tool.background": ["ctrl+b"],
 	};
 	const customHandlers = new Map<string, () => void>();
 	const setActionKeys = vi.fn();
@@ -100,6 +102,9 @@ async function createContext() {
 	const prompt = vi.fn(async () => {});
 	const retry = vi.fn(async () => true);
 	const abort = vi.fn(async () => {});
+	const cycleThinkingLevel = vi.fn(() => "low");
+	const cycleRoleModels = vi.fn(async () => ({ role: "slow" }));
+	const requestToolBackground = vi.fn(() => false);
 	const session = {
 		isStreaming: false,
 		isCompacting: false,
@@ -111,6 +116,9 @@ async function createContext() {
 		queuedMessageCount: 0,
 		abort,
 		retry,
+		cycleThinkingLevel,
+		cycleRoleModels,
+		agent: { requestToolBackground },
 	};
 	const updatePendingMessagesDisplay = vi.fn();
 	const handleBtwBranchKey = vi.fn(async () => true);
@@ -121,6 +129,7 @@ async function createContext() {
 	const handleBtwFollowUpKey = vi.fn(() => true);
 	const hasActiveBtw = vi.fn(() => false);
 	const handlesBtwBranchKey = vi.fn(() => false);
+	const moveSubagentDockSelection = vi.fn(() => true);
 	const editor: FakeEditor = {
 		setText(text: string) {
 			editorText = text;
@@ -156,6 +165,9 @@ async function createContext() {
 	};
 	focused = editor;
 	const ctx = {
+		statusLine: { invalidate: vi.fn() },
+		showModelCycleTrack: vi.fn(),
+		moveSubagentDockSelection,
 		editor: editor as unknown as InteractiveModeContext["editor"],
 		resetDisplayAfterAppearanceRefresh,
 		ui: {
@@ -256,6 +268,9 @@ async function createContext() {
 			keyMap[action] = keys;
 		},
 		spies: {
+			cycleThinkingLevel,
+			moveSubagentDockSelection,
+			cycleRoleModels,
 			setActionKeys,
 			showModelSelector,
 			prompt,
@@ -277,6 +292,7 @@ async function createContext() {
 			canFollowUpBtw,
 			handleBtwFollowUpKey,
 			showError,
+			requestToolBackground,
 		},
 	};
 }
@@ -305,6 +321,17 @@ describe("InputController keybinding setup", () => {
 		expect(spies.resetDisplayAfterAppearanceRefresh).toHaveBeenCalledTimes(1);
 	});
 
+	it("enters the compact agent dock with Down from an empty editor", async () => {
+		const { InputController, ctx, spies } = await createContext();
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+
+		expect(dispatchInput(registeredInputListeners(spies.addInputListener), "\x1b[B")).toEqual({ consume: true });
+		expect(spies.moveSubagentDockSelection).toHaveBeenCalledWith("next");
+		expect(ctx.editor.getText()).toBe("");
+	});
+
 	it("registers the tool activity visibility action", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const controller = new InputController(ctx);
@@ -321,6 +348,38 @@ describe("InputController keybinding setup", () => {
 		expect(spies.clearInlineImages).toHaveBeenCalledTimes(1);
 		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
 		expect(ctx.chatContainer.setToolActivityVisible).toHaveBeenCalledWith(false);
+	});
+	it("cycles model and thinking on the focused subagent session", async () => {
+		const { InputController, ctx, spies } = await createContext();
+		await initTheme(false);
+		await Settings.init({ inMemory: true });
+		const cycleOrder = settings.get("cycleOrder");
+		const focusedCycleThinking = vi.fn(() => "high");
+		const focusedCycleModel = vi.fn(async () => ({ role: "slow" }));
+		const focusedSession = {
+			cycleThinkingLevel: focusedCycleThinking,
+			cycleRoleModels: focusedCycleModel,
+		};
+		// The harness omits the focus controller, so explicitly install its
+		// focused-session surface before exercising the controller behavior.
+		const focusedContext = ctx as unknown as {
+			focusedAgentId: string;
+			viewSession: typeof focusedSession;
+		};
+		focusedContext.focusedAgentId = "worker";
+		focusedContext.viewSession = focusedSession;
+		const controller = new InputController(ctx);
+
+		controller.cycleThinkingLevel();
+		await controller.cycleRoleModel("backward");
+
+		expect(focusedCycleThinking).toHaveBeenCalledTimes(1);
+		expect(focusedCycleModel).toHaveBeenCalledWith(cycleOrder, "backward");
+		expect(spies.cycleThinkingLevel).not.toHaveBeenCalled();
+		expect(spies.cycleRoleModels).not.toHaveBeenCalled();
+		expect(ctx.statusLine.invalidate).toHaveBeenCalledTimes(2);
+		expect(ctx.updateEditorBorderColor).toHaveBeenCalledTimes(2);
+		expect(ctx.showModelCycleTrack).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not mark pasted shell prompts as Python mode while editing", async () => {
@@ -429,9 +488,7 @@ describe("InputController keybinding setup", () => {
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
-		const listener = spies.addInputListener.mock.calls[1]?.[0];
-		expect(listener).toBeDefined();
-		const result = listener?.("b");
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "b");
 
 		expect(result).toEqual({ consume: true });
 		expect(spies.handleBtwBranchKey).toHaveBeenCalledTimes(1);
@@ -444,9 +501,7 @@ describe("InputController keybinding setup", () => {
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
-		const listener = spies.addInputListener.mock.calls[1]?.[0];
-		expect(listener).toBeDefined();
-		const result = listener?.("b");
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "b");
 
 		expect(result).toBeUndefined();
 		expect(spies.handleBtwBranchKey).not.toHaveBeenCalled();
@@ -458,9 +513,7 @@ describe("InputController keybinding setup", () => {
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
-		const listener = spies.addInputListener.mock.calls[1]?.[0];
-		expect(listener).toBeDefined();
-		const result = listener?.("b");
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "b");
 
 		expect(result).toEqual({ consume: true });
 		expect(spies.handleBtwBranchKey).toHaveBeenCalledTimes(1);
@@ -472,9 +525,7 @@ describe("InputController keybinding setup", () => {
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
-		const listener = spies.addInputListener.mock.calls[1]?.[0];
-		expect(listener).toBeDefined();
-		const result = listener?.("b");
+		const result = dispatchInput(registeredInputListeners(spies.addInputListener), "b");
 
 		expect(result).toBeUndefined();
 		expect(spies.handleBtwBranchKey).not.toHaveBeenCalled();
@@ -841,5 +892,49 @@ describe("InputController global tool-output expand (ctrl+o)", () => {
 
 		expect(dispatchInput(listeners, "\x0f")).toEqual({ consume: true });
 		expect(ctx.toolOutputExpanded).toBe(true);
+	});
+});
+
+describe("InputController background chord (ctrl+b)", () => {
+	const CTRL_B = "\x02";
+
+	beforeAll(async () => {
+		await initTheme(false);
+	});
+
+	async function setup() {
+		const context = await createContext();
+		const controller = new context.InputController(context.ctx);
+		controller.setupKeyHandlers();
+		return { ...context, listeners: registeredInputListeners(context.spies.addInputListener) };
+	}
+
+	it("backgrounds the running command and consumes the key when the batch accepts", async () => {
+		const { ctx, listeners, spies } = await setup();
+		spies.requestToolBackground.mockReturnValue(true);
+
+		expect(dispatchInput(listeners, CTRL_B)).toEqual({ consume: true });
+		expect(spies.requestToolBackground).toHaveBeenCalledTimes(1);
+		expect(ctx.showStatus).toHaveBeenCalled();
+	});
+
+	it("falls through to the editor when nothing is backgroundable, keeping ctrl+b as cursor-left", async () => {
+		const { ctx, listeners, spies } = await setup();
+		// Idle session: the agent reports the request was not accepted, so the
+		// key must reach the focused editor (ctrl+b is `tui.editor.cursorLeft`).
+		spies.requestToolBackground.mockReturnValue(false);
+
+		expect(dispatchInput(listeners, CTRL_B)).toBeUndefined();
+		expect(spies.requestToolBackground).toHaveBeenCalledTimes(1);
+		expect(ctx.showStatus).not.toHaveBeenCalled();
+	});
+
+	it("defers while an overlay owns the surface", async () => {
+		const { listeners, spies, setOverlayVisible } = await setup();
+		spies.requestToolBackground.mockReturnValue(true);
+		setOverlayVisible(true);
+
+		expect(dispatchInput(listeners, CTRL_B)).toBeUndefined();
+		expect(spies.requestToolBackground).not.toHaveBeenCalled();
 	});
 });

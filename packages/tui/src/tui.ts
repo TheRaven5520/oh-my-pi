@@ -119,6 +119,8 @@ export interface RenderScheduler {
 
 export interface TUIOptions {
 	renderScheduler?: RenderScheduler;
+	/** Limit mutable frames when tmux exposes the outer terminal's scrollback. */
+	outerScrollbackStreamingCoalesce?: boolean;
 }
 /** Physical terminal dimensions supplied to a frame provider. */
 export interface ViewportSize {
@@ -278,6 +280,8 @@ export interface Focusable {
 
 /** Options for scheduling a TUI render. */
 export interface RenderRequestOptions {
+	/** Follow the latest line after an intentional transcript replacement. */
+	followTail?: boolean;
 	/** Clear terminal scrollback for intentional transcript replacement. */
 	clearScrollback?: boolean;
 }
@@ -749,6 +753,11 @@ export class TUI extends Container {
 	#renderRequested = false;
 	#renderTimer: RenderTimer | undefined;
 	#renderScheduler: RenderScheduler;
+	#outerScrollbackStreamingCoalesce: boolean;
+	#outerScrollbackStreamTimer: RenderTimer | undefined;
+	#outerScrollbackFlushReady = false;
+	#inputRenderPending = false;
+	#followTailOnNextRender = false;
 	#lastRenderAt = 0;
 	/**
 	 * Wall-clock cost of the most recent `#doRender()` call. Used by
@@ -874,6 +883,9 @@ export class TUI extends Container {
 		super();
 		this.terminal = terminal;
 		this.#renderScheduler = options?.renderScheduler ?? DEFAULT_RENDER_SCHEDULER;
+		this.#outerScrollbackStreamingCoalesce =
+			options?.outerScrollbackStreamingCoalesce ??
+			($flag("PI_TUI_TMUX_OUTER_SCROLLBACK") && isInsideTerminalMultiplexer());
 		this.#showHardwareCursor = showHardwareCursor === undefined ? this.#showHardwareCursor : showHardwareCursor;
 		this.#watchdog = new LoopWatchdog();
 	}
@@ -1904,6 +1916,9 @@ export class TUI extends Container {
 		// (and live-session ghosts are already bounded by the inline-image budget).
 		this.#clearSixelProbeState();
 		this.#stopped = true;
+		this.#outerScrollbackStreamTimer?.cancel();
+		this.#outerScrollbackStreamTimer = undefined;
+		this.#outerScrollbackFlushReady = false;
 		this.#watchdog.stop();
 		if (this.#renderTimer) {
 			this.#renderTimer.cancel();
@@ -1957,6 +1972,7 @@ export class TUI extends Container {
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
 		if (force) {
+			this.#followTailOnNextRender ||= options?.followTail === true;
 			this.#prepareForcedRender(options?.clearScrollback === true);
 			this.#renderRequested = true;
 			this.#renderScheduler.scheduleImmediate(() => {
@@ -1978,6 +1994,7 @@ export class TUI extends Container {
 	 */
 	renderNow(options?: RenderRequestOptions): void {
 		if (this.#stopped) return;
+		this.#followTailOnNextRender ||= options?.followTail === true;
 		this.#prepareForcedRender(options?.clearScrollback === true);
 		this.#renderRequested = false;
 		const start = this.#renderScheduler.now();
@@ -2103,6 +2120,7 @@ export class TUI extends Container {
 	}
 
 	#handleInput(data: string): void {
+		this.#inputRenderPending = true;
 		// Consume CPR replies (CSI row;col R) while an anchor probe is unanswered;
 		// they are terminal reports, never keystrokes, and must not reach the
 		// focused component.
@@ -2637,6 +2655,31 @@ export class TUI extends Container {
 			viewport = this.#compositeOverlaysIntoWindow(viewport, width, height);
 		}
 		const history = offered !== undefined && offered.id > this.#acceptedHistoryBatchId ? offered : undefined;
+		// A new history batch represents stable rows and bypasses the throttle.
+		// Input, geometry changes, and overlays must also remain immediate.
+		if (
+			this.#outerScrollbackStreamingCoalesce &&
+			history === undefined &&
+			this.#providerWindow.length > 0 &&
+			!this.#inputRenderPending &&
+			!this.#outerScrollbackFlushReady &&
+			!this.#forceViewportRepaintOnNextRender &&
+			width === this.#previousWidth &&
+			height === this.#previousHeight &&
+			this.#getTopmostVisibleOverlay() === undefined
+		) {
+			this.#outerScrollbackStreamTimer ??= this.#renderScheduler.scheduleRender(() => {
+				this.#outerScrollbackStreamTimer = undefined;
+				if (this.#stopped) return;
+				this.#outerScrollbackFlushReady = true;
+				this.requestRender();
+			}, 250);
+			return;
+		}
+		this.#inputRenderPending = false;
+		this.#outerScrollbackFlushReady = false;
+		this.#outerScrollbackStreamTimer?.cancel();
+		this.#outerScrollbackStreamTimer = undefined;
 		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
 
 		let historyRows = history?.rows ?? [];
@@ -2778,7 +2821,11 @@ export class TUI extends Container {
 			this.#parkedViewportOffset = 0;
 		}
 		buffer += this.#paintEndSequence;
-		this.terminal.write(buffer);
+		const tailFollow = this.#followTailOnNextRender
+			? this.terminal.getTransientScrollToBottomSequences?.()
+			: undefined;
+		this.terminal.write((tailFollow?.before ?? "") + buffer + (tailFollow?.after ?? ""));
+		this.#followTailOnNextRender = false;
 		this.#debugPaint = {
 			lines: prepared,
 			windowTop: this.#debugNextWindowTop,

@@ -37,11 +37,13 @@ import {
 	getSymbolTheme,
 	previewTheme,
 	setColorBlindMode,
+	setMarkdownMathRenderer,
 	setMarkdownMermaidRendering,
 	setSymbolPreset,
 	setTheme,
 	theme,
 } from "../../modes/theme/theme";
+import { initializeMathJaxRenderer } from "../theme/mathjax-cache";
 import type { AgentHubOpenOptions, InteractiveModeContext } from "../../modes/types";
 import type { SessionOAuthAccountList } from "../../session/agent-session-types";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
@@ -704,6 +706,13 @@ export class SelectorController {
 				this.ctx.session.refreshBaseSystemPrompt().catch(err => {
 					this.ctx.showError(`Failed to apply Mermaid rendering setting: ${err}`);
 				});
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
+				break;
+
+			case "tui.mathRenderer":
+				setMarkdownMathRenderer(value as "unicode" | "mathjax");
+				if (value === "mathjax") void initializeMathJaxRenderer();
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;

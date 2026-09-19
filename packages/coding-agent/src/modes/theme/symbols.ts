@@ -770,8 +770,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	// pick:  | alt: │ ┃ |
 	"sep.pipe": "\ue0b3",
 	// Icons - Nerd Font specific
-	// pick:  | alt:   ◆
-	"icon.model": "\uec19",
+	// Intentionally blank: the model name is the complete status label.
+	"icon.model": "",
 	// pick:  | alt:  
 	"icon.plan": "\uf2d2",
 	"icon.prewalk": "\uf29d",
@@ -781,13 +781,13 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.pause": "\uf04c",
 	// pick: ↻ | alt: ⟳
 	"icon.loop": "\uf021",
-	// pick:  | alt:  
-	"icon.folder": "\uf115",
+	// Intentionally blank: paths are readable without a folder icon.
+	"icon.folder": "",
 	"icon.search": "\uf002",
-	// pick:  | alt:
-	"icon.scratchFolder": "\uf014",
-	// pick: nf-fa-sitemap | alt: nf-cod-list_tree
-	"icon.worktree": "\uf0e8",
+	// Intentionally blank: scratch paths use the same text-only treatment.
+	"icon.scratchFolder": "",
+	// Intentionally blank: worktree paths use the same text-only treatment.
+	"icon.worktree": "",
 	// pick:  | alt:  
 	"icon.file": "\uf15b",
 	// pick:  | alt:  ⎇
@@ -800,10 +800,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.pin": "\uf08d",
 	// pick:  | alt: ⊛ ◍ 
 	"icon.tokens": "\ue26b",
-	// pick:  (nf-dev-windows) | alt:  (nf-cod-window) ◫ ▦
-	// INTENTIONAL: the Windows logo is the chosen glyph here. It has been "fixed"
-	// to nf-cod-window before (739d5a3947) and reverted; do not swap it again.
-	"icon.context": "\ue70f",
+	// Intentionally blank: status-line context is shown as text, not an icon.
+	"icon.context": "",
 	// pick:  | alt: $ ¢
 	"icon.cost": "\uf155",
 	// pick: 󰙺 (nf-md-currency_usd_off)
@@ -818,7 +816,7 @@ const NERD_SYMBOLS: SymbolMap = {
 	// INTENTIONAL: U+F0D57 is the chosen glyph here. It has been "fixed" to
 	// U+F03FF before (2ec52b8bdd) and reverted because it renders the wrong glyph;
 	// do not swap it again.
-	"icon.omp": "\u{f0d57}",
+	"icon.omp": "",
 	// pick: 󱊷 (nf-md-keyboard_esc) | alt: ⎋
 	"icon.esc": "\u{f12b7}",
 	// pick: 󰊠 (nf-md-ghost) | alt: 👻
@@ -849,8 +847,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.warning": "\uf071",
 	// pick:  | alt:  ↺
 	"icon.rewind": "\uf0e2",
-	// pick: 󰁨 | alt:   
-	"icon.auto": "\u{f0068}",
+	// Intentionally blank: auto-compaction needs no status-line icon.
+	"icon.auto": "",
 	"icon.fast": "\uf0e7",
 	"icon.extensionSkill": "\uf0eb",
 	// pick:  | alt:  
@@ -979,7 +977,7 @@ const NERD_SYMBOLS: SymbolMap = {
 	"thinking.minimal": "\u{F0A9E} min",
 	"thinking.low": "\u{F0A9F} low",
 	"thinking.medium": "\u{F0AA1} med",
-	"thinking.high": "\u{F0AA3} high",
+	"thinking.high": "high",
 	"thinking.xhigh": "\u{F0AA5} xhi",
 	"thinking.max": "\u{F06D} max",
 	// Auto mode uses shuffle until the model resolves its thinking level.

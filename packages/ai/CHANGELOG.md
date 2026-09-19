@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Auth gateway callers can list and redeem saved Codex reset credits with idempotent retries.
+
 ## [18.1.20] - 2026-09-13
 
 ### Fixed

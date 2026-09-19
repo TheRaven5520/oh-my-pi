@@ -2750,6 +2750,14 @@ async function executeToolCalls(
 	// backgrounds itself so the message injects promptly — but it never kills
 	// anything; ignoring it is always safe.
 	const steeringSoftController = new AbortController();
+	// Cooperative channel: aborted when the user explicitly asks (Ctrl+B) for the
+	// running tool work to be backgrounded. Delivered as `ctx.backgroundSignal`;
+	// like the steering signal it never kills anything, but a tool that can hand
+	// its work to the async job manager returns a background handle immediately.
+	// The sink is installed below, once the batch is known to contain a
+	// `backgroundable` tool, and removed when the batch settles.
+	const backgroundSoftController = new AbortController();
+	let unsubscribeBackgroundRequests: (() => void) | undefined;
 	// Interruptible tools (pure waits: hub wait, vibe) observe steering +
 	// external + IRC aborts. Every other tool sees ONLY the external signal:
 	// neither queued steering nor a peer IRC ever hard-kills a partially
@@ -2809,6 +2817,15 @@ async function executeToolCalls(
 			transformError: prepared.transformError,
 		};
 	});
+
+	// Only a batch that can actually background something arms the request sink:
+	// a host chord bound to `requestToolBackground()` then reports "not accepted"
+	// for every other batch and can fall back to its normal key handling.
+	if (records.some(record => record.tool?.backgroundable === true)) {
+		unsubscribeBackgroundRequests = config.subscribeBackgroundRequests?.(() => {
+			backgroundSoftController.abort();
+		});
+	}
 
 	const checkIrcInterrupts = async (): Promise<void> => {
 		// IRC only fires once: a peer interrupt already recorded on interruptState
@@ -3032,6 +3049,7 @@ async function executeToolCalls(
 						total: toolCalls.length,
 						toolCalls: toolCallInfos,
 						steeringSignal: steeringSoftController.signal,
+						backgroundSignal: backgroundSoftController.signal,
 						providerMetadata: toolCall.providerMetadata,
 					});
 					if (streamSession && toolContext) {
@@ -3249,6 +3267,7 @@ async function executeToolCalls(
 		steeringWatchAbortController.abort();
 		await steeringWatchPromise?.catch(() => undefined);
 		clearInterval(steeringWatchTimer);
+		unsubscribeBackgroundRequests?.();
 	}
 	// Yield after batch tool execution to let GC and I/O catch up,
 	// especially when tool results are large (e.g. bash output).

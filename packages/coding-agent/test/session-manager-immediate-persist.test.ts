@@ -84,7 +84,7 @@ function entryKind(entry: Record<string, unknown>): string {
 }
 
 describe("SessionManager JSONL software-crash durability", () => {
-	it("makes completed entries visible on disk without a microtask or flush", () => {
+	it("makes accepted user intent visible on disk without a microtask or flush", () => {
 		const cwd = makeTempDir("@pi-immediate-cwd-");
 		const sessionDir = path.join(cwd, "sessions");
 		const manager = SessionManager.create(cwd, sessionDir);
@@ -92,9 +92,10 @@ describe("SessionManager JSONL software-crash durability", () => {
 		if (!sessionFile) throw new Error("Expected a persisted session file path");
 
 		manager.appendMessage({ role: "user", content: "queued before assistant", timestamp: Date.now() });
-		expect(fs.existsSync(sessionFile)).toBe(false);
+		expect(fs.existsSync(sessionFile)).toBe(true);
 
-		// First assistant materializes the file via the synchronous rewrite path.
+		// The first assistant remains an ordinary hot-path append after user intent
+		// materialized the journal.
 		manager.appendMessage(assistantMessage("hello"));
 		expect(fs.existsSync(sessionFile)).toBe(true);
 
@@ -239,7 +240,50 @@ describe("SessionManager JSONL software-crash durability", () => {
 		expect(fs.readFileSync(sessionFile)).toEqual(originalBytes);
 	});
 
-	it("keeps pre-assistant sessions out of history during shutdown", async () => {
+	it("recovers an incomplete streaming checkpoint and discards it after normal completion", async () => {
+		const cwd = makeTempDir("@pi-streaming-checkpoint-cwd-");
+		const sessionDir = path.join(cwd, "sessions");
+		const manager = SessionManager.create(cwd, sessionDir);
+		const sessionFile = manager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted session file path");
+		const partial = { ...assistantMessage("partial answer"), responseId: "interrupted-response" };
+		manager.appendStreamingAssistantCheckpoint(partial);
+		const newerPartial = {
+			...partial,
+			content: [{ type: "text" as const, text: "newer partial answer" }],
+		};
+		manager.appendStreamingAssistantCheckpoint(newerPartial);
+
+		const crashed = await SessionManager.open(sessionFile);
+		const recovered = crashed
+			.getEntries()
+			.find(entry => entry.type === "message" && entry.message.role === "assistant");
+		expect(
+			recovered?.type === "message" && recovered.message.role === "assistant"
+				? recovered.message.content
+				: undefined,
+		).toEqual(newerPartial.content);
+		expect(
+			recovered?.type === "message" && recovered.message.role === "assistant"
+				? recovered.message.stopReason
+				: undefined,
+		).toBe("aborted");
+
+		const complete = { ...assistantMessage("completed answer"), responseId: "completed-response" };
+		manager.appendStreamingAssistantCheckpoint(complete);
+		manager.appendMessage(complete);
+		const resumed = await SessionManager.open(sessionFile);
+		const assistants = resumed
+			.getEntries()
+			.filter(entry => entry.type === "message" && entry.message.role === "assistant");
+		expect(assistants).toHaveLength(2);
+		const final = assistants.at(-1);
+		if (!final || final.type !== "message" || final.message.role !== "assistant") {
+			throw new Error("Expected normal assistant completion");
+		}
+		expect(final.message.stopReason).toBe("stop");
+	});
+	it("keeps empty sessions out of history but retains accepted user intent", async () => {
 		const cwd = makeTempDir("@pi-empty-session-cwd-");
 		const sessionDir = path.join(cwd, "sessions");
 		const manager = SessionManager.create(cwd, sessionDir);
@@ -255,8 +299,19 @@ describe("SessionManager JSONL software-crash durability", () => {
 		manager.appendMessage({ role: "user", content: "queued before assistant", timestamp: Date.now() });
 		manager.flushSync();
 
-		expect(fs.existsSync(sessionFile)).toBe(false);
-		expect(await SessionManager.list(cwd, sessionDir)).toHaveLength(0);
+		expect(fs.existsSync(sessionFile)).toBe(true);
+		expect(await SessionManager.list(cwd, sessionDir)).toHaveLength(1);
+		const reopened = await SessionManager.open(sessionFile);
+		expect(
+			reopened
+				.getEntries()
+				.some(
+					entry =>
+						entry.type === "message" &&
+						entry.message.role === "user" &&
+						entry.message.content === "queued before assistant",
+				),
+		).toBe(true);
 	});
 
 	it("lets explicit rewrites materialize pre-assistant entries", async () => {

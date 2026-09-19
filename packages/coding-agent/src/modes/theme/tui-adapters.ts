@@ -8,6 +8,7 @@ import {
 import type { EditorTheme, MarkdownTheme, SelectListTheme, SettingsListTheme, SymbolTheme } from "@oh-my-pi/pi-tui";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { clearMathJaxCache, resolveMathJaxImage } from "./mathjax-cache";
 import { resolveMermaidAscii } from "./mermaid-cache";
 import type { SlashCommandIconName } from "./symbols";
 import { theme } from "./theme";
@@ -167,10 +168,18 @@ export function getSymbolTheme(): SymbolTheme {
 let cachedMarkdownTheme: MarkdownTheme | undefined;
 let cachedMarkdownThemeRef: Theme | undefined;
 let markdownMermaidRendering = true;
+let markdownMathRenderer: "unicode" | "mathjax" = "unicode";
 
 export function setMarkdownMermaidRendering(enabled: boolean): void {
 	if (markdownMermaidRendering === enabled) return;
 	markdownMermaidRendering = enabled;
+	cachedMarkdownTheme = undefined;
+}
+
+export function setMarkdownMathRenderer(renderer: "unicode" | "mathjax"): void {
+	if (markdownMathRenderer === renderer) return;
+	markdownMathRenderer = renderer;
+	clearMathJaxCache();
 	cachedMarkdownTheme = undefined;
 }
 
@@ -219,6 +228,10 @@ export function getMarkdownTheme(): MarkdownTheme {
 						colorMode: mermaid.mermaidColorMode,
 					})
 			: undefined,
+		resolveDisplayMath:
+			markdownMathRenderer === "mathjax"
+				? (source, maxWidthCells) => resolveMathJaxImage(source, theme.getColorHex("text"), maxWidthCells)
+				: undefined,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
 			const highlighted = highlightCached(code, validLang, theme);

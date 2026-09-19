@@ -16,10 +16,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import { createMockModel, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
+import { createMockModel, type MockHandler, type MockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
+import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
+import { getEditorTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -64,7 +68,7 @@ describe("AgentSession queued steer delivery", () => {
 		removeSyncWithRetries(fixtureDir);
 	});
 
-	async function createSession(responses: MockResponse[]): Promise<SteerHarness> {
+	async function createSession(responses: MockHandler[]): Promise<SteerHarness> {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({ responses });
 		const agent = new Agent({
@@ -213,6 +217,59 @@ describe("AgentSession queued steer delivery", () => {
 		expect(mock.calls.length).toBe(3);
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 		expect(session.getQueuedMessages().steering).toEqual([]);
+	});
+
+	it("rapid Enter then empty Enter interrupts and delivers the pending steer exactly once", async () => {
+		const started = Promise.withResolvers<void>();
+		const { session, mock } = await createSession([
+			() => {
+				started.resolve();
+				return { content: ["uninterrupted response"], delayMs: 60_000 };
+			},
+			{ content: ["steer received"] },
+		]);
+		const editor = new CustomEditor(getEditorTheme());
+		const errors: string[] = [];
+		const ctx = {
+			session,
+			editor,
+			ui: { requestRender() {} },
+			updatePendingMessagesDisplay() {},
+			showError: (message: string) => errors.push(message),
+			withLocalSubmission: async (_text: string, dispatch: () => Promise<unknown>) => dispatch(),
+		} as unknown as InteractiveModeContext;
+		new InputController(ctx).setupEditorSubmitHandler();
+		const submissions: Promise<void>[] = [];
+		const submit = editor.onSubmit!;
+		editor.onSubmit = text => {
+			const submission = Promise.resolve(submit(text));
+			submissions.push(submission);
+			return submission;
+		};
+
+		const initialPrompt = session.prompt("start working");
+		await started.promise;
+		editor.setText("change direction now");
+		// Both keys can arrive in one terminal read, before asynchronous prompt
+		// dispatch has placed the first message in the agent's steering queue.
+		editor.handleInput("\r");
+		editor.handleInput("\r");
+		await Promise.all(submissions);
+
+		expect(errors).toEqual([]);
+		expect(mock.calls[0]?.options?.signal?.aborted).toBe(true);
+		await initialPrompt;
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(2);
+		expect(session.getQueuedMessages().steering).toEqual([]);
+		const delivered = session.agent.state.messages.filter(
+			message =>
+				message.role === "user" &&
+				Array.isArray(message.content) &&
+				message.content.some(part => part.type === "text" && part.text === "change direction now"),
+		);
+		expect(delivered).toHaveLength(1);
+		expect(editor.getText()).toBe("");
 	});
 
 	it("dequeuing an ultrathink prompt mid-stream restores the text and drops its companion notice", async () => {

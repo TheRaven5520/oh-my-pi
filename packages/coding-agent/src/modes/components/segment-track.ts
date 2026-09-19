@@ -65,7 +65,8 @@ export function renderSegmentTrack(segments: TrackSegment[], activeIndex: number
 	// the filled body: left cap points left, right cap points right.
 	const capLeft = theme.sep.powerlineRight;
 	const capRight = theme.sep.powerlineLeft;
-	const thinSep = theme.fg("statusLineSep", theme.sep.powerlineThin);
+	// Role names need visual breathing room, not a Nerd Font glyph between them.
+	const thinSep = "";
 	const palette = resolveSegmentPalette(segments.length);
 
 	let track = "";

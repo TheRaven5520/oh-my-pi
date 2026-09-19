@@ -831,6 +831,19 @@ describe("ProcessTerminal DECRQM + in-band resize (DEC 2026/2048)", () => {
 		expect(writes).not.toContain("\x1b[?1011h");
 	});
 
+	it("offers one-shot output tail-follow only after DEC 1010 support is confirmed", () => {
+		const { terminal } = setup();
+		expect(terminal.getTransientScrollToBottomSequences?.()).toBeUndefined();
+
+		process.stdin.emit("data", "\x1b[?1010;2$y");
+		expect(terminal.getTransientScrollToBottomSequences?.()).toEqual({
+			before: "\x1b[?1010h",
+			after: "\x1b[?1010l",
+		});
+
+		terminal.stop();
+	});
+
 	it("does not enable DEC 2048 when reported unsupported", () => {
 		const { terminal, writes, reports } = setup();
 		process.stdin.emit("data", "\x1b[?2048;0$y");
