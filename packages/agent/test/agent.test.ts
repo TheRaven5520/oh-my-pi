@@ -81,6 +81,43 @@ describe("Agent", () => {
 		expect(skippedContent.text).not.toContain("queued user message");
 	});
 
+	it("accepts a background request only while a backgroundable tool runs", async () => {
+		const toolSchema = type({ value: type("string") });
+		let agent: Agent;
+		const acceptedDuringRun: boolean[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "detach",
+			label: "Detach",
+			description: "Detachable tool",
+			parameters: toolSchema,
+			backgroundable: true,
+			async execute(_toolCallId, params) {
+				acceptedDuringRun.push(agent.requestToolBackground());
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "detach", arguments: { value: "a" } }] },
+				{ content: ["done"] },
+			],
+		});
+		agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+		});
+
+		// Idle: nothing to background, so the host keeps its normal key handling.
+		expect(agent.requestToolBackground()).toBe(false);
+		await agent.prompt("start");
+		expect(acceptedDuringRun).toEqual([true]);
+		// The batch's sink is gone once the turn finishes.
+		expect(agent.requestToolBackground()).toBe(false);
+	});
+
 	it("classifies user-attributed custom steering as a queued user message", async () => {
 		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];

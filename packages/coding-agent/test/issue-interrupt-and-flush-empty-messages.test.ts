@@ -74,6 +74,23 @@ describe("empty submit with queued messages", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
+	it("interrupts already queued work without waiting for another submission", async () => {
+		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
+		const { ctx, abort, prompt } = createContext({ queuedMessageCount: 1, pendingImages: [image] });
+		const release = Promise.withResolvers<void>();
+		prompt.mockImplementationOnce(() => release.promise);
+		new InputController(ctx).setupEditorSubmitHandler();
+
+		const imageSubmit = ctx.editor.onSubmit?.("");
+		const flushSubmit = ctx.editor.onSubmit?.("");
+		try {
+			expect(abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		} finally {
+			release.resolve();
+			await Promise.all([imageSubmit, flushSubmit]);
+		}
+	});
+
 	it("queues an image-only steer while streaming", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, abort, prompt, updatePendingMessagesDisplay, requestRender } = createContext({
@@ -93,7 +110,7 @@ describe("empty submit with queued messages", () => {
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
-	it("restores an image-only steer when streaming dispatch rejects", async () => {
+	it("preserves rejected image input without aborting on a concurrent empty Enter", async () => {
 		const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 		const { ctx, abort, prompt, showError, updatePendingMessagesDisplay, requestRender } = createContext({
 			queuedMessageCount: 0,
@@ -106,7 +123,9 @@ describe("empty submit with queued messages", () => {
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 
-		await ctx.editor.onSubmit?.("");
+		const imageSubmit = ctx.editor.onSubmit?.("");
+		const flushSubmit = ctx.editor.onSubmit?.("");
+		await Promise.all([imageSubmit, flushSubmit]);
 
 		expect(abort).not.toHaveBeenCalled();
 		expect(showError).toHaveBeenCalledWith("queue rejected");

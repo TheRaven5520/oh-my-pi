@@ -536,8 +536,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	// pick:  | alt: │ ┃ |
 	"sep.pipe": "\ue0b3",
 	// Icons - Nerd Font specific
-	// pick:  | alt:   ◆
-	"icon.model": "\uec19",
+	// Intentionally blank: the model name is the complete status label.
+	"icon.model": "",
 	// pick:  | alt:  
 	"icon.plan": "\uf2d2",
 	"icon.prewalk": "\uf29d",
@@ -547,13 +547,13 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.pause": "\uf04c",
 	// pick: ↻ | alt: ⟳
 	"icon.loop": "\uf021",
-	// pick:  | alt:  
-	"icon.folder": "\uf115",
+	// Intentionally blank: paths are readable without a folder icon.
+	"icon.folder": "",
 	"icon.search": "\uf002",
-	// pick:  | alt:
-	"icon.scratchFolder": "\uf014",
-	// pick: nf-fa-sitemap | alt: nf-cod-list_tree
-	"icon.worktree": "\uf0e8",
+	// Intentionally blank: scratch paths use the same text-only treatment.
+	"icon.scratchFolder": "",
+	// Intentionally blank: worktree paths use the same text-only treatment.
+	"icon.worktree": "",
 	// pick:  | alt:  
 	"icon.file": "\uf15b",
 	// pick:  | alt:  ⎇
@@ -564,14 +564,14 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.pr": "\uea64",
 	// pick:  | alt: ⊛ ◍ 
 	"icon.tokens": "\ue26b",
-	// pick:  | alt: ◫ ▦
-	"icon.context": "\ue70f",
+	// Intentionally blank: status-line context is shown as text, not an icon.
+	"icon.context": "",
 	// pick:  | alt: $ ¢
 	"icon.cost": "\uf155",
 	// pick:  | alt: ◷ ◴
 	"icon.time": "\uf017",
-	// pick:  | alt: π ∏ ∑
-	"icon.pi": "\ue22c",
+	// Intentionally blank: the status line does not need a product mark.
+	"icon.pi": "",
 	// pick: 󰊠 (nf-md-ghost) | alt: 👻
 	"icon.ghost": "\u{f02a0}",
 	// pick:  | alt: 
@@ -598,8 +598,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.warning": "\uf071",
 	// pick:  | alt:  ↺
 	"icon.rewind": "\uf0e2",
-	// pick: 󰁨 | alt:   
-	"icon.auto": "\u{f0068}",
+	// Intentionally blank: auto-compaction needs no status-line icon.
+	"icon.auto": "",
 	"icon.fast": "\uf0e7",
 	"icon.extensionSkill": "\uf0eb",
 	// pick:  | alt:  
@@ -626,7 +626,7 @@ const NERD_SYMBOLS: SymbolMap = {
 	"thinking.minimal": "\u{F0A9E} min",
 	"thinking.low": "\u{F0A9F} low",
 	"thinking.medium": "\u{F0AA1} med",
-	"thinking.high": "\u{F0AA3} high",
+	"thinking.high": "high",
 	"thinking.xhigh": "\u{F0AA5} xhi",
 	"thinking.max": "\u{F06D} max",
 	// Auto mode uses shuffle until the model resolves its thinking level.

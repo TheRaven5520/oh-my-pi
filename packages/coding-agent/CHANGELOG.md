@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/usage` (or `/usage on`) to pin an automatically updating usage panel above the prompt and `/usage off` to remove it without interrupting active work. The panel checks for updates every 30 seconds while respecting provider usage caches.
+
+### Changed
+
+- Removed `/usage show`; interactive `/usage` now enables the live panel instead of producing a one-shot report.
+- Replaced pinned usage report clipping with compact provider headers and fairly shared account rows, keeping every provider visible and reporting omitted accounts, exhausted accounts, and the oldest report age. Exhausted and active accounts receive priority when space is limited.
+- Simplified compact Anthropic and Openai account rows to email, selected weekly usage bar, reset countdown, and available full-reset credits. Anthropic uses Fable weekly usage; Openai uses the main weekly quota, excluding Spark. Entire provider headlines, including their account-average weekly bars, use distinct theme-aware colors (gold for Anthropic and blue for Openai in Titanium). Unavailable quotas or reset counts remain unknown rather than zero.
+- Softened the compact usage panel's green and red account-bar fills by 12%, preserving their theme-derived hues, provider headlines, warning colors, and empty cells.
+
+- Restricted local memory extraction and consolidation to durable operational knowledge, user preferences, and general research or verification lessons, excluding individual experiment results and transient run state.
+
+### Fixed
+
+- Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
+
 ## [17.3.1] - 2026-08-13
 
 ### Fixed

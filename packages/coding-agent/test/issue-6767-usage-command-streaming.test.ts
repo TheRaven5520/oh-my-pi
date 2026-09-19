@@ -11,6 +11,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { Text } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -20,10 +21,10 @@ const usageReports: UsageReport[] = [
 		fetchedAt: 1_700_000_000_000,
 		limits: [
 			{
-				id: "codex-weekly",
+				id: "openai-codex:secondary",
 				label: "Weekly",
-				scope: { provider: "openai-codex", tier: "pro", accountId: "acct-1" },
-				window: { id: "weekly", label: "weekly" },
+				scope: { provider: "openai-codex", tier: "pro", accountId: "acct-1", windowId: "7d" },
+				window: { id: "7d", label: "weekly", durationMs: 604_740_000 },
 				amount: { remainingFraction: 0.25, unit: "requests" },
 				status: "ok",
 			},
@@ -82,22 +83,34 @@ describe("issue #6767 /usage output during streaming", () => {
 		resetSettingsForTest();
 	});
 
-	it("defers the usage panel until the active turn ends, mounting it once", async () => {
+	it("pins plain usage during streaming without transcript insertion and keeps it until off", async () => {
+		const fetchUsageReports = vi.spyOn(session, "fetchUsageReports").mockResolvedValue(usageReports);
+		vi.spyOn(session, "getUsageReportingModelSelectors").mockReturnValue([]);
 		const streamedReply = new Text("agent is streaming", 0, 0);
 		mode.chatContainer.addChild(streamedReply);
 
-		await mode.handleUsageCommand(usageReports);
+		expect(await executeBuiltinSlashCommand("/usage", { ctx: mode })).toBe(true);
+		for (let i = 0; i < 10; i++) await Promise.resolve();
 
-		// Mid-stream: the finalized panel must NOT mount above the growing live
-		// block (that is what duplicates in native scrollback — issue #6767).
+		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
 		expect(mode.chatContainer.children).toEqual([streamedReply]);
+		expect(mode.deferredCommandContainer.children).toHaveLength(0);
+		expect(mode.liveUsageContainer.children).toHaveLength(1);
+		expect(mode.liveUsageContainer.render(120).join("\n")).toContain("Live usage");
+		expect(mode.liveUsageContainer.render(120).join("\n")).toContain("75%");
 
 		streaming = false;
 		await mode.eventController.handleEvent({ type: "agent_end", messages: [] } as AgentSessionEvent);
 
-		// streamedReply + the deferred usage panel (Spacer + Text).
-		expect(mode.chatContainer.children).toHaveLength(3);
-		const transcript = mode.chatContainer.render(80).join("\n");
-		expect(transcript.match(/Usage \(/g)).toHaveLength(1);
+		expect(mode.chatContainer.children).toEqual([streamedReply]);
+		expect(mode.deferredCommandContainer.children).toHaveLength(0);
+		expect(mode.liveUsageContainer.children).toHaveLength(1);
+		expect(mode.liveUsageContainer.render(120).join("\n")).toContain("75%");
+		expect(mode.chatContainer.render(120).join("\n")).not.toContain("Usage");
+
+		await executeBuiltinSlashCommand("/usage off", { ctx: mode });
+		expect(mode.liveUsageContainer.children).toHaveLength(0);
+		expect(mode.chatContainer.children).toEqual([streamedReply]);
+		expect(mode.deferredCommandContainer.children).toHaveLength(0);
 	});
 });

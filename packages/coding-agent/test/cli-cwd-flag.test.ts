@@ -5,10 +5,14 @@ import * as path from "node:path";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
 import { applyStartupCwd } from "@oh-my-pi/pi-coding-agent/cli/startup-cwd";
 import { getProjectDir, normalizePathForComparison, setProjectDir } from "@oh-my-pi/pi-utils";
+import { runCli } from "../src/cli";
+import { WRAPPER_ALLOW_HOME_ARG, WRAPPER_ALLOW_HOME_KEY } from "../src/process-supervisor";
 
 const originalProjectDir = getProjectDir();
+const wrapperAllowHomeKey = WRAPPER_ALLOW_HOME_KEY;
 
 afterEach(() => {
+	Reflect.deleteProperty(globalThis, wrapperAllowHomeKey);
 	setProjectDir(originalProjectDir);
 });
 describe("parseArgs — --cwd flag", () => {
@@ -66,3 +70,41 @@ describe("parseArgs — --cwd flag", () => {
 		expect(parsed.cwd?.endsWith(`${childName}${path.sep}${childName}`)).toBe(false);
 	});
 });
+
+it("preserves wrapper-launched home and consumes the process-local marker", async () => {
+	const home = os.homedir();
+	setProjectDir(home);
+	Reflect.set(globalThis, wrapperAllowHomeKey, true);
+
+	await applyStartupCwd(parseArgs([]));
+
+	expect(getProjectDir()).toBe(home);
+	expect(Reflect.has(globalThis, wrapperAllowHomeKey)).toBe(false);
+});
+
+it("does not retain wrapper cwd intent in auth service commands", async () => {
+	await runCli([WRAPPER_ALLOW_HOME_ARG, "auth-broker", "serve", "--help"]);
+
+	expect(Reflect.has(globalThis, wrapperAllowHomeKey)).toBe(false);
+});
+
+
+for (const [command, timing] of [
+	["auth-broker", false],
+	["auth-gateway", true],
+] as const) {
+	it(`starts ${command} help through the ${timing ? "timing" : "normal"} wrapper branch`, async () => {
+		const wrapper = path.join(import.meta.dir, "..", "scripts", "omp");
+		const env = { ...process.env };
+		if (timing) env.PI_TIMING = "1";
+		else delete env.PI_TIMING;
+		const proc = Bun.spawn([wrapper, command, "serve", "--help"], {
+			env,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+
+		expect(exitCode, stderr).toBe(0);
+	});
+}

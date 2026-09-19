@@ -423,6 +423,8 @@ type SetSessionNameWithTrigger = (
 const kPersistedSessionEntryId = Symbol("persistedSessionEntryId");
 type PersistedAssistantMessage = AssistantMessage & { [kPersistedSessionEntryId]?: string };
 
+const STREAMING_ASSISTANT_CHECKPOINT_MS = 1_000;
+
 /**
  * Clone one top-level notification field without ever returning an object owned
  * by the live session. Most values take the lossless structured-clone path. If
@@ -585,6 +587,13 @@ export class AgentSession {
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
+	#streamingAssistantCheckpoint:
+		| {
+				key: string;
+				message: AssistantMessage;
+				timer: ReturnType<typeof setTimeout> | undefined;
+		  }
+		| undefined;
 
 	// Custom commands (TypeScript slash commands)
 	#customCommands: LoadedCustomCommand[] = [];
@@ -2296,6 +2305,42 @@ export class AgentSession {
 		return entryId;
 	}
 
+	#queueStreamingAssistantCheckpoint(message: AssistantMessage): void {
+		const key = `${message.timestamp}:${message.provider}:${message.model}:${message.responseId ?? ""}`;
+		const checkpoint = this.#streamingAssistantCheckpoint;
+		if (checkpoint?.key === key) {
+			checkpoint.message = message;
+			return;
+		}
+		this.#persistStreamingAssistantCheckpoint();
+		const next = {
+			key,
+			message,
+			timer: undefined as ReturnType<typeof setTimeout> | undefined,
+		};
+		next.timer = setTimeout(() => {
+			this.sessionManager.appendStreamingAssistantCheckpoint(next.message);
+			if (this.#streamingAssistantCheckpoint === next) this.#streamingAssistantCheckpoint = undefined;
+		}, STREAMING_ASSISTANT_CHECKPOINT_MS);
+		this.#streamingAssistantCheckpoint = next;
+	}
+
+	#persistStreamingAssistantCheckpoint(): void {
+		const checkpoint = this.#streamingAssistantCheckpoint;
+		if (!checkpoint) return;
+		clearTimeout(checkpoint.timer);
+		this.sessionManager.appendStreamingAssistantCheckpoint(checkpoint.message);
+		this.#streamingAssistantCheckpoint = undefined;
+	}
+
+	#discardStreamingAssistantCheckpoint(message: AssistantMessage): void {
+		const key = `${message.timestamp}:${message.provider}:${message.model}:${message.responseId ?? ""}`;
+		const checkpoint = this.#streamingAssistantCheckpoint;
+		if (checkpoint?.key !== key) return;
+		clearTimeout(checkpoint.timer);
+		this.#streamingAssistantCheckpoint = undefined;
+	}
+
 	#persistSessionMessageIfMissing(message: AgentMessage): void {
 		if (
 			message.role !== "user" &&
@@ -2457,6 +2502,9 @@ export class AgentSession {
 		// history replay branch identically. The one-shot flag is consumed
 		// here, scoped strictly to this aborted message_end; callers still clear it
 		// in `finally` so a leaked flag cannot silence a later unrelated abort.
+		if (event.type === "message_update" && event.message.role === "assistant") {
+			this.#queueStreamingAssistantCheckpoint(event.message);
+		}
 		if (
 			event.type === "message_end" &&
 			event.message.role === "assistant" &&
@@ -2593,6 +2641,9 @@ export class AgentSession {
 				await messageEndPersistence.persist(persistMessageEnd);
 			} else {
 				persistMessageEnd();
+			}
+			if (event.message.role === "assistant") {
+				this.#discardStreamingAssistantCheckpoint(event.message);
 			}
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
@@ -3987,6 +4038,7 @@ export class AgentSession {
 		// rewrites at their commit guard; hot-path appends drained above are
 		// already durable, and close() (scheduled post-seal) still flushes and
 		// closes the writer.
+		this.#persistStreamingAssistantCheckpoint();
 		this.sessionManager.seal();
 		await this.sessionManager.close();
 

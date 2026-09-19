@@ -65,6 +65,8 @@ export interface SessionEntryBase {
 export interface SessionMessageEntry extends SessionEntryBase {
 	type: "message";
 	message: AgentMessage;
+	/** An append-only recovery snapshot of an assistant stream, promoted or removed on reload. */
+	streamingCheckpoint?: true;
 }
 
 export interface ThinkingLevelChangeEntry extends SessionEntryBase {

@@ -1,9 +1,8 @@
 /**
  * Contract: the anchored subagent HUD (rendered above the editor, next to the
- * Todos block) lists exactly the running *detached* subagents as
- * `Id: description` rows and yields no output once nothing qualifies, so the
- * block self-clears. Sync task spawns and eval `agent()` spawns are excluded:
- * their progress is already rendered inline (tool block / eval cell).
+ * Todos block) lists detached subagents as `Id · description` rows and yields
+ * no output once no detached subagent qualifies. Sync task spawns and eval
+ * `agent()` spawns are excluded because their progress renders inline.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
@@ -88,8 +87,8 @@ function makeProgressPayload(
 	};
 }
 
-function render(sessions: ObservableSession[], columns = 120): string {
-	return Bun.stripANSI(renderSubagentHudLines(sessions, columns).join("\n"));
+function render(sessions: ObservableSession[], columns = 120, selectedId?: string): string {
+	return Bun.stripANSI(renderSubagentHudLines(sessions, columns, selectedId).join("\n"));
 }
 
 describe("subagent HUD lines", () => {
@@ -97,40 +96,36 @@ describe("subagent HUD lines", () => {
 		await initTheme();
 	});
 
-	it("renders running subagents as Id: description under a Subagents header", () => {
+	it("renders running subagents in the compact agents dock", () => {
 		const out = render([
 			makeSession({ id: "AuthLoader", description: "Refactoring the auth flow" }),
 			makeSession({ id: "SchemaMigrator", description: "Migrating the users table" }),
 		]);
-		expect(out).toContain("Subagents");
-		expect(out).toContain("AuthLoader: Refactoring the auth flow");
-		expect(out).toContain("SchemaMigrator: Migrating the users table");
+		expect(out).toContain("agents · main");
+		expect(out).toContain("AuthLoader · Refactoring the auth flow");
+		expect(out).toContain("SchemaMigrator · Migrating the users table");
 	});
 
-	it("only shows active subagents and clears once everything finished", () => {
-		const finishedStates = ["completed", "failed", "aborted"] as const;
+	it("retains completed detached subagents and omits aborted ones", () => {
 		const sessions: ObservableSession[] = [
-			{ id: "main", kind: "main", label: "Main Session", status: "active", lastUpdate: Date.now() },
-			...finishedStates.map(status => makeSession({ id: `Done-${status}`, status, description: "old work" })),
+			makeSession({ id: "Done", status: "completed", description: "finished work" }),
+			makeSession({ id: "Aborted", status: "aborted", description: "cancelled work" }),
 		];
-		expect(renderSubagentHudLines(sessions, 120)).toEqual([]);
-
-		const out = render([...sessions, makeSession({ id: "StillRunning", description: "live work" })]);
-		expect(out).toContain("StillRunning: live work");
-		expect(out).not.toContain("Done-");
-		expect(out).not.toContain("Main Session");
+		const out = render(sessions);
+		expect(out).toContain("Done · finished work");
+		expect(out).not.toContain("Aborted");
 	});
 
 	it("falls back to the description and task carried by progress snapshots", () => {
 		const fromProgressDesc = render([
 			makeSession({ id: "Worker", progress: makeProgress({ id: "Worker", description: "From progress" }) }),
 		]);
-		expect(fromProgressDesc).toContain("Worker: From progress");
+		expect(fromProgressDesc).toContain("Worker · From progress");
 
 		const fromTask = render([
 			makeSession({ id: "Worker", progress: makeProgress({ id: "Worker", task: "Investigate flaky CI on macOS" }) }),
 		]);
-		expect(fromTask).toContain("Worker Investigate flaky CI on macOS");
+		expect(fromTask).toContain("Worker · Investigate flaky CI on macOS");
 	});
 
 	it("hides non-detached spawns: sync task calls and eval agent() helpers", () => {
@@ -143,7 +138,7 @@ describe("subagent HUD lines", () => {
 		expect(renderSubagentHudLines(sessions, 120)).toEqual([]);
 
 		const out = render([...sessions, makeSession({ id: "BackgroundSpawn", description: "detached work" })]);
-		expect(out).toContain("BackgroundSpawn: detached work");
+		expect(out).toContain("BackgroundSpawn · detached work");
 		expect(out).not.toContain("SyncSpawn");
 		expect(out).not.toContain("EvalSpawn");
 	});
@@ -156,16 +151,15 @@ describe("subagent HUD lines", () => {
 		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("Detached", 0, "background work", true));
 		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("Inline", 1, "sync work"));
 		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("FromProgress", 2, "background work", true));
-
 		const out = render(registry.getSessions());
-		expect(out).toContain("Detached: background work");
-		expect(out).toContain("FromProgress: background work");
+		expect(out).toContain("Detached · background work");
+		expect(out).toContain("FromProgress · background work");
 		expect(out).not.toContain("Inline");
 	});
 
 	it("renders nested ids as a breadcrumb and truncates long descriptions to the viewport", () => {
 		const out = render([makeSession({ id: "Anna.Bob", description: `start ${"x".repeat(300)} end` })], 60);
-		expect(out).toContain("Anna>Bob:");
+		expect(out).toContain("Anna>Bob ·");
 		expect(out).not.toContain("end");
 		for (const line of out.split("\n")) {
 			expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
@@ -209,7 +203,7 @@ describe("subagent HUD lines", () => {
 		expect(activeIds()).toEqual(["SelectorSurfaces", "BlastRadius", "VariantsSurvey"]);
 	});
 
-	it("renders the first eight active detached subagents and summarizes the rest", () => {
+	it("scrolls the compact window to keep the selected agent visible", () => {
 		const active = Array.from({ length: 10 }, (_, index) =>
 			makeSession({
 				id: `Worker${index}`,
@@ -217,15 +211,14 @@ describe("subagent HUD lines", () => {
 			}),
 		);
 
-		const out = render(active, 120);
+		const out = render(active, 120, "Worker8");
 
-		for (const session of active.slice(0, 8)) {
-			expect(out).toContain(`${session.id}: ${session.description}`);
-		}
-		for (const session of active.slice(8)) {
-			expect(out).not.toContain(`${session.id}: ${session.description}`);
-		}
-		expect(out).toContain("2 more running");
+		expect(out).toContain("Worker5 · job 5");
+		expect(out).toContain("Worker8 · job 8");
+		expect(out).not.toContain("Worker4 · job 4");
+		expect(out).toContain("… 5 above");
+		expect(out).toContain("… 1 below");
+		expect(out).toContain("↑/↓ select · Enter open · x interrupt · Esc cancel");
 	});
 });
 
@@ -298,9 +291,41 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 
 		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-		expect(hud).toContain("BurstAgent0: Burst job 0");
-		expect(hud).toContain("BurstAgent5: Burst job 5");
+		expect(hud).toContain("BurstAgent0 · Burst job 0");
+		expect(hud).toContain("… 2 below");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("scopes steady-state progress repaints to the anchored HUD roots", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		const requestRender = vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		const requestComponentRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+
+		eventBus.emit(
+			TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+			makeLifecycle("ScopedAgent", 0, "Starting background work", true),
+		);
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		await Promise.resolve();
+		expect(requestRender).toHaveBeenCalledTimes(1);
+
+		requestRender.mockClear();
+		requestComponentRender.mockClear();
+		eventBus.emit(
+			TASK_SUBAGENT_PROGRESS_CHANNEL,
+			makeProgressPayload("ScopedAgent", 0, "Checking the next prerequisite", true),
+		);
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		await Promise.resolve();
+
+		expect(requestRender).not.toHaveBeenCalled();
+		expect(requestComponentRender).toHaveBeenCalledTimes(3);
+		expect(requestComponentRender).toHaveBeenNthCalledWith(1, mode.statusLine);
+		expect(requestComponentRender).toHaveBeenNthCalledWith(2, mode.todoContainer);
+		expect(requestComponentRender).toHaveBeenNthCalledWith(3, mode.subagentContainer);
 	});
 });

@@ -111,6 +111,8 @@ export interface RenderScheduler {
 
 export interface TUIOptions {
 	renderScheduler?: RenderScheduler;
+	/** Coalesce mutable live frames for tmux profiles exposing outer native scrollback. */
+	outerScrollbackStreamingCoalesce?: boolean;
 }
 
 export interface TUIStartOptions {
@@ -357,6 +359,8 @@ export interface Focusable {
 export interface RenderRequestOptions {
 	/** Clear terminal scrollback for intentional transcript replacement. */
 	clearScrollback?: boolean;
+	/** Follow the tail after an intentional transcript replacement. */
+	followTail?: boolean;
 }
 
 /** Type guard to check if a component implements Focusable */
@@ -866,7 +870,7 @@ export class Container
  *   scrollback seam (if any) and repaints the window with relative moves.
  */
 type RenderIntent =
-	| { kind: "fullPaint"; clearScrollback: boolean }
+	| { kind: "fullPaint"; clearScrollback: boolean; followTail: boolean }
 	| { kind: "update"; chunkTo: number; windowTop: number };
 
 interface HardwareCursorState {
@@ -1184,6 +1188,7 @@ export class TUI extends Container {
 	#lastFrameCostMs = 0;
 	static readonly #MIN_RENDER_INTERVAL_MS = 1000 / 30;
 	static readonly #INPUT_RENDER_GRACE_MS = TUI.#MIN_RENDER_INTERVAL_MS;
+	static readonly #OUTER_SCROLLBACK_STREAM_FRAME_MS = 250;
 	/**
 	 * Cap on the adaptive floor derived from `#lastFrameCostMs`. Bounds the UI
 	 * responsiveness at ~5 fps under sustained heavy renders — anything slower
@@ -1191,6 +1196,13 @@ export class TUI extends Container {
 	 */
 	static readonly #MAX_ADAPTIVE_RENDER_MS = 200;
 	#inputRenderGraceUntilMs = 0;
+	// Compatibility coalescer for tmux profiles that expose the outer
+	// terminal's normal-screen scrollback. Mutable token frames are bounded to
+	// four paints per second, while input and stable-row advancement bypass it.
+	#outerScrollbackStreamTimer: RenderTimer | undefined;
+	#outerScrollbackFlushReady = false;
+	#inputRenderPending = false;
+	#outerScrollbackStreamingCoalesce: boolean;
 	// Pane-reflow settle window for tmux/screen/zellij. The host process gets
 	// SIGWINCH (and `process.stdout` already reports the new geometry) before
 	// the multiplexer finishes repainting the pane at the new size, and
@@ -1332,6 +1344,12 @@ export class TUI extends Container {
 	#previousWindow: string[] = [];
 	#nativeScrollbackLiveRegionStart: number | undefined;
 	#nativeScrollbackLiveRegionPinned = false;
+	// Live-region boundary represented by the last frame that actually reached
+	// the terminal. In tmux sessions that deliberately expose the outer
+	// terminal's native scrollback, token-rate in-place rewrites race the outer
+	// viewport and mix rows. The opt-in compatibility path below holds mutable
+	// frames until this boundary moves (normally one completed rendered row).
+	#paintedNativeScrollbackLiveRegionStart: number | undefined;
 	#fullRedrawCount = 0;
 	// Caps how many inline images render as live graphics; older ones fall back
 	// to text via a purge + full redraw. Cap is configured by the host app.
@@ -1340,6 +1358,7 @@ export class TUI extends Container {
 	#ghosttyInitialImageDelayTimer: RenderTimer | undefined;
 	#ghosttyImageReadyAtMs = 0;
 	#clearScrollbackOnNextRender = false;
+	#followTailOnNextRender = false;
 	// Set by `resetDisplay()` and consumed by the next authoritative normal-screen
 	// render. If that render is a full paint, it is a user-driven replay of the
 	// current transcript (Ctrl+O expand, thinking/setting toggles, display reset)
@@ -1365,6 +1384,7 @@ export class TUI extends Container {
 	// flag below so the settled paint still honours every caller's request.
 	#multiplexerResizeTimer: RenderTimer | undefined;
 	#deferredForcedClearScrollback = false;
+	#deferredForcedFollowTail = false;
 	#multiplexerResizeHasPendingRender = false;
 	// True from the first SIGWINCH of a non-multiplexer drag until the settle
 	// timer fires. While set, every `#doRender` short-circuits to the viewport
@@ -1476,6 +1496,8 @@ export class TUI extends Container {
 		super();
 		this.terminal = terminal;
 		this.#renderScheduler = options?.renderScheduler ?? DEFAULT_RENDER_SCHEDULER;
+		this.#outerScrollbackStreamingCoalesce =
+			options?.outerScrollbackStreamingCoalesce ?? ($flag("PI_TUI_TMUX_OUTER_SCROLLBACK") && isMultiplexerSession());
 		this.#showHardwareCursor = showHardwareCursor === undefined ? this.#showHardwareCursor : showHardwareCursor;
 		this.#watchdog = new LoopWatchdog();
 	}
@@ -2325,6 +2347,10 @@ export class TUI extends Container {
 			this.#multiplexerResizeTimer.cancel();
 			this.#multiplexerResizeTimer = undefined;
 		}
+		if (this.#outerScrollbackStreamTimer) {
+			this.#outerScrollbackStreamTimer.cancel();
+			this.#outerScrollbackStreamTimer = undefined;
+		}
 		if (this.#resizeViewportSettleTimer) {
 			this.#resizeViewportSettleTimer.cancel();
 			this.#resizeViewportSettleTimer = undefined;
@@ -2332,6 +2358,7 @@ export class TUI extends Container {
 		this.#resizeViewportActive = false;
 		this.#clearPostFullPaintSettle();
 		this.#deferredForcedClearScrollback = false;
+		this.#deferredForcedFollowTail = false;
 		// Place the parent shell on the first line after the rendered content. When
 		// that line is still inside the viewport, moving there and writing `\r` is
 		// enough; emitting `\r\n` would create an extra blank row. If the content
@@ -2410,6 +2437,7 @@ export class TUI extends Container {
 			if (this.#multiplexerResizeTimer) {
 				this.#armMultiplexerResizeTimer({
 					clearScrollback: options?.clearScrollback === true,
+					followTail: options?.followTail === true,
 					hasPendingRender: true,
 				});
 				return;
@@ -2418,7 +2446,7 @@ export class TUI extends Container {
 			// the next paint and is going to redraw the buffer anyway, so the
 			// trailing coalesced render queued by the settle would only race it.
 			this.#clearPostFullPaintSettle();
-			this.#prepareForcedRender(options?.clearScrollback === true);
+			this.#prepareForcedRender(options?.clearScrollback === true, options?.followTail === true);
 			this.#renderRequested = true;
 			this.#renderScheduler.scheduleImmediate(() => {
 				if (this.#stopped || !this.#renderRequested) {
@@ -2724,12 +2752,16 @@ export class TUI extends Container {
 	 * resize event, and by `requestRender(true)` / `resetDisplay()` when they
 	 * land inside an in-flight settle window. Each call cancels the prior
 	 * timer, supersedes any queued throttled render (otherwise it would race
-	 * tmux's mid-reflow paint), and OR's the caller's `clearScrollback`
-	 * intent into `#deferredForcedClearScrollback` — the timer's callback
-	 * consumes that flag exactly once when it re-enters `requestRender(true)`.
+	 * tmux's mid-reflow paint), and preserves its clear-scrollback and tail-follow
+	 * intents for the single forced render that follows.
 	 */
-	#armMultiplexerResizeTimer(options: { clearScrollback: boolean; hasPendingRender?: boolean }): void {
+	#armMultiplexerResizeTimer(options: {
+		clearScrollback: boolean;
+		followTail?: boolean;
+		hasPendingRender?: boolean;
+	}): void {
 		this.#deferredForcedClearScrollback ||= options.clearScrollback;
+		this.#deferredForcedFollowTail ||= options.followTail === true;
 		this.#multiplexerResizeHasPendingRender ||= options.hasPendingRender === true;
 		if (this.#renderTimer) {
 			this.#renderTimer.cancel();
@@ -2743,11 +2775,14 @@ export class TUI extends Container {
 			this.#multiplexerResizeTimer = undefined;
 			if (this.#stopped) {
 				this.#deferredForcedClearScrollback = false;
+				this.#deferredForcedFollowTail = false;
 				return;
 			}
 			const deferredClearScrollback = this.#deferredForcedClearScrollback;
+			const deferredFollowTail = this.#deferredForcedFollowTail;
 			this.#deferredForcedClearScrollback = false;
-			this.requestRender(true, { clearScrollback: deferredClearScrollback });
+			this.#deferredForcedFollowTail = false;
+			this.requestRender(true, { clearScrollback: deferredClearScrollback, followTail: deferredFollowTail });
 		}, TUI.#MULTIPLEXER_RESIZE_DEBOUNCE_MS);
 	}
 
@@ -2833,8 +2868,9 @@ export class TUI extends Container {
 		}, delayMs);
 		return true;
 	}
-	#prepareForcedRender(clearScrollback: boolean): void {
+	#prepareForcedRender(clearScrollback: boolean, followTail = false): void {
 		this.#clearScrollbackOnNextRender ||= clearScrollback;
+		this.#followTailOnNextRender ||= followTail;
 		this.#forceViewportRepaintOnNextRender = true;
 		if (this.#renderTimer) {
 			this.#renderTimer.cancel();
@@ -2892,6 +2928,7 @@ export class TUI extends Container {
 	}
 
 	#handleInput(data: string): void {
+		this.#inputRenderPending = true;
 		// Ctrl+C/Esc use app-level double-press windows. Give those gestures one
 		// frame to drain queued input before an ordinary repaint; delaying every
 		// key would make idle navigation pay a full frame of latency.
@@ -3498,6 +3535,45 @@ export class TUI extends Container {
 		const frameLength = rawFrame.length;
 		const finalBoundary = Math.max(0, Math.min(frameLength, liveRegionStart ?? frameLength));
 
+		// Some tmux profiles keep the client on the outer terminal's normal
+		// screen so its native scrollback remains available. While that outer
+		// viewport is scrolled, tmux's token-rate pane rewrites race the reader
+		// and visually mix rows. Under the explicit compatibility flag, coalesce
+		// a mutable live suffix while its byte-stable boundary is unchanged.
+		// User input, completed rows, geometry, overlays, and forced paints bypass
+		// the coalescer. The timer guarantees a quiet partial tail is eventually
+		// painted rather than dropped.
+		if (
+			this.#outerScrollbackStreamingCoalesce &&
+			this.#hasEverRendered &&
+			liveRegionStart !== undefined &&
+			liveRegionStart === this.#paintedNativeScrollbackLiveRegionStart &&
+			!this.#inputRenderPending &&
+			!this.#outerScrollbackFlushReady &&
+			!this.#resizeEventPending &&
+			!this.#clearScrollbackOnNextRender &&
+			!this.#forceViewportRepaintOnNextRender &&
+			width === this.#previousWidth &&
+			height === this.#previousHeight &&
+			this.#getTopmostVisibleOverlay() === undefined
+		) {
+			if (!this.#outerScrollbackStreamTimer) {
+				this.#outerScrollbackStreamTimer = this.#renderScheduler.scheduleRender(() => {
+					this.#outerScrollbackStreamTimer = undefined;
+					if (this.#stopped) return;
+					this.#outerScrollbackFlushReady = true;
+					this.requestRender();
+				}, TUI.#OUTER_SCROLLBACK_STREAM_FRAME_MS);
+			}
+			return;
+		}
+		this.#inputRenderPending = false;
+		this.#outerScrollbackFlushReady = false;
+		if (this.#outerScrollbackStreamTimer) {
+			this.#outerScrollbackStreamTimer.cancel();
+			this.#outerScrollbackStreamTimer = undefined;
+		}
+
 		// 2. Transition state captured before any emitter runs.
 		let prevWindowTop = this.#windowTopRow;
 		const prevHardwareCursorRow = this.#hardwareCursorRow;
@@ -3692,6 +3768,7 @@ export class TUI extends Container {
 		// feedback loop), so committed history keeps its old wrap.
 		const firstPaint = !this.#hasEverRendered;
 		const replaceRequested = this.#clearScrollbackOnNextRender;
+		const followTailRequested = this.#followTailOnNextRender;
 		const geometryRebuild = geometryChanged && !this.#resizeRepaintsInPlace();
 		// Committed history no longer matches the frame: a finalized block
 		// replaced its scrolled-off live render, or the frame collapsed into
@@ -3841,6 +3918,7 @@ export class TUI extends Container {
 			? {
 					kind: "fullPaint",
 					clearScrollback: divergenceRebuild || ((replaceRequested || geometryRebuild) && !isMultiplexerSession()),
+					followTail: followTailRequested,
 				}
 			: { kind: "update", chunkTo, windowTop };
 		this.#logRedraw(intent, frameLength, height);
@@ -3879,6 +3957,7 @@ export class TUI extends Container {
 		if (intent.kind === "fullPaint") {
 			this.#emitFullPaint(frame, window, width, height, cursorPos, purgeSequence, imageTransmitBuffer, {
 				clearScrollback: intent.clearScrollback,
+				followTail: intent.followTail,
 				chunkTo,
 				windowTop,
 				cursorTrackingLineCount,
@@ -3890,6 +3969,7 @@ export class TUI extends Container {
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
 			this.#committedPrefixAuditRows = Math.min(chunkTo, finalBoundary);
 			this.#clearScrollbackOnNextRender = false;
+			this.#followTailOnNextRender = false;
 			this.#hasEverRendered = true;
 			this.#widthEpochBaselineRows = undefined;
 			this.#widthEpochReplayUnresolved = false;
@@ -4019,6 +4099,7 @@ export class TUI extends Container {
 				};
 			}
 			this.#clearScrollbackOnNextRender = false;
+			this.#followTailOnNextRender = false;
 			this.#hasEverRendered = true;
 			this.#publishCommittedRows(this.#windowTopRow);
 			return;
@@ -4371,6 +4452,7 @@ export class TUI extends Container {
 	): void {
 		this.#previousFrameLength = lines.length;
 		this.#previousWindow = window;
+		this.#paintedNativeScrollbackLiveRegionStart = this.#nativeScrollbackLiveRegionStart;
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#previousWidth = width;
 		this.#previousHeight = height;
@@ -4578,6 +4660,8 @@ export class TUI extends Container {
 			 * nothing is silently dropped from scrollback (issue #4863).
 			 */
 			boundConptyPaint: boolean;
+			/** Scroll a supported terminal to the replacement transcript's tail. */
+			followTail: boolean;
 			leadingSequence: string;
 			copyScreenToScrollback: boolean;
 		},
@@ -4620,7 +4704,13 @@ export class TUI extends Container {
 				paintCursorPos = paint.cursorPos;
 			}
 		}
-		let buffer = this.#paintBeginSequence + this.#leaveResizeAltSequence() + options.leadingSequence + purgeSequence;
+		const tailFollow = options.followTail ? this.terminal.getTransientScrollToBottomSequences?.() : undefined;
+		let buffer =
+			(tailFollow?.before ?? "") +
+			this.#paintBeginSequence +
+			this.#leaveResizeAltSequence() +
+			options.leadingSequence +
+			purgeSequence;
 		if (options.clearScrollback) {
 			// Clear native history without blanking the live viewport first. The
 			// replay below rewrites every visible row from home, including blanks,
@@ -4730,7 +4820,7 @@ export class TUI extends Container {
 		const paintContentBottomRow = Math.max(0, paintLineCount - 1 - parkUp);
 		const cursorControl = this.#cursorControlSequence(paintCursorPos, paintLineCount, paintContentBottomRow);
 		buffer += cursorControl.seq;
-		buffer += this.#paintEndSequence;
+		buffer += this.#paintEndSequence + (tailFollow?.after ?? "");
 		this.terminal.write(buffer);
 
 		const committedCursorState = paintCursorPos

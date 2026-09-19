@@ -293,30 +293,34 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "usage",
-		description: "Show provider usage and limits",
+		description: "Pin live provider usage and limits; use off to hide",
 		acpDescription: "Show token usage",
-		acpInputHint: "[show|reset [account|active]]",
+		acpInputHint: "[reset [account|active]]",
 		subcommands: [
-			{ name: "show", description: "Show provider usage and limits" },
+			{ name: "on", description: "Pin live usage above the prompt (TUI only)" },
+			{ name: "off", description: "Hide pinned usage and stop refreshing (TUI only)" },
 			{ name: "reset", description: "Spend a saved Codex rate-limit reset", usage: "[account|active]" },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
-			if (!verb || (verb === "show" && !rest)) {
+			if (!verb) {
 				await runtime.output(await buildUsageReportText(runtime));
 				return commandConsumed();
+			}
+			if ((verb === "on" || verb === "off") && !rest) {
+				return usage("Live usage is available in interactive mode: /usage on or /usage off.", runtime);
 			}
 			if (verb === "reset") {
 				await handleUsageResetCommand(rest, runtime.session, runtime.output);
 				return commandConsumed();
 			}
-			return usage("Usage: /usage [show|reset [account|active]]", runtime);
+			return usage("Usage: /usage [reset [account|active]]", runtime);
 		},
 		handleTui: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
-			if (!verb || (verb === "show" && !rest)) {
-				await runtime.ctx.handleUsageCommand();
+			if ((!verb || verb === "on" || verb === "off") && !rest) {
+				runtime.ctx.setLiveUsageEnabled(verb !== "off");
 				runtime.ctx.editor.setText("");
 				return;
 			}
@@ -329,7 +333,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				runtime.ctx.editor.setText("");
 				return;
 			}
-			runtime.ctx.showStatus("Usage: /usage [show|reset [account|active]]");
+			runtime.ctx.showStatus("Usage: /usage [on|off|reset [account|active]]");
 			runtime.ctx.editor.setText("");
 		},
 	},

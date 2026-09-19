@@ -23,6 +23,25 @@ describe("prompt action autocomplete", () => {
 		setKeyHintPlatform(undefined);
 	});
 
+	it("keeps the palette closed for a bare slash", async () => {
+		const provider = createPromptActionAutocompleteProvider({
+			commands: [{ name: "refresh", description: "Restart and resume" }],
+			basePath: "/tmp",
+			keybindings: AppKeybindingsManager.inMemory({}),
+			copyCurrentLine: () => {},
+			copyPrompt: () => {},
+			undo: () => {},
+			moveCursorToMessageEnd: () => {},
+			moveCursorToMessageStart: () => {},
+			moveCursorToLineStart: () => {},
+			moveCursorToLineEnd: () => {},
+		});
+
+		expect(await provider.getSuggestions(["/"], 0, 1)).toBeNull();
+		const suggestions = await provider.getSuggestions(["/r"], 0, 2);
+		expect(suggestions?.items.map(item => item.label)).toContain("refresh");
+	});
+
 	it("shows prompt actions with configured shortcut hints", async () => {
 		const provider = createPromptActionAutocompleteProvider({
 			commands: [],

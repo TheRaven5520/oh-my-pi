@@ -155,6 +155,43 @@ describe("TUI native scrollback replay", () => {
 			await term.flush();
 		}
 	});
+
+	it("uses a terminal-supported one-shot tail follow for transcript replacement", async () => {
+		const term = new VirtualTerminal(40, 4, 1_000);
+		const scheduler = new StressRenderScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		const transcript = new ReplayVirtualizedLines(["history-0", "history-1", "history-2", "history-3", "tail"]);
+		const writes: string[] = [];
+		const originalWrite = term.write.bind(term);
+		term.write = data => {
+			writes.push(data);
+			originalWrite(data);
+		};
+		(
+			term as VirtualTerminal & {
+				getTransientScrollToBottomSequences(): { before: string; after: string };
+			}
+		).getTransientScrollToBottomSequences = () => ({ before: "\x1b[?1010h", after: "\x1b[?1010l" });
+		tui.addChild(transcript);
+
+		try {
+			tui.start();
+			await scheduler.drain(term);
+			writes.length = 0;
+
+			tui.requestRender(true, { clearScrollback: true, followTail: true });
+			await scheduler.drain(term);
+
+			const paint = writes.join("");
+			expect(paint).toContain("\x1b[?1010h");
+			expect(paint).toContain("\x1b[?1010l");
+			expect(paint.indexOf("\x1b[?1010h")).toBeLessThan(paint.indexOf("history-0"));
+			expect(paint.indexOf("\x1b[?1010l")).toBeGreaterThan(paint.indexOf("tail"));
+		} finally {
+			tui.stop();
+			await term.flush();
+		}
+	});
 });
 
 describe("TUI.requestComponentRender", () => {
