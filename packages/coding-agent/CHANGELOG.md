@@ -13,6 +13,7 @@
 ### Changed
 
 - Restore durable-memory filtering and the personal orchestration guidance while retaining the existing Sprilicred configuration and usage commands.
+- The startup update check and its "Update Available" banner are now off by default in this fork; set `startup.checkUpdate` to `true` to bring them back. `omp update` is unchanged.
 
 ## [18.1.21] - 2026-09-14
 
