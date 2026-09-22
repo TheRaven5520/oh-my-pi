@@ -93,6 +93,15 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 		},
 	},
 
+	claude: {
+		// Mirrors the Claude Code statusline: `…/a/b/c [branch] | model (level) | ctx 62% | 5h 88% | wk 40%`.
+		// Segments render in their fixed Claude shape and colors (SegmentContext.claudeStyle),
+		// so segmentOptions are irrelevant here.
+		leftSegments: ["path", "git", "model", "context_pct", "usage"],
+		rightSegments: [],
+		separator: "pipe",
+	},
+
 	custom: {
 		// User-defined - these are just defaults that get overridden
 		leftSegments: [...CUSTOM_STATUS_LINE_DEFAULTS.left],

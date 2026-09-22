@@ -91,6 +91,13 @@ export interface SegmentContext {
 	options: StatusLineSegmentOptions;
 	/** Render the model segment's thinking level as a compact leading glyph. */
 	compactThinkingLevel: boolean;
+	/**
+	 * `claude` preset: render segments in the Claude Code statusline's exact
+	 * shape — no icons, `[branch]`, `(level)`, remaining-percent gauges with
+	 * fixed 256-color foregrounds — instead of the theme-driven omp shape.
+	 * Omitted (fixtures/previews) means the normal omp shape.
+	 */
+	claudeStyle?: boolean;
 	/** Key-sorted extension/hook status values. Segment renderers sanitize before display. */
 	hookStatuses?: readonly string[];
 	planMode: {

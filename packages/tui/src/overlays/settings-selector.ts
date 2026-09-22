@@ -1003,9 +1003,7 @@ export class SettingsSelectorComponent implements Component {
 			};
 		} else if (def.path === "statusLine.preset") {
 			onPreview = value => {
-				const presetDef = getPreset(
-					value as "default" | "minimal" | "compact" | "full" | "nerd" | "ascii" | "custom",
-				);
+				const presetDef = getPreset(value as StatusLinePreset);
 				this.#callbacks.onStatusLinePreview?.({
 					preset: value as StatusLinePreset,
 					leftSegments: presetDef.leftSegments,

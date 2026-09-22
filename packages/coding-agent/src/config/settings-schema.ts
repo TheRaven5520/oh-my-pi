@@ -621,6 +621,11 @@ export const SETTINGS_SCHEMA = {
 				{ value: "full", label: "Full", description: "All segments including time" },
 				{ value: "nerd", label: "Nerd", description: "Maximum info with Nerd Font icons" },
 				{ value: "ascii", label: "ASCII", description: "No special characters" },
+				{
+					value: "claude",
+					label: "Claude",
+					description: "Claude Code's statusline: dir [branch] | model (level) | ctx | 5h | wk",
+				},
 				{ value: "custom", label: "Custom", description: "User-defined segments" },
 			],
 		},

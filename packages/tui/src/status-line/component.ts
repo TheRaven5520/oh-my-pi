@@ -37,7 +37,7 @@ import {
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { summarizeUsageResetCredits } from "../overlays/usage-display";
 import { getPreset } from "./presets";
-import { renderSegment, type SegmentContext } from "./segments";
+import { CLAUDE_DIM_ANSI, renderSegment, type SegmentContext } from "./segments";
 import { getSeparator } from "./separators";
 import type {
 	CollabStatus,
@@ -2161,6 +2161,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			width,
 			options: segmentOptions ?? {},
 			compactThinkingLevel: this.#resolveSettings().compactThinkingLevel ?? false,
+			claudeStyle: this.#resolveSettings().preset === "claude",
 			hookStatuses: this.#sortedHookStatuses,
 			planMode: this.#planModeStatus,
 			loopMode: this.#loopModeStatus,
@@ -2532,9 +2533,14 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			previewTitle,
 		);
 		const ctx: SegmentContext = placeholders ? { ...liveCtx, startupPlaceholder: true } : liveCtx;
+		// The claude preset reproduces Claude Code's line verbatim: ASCII pipes in
+		// bright black on the terminal's own background, whatever the theme says.
+		const claudeStyle = ctx.claudeStyle;
 		const separatorDef = plain
 			? { left: "·", right: "·" }
-			: getSeparator(effectiveSettings.separator ?? "powerline-thin", theme);
+			: claudeStyle
+				? { left: "|", right: "|" }
+				: getSeparator(effectiveSettings.separator ?? "powerline-thin", theme);
 
 		// `transparent` reuses the empty-string sentinel (`\x1b[49m`) so the bar
 		// inherits the terminal's default background, matching custom themes that
@@ -2546,10 +2552,11 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		// Plain bottom bars drop the background entirely; the claude top-rule
 		// chip (`plain-right`) keeps it so the group reads as a chip on the rule.
 		const transparentLayout = layout === "plain-full" || layout === "plain-left";
-		const bgAnsi = transparentLayout || effectiveSettings.transparent ? TRANSPARENT_BG_ANSI : themeBgAnsi;
+		const bgAnsi =
+			transparentLayout || effectiveSettings.transparent || claudeStyle ? TRANSPARENT_BG_ANSI : themeBgAnsi;
 		const transparentBg = bgAnsi === TRANSPARENT_BG_ANSI;
 		const fgAnsi = theme.getFgAnsi("text");
-		const sepAnsi = theme.getFgAnsi("statusLineSep");
+		const sepAnsi = claudeStyle ? CLAUDE_DIM_ANSI : theme.getFgAnsi("statusLineSep");
 		const subagentBadge = this.#subagentBadgeText();
 
 		// Collect visible segment contents

@@ -58,6 +58,58 @@ function accentFg(ctx: SegmentContext, color: ThemeColor, text: string): string 
 	return `${sessionAccentAnsi(ctx) ?? theme.getFgAnsi(color)}${text}\x1b[39m`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Claude preset
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Fixed 256-color foregrounds of the Claude Code statusline, a cool→warm
+ * gradient left→right: teal → sky → cornflower → purple → mauve → orchid →
+ * pink. These are deliberately not theme colors: the preset reproduces the
+ * Claude line exactly, independent of the active omp theme.
+ */
+const CLAUDE_COLORS = {
+	path: 80,
+	branch: 74,
+	model: 69,
+	effort: 104,
+	context: 140,
+	fiveHour: 176,
+	week: 211,
+} as const;
+
+/** Claude's `\e[90m` separator/dash color (bright black). */
+export const CLAUDE_DIM_ANSI = "\x1b[90m";
+
+function claudeFg(color: number, text: string): string {
+	return `\x1b[38;5;${color}m${text}\x1b[39m`;
+}
+
+/**
+ * Claude's gauge: `<label> NN%` where NN is the *remaining* share (100 − used,
+ * truncated toward zero like the shell's `${v%.*}`), or `<label> —` when the
+ * backend cannot report the window.
+ */
+function claudeGauge(
+	ctx: SegmentContext,
+	color: number,
+	label: string,
+	usedPercent: number | null | undefined,
+): string {
+	if (usedPercent === null || usedPercent === undefined || !Number.isFinite(usedPercent)) {
+		return `${claudeFg(color, label)} ${CLAUDE_DIM_ANSI}—\x1b[39m`;
+	}
+	const left = statusValue(ctx, `${Math.trunc(100 - usedPercent)}`);
+	return claudeFg(color, `${label} ${left}%`);
+}
+
+/** Last three path components, prefixed with `…/` when the path is deeper. */
+function claudeShortDir(dir: string): string {
+	const parts = dir.split(/[\\/]+/).filter(Boolean);
+	const tail = parts.slice(-3).join("/");
+	return parts.length > 3 ? `…/${tail}` : tail;
+}
+
 /** Left-truncate a path/label to `maxLen`, prefixing an ellipsis when clipped. */
 function clampPathLength(pwd: string, maxLen: number): string {
 	if (pwd.length <= maxLen) return pwd;
@@ -221,6 +273,23 @@ const modelSegment: StatusLineSegment = {
 			modelName = modelName.slice(7);
 		}
 		modelName = statusValue(ctx, modelName);
+
+		if (ctx.claudeStyle) {
+			// `model (level)`: the level is the plain effort word (Claude reads it
+			// from settings), omitted when thinking is off or unsupported.
+			let effort = "";
+			if (state.model?.thinking) {
+				if (ctx.session.isAutoThinking) {
+					effort = ctx.session.autoResolvedThinkingLevel() ?? "auto";
+				} else {
+					const level = state.thinkingLevel ?? ThinkingLevel.Off;
+					if (level !== ThinkingLevel.Off) effort = level;
+				}
+			}
+			let content = claudeFg(CLAUDE_COLORS.model, modelName);
+			if (effort) content += ` ${claudeFg(CLAUDE_COLORS.effort, `(${statusValue(ctx, effort)})`)}`;
+			return { content, visible: true };
+		}
 
 		// Resolve the current thinking-level display ("◉ xhigh", "⟳ auto", …)
 		// when the model supports thinking and the segment isn't hiding it.
@@ -412,6 +481,14 @@ const pathSegment: StatusLineSegment = {
 		const opts = ctx.options.path ?? {};
 		const stripPrefix = opts.stripWorkPrefix !== false;
 
+		if (ctx.claudeStyle) {
+			const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
+			const text = ctx.startupPlaceholder
+				? STARTUP_PLACEHOLDER
+				: fileHyperlink(projectDir, claudeShortDir(projectDir));
+			return { content: claudeFg(CLAUDE_COLORS.path, text), visible: true };
+		}
+
 		// Linked git worktree: the on-disk path nests the worktree base, the
 		// project, and a worktree dir that usually duplicates the branch (already
 		// shown by the git segment). Collapse to the project name, appending the
@@ -457,6 +534,12 @@ const gitSegment: StatusLineSegment = {
 	render(ctx) {
 		const { branch, status } = ctx.git;
 		if (!branch && !status) return { content: "", visible: false };
+
+		if (ctx.claudeStyle) {
+			// `[branch]` in one fixed color; Claude's line carries no dirty state.
+			if (!branch) return { content: "", visible: false };
+			return { content: claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, branch)}]`), visible: true };
+		}
 
 		const opts = ctx.options.git ?? {};
 		const gitStatus = status;
@@ -601,6 +684,10 @@ const contextPctSegment: StatusLineSegment = {
 	render(ctx) {
 		const pct = ctx.contextPercent;
 		const window = ctx.contextWindow;
+
+		if (ctx.claudeStyle) {
+			return { content: claudeGauge(ctx, CLAUDE_COLORS.context, "ctx", pct), visible: true };
+		}
 
 		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window));
 		// Async-compaction indicator: pulse the auto icon while a background
@@ -859,6 +946,17 @@ const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
 		const u = ctx.usage;
+		if (ctx.claudeStyle) {
+			// Claude always prints both gauges, `—` for a window the backend lacks.
+			// The daily window stands in for 5h on providers that only report a day.
+			const fiveHour = u?.fiveHour?.percent ?? u?.daily?.percent;
+			const week = u?.sevenDay?.percent ?? u?.monthly?.percent;
+			const sep = ` ${CLAUDE_DIM_ANSI}|\x1b[39m `;
+			return {
+				content: `${claudeGauge(ctx, CLAUDE_COLORS.fiveHour, "5h", fiveHour)}${sep}${claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week)}`,
+				visible: true,
+			};
+		}
 		if (!u || (!u.fiveHour && !u.daily && !u.sevenDay && !u.monthly && !u.resetCredits)) {
 			return { content: "", visible: false };
 		}

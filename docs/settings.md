@@ -740,7 +740,7 @@ tui:
 | `symbolPreset`              | enum    | `unicode`        | `unicode`, `nerd`, `ascii`.                                               |
 | `colorBlindMode`            | boolean | `false`          | Use blue instead of green for diff additions.                             |
 | `showHardwareCursor`        | boolean | `true`           | Show the terminal hardware cursor.                                        |
-| `statusLine.preset`         | enum    | `default`        | `default`, `minimal`, `compact`, `full`, `nerd`, `ascii`, `custom`.       |
+| `statusLine.preset`         | enum    | `default`        | `default`, `minimal`, `compact`, `full`, `nerd`, `ascii`, `claude`, `custom`. |
 | `statusLine.separator`      | enum    | `powerline-thin` | `powerline`, `powerline-thin`, `slash`, `pipe`, `block`, `none`, `ascii`. |
 | `statusLine.sessionAccent`  | boolean | `true`           | Tint the editor border with the session color.                            |
 | `statusLine.transparent`    | boolean | `false`          | Use the terminal background for the status line.                          |
@@ -754,6 +754,8 @@ tui:
 | `tui.resizeScrollback`      | enum    | `rebuild`        | How a settled width resize refreshes transcript rows kept in terminal scrollback: `append` replays the transcript at the new width below retained history, `rebuild` erases pane scrollback then replays one current-width copy, `preserve` repaints only the viewport. |
 
 For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`. Include `status` in either segment list to render extension statuses registered through `ctx.ui.setStatus()`, ordered by key and joined inline. Set `statusLine.showHookStatus: false` to suppress the same statuses in the footer.
+
+`statusLine.preset: claude` reproduces the Claude Code statusline verbatim — `…/last/three/dirs [branch] | model (level) | ctx 62% | 5h 88% | wk 40%` — with fixed 256-color foregrounds, bright-black `|` separators, and the terminal's own background. Gauges show the *remaining* share of each window and print `—` when the provider does not report one. Theme status-line colors, icons, separator, and `transparent` settings do not apply to this preset.
 
 The `cost` segment shows recorded session costs. For an active provider/model with scheduled pricing, it appends `↑` during peak hours or `↓` off-peak, refreshing at boundaries even while idle. The arrow reflects the current tariff, not past spending; flat-price models and explicit cost overrides have no arrow. See [usage costs and time-based pricing](models.md#usage-costs-and-time-based-pricing) for the UTC schedule and estimation semantics.
 
