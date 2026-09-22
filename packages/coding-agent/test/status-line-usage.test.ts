@@ -93,6 +93,23 @@ describe("usage status-line segment", () => {
 		expect(content).toContain("5d 21h");
 	});
 
+	it("hides the nonexistent five-hour gauge for OpenAI pools", () => {
+		const result = renderSegment("usage", {
+			claudeStyle: true,
+			session: { model: { provider: "sprilicred-openai" } },
+			usage: {
+				fiveHour: { percent: 12 },
+				sevenDay: { percent: 40 },
+			},
+		} as unknown as SegmentContext);
+		const content = stripVTControlCharacters(result.content);
+
+		expect(result.visible).toBe(true);
+		expect(content).not.toContain("5h");
+		expect(content).toContain("wk");
+		expect(content).toContain("60%");
+	});
+
 	it("renders tiered usage fetched from provider reports", async () => {
 		const now = Date.now();
 		const component = makeComponent([

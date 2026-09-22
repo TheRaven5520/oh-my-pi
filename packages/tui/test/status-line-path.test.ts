@@ -283,7 +283,7 @@ describe("status line path segment", () => {
 		}
 	});
 
-	it("claude style shows the last three components and [branch], eliding only when deeper", () => {
+	it("claude style mirrors Claude Code's three-component path rule", () => {
 		const render = (cwd: string, branch: string | null = null) => {
 			const ctx: SegmentContext = {
 				...createPathContext(),
@@ -293,9 +293,10 @@ describe("status line path segment", () => {
 			};
 			return stripVTControlCharacters(renderSegment("path", ctx).content);
 		};
+		expect(render("/home/ubuntu/code", null)).toBe("…/home/ubuntu/code");
 		expect(render("/home/ubuntu/code/oh-my-pi", "main")).toBe("…/ubuntu/code/oh-my-pi [main]");
-		expect(render("/home/ubuntu/code")).toBe("home/ubuntu/code");
 		expect(render("/tmp")).toBe("tmp");
+		expect(render("/a/b")).toBe("a/b");
 	});
 });
 
