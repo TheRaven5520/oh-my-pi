@@ -195,6 +195,13 @@ export interface SegmentContext {
 		daily?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
 		monthly?: { percent: number; resetHours?: number };
+		/**
+		 * Model-scoped weekly window for the active model family (Claude's
+		 * `7d:fable`), as the *tighter* of the shared 7d and the scoped cap.
+		 * Only the `claude` preset renders it; absent when the provider does not
+		 * report one.
+		 */
+		modelWeekly?: { percent: number };
 		resetCredits?: {
 			bankedCount: number;
 			redeemableCount: number;

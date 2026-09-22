@@ -37,6 +37,7 @@ import {
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { summarizeUsageResetCredits } from "../overlays/usage-display";
 import { getPreset } from "./presets";
+import { pooledProviderMatches, summarizePooledUsage } from "./pooled-usage";
 import { CLAUDE_DIM_ANSI, renderSegment, type SegmentContext } from "./segments";
 import { getSeparator } from "./separators";
 import type {
@@ -1820,6 +1821,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		daily?: { percent: number; resetMinutes?: number };
 		sevenDay?: { percent: number; resetHours?: number };
 		monthly?: { percent: number; resetHours?: number };
+		modelWeekly?: { percent: number };
 		resetCredits?: {
 			bankedCount: number;
 			redeemableCount: number;
@@ -1958,7 +1960,14 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 						unavailableReason: resetSummary.unavailableReason,
 					}
 				: undefined;
-		if (!selectedGroup) return resetCredits ? { resetCredits } : null;
+		if (!selectedGroup) {
+			// No account-scoped limit matched: Sprilicred-brokered sessions have no
+			// active OAuth account, only pooled reports. Show the pool headline —
+			// the best headroom any pooled account for this provider still has.
+			const pooled = this.#normalizePooledUsage(reports, context.provider);
+			if (pooled) return resetCredits ? { ...pooled, resetCredits } : pooled;
+			return resetCredits ? { resetCredits } : null;
+		}
 
 		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
 		let daily: { percent: number; resetMinutes?: number } | undefined;
@@ -2015,8 +2024,47 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 				}
 			}
 		}
+		// The tier-scoped weekly for the active model family (Claude's `7d:fable`)
+		// lands in its own lower-priority group; surface it as the tighter of the
+		// shared weekly and the scoped cap, matching Sprilicred's pool math.
+		let modelWeekly: { percent: number } | undefined;
+		if (sevenDay && activeModelId) {
+			for (const group of scopeGroups.values()) {
+				const tier = normalizeUsageScopeValue(group.tier);
+				if (!tier || group === selectedGroup || !activeModelId.includes(tier)) continue;
+				const scoped = group.candidates.find(candidate => candidate.windowClass === "7d");
+				if (!scoped) continue;
+				modelWeekly = { percent: Math.max(sevenDay.percent, scoped.fraction * 100) };
+				break;
+			}
+		}
 		if (!fiveHour && !daily && !sevenDay && !monthly && !resetCredits) return null;
-		return { tier: selectedGroup.tier, fiveHour, daily, sevenDay, monthly, resetCredits };
+		return { tier: selectedGroup.tier, fiveHour, daily, sevenDay, monthly, modelWeekly, resetCredits };
+	}
+
+	#normalizePooledUsage(
+		reports: unknown,
+		activeProvider: string | undefined,
+	): {
+		fiveHour?: { percent: number };
+		sevenDay?: { percent: number };
+		modelWeekly?: { percent: number };
+	} | null {
+		const summary = summarizePooledUsage(reports);
+		if (!summary) return null;
+		for (const [provider, usage] of summary) {
+			if (!pooledProviderMatches(activeProvider, provider)) continue;
+			const result: {
+				fiveHour?: { percent: number };
+				sevenDay?: { percent: number };
+				modelWeekly?: { percent: number };
+			} = {};
+			if (usage.fiveHour) result.fiveHour = { percent: usage.fiveHour.usedPercent };
+			if (usage.weekly) result.sevenDay = { percent: usage.weekly.usedPercent };
+			if (usage.fableWeekly) result.modelWeekly = { percent: usage.fableWeekly.usedPercent };
+			return result.fiveHour || result.sevenDay || result.modelWeekly ? result : null;
+		}
+		return null;
 	}
 
 	/**

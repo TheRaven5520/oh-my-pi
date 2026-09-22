@@ -76,6 +76,7 @@ const CLAUDE_COLORS = {
 	context: 140,
 	fiveHour: 176,
 	week: 211,
+	fable: 217,
 } as const;
 
 /** Claude's `\e[90m` separator/dash color (bright black). */
@@ -951,15 +952,17 @@ const usageSegment: StatusLineSegment = {
 	render(ctx) {
 		const u = ctx.usage;
 		if (ctx.claudeStyle) {
-			// Claude always prints both gauges, `—` for a window the backend lacks.
+			// Claude always prints the 5h and wk gauges (`—` for a window the backend
+			// lacks) and appends `fable` only when a model-scoped weekly cap is known —
+			// a permanent `fable —` on a backend that cannot report it is just noise.
 			// The daily window stands in for 5h on providers that only report a day.
 			const fiveHour = u?.fiveHour?.percent ?? u?.daily?.percent;
 			const week = u?.sevenDay?.percent ?? u?.monthly?.percent;
 			const sep = ` ${CLAUDE_DIM_ANSI}|\x1b[39m `;
-			return {
-				content: `${claudeGauge(ctx, CLAUDE_COLORS.fiveHour, "5h", fiveHour)}${sep}${claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week)}`,
-				visible: true,
-			};
+			let content = `${claudeGauge(ctx, CLAUDE_COLORS.fiveHour, "5h", fiveHour)}${sep}${claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week)}`;
+			if (u?.modelWeekly)
+				content += `${sep}${claudeGauge(ctx, CLAUDE_COLORS.fable, "fable", u.modelWeekly.percent)}`;
+			return { content, visible: true };
 		}
 		if (!u || (!u.fiveHour && !u.daily && !u.sevenDay && !u.monthly && !u.resetCredits)) {
 			return { content: "", visible: false };
