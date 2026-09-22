@@ -482,11 +482,15 @@ const pathSegment: StatusLineSegment = {
 		const stripPrefix = opts.stripWorkPrefix !== false;
 
 		if (ctx.claudeStyle) {
+			// `…/a/b/c [branch]`: Claude keeps the branch inside the path section
+			// (no separator between them) in one fixed color, with no dirty state.
 			const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
-			const text = ctx.startupPlaceholder
+			const dir = ctx.startupPlaceholder
 				? STARTUP_PLACEHOLDER
 				: fileHyperlink(projectDir, claudeShortDir(projectDir));
-			return { content: claudeFg(CLAUDE_COLORS.path, text), visible: true };
+			let content = claudeFg(CLAUDE_COLORS.path, dir);
+			if (ctx.git.branch) content += ` ${claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, ctx.git.branch)}]`)}`;
+			return { content, visible: true };
 		}
 
 		// Linked git worktree: the on-disk path nests the worktree base, the
@@ -534,12 +538,6 @@ const gitSegment: StatusLineSegment = {
 	render(ctx) {
 		const { branch, status } = ctx.git;
 		if (!branch && !status) return { content: "", visible: false };
-
-		if (ctx.claudeStyle) {
-			// `[branch]` in one fixed color; Claude's line carries no dirty state.
-			if (!branch) return { content: "", visible: false };
-			return { content: claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, branch)}]`), visible: true };
-		}
 
 		const opts = ctx.options.git ?? {};
 		const gitStatus = status;

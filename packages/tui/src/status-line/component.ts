@@ -2515,12 +2515,19 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		this.#syncPricingTimer();
 		const placeholders = options?.placeholders === true;
 		const plain = layout !== "box" && layout !== "band";
+		// The claude preset reproduces Claude Code's line verbatim: `[branch]`
+		// lives inside the path section, and the separators are ASCII pipes in
+		// bright black on the terminal's own background — whatever the theme or
+		// layout would otherwise choose.
+		const claudeStyle = effectiveSettings.preset === "claude";
 		const includePath =
 			hasPathSegment(effectiveSettings.leftSegments) || hasPathSegment(effectiveSettings.rightSegments);
 		const gitEnabled = this.#gitEnabled();
 		const includeGit =
 			gitEnabled &&
-			(hasGitSegment(effectiveSettings.leftSegments) || hasGitSegment(effectiveSettings.rightSegments));
+			((claudeStyle && includePath) ||
+				hasGitSegment(effectiveSettings.leftSegments) ||
+				hasGitSegment(effectiveSettings.rightSegments));
 		const includePr =
 			gitEnabled && (hasPrSegment(effectiveSettings.leftSegments) || hasPrSegment(effectiveSettings.rightSegments));
 		const liveCtx = this.#buildSegmentContext(
@@ -2533,13 +2540,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			previewTitle,
 		);
 		const ctx: SegmentContext = placeholders ? { ...liveCtx, startupPlaceholder: true } : liveCtx;
-		// The claude preset reproduces Claude Code's line verbatim: ASCII pipes in
-		// bright black on the terminal's own background, whatever the theme says.
-		const claudeStyle = ctx.claudeStyle;
-		const separatorDef = plain
-			? { left: "·", right: "·" }
-			: claudeStyle
-				? { left: "|", right: "|" }
+		const separatorDef = claudeStyle
+			? { left: "|", right: "|" }
+			: plain
+				? { left: "·", right: "·" }
 				: getSeparator(effectiveSettings.separator ?? "powerline-thin", theme);
 
 		// `transparent` reuses the empty-string sentinel (`\x1b[49m`) so the bar
