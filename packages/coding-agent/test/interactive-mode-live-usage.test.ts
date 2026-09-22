@@ -95,8 +95,8 @@ describe("/usage pinned snapshot", () => {
 		pending.resolve(reports(0.2));
 		await flushMicrotasks();
 		expect(panel()).toContain("OpenAI");
-		expect(panel()).toContain("- Weekly    [xx--------]");
-		expect(panel()).toContain("- Five Hour [----------] —");
+		expect(panel()).toMatch(/Weekly +[█▓▒░]{16} +80% left/);
+		expect(panel()).toMatch(/Five Hour +·{16} +—/);
 		expect(panel()).not.toContain("Fetching usage data");
 		vi.advanceTimersByTime(10 * 60_000);
 		await flushMicrotasks();
@@ -109,17 +109,17 @@ describe("/usage pinned snapshot", () => {
 	it("re-running show refetches once and replaces the snapshot while keeping the old one visible", async () => {
 		await executeBuiltinSlashCommand("/usage show", { ctx: mode });
 		await flushMicrotasks();
-		expect(panel()).toContain("[xx--------]");
+		expect(panel()).toContain("80% left");
 		const pending = Promise.withResolvers<UsageReport[] | null>();
 		fetchUsageReports.mockImplementationOnce(() => pending.promise);
 		await executeBuiltinSlashCommand("/usage show", { ctx: mode });
 		expect(fetchUsageReports).toHaveBeenCalledTimes(2);
-		expect(panel()).toContain("[xx--------]");
+		expect(panel()).toContain("80% left");
 		expect(panel()).toContain("Fetching usage data");
 		pending.resolve(reports(0.7));
 		await flushMicrotasks();
-		expect(panel()).toContain("[xxxxxxx---]");
-		expect(panel()).not.toContain("[xx--------]");
+		expect(panel()).toContain("30% left");
+		expect(panel()).not.toContain("80% left");
 		expect(mode.usageContainer.children).toHaveLength(1);
 	});
 
@@ -146,11 +146,11 @@ describe("/usage pinned snapshot", () => {
 		mode.setUsagePinned(true);
 		expect(fetchUsageReports).toHaveBeenCalledTimes(2);
 		await flushMicrotasks();
-		expect(panel()).toContain("[xx--------]");
+		expect(panel()).toContain("80% left");
 		stale.resolve(reports(0.9));
 		await flushMicrotasks();
-		expect(panel()).toContain("[xx--------]");
-		expect(panel()).not.toContain("[xxxxxxxxx-]");
+		expect(panel()).toContain("80% left");
+		expect(panel()).not.toContain("10% left");
 	});
 
 	for (const cleanup of ["clearTransientSessionUi", "stop"] as const) {
@@ -172,7 +172,7 @@ describe("/usage pinned snapshot", () => {
 		await flushMicrotasks();
 		mode.resetTranscript();
 		mode.flushPendingCommandOutput();
-		expect(panel()).toContain("[xx--------]");
+		expect(panel()).toContain("80% left");
 		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
 		expect(mode.usageContainer.children).toHaveLength(1);
 	});

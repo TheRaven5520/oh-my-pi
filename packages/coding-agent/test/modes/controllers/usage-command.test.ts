@@ -5,6 +5,7 @@ import { CommandController, renderUsageReports } from "@oh-my-pi/pi-coding-agent
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { Container, visibleWidth } from "@oh-my-pi/pi-tui";
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
+import { colorToAnsi } from "@oh-my-pi/pi-tui/theme/color";
 
 describe("renderUsageReports content", () => {
 	beforeAll(async () => {
@@ -234,6 +235,12 @@ describe("CommandController pinned /usage snapshot", () => {
 		vi.restoreAllMocks();
 	});
 
+	/** `  <label padded>  <16 bar cells>  <NN% left padded to 9>`; the bar glyphs depend on rounding, the readout does not. */
+	function windowRow(label: string, labelWidth: number, left: string): RegExp {
+		const readout = left.padStart(9).replace(/[%]/g, "\\%");
+		return new RegExp(`^  ${label.padEnd(labelWidth).replace(/ /g, " ")}  [█▓▒░]{16}  ${readout}$`);
+	}
+
 	it("renders one pool headline per provider from the best-headroom account, no account rows", async () => {
 		const rows = await renderPinnedSnapshot([
 			pooledReport("openai-codex", "codex-a", { "chat:primary": 1, "chat:secondary": 1 }),
@@ -242,38 +249,41 @@ describe("CommandController pinned /usage snapshot", () => {
 			pooledReport("anthropic", "claude-b", { "5h": 0.5, "7d": 0.9, "7d:fable": 0.2 }),
 		]);
 		const fetched = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-		expect(rows).toEqual([
-			"Anthropic",
-			"  - Fable Weekly [xxxxxx----]",
-			"  - Weekly       [xxx-------]",
-			"  - Five Hour    [x---------]",
-			"",
-			"OpenAI",
-			"  - Weekly       [xxxxxxxxxx]",
-			"  - Five Hour    [----------]",
-			`Usage snapshot · fetched ${fetched.format(now)} · /usage clear`,
-		]);
+		expect(rows).toHaveLength(9);
+		expect(rows[0]).toBe("Anthropic");
+		// Fable = tighter of 7d and 7d:fable per account (a: 60, b: 90) → a; weekly and 5h best are a's too.
+		expect(rows[1]).toMatch(windowRow("Fable Weekly", 12, "40% left"));
+		expect(rows[2]).toMatch(windowRow("Weekly", 12, "70% left"));
+		expect(rows[3]).toMatch(windowRow("Five Hour", 12, "90% left"));
+		expect(rows[4]).toBe("");
+		expect(rows[5]).toBe("OpenAI");
+		expect(rows[6]).toMatch(windowRow("Weekly", 12, "0% left"));
+		expect(rows[7]).toMatch(windowRow("Five Hour", 12, "96% left"));
+		expect(rows[8]).toBe(`Usage snapshot · fetched ${fetched.format(now)} · /usage clear`);
 		expect(rows.join("\n")).not.toContain("codex-a");
 		expect(rows.join("\n")).not.toContain("claude-a");
 	});
 
-	it("renders an unreported window as an empty dimmed bar with a dash and pads labels to the widest", async () => {
+	it("renders an unreported window as a dotted bar with a dash and pads labels to the widest", async () => {
 		const rows = await renderPinnedSnapshot([pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.75 })]);
-		expect(rows).toEqual([
-			"OpenAI",
-			"  - Weekly    [xxxxxxxx--]",
-			"  - Five Hour [----------] —",
-			expect.stringContaining("Usage snapshot · fetched "),
-		]);
+		expect(rows).toHaveLength(4);
+		expect(rows[0]).toBe("OpenAI");
+		expect(rows[1]).toMatch(windowRow("Weekly", 9, "25% left"));
+		expect(rows[2]).toBe(`  Five Hour  ${"·".repeat(16)}  —`);
+		expect(rows[3]).toContain("Usage snapshot · fetched ");
 	});
 
-	it("colors bar cells plainly: x in text, brackets and dashes muted", async () => {
-		const [, weekly] = await renderPinnedSnapshot(
-			[pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.5, "chat:primary": 0 })],
+	it("colors headings by provider brand and bars by headroom", async () => {
+		const [heading, weekly, fiveHour] = await renderPinnedSnapshot(
+			[pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.5, "chat:primary": 0.95 })],
 			{ raw: true },
 		);
-		expect(weekly).toContain(theme.fg("muted", "[") + theme.fg("text", "xxxxx") + theme.fg("muted", "-----]"));
-		expect(weekly).not.toContain(theme.fg("warning", "x"));
+		// OpenAI brand green heading.
+		expect(heading).toContain(colorToAnsi("#10a37f", theme.getColorMode()));
+		// 50% left → success fill; 5% left → error fill.
+		expect(weekly).toContain(theme.fg("success", "████████"));
+		expect(fiveHour).toContain(theme.fg("error", "███████████████"));
+		expect(fiveHour).toContain(theme.fg("error", "  5% left"));
 	});
 
 	it("capitalizes other providers and orders Anthropic, OpenAI, then the rest", async () => {

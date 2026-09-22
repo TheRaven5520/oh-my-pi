@@ -83,7 +83,8 @@ function pooledWindowId(limit: object): PooledWindowId | undefined {
 	const fromScope = scope && typeof scope === "object" && "windowId" in scope ? scope.windowId : undefined;
 	const fromId = "id" in limit ? limit.id : undefined;
 	for (const candidate of [fromScope, fromId]) {
-		if (typeof candidate === "string" && candidate in POOLED_WINDOW_IDS) return POOLED_WINDOW_IDS[candidate];
+		if (typeof candidate === "string" && Object.hasOwn(POOLED_WINDOW_IDS, candidate))
+			return POOLED_WINDOW_IDS[candidate];
 	}
 	return undefined;
 }

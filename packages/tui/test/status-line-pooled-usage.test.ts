@@ -32,12 +32,17 @@ describe("summarizePooledUsage", () => {
 				["7d", 0.4],
 				["7d:fable", 0.9],
 			]),
+			// Reports 5h and 7d but no Fable cap: counts toward those two headlines only.
+			pooledReport("anthropic", "d", [
+				["5h", 0.05],
+				["7d", 0.2],
+			]),
 		]);
 		const anthropic = summary?.get("anthropic");
-		expect(anthropic?.accounts).toBe(3);
+		expect(anthropic?.accounts).toBe(4);
 		expect(anthropic?.fiveHour?.usedPercent).toBe(0);
-		expect(anthropic?.weekly?.usedPercent).toBeCloseTo(40);
-		// Fable per account = max(7d, 7d:fable): a=100, b=70, c=90 → best is b.
+		expect(anthropic?.weekly?.usedPercent).toBeCloseTo(20);
+		// Fable per account = max(7d, 7d:fable): a=100, b=70, c=90, d ineligible → best is b.
 		expect(anthropic?.fableWeekly?.usedPercent).toBeCloseTo(70);
 	});
 

@@ -840,4 +840,38 @@ describe("usage status-line segment", () => {
 		expect(content).toContain("24%");
 		expect(content).not.toContain("7d");
 	});
+
+	it("shows the Sprilicred pool headline, not one pooled account, when no account is active", async () => {
+		const pooled = (account: string, fiveHour: number, weekly: number, fable?: number) => ({
+			provider: "anthropic",
+			metadata: { sprilicredAccountId: account },
+			limits: [
+				{ id: "5h", scope: { windowId: "5h" }, amount: { usedFraction: fiveHour } },
+				{ id: "7d", scope: { windowId: "7d" }, amount: { usedFraction: weekly } },
+				...(fable === undefined
+					? []
+					: [{ id: "7d:fable", scope: { windowId: "7d:fable" }, amount: { usedFraction: fable } }]),
+			],
+		});
+		// Account order is chosen so a first-match normalizer would read 5h 90% / 7d 95%.
+		const reports = [pooled("a", 0.9, 0.95, 1), pooled("b", 0.36, 0.6, 0.7), pooled("c", 0.02, 0.4)];
+		// Exact provider match: the pooled path must win on its own, not via a provider-name mismatch.
+		const component = makeComponent(reports, { provider: "anthropic", modelId: "claude-fable-5-1" });
+
+		component.refreshUsageInBackground();
+		await flushUsageRefresh();
+		const content = stripVTControlCharacters(component.getTopBorder(200).content);
+
+		// best(5h) = c (2% used), best(7d) = c (40% used); c has no 7d:fable so fable = b (max(60,70) = 70% used).
+		expect(content).toContain("5h 2%");
+		expect(content).toContain("7d 40%");
+		expect(content).not.toContain("90%");
+		expect(content).not.toContain("95%");
+
+		component.updateSettings({ preset: "claude", sessionAccent: false });
+		const claude = stripVTControlCharacters(component.renderBottomBar(200, "full"));
+		expect(claude).toContain("5h 98%");
+		expect(claude).toContain("wk 60%");
+		expect(claude).toContain("fable 30%");
+	});
 });

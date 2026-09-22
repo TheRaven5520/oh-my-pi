@@ -100,7 +100,8 @@ function claudeGauge(
 	if (usedPercent === null || usedPercent === undefined || !Number.isFinite(usedPercent)) {
 		return `${claudeFg(color, label)} ${CLAUDE_DIM_ANSI}—\x1b[39m`;
 	}
-	const left = statusValue(ctx, `${Math.trunc(100 - usedPercent)}`);
+	// Clamp like the script's `rem` so overage never reads as a negative share.
+	const left = statusValue(ctx, `${Math.trunc(Math.min(100, Math.max(0, 100 - usedPercent)))}`);
 	return claudeFg(color, `${label} ${left}%`);
 }
 

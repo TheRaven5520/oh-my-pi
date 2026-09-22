@@ -1960,14 +1960,15 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 						unavailableReason: resetSummary.unavailableReason,
 					}
 				: undefined;
-		if (!selectedGroup) {
-			// No account-scoped limit matched: Sprilicred-brokered sessions have no
-			// active OAuth account, only pooled reports. Show the pool headline —
-			// the best headroom any pooled account for this provider still has.
+		if (!context.identity || !selectedGroup) {
+			// Without an active OAuth account (Sprilicred-brokered sessions) any
+			// account-scoped group would be an arbitrary pooled account's numbers.
+			// Prefer the pool headline — the best headroom any pooled account for
+			// this provider still has. Non-pooled reports yield null and fall through.
 			const pooled = this.#normalizePooledUsage(reports, context.provider);
 			if (pooled) return resetCredits ? { ...pooled, resetCredits } : pooled;
-			return resetCredits ? { resetCredits } : null;
 		}
+		if (!selectedGroup) return resetCredits ? { resetCredits } : null;
 
 		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
 		let daily: { percent: number; resetMinutes?: number } | undefined;

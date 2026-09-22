@@ -37,6 +37,7 @@ import { MoveOverlay, type MoveOverlayResult } from "@oh-my-pi/pi-tui/overlays/m
 import { moveDirectorySource } from "../move-directory-source";
 import { TranscriptBlock } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { type PooledUsageWindow, summarizePooledUsage } from "@oh-my-pi/pi-tui/status-line/pooled-usage";
+import { FG_RESET, colorToAnsi } from "@oh-my-pi/pi-tui/theme/color";
 import {
 	getMarkdownTheme,
 	getSymbolTheme,
@@ -156,13 +157,25 @@ class UsagePanel extends Text {
 	}
 }
 
-const USAGE_BAR_CELLS = 10;
+const USAGE_BAR_CELLS = 16;
 const usageFetchTime = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
+/** Provider brand colors for the snapshot headings; unknown providers fall back to the theme accent. */
+const USAGE_PROVIDER_BRAND: Readonly<Record<string, string>> = {
+	anthropic: "#d97757",
+	"openai-codex": "#10a37f",
+};
+
 function usageProviderHeading(provider: string): string {
-	if (provider === "anthropic") return "Anthropic";
-	if (provider === "openai-codex") return "OpenAI";
-	return provider.charAt(0).toUpperCase() + provider.slice(1);
+	const label =
+		provider === "anthropic"
+			? "Anthropic"
+			: provider === "openai-codex"
+				? "OpenAI"
+				: provider.charAt(0).toUpperCase() + provider.slice(1);
+	const brand = USAGE_PROVIDER_BRAND[provider];
+	const colored = brand ? `${colorToAnsi(brand, theme.getColorMode())}${label}${FG_RESET}` : theme.fg("accent", label);
+	return theme.bold(colored);
 }
 
 function usageProviderRank(provider: string): number {
@@ -171,12 +184,21 @@ function usageProviderRank(provider: string): number {
 	return 2;
 }
 
+/** Headroom color like the dashboard's status colors: green while roomy, amber when tight, red near exhaustion. */
+function usageWindowColor(usedPercent: number): ThemeColor {
+	const left = 100 - usedPercent;
+	if (left <= 10) return "error";
+	if (left <= 35) return "warning";
+	return "success";
+}
+
+/** `████████░░░░░░░░  48% left`; a window the pool does not report renders as a dim dotted bar and `—`. */
 function renderUsageWindowBar(window: PooledUsageWindow | undefined): string {
-	if (!window) {
-		return theme.fg("muted", `[${"-".repeat(USAGE_BAR_CELLS)}] —`);
-	}
-	const used = Math.min(USAGE_BAR_CELLS, Math.max(0, Math.round(window.usedPercent / 10)));
-	return `${theme.fg("muted", "[")}${theme.fg("text", "x".repeat(used))}${theme.fg("muted", `${"-".repeat(USAGE_BAR_CELLS - used)}]`)}`;
+	if (!window) return `${renderFractionBar(undefined, theme, USAGE_BAR_CELLS, "dim")}  ${theme.fg("muted", "—")}`;
+	const used = Math.min(100, Math.max(0, window.usedPercent));
+	const color = usageWindowColor(used);
+	const left = `${Math.round(100 - used)}% left`.padStart(9);
+	return `${renderFractionBar(used / 100, theme, USAGE_BAR_CELLS, color)}  ${theme.fg(color, left)}`;
 }
 
 /** Pool headline per provider from Sprilicred's pooled reports; no per-account rows. */
@@ -209,7 +231,12 @@ function renderUsageSnapshotRows(snapshot: UsageSnapshot, width: number): string
 			if (index > 0) rows.push("");
 			rows.push(truncateToWidth(section.heading, width));
 			for (const [label, window] of section.windows) {
-				rows.push(truncateToWidth(`  - ${label.padEnd(labelWidth)} ${renderUsageWindowBar(window)}`, width));
+				rows.push(
+					truncateToWidth(
+						`  ${theme.fg("text", label.padEnd(labelWidth))}  ${renderUsageWindowBar(window)}`,
+						width,
+					),
+				);
 			}
 		}
 	}

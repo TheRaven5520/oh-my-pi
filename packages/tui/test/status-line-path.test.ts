@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -280,6 +281,21 @@ describe("status line path segment", () => {
 			setProjectDir(originalProjectDir);
 			removeSyncWithRetries(parentDir);
 		}
+	});
+
+	it("claude style shows the last three components and [branch], eliding only when deeper", () => {
+		const render = (cwd: string, branch: string | null = null) => {
+			const ctx: SegmentContext = {
+				...createPathContext(),
+				claudeStyle: true,
+				activeRepo: { cwd, relativeRepoRoot: "." } as unknown as SegmentContext["activeRepo"],
+				git: { branch, status: null, pr: null },
+			};
+			return stripVTControlCharacters(renderSegment("path", ctx).content);
+		};
+		expect(render("/home/ubuntu/code/oh-my-pi", "main")).toBe("…/ubuntu/code/oh-my-pi [main]");
+		expect(render("/home/ubuntu/code")).toBe("home/ubuntu/code");
+		expect(render("/tmp")).toBe("tmp");
 	});
 });
 
