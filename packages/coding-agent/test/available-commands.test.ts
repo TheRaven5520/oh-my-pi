@@ -35,15 +35,7 @@ describe("buildAvailableSlashCommands", () => {
 		const commands = await buildAvailableSlashCommands(session as never, async () => fileCommands);
 		const byName = Object.fromEntries(commands.map(command => [command.name, command]));
 
-		expect(byName.usage.subcommands).toContainEqual({
-			name: "show",
-			description: "Show provider usage and limits",
-		});
-		expect(byName.usage.subcommands).toContainEqual({
-			name: "reset",
-			description: "Spend a saved provider rate-limit reset",
-			usage: "[provider/credential-id|provider/active]",
-		});
+		expect(byName.usage.subcommands?.map(subcommand => subcommand.name)).toEqual(["show", "clear"]);
 		expect(byName["reset-usage"]).toBeUndefined();
 
 		expect(byName.fast.description).toBe("Toggle fast mode");

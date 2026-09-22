@@ -4,14 +4,12 @@
 
 ### Added
 
-- Added `/usage` (or `/usage on`) to pin an automatically updating usage panel above the prompt and `/usage off` to remove it without interrupting active work. The panel checks for updates every 30 seconds while respecting provider usage caches.
+- Added `/usage show` (or plain `/usage`) to pin a static usage snapshot above the prompt and `/usage clear` to remove it without interrupting active work. The pinned panel shows one pool headline per provider from Sprilicred's pooled accounts — Anthropic Fable Weekly / Weekly / Five Hour and OpenAI Weekly / Five Hour ten-cell bars — plus the fetch time; running `/usage show` again refetches and replaces the snapshot.
 
 ### Changed
 
-- Removed `/usage show`; interactive `/usage` now enables the live panel instead of producing a one-shot report.
-- Replaced pinned usage report clipping with compact provider headers and fairly shared account rows, keeping every provider visible and reporting omitted accounts, exhausted accounts, and the oldest report age. Exhausted and active accounts receive priority when space is limited.
-- Simplified compact Anthropic and Openai account rows to email, selected weekly usage bar, reset countdown, and available full-reset credits. Anthropic uses Fable weekly usage; Openai uses the main weekly quota, excluding Spark. Entire provider headlines, including their account-average weekly bars, use distinct theme-aware colors (gold for Anthropic and blue for Openai in Titanium). Unavailable quotas or reset counts remain unknown rather than zero.
-- Softened the compact usage panel's green and red account-bar fills by 12%, preserving their theme-derived hues, provider headlines, warning colors, and empty cells.
+- Interactive `/usage` no longer opens the one-shot dashboard overlay or lists per-account rows; it pins the pooled snapshot instead.
+- Removed `/usage on`, `/usage off`, and `/usage reset` together with the saved-reset account picker; saved rate-limit resets are still spent automatically via `codexResets.autoRedeem` / `claudeResets.autoRedeem` and through the auth-gateway `/v1/usage/reset-credits` endpoints.
 
 - Restricted local memory extraction and consolidation to durable operational knowledge, user preferences, and general research or verification lessons, excluding individual experiment results and transient run state.
 

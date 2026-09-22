@@ -10762,7 +10762,7 @@ export class AgentSession {
 				coordinator.notifiedKeys.add(first.attemptKey);
 				this.emitNotice(
 					"warning",
-					`Saved ${providerLabel} resets are eligible to spend, but auto-redeem is unset and no prompt UI is available. Run \`/usage reset\` or set ${settingsKey}.`,
+					`Saved ${providerLabel} resets are eligible to spend, but auto-redeem is unset and no prompt UI is available. Set ${settingsKey} to spend them automatically.`,
 					source,
 				);
 			}

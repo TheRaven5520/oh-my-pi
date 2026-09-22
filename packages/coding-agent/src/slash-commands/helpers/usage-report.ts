@@ -105,7 +105,7 @@ function renderUsageReports(
 				const availability =
 					resets.redeemableCount === resets.bankedCount ? "available" : `${resets.redeemableCount} usable now`;
 				lines.push(
-					`- ${resetLabel}: ${resets.bankedCount} saved rate-limit reset${resets.bankedCount === 1 ? "" : "s"} — ${availability} — /usage reset to spend`,
+					`- ${resetLabel}: ${resets.bankedCount} saved rate-limit reset${resets.bankedCount === 1 ? "" : "s"} — ${availability}`,
 				);
 				if (resets.soonestExpiry) {
 					const expiryMs = Date.parse(resets.soonestExpiry);

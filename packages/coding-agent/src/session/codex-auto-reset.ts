@@ -666,7 +666,7 @@ export function isTerminalRedeemOutcome(code: string): boolean {
  *   and settlement handle for the combined provider salvage sweep (a redeem refreshes usage,
  *   which would recurse into a sweep; the promise lets tests and diagnostics
  *   await a fire-and-forget sweep instead of polling).
- * - `notifiedKeys`: headless "run /usage reset" notices already emitted, so a
+ * - `notifiedKeys`: headless "set autoRedeem" notices already emitted, so a
  *   5-minute sweep cadence can't spam the transcript.
  */
 export interface CodexAutoRedeemCoordinator {

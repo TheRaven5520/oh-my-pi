@@ -14,8 +14,8 @@
  * response carries a `code`: `"reset"` on success, otherwise a business reason
  * (`already_redeemed`, `no_credit`, `nothing_to_reset`).
  *
- * These are thin, dependency-light functions so both the interactive session
- * (the `/usage reset` command + auto-redeem) and any out-of-band tooling can
+ * These are thin, dependency-light functions so the interactive session's
+ * auto-redeem, the auth-gateway HTTP endpoints, and any out-of-band tooling can
  * share one wire contract.
  */
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";

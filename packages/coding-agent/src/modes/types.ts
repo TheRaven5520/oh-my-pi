@@ -119,7 +119,7 @@ export interface InteractiveModeContext {
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
 	deferredCommandContainer: Container;
-	liveUsageContainer: Container;
+	usageContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
 	hookWidgetContainerAbove: Container;
@@ -426,8 +426,8 @@ export interface InteractiveModeContext {
 	handleAdvisorStatusCommand(): Promise<void>;
 	handleJobsCommand(): Promise<void>;
 	handleUsageCommand(reports?: UsageReport[] | null): Promise<void>;
-	/** Pin (or hide) the auto-refreshing live usage panel above the prompt. */
-	setLiveUsageEnabled(enabled: boolean): void;
+	/** Pin (or clear) a static usage snapshot above the prompt. */
+	setUsagePinned(pinned: boolean): void;
 	handleChangelogCommand(showFull?: boolean): Promise<void>;
 	handleHotkeysCommand(): void;
 	handleToolsCommand(): void;
@@ -494,7 +494,6 @@ export interface InteractiveModeContext {
 	handleSessionDeleteCommand(): Promise<void>;
 	showOAuthSelector(mode: "login" | "logout", providerId?: string): Promise<void>;
 	showSessionPinSelector(): Promise<void>;
-	showResetUsageSelector(): Promise<void>;
 	showProviderSetup(): Promise<void>;
 	showHookConfirm(title: string, message: string): Promise<boolean>;
 	showDebugSelector(): Promise<void>;

@@ -6,13 +6,7 @@ import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { Component, OverlayHandle, ResizeScrollbackMode } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
-import {
-	getAgentDbPath,
-	getAgentDir,
-	getProjectDir,
-	normalizePathForComparison,
-	sanitizeText,
-} from "@oh-my-pi/pi-utils";
+import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	discoverAdvisorConfigs,
@@ -52,7 +46,6 @@ import {
 import { initializeMathJaxRenderer } from "@oh-my-pi/pi-tui/theme/mathjax-cache";
 import type { AgentHubOpenOptions, InteractiveModeContext } from "../../modes/types";
 import type { SessionOAuthAccountList } from "../../session/agent-session-types";
-import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
 import {
 	createForeignSessionStore,
 	foreignSessionInfoToSessionInfo,
@@ -69,7 +62,6 @@ import { loadPinnedSessionIds } from "../../session/session-pins";
 import { FileSessionStorage } from "../../session/session-storage";
 import { toLogoutAccounts } from "../../slash-commands/helpers/logout";
 import type { LogoutAccount } from "@oh-my-pi/pi-tui/overlays/logout-account-selector";
-import { describeRedeemOutcome, toResetUsageAccounts } from "../../slash-commands/helpers/reset-usage";
 import { toSessionPinAccounts } from "../../slash-commands/helpers/session-pin";
 import { loadDailyActivity } from "../../stats/activity-client";
 import {
@@ -118,7 +110,6 @@ import type { ModelPickerComponent as ModelPickerComponentType } from "@oh-my-pi
 import type { OAuthSelectorComponent as OAuthSelectorComponentType } from "@oh-my-pi/pi-tui/overlays/oauth-selector";
 import { PluginSelectorComponent } from "@oh-my-pi/pi-tui/overlays/plugin-selector";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
-import { type ResetUsageAccount, ResetUsageSelectorComponent } from "@oh-my-pi/pi-tui/overlays/reset-usage-selector";
 import { type BranchVariantPath, RewindSelectorComponent } from "@oh-my-pi/pi-tui/overlays/rewind-selector";
 import { renderSegmentTrack } from "@oh-my-pi/pi-tui/chrome/segment-track";
 import { SessionAccountSelectorComponent } from "@oh-my-pi/pi-tui/overlays/session-account-selector";
@@ -2376,82 +2367,6 @@ export class SelectorController {
 			);
 			return { component: selector, focus: selector };
 		});
-	}
-
-	async showResetUsageSelector(): Promise<void> {
-		const session = this.ctx.session;
-		this.ctx.showStatus("Checking saved rate-limit resets…", { dim: true });
-		let statuses: ResetCreditAccountStatus[];
-		try {
-			statuses = await session.listResetCredits();
-		} catch (error) {
-			this.ctx.showError(
-				sanitizeText(
-					`Could not load saved resets: ${error instanceof Error ? error.message : String(error)}`.replace(
-						/[\r\n\t]+/g,
-						" ",
-					),
-				),
-			);
-			return;
-		}
-		const accounts = toResetUsageAccounts(statuses);
-		if (accounts.length === 0) {
-			this.ctx.showStatus("No provider accounts found. Use /login to add one.");
-			return;
-		}
-		if (!accounts.some(account => account.availableCount > 0)) {
-			this.ctx.showStatus(
-				accounts.some(account => account.error)
-					? "No saved resets available — some accounts couldn't be reached (try /login)."
-					: "No saved rate-limit resets available to spend right now.",
-			);
-			return;
-		}
-		this.showSelector(done => {
-			const selector = new ResetUsageSelectorComponent(
-				accounts,
-				account => {
-					done();
-					void this.#redeemReset(account);
-				},
-				() => {
-					done();
-					this.ctx.ui.requestRender();
-				},
-			);
-			return { component: selector, focus: selector };
-		});
-	}
-
-	async #redeemReset(account: ResetUsageAccount): Promise<void> {
-		this.ctx.showStatus(
-			`Spending 1 saved reset for ${sanitizeText(account.label.replace(/[\r\n\t]+/g, " "))} (${account.providerLabel})…`,
-			{ dim: true },
-		);
-		let outcome: ResetCreditRedeemOutcome;
-		try {
-			outcome = await this.ctx.session.redeemResetCredit(account.target);
-		} catch (error) {
-			this.ctx.showError(
-				sanitizeText(
-					`Reset failed for ${account.label}: ${error instanceof Error ? error.message : String(error)}`.replace(
-						/[\r\n\t]+/g,
-						" ",
-					),
-				),
-			);
-			return;
-		}
-		const message = sanitizeText(describeRedeemOutcome(outcome, account.label).replace(/[\r\n\t]+/g, " "));
-		if (outcome.ok) {
-			this.ctx.showStatus(message);
-			// Refresh the status-line usage so the freshly-reset window shows.
-			this.ctx.statusLine.invalidate();
-			this.ctx.ui.requestRender();
-		} else {
-			this.ctx.showWarning(message);
-		}
 	}
 
 	async showDebugSelector(): Promise<void> {

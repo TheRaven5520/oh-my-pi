@@ -3,12 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Tokenizer } from "@oh-my-pi/pi-agent-core";
-import type {
-	ResetCreditAccountStatus,
-	ResetCreditRedeemOutcome,
-	ResetCreditTarget,
-	UsageReport,
-} from "@oh-my-pi/pi-ai";
+import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { MarketplaceManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
@@ -68,8 +63,6 @@ interface FakeAcpBuiltinSession {
 	};
 	setModel(model: unknown): Promise<void>;
 	setModelTemporary(model: unknown, thinkingLevel?: string): Promise<void>;
-	listResetCredits: () => Promise<ResetCreditAccountStatus[]>;
-	redeemResetCredit: (target: ResetCreditTarget) => Promise<ResetCreditRedeemOutcome>;
 }
 
 function createRuntime() {
@@ -104,12 +97,6 @@ function createRuntime() {
 		},
 		setForcedToolChoice(toolName: string) {
 			this.forcedToolChoice = toolName;
-		},
-		async listResetCredits() {
-			return [];
-		},
-		async redeemResetCredit(_target) {
-			return { ok: false, code: "no_credit" };
 		},
 		async newSession(_opts?: { drop?: boolean; parentSession?: string }) {
 			return true;
@@ -386,93 +373,22 @@ describe("ACP builtin slash commands", () => {
 		}
 	});
 
-	it("routes saved reset redemption through /usage reset", async () => {
-		const { runtime } = createRuntime();
-		let redeemedTarget: ResetCreditTarget | undefined;
-		runtime.session.listResetCredits = async () => [
-			{
-				provider: "openai-codex",
-				credentialId: 42,
-				accountId: "account-1",
-				email: "user@example.com",
-				availableCount: 1,
-				credits: [],
-				active: true,
-			},
-		];
-		runtime.session.redeemResetCredit = async target => {
-			redeemedTarget = target;
-			return { ok: true, code: "reset", email: target.email };
-		};
+	it("/usage clear explains that nothing is pinned in ACP mode", async () => {
+		const { output, runtime } = createRuntime();
 
-		const result = await executeAcpBuiltinSlashCommand("/usage reset openai-codex/active", runtime);
+		const result = await executeAcpBuiltinSlashCommand("/usage clear", runtime);
 
 		expect(result).toEqual({ consumed: true });
-		expect(redeemedTarget).toEqual({
-			provider: "openai-codex",
-			credentialId: 42,
-			accountId: "account-1",
-			email: "user@example.com",
-		});
+		expect(output).toEqual(["Nothing is pinned in ACP mode; /usage show prints the report."]);
 	});
 
-	it("pins Claude's provider, credential, organization, and selected grant for same-email accounts", async () => {
-		const { runtime } = createRuntime();
-		let redeemedTarget: ResetCreditTarget | undefined;
-		runtime.session.listResetCredits = async () => [
-			{
-				provider: "openai-codex",
-				credentialId: 7,
-				email: "shared@example.com",
-				availableCount: 1,
-				credits: [],
-				active: true,
-			},
-			{
-				provider: "anthropic",
-				credentialId: 9,
-				accountId: "claude-account",
-				email: "shared@example.com",
-				orgId: "org-claude",
-				availableCount: 2,
-				redeemableCount: 1,
-				nextCreditId: "grant-next",
-				credits: [
-					{
-						id: "grant-next",
-						title: "Claude reset",
-						program: "cedar_ember",
-						remainingCount: 2,
-						usable: true,
-						requiresLimit: true,
-						clears: ["anthropic:5h", "anthropic:7d"],
-						blocking: [],
-						usedFractions: {},
-					},
-				],
-				active: true,
-			},
-		];
-		runtime.session.redeemResetCredit = async target => {
-			redeemedTarget = target;
-			return {
-				ok: true,
-				code: "reset",
-				provider: "anthropic",
-				cleared: ["anthropic:5h", "anthropic:7d"],
-			};
-		};
-
-		await executeAcpBuiltinSlashCommand("/usage reset anthropic/9", runtime);
-
-		expect(redeemedTarget).toEqual({
-			provider: "anthropic",
-			credentialId: 9,
-			accountId: "claude-account",
-			email: "shared@example.com",
-			orgId: "org-claude",
-			creditId: "grant-next",
-		});
+	it("/usage rejects on, off, reset, and extra arguments with the show|clear help", async () => {
+		for (const input of ["/usage on", "/usage off", "/usage reset openai-codex/active", "/usage show extra"]) {
+			const { output, runtime } = createRuntime();
+			const result = await executeAcpBuiltinSlashCommand(input, runtime);
+			expect(result).toEqual({ consumed: true });
+			expect(output).toEqual(["Usage: /usage [show|clear]"]);
+		}
 	});
 
 	it("does not dispatch the legacy /reset-usage command", async () => {

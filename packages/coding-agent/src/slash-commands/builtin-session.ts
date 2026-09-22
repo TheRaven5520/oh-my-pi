@@ -10,102 +10,13 @@ import {
 import { formatTokenCount, refreshStatusLine } from "./builtin-modes";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
-import { describeRedeemOutcome, toResetUsageAccounts } from "./helpers/reset-usage";
-import type { ResetUsageAccount } from "@oh-my-pi/pi-tui/overlays/reset-usage-selector";
 import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
 import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
 import type { SlashCommandRuntime, SlashCommandSpec } from "./types";
-
-function normalizeResetProvider(value: string): string | undefined {
-	switch (value.trim().toLowerCase()) {
-		case "anthropic":
-		case "claude":
-			return "anthropic";
-		case "openai-codex":
-		case "codex":
-			return "openai-codex";
-		default:
-			return undefined;
-	}
-}
-
-async function handleUsageResetCommand(
-	arg: string,
-	session: AgentSession,
-	output: SlashCommandRuntime["output"],
-): Promise<void> {
-	const safe = (value: string): string => sanitizeText(value.replace(/[\r\n\t]+/g, " "));
-	let accounts: ResetUsageAccount[];
-	try {
-		accounts = toResetUsageAccounts(await session.listResetCredits());
-	} catch (error) {
-		await output(`Could not load saved resets: ${safe(errorMessage(error))}`);
-		return;
-	}
-	if (accounts.length === 0) {
-		await output("No provider accounts found. Use /login to add one.");
-		return;
-	}
-	const targetArg = arg.trim();
-	if (!targetArg) {
-		const lines = ["Saved rate-limit resets:"];
-		for (const account of accounts) {
-			let detail: string;
-			if (account.error) {
-				detail = `unavailable (${safe(account.error)})`;
-			} else {
-				detail = `${account.availableCount} saved, ${account.redeemableCount} usable now`;
-				if (account.expiresAt) detail += `, expires ${safe(account.expiresAt)}`;
-				if (account.redeemableCount === 0 && account.unavailableReason) {
-					detail += ` (${safe(account.unavailableReason)})`;
-				}
-			}
-			lines.push(
-				`- ${safe(account.label)} [${safe(account.providerLabel)} · ${account.provider}/${account.target.credentialId}]: ${detail}${account.active ? " (active)" : ""}`,
-			);
-		}
-		lines.push("", "Spend one with `/usage reset <provider>/<credential id>` or `/usage reset <provider>/active`.");
-		await output(lines.join("\n"));
-		return;
-	}
-
-	const slash = targetArg.indexOf("/");
-	if (slash <= 0) {
-		await output("Choose an account with `/usage reset <provider>/<credential id>`.");
-		return;
-	}
-	const requestedProvider = normalizeResetProvider(targetArg.slice(0, slash));
-	const requestedAccount = targetArg
-		.slice(slash + 1)
-		.trim()
-		.toLowerCase();
-	if (!requestedProvider) {
-		await output(`Unknown reset provider "${safe(targetArg.slice(0, slash))}". Use anthropic or openai-codex.`);
-		return;
-	}
-	const requestedCredentialId = /^\d+$/.test(requestedAccount) ? Number(requestedAccount) : undefined;
-	const target = accounts.find(account => {
-		if (account.provider !== requestedProvider) return false;
-		if (requestedAccount === "active") return account.active;
-		return requestedCredentialId !== undefined && account.target.credentialId === requestedCredentialId;
-	});
-	if (!target) {
-		await output(`No stored account matches "${safe(targetArg)}". List choices with \`/usage reset\`.`);
-		return;
-	}
-	if (target.redeemableCount <= 0) {
-		const reason = target.unavailableReason ? ` (${safe(target.unavailableReason)})` : "";
-		await output(`${safe(target.label)} [${safe(target.providerLabel)}]: no saved resets usable right now${reason}.`);
-		return;
-	}
-	const outcome = await session.redeemResetCredit(target.target);
-	await output(safe(describeRedeemOutcome(outcome, target.label)));
-}
 
 async function handleSessionPinCommand(
 	arg: string,
@@ -337,55 +248,38 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "usage",
 		icon: "gauge",
-		description: "Pin live provider usage and limits; use off to hide",
+		description: "Pin a usage snapshot above the prompt; clear to hide",
 		acpDescription: "Show token usage",
-		acpInputHint: "[show|on|off|reset [provider/credential-id|provider/active]]",
+		acpInputHint: "[show|clear]",
 		subcommands: [
-			{ name: "show", description: "Show provider usage and limits" },
-			{ name: "on", description: "Pin live usage above the prompt (TUI only)" },
-			{ name: "off", description: "Hide pinned usage and stop refreshing (TUI only)" },
-			{
-				name: "reset",
-				description: "Spend a saved provider rate-limit reset",
-				usage: "[provider/credential-id|provider/active]",
-			},
+			{ name: "show", description: "Pin a usage snapshot above the prompt (refetches if already pinned)" },
+			{ name: "clear", description: "Remove the pinned usage snapshot" },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
-			if (!verb || (verb === "show" && !rest)) {
+			if ((!verb || verb === "show") && !rest) {
 				await runtime.output(await buildUsageReportText(runtime));
 				return commandConsumed();
 			}
-			if ((verb === "on" || verb === "off") && !rest) {
-				return usage("Live usage is available in interactive mode: /usage on or /usage off.", runtime);
-			}
-			if (verb === "reset") {
-				await handleUsageResetCommand(rest, runtime.session, runtime.output);
+			if (verb === "clear" && !rest) {
+				await runtime.output("Nothing is pinned in ACP mode; /usage show prints the report.");
 				return commandConsumed();
 			}
-			return usage("Usage: /usage [show|on|off|reset [provider/credential-id|provider/active]]", runtime);
+			return usage("Usage: /usage [show|clear]", runtime);
 		},
 		handleTui: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
-			// TUI: plain, `show`, and `on` all pin the auto-refreshing live panel
-			// (idempotent); `off` hides it. The one-shot dashboard overlay stays
-			// reachable through ctx.showUsageDashboard for callers that hold reports.
-			if ((!verb || verb === "show" || verb === "on" || verb === "off") && !rest) {
-				runtime.ctx.setLiveUsageEnabled(verb !== "off");
-				runtime.ctx.editor.setText("");
-				return;
+			// Plain and `show` pin a one-shot snapshot (re-pinning refetches); `clear`
+			// removes it. The dashboard overlay stays reachable through
+			// ctx.showUsageDashboard for callers that already hold reports.
+			if ((!verb || verb === "show") && !rest) {
+				runtime.ctx.setUsagePinned(true);
+			} else if (verb === "clear" && !rest) {
+				runtime.ctx.setUsagePinned(false);
+			} else {
+				runtime.ctx.showStatus("Usage: /usage [show|clear]");
 			}
-			if (verb === "reset") {
-				if (rest) {
-					await handleUsageResetCommand(rest, runtime.ctx.session, text => runtime.ctx.showStatus(text));
-				} else {
-					await runtime.ctx.showResetUsageSelector();
-				}
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			runtime.ctx.showStatus("Usage: /usage [show|on|off|reset [provider/credential-id|provider/active]]");
 			runtime.ctx.editor.setText("");
 		},
 	},

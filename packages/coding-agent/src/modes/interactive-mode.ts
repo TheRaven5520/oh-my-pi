@@ -809,7 +809,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
 	deferredCommandContainer: Container;
-	liveUsageContainer: Container;
+	usageContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
 	/** Composer attachment band (chip cards) rendered directly above the prompt box. */
@@ -1154,7 +1154,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	clearTransientSessionUi(): void {
-		this.#commandController.setLiveUsageEnabled(false);
+		this.#commandController.setUsagePinned(false);
 		this.#hideSessionInfo();
 		if (this.loadingAnimation) {
 			this.loadingAnimation.stop();
@@ -1345,7 +1345,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.errorBannerContainer = new AnchoredLiveContainer();
 		this.modelCycleContainer = new AnchoredLiveContainer();
 		this.deferredCommandContainer = new AnchoredLiveContainer();
-		this.liveUsageContainer = new AnchoredLiveContainer();
+		this.usageContainer = new AnchoredLiveContainer();
 		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
 		this.#applyVimMode(this.editor);
@@ -1616,7 +1616,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.errorBannerContainer,
 			this.modelCycleContainer,
 			this.deferredCommandContainer,
-			this.liveUsageContainer,
+			this.usageContainer,
 			// Working loader / transient status sits below the sticky todo + subagent
 			// HUDs, just above the editor's hook-widget top margin — so it reads next to
 			// the prompt while keeping the one-line gap above the editor (the band
@@ -5686,7 +5686,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
-		this.#commandController.setLiveUsageEnabled(false);
+		this.#commandController.setUsagePinned(false);
 		this.#appearanceRefreshRequest = undefined;
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;
@@ -6557,8 +6557,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleUsageCommand(reports);
 	}
 
-	setLiveUsageEnabled(enabled: boolean): void {
-		this.#commandController.setLiveUsageEnabled(enabled);
+	setUsagePinned(pinned: boolean): void {
+		this.#commandController.setUsagePinned(pinned);
 	}
 
 	async handleChangelogCommand(showFull = false): Promise<void> {
@@ -6868,10 +6868,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showSessionPinSelector(): Promise<void> {
 		return this.#selectorController.showSessionPinSelector();
-	}
-
-	showResetUsageSelector(): Promise<void> {
-		return this.#selectorController.showResetUsageSelector();
 	}
 
 	async showProviderSetup(): Promise<void> {

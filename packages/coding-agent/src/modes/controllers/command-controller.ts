@@ -11,7 +11,7 @@ import {
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { adjustHsv, formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
@@ -36,7 +36,7 @@ import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
 import { MoveOverlay, type MoveOverlayResult } from "@oh-my-pi/pi-tui/overlays/move-overlay";
 import { moveDirectorySource } from "../move-directory-source";
 import { TranscriptBlock } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { colorToAnsi } from "@oh-my-pi/pi-tui/theme/color";
+import { type PooledUsageWindow, summarizePooledUsage } from "@oh-my-pi/pi-tui/status-line/pooled-usage";
 import {
 	getMarkdownTheme,
 	getSymbolTheme,
@@ -98,26 +98,27 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 	ctx.presentCommandOutput(block);
 }
 
-const LIVE_USAGE_REFRESH_MS = 30_000;
+/** One `/usage show` fetch. Pinned above the prompt until `/usage clear` or the next `show` replaces it. */
+interface UsageSnapshot {
+	session: InteractiveModeContext["session"];
+	sessionId: string;
+	/** `null` until the first fetch settles; a failed refetch keeps the last reports. */
+	reports: UsageReport[] | null;
+	fetchedAt: number | undefined;
+	message: string;
+}
 
-/** Compact rows are budgeted before rendering, so no provider disappears below a clip. */
-class LiveUsagePanel extends Text {
+class UsagePanel extends Text {
 	#cached?: {
 		reports: UsageReport[] | null;
+		fetchedAt: number | undefined;
 		message: string;
 		width: number;
-		maxRows: number;
-		clock: number;
 		themeEpoch: number;
-		provider: string | undefined;
-		activeAccount: OAuthAccountIdentity | undefined;
 		rows: string[];
 	};
 
-	constructor(
-		private readonly ctx: InteractiveModeContext,
-		private readonly state: () => LiveUsageState | undefined,
-	) {
+	constructor(private readonly snapshot: () => UsageSnapshot | undefined) {
 		super("", 0, 0);
 	}
 
@@ -127,339 +128,107 @@ class LiveUsagePanel extends Text {
 	}
 
 	override render(width: number): string[] {
-		const state = this.state();
-		if (!state) return [];
+		const snapshot = this.snapshot();
+		if (!snapshot) return [];
 		width = Math.max(1, width);
-		const maxRows = Math.max(6, Math.floor(this.ctx.ui.terminal.rows * 0.4));
-		// Relative times have second precision; ordinary token-stream frames reuse the rows.
-		const clock = Math.floor(Date.now() / 1000);
 		const themeEpoch = getThemeEpoch();
-		const provider = this.ctx.session.model?.provider;
-		const activeAccount = provider
-			? this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(provider, this.ctx.session.sessionId)
-			: undefined;
 		const cached = this.#cached;
 		if (
 			cached &&
-			cached.reports === state.reports &&
-			cached.message === state.message &&
+			cached.reports === snapshot.reports &&
+			cached.fetchedAt === snapshot.fetchedAt &&
+			cached.message === snapshot.message &&
 			cached.width === width &&
-			cached.maxRows === maxRows &&
-			cached.clock === clock &&
-			cached.themeEpoch === themeEpoch &&
-			cached.provider === provider &&
-			cached.activeAccount?.accountId === activeAccount?.accountId &&
-			cached.activeAccount?.email === activeAccount?.email &&
-			cached.activeAccount?.projectId === activeAccount?.projectId &&
-			cached.activeAccount?.orgId === activeAccount?.orgId
+			cached.themeEpoch === themeEpoch
 		) {
 			return cached.rows;
 		}
-		const rows = renderLiveUsageRows(state, width, maxRows, clock * 1000, provider, activeAccount);
+		const rows = renderUsageSnapshotRows(snapshot, width);
 		this.#cached = {
-			reports: state.reports,
-			message: state.message,
+			reports: snapshot.reports,
+			fetchedAt: snapshot.fetchedAt,
+			message: snapshot.message,
 			width,
-			maxRows,
-			clock,
 			themeEpoch,
-			provider,
-			activeAccount: activeAccount ? { ...activeAccount } : undefined,
 			rows,
 		};
 		return rows;
 	}
 }
 
-function liveUsageText(text: string): string {
-	return replaceTabs(sanitizeText(text.replace(/[\r\n]+/g, " ")));
+const USAGE_BAR_CELLS = 10;
+const usageFetchTime = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+function usageProviderHeading(provider: string): string {
+	if (provider === "anthropic") return "Anthropic";
+	if (provider === "openai-codex") return "OpenAI";
+	return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
-function formatLiveUsageLimit(limit: UsageLimit, nowMs: number, width: number): string {
-	const fraction = resolveUsedFraction(limit);
-	const amount = limit.amount;
-	let value = "unknown";
-	if (fraction !== undefined && Number.isFinite(fraction)) {
-		value = `${formatNumber(fraction * 100)}% used`;
-	} else if (amount.used !== undefined && Number.isFinite(amount.used)) {
-		value =
-			amount.unit === "usd" ? `$${amount.used.toFixed(2)} used` : `${formatNumber(amount.used)} ${amount.unit} used`;
-	} else if (amount.remaining !== undefined && Number.isFinite(amount.remaining)) {
-		value = `${formatNumber(amount.remaining)} ${amount.unit} left`;
-	}
-	if (limit.status === "exhausted" || (fraction !== undefined && fraction >= 1) || amount.remaining === 0) {
-		value += " exhausted";
-	} else if (limit.status === "warning") {
-		value += " warning";
-	}
-	const reset = formatResetShort(limit, nowMs);
-	const resetText = reset ? `, ${liveUsageText(limit.window?.resetLabel ?? "resets")} ${reset}` : "";
-	let title = liveUsageText(formatLimitTitle(limit));
-	const windowLabel = limit.window?.label ?? limit.window?.id ?? limit.scope.windowId;
-	if (windowLabel && !title.toLowerCase().includes(windowLabel.toLowerCase())) {
-		title += ` (${liveUsageText(windowLabel)})`;
-	}
-	// A countdown must not crowd out the window name that gives the amount meaning.
-	const titleReservation = Math.min(visibleWidth(title), 16);
-	const suffix = visibleWidth(value + resetText) + titleReservation + 1 <= width ? value + resetText : value;
-	return truncateToWidth(`${truncateToWidth(title, Math.max(1, width - visibleWidth(suffix) - 1))} ${suffix}`, width);
+function usageProviderRank(provider: string): number {
+	if (provider === "anthropic") return 0;
+	if (provider === "openai-codex") return 1;
+	return 2;
 }
 
-function selectLiveWeeklyLimit(report: UsageReport): UsageLimit | undefined {
-	return report.limits.find(limit => {
-		const weekly =
-			limit.window?.id === "7d" || limit.scope.windowId === "7d" || limit.window?.durationMs === 604_800_000;
-		if (report.provider === "anthropic") {
-			return limit.id === "anthropic:7d:fable" || (limit.scope.tier === "fable" && weekly);
-		}
-		return weekly && (limit.id === "openai-codex:primary" || limit.id === "openai-codex:secondary");
-	});
+function renderUsageWindowBar(window: PooledUsageWindow | undefined): string {
+	if (!window) {
+		return theme.fg("muted", `[${"-".repeat(USAGE_BAR_CELLS)}] —`);
+	}
+	const used = Math.min(USAGE_BAR_CELLS, Math.max(0, Math.round(window.usedPercent / 10)));
+	return `${theme.fg("muted", "[")}${theme.fg("text", "x".repeat(used))}${theme.fg("muted", `${"-".repeat(USAGE_BAR_CELLS - used)}]`)}`;
 }
 
-let liveUsageFillColors: { epoch: number; success: string; error: string } | undefined;
-
-function getLiveUsageFillAnsi(color: "success" | "error"): string {
-	const epoch = getThemeEpoch();
-	if (liveUsageFillColors?.epoch !== epoch) {
-		// Soften only account fills; keep their hue and the rest of the theme intact.
-		liveUsageFillColors = {
-			epoch,
-			success: colorToAnsi(adjustHsv(theme.getColorHex("success"), { v: 0.88 }), theme.getColorMode()),
-			error: colorToAnsi(adjustHsv(theme.getColorHex("error"), { v: 0.88 }), theme.getColorMode()),
-		};
-	}
-	return liveUsageFillColors[color];
-}
-
-function formatLiveWeeklyAccount(
-	report: UsageReport,
-	limit: UsageLimit | undefined,
-	fraction: number | undefined,
-	exhausted: boolean,
-	active: boolean,
-	nowMs: number,
-	width: number,
-): string {
-	const email = report.metadata?.email;
-	const label = typeof email === "string" && email.trim() ? liveUsageText(email) : "email unavailable";
-	const value = fraction === undefined ? "—" : `${formatNumber(fraction * 100)}%`;
-	const reset = limit && Number.isFinite(limit.window?.resetsAt) ? formatResetShort(limit, nowMs) : undefined;
-	const count = report.resetCredits?.availableCount;
-	const resets = count !== undefined && Number.isSafeInteger(count) && count >= 0 ? formatNumber(count, 0) : "—";
-	const suffix = ` ${value} · resets ${reset ?? "—"} · full resets ${resets}`;
-	const barWidth = Math.min(10, Math.max(4, width - 4 - Math.min(visibleWidth(label), 24) - visibleWidth(suffix)));
-	const identityWidth = Math.max(1, width - 4 - barWidth - visibleWidth(suffix));
-	const identity = truncateToWidth(label, identityWidth);
-	const color = exhausted ? "error" : limit?.status === "warning" ? "warning" : "success";
-	const bar = renderFractionBar(
-		fraction,
-		theme,
-		barWidth,
-		color,
-		"dim",
-		color === "warning" ? undefined : getLiveUsageFillAnsi(color),
-	);
-	return truncateToWidth(`  ${active ? theme.fg("accent", identity) : identity}: ${bar}${suffix}`, width);
-}
-
-function renderLiveUsageRows(
-	state: LiveUsageState,
-	width: number,
-	maxRows: number,
-	nowMs: number,
-	currentProvider: string | undefined,
-	activeAccount: OAuthAccountIdentity | undefined,
-): string[] {
-	const grouped = new Map<string, UsageReport[]>();
-	for (const report of state.reports ?? []) {
-		const reports = grouped.get(report.provider);
-		if (reports) reports.push(report);
-		else grouped.set(report.provider, [report]);
-	}
-	const providers = [...grouped].map(([provider, reports]) => {
-		const weeklyOnly = provider === "anthropic" || provider === "openai-codex";
-		const accounts = reports.map((report, index) => {
-			const weeklyLimit = weeklyOnly ? selectLiveWeeklyLimit(report) : undefined;
-			const selectedLimits = weeklyOnly ? (weeklyLimit ? [weeklyLimit] : []) : report.limits;
-			const limits = selectedLimits.map(limit => {
-				const usedFraction = resolveUsedFraction(limit);
-				const fraction = usedFraction !== undefined && Number.isFinite(usedFraction) ? usedFraction : -1;
-				return {
-					limit,
-					fraction,
-					exhausted: limit.status === "exhausted" || fraction >= 1 || limit.amount.remaining === 0,
-				};
-			});
-			limits.sort((a, b) => Number(b.exhausted) - Number(a.exhausted) || b.fraction - a.fraction);
-			const active =
-				provider === currentProvider &&
-				report.limits.some(limit => limitMatchesActiveAccount(report, limit, activeAccount));
-			return {
-				report,
-				index,
-				limits,
-				active,
-				exhausted: limits.some(entry => entry.exhausted),
-				pressure: limits[0]?.fraction ?? -1,
-			};
-		});
-		accounts.sort(
-			(a, b) =>
-				Number(b.exhausted) - Number(a.exhausted) ||
-				Number(b.active) - Number(a.active) ||
-				b.pressure - a.pressure ||
-				a.index - b.index,
-		);
-		return { provider, reports, accounts, weeklyOnly, allocation: 0 };
-	});
-	providers.sort((a, b) => a.provider.localeCompare(b.provider));
-	// Reserve every provider and the controls before fairly sharing account rows.
-	// A fetch error keeps the last snapshot visible and gets its own budgeted row.
-	let remaining = Math.max(0, maxRows - providers.length - 1 - Number(Boolean(state.message)));
-	while (remaining > 0) {
-		let allocated = false;
-		for (const provider of providers) {
-			if (provider.allocation >= provider.accounts.length) continue;
-			provider.allocation++;
-			remaining--;
-			allocated = true;
-			if (remaining === 0) break;
-		}
-		if (!allocated) break;
-	}
+/** Pool headline per provider from Sprilicred's pooled reports; no per-account rows. */
+function renderUsageSnapshotRows(snapshot: UsageSnapshot, width: number): string[] {
 	const rows: string[] = [];
-	for (const { provider, reports, accounts, weeklyOnly, allocation } of providers) {
-		const name = provider === "openai-codex" ? "Openai" : liveUsageText(formatProviderName(provider));
-		const omitted = accounts.length - allocation;
-		const exhausted = accounts.filter(account => account.exhausted).length;
-		const fetchedAt = reports.reduce(
-			(oldest, report) =>
-				Number.isFinite(report.fetchedAt) && report.fetchedAt > 0 ? Math.min(oldest, report.fetchedAt) : 0,
-			Number.POSITIVE_INFINITY,
-		);
-		const age = fetchedAt > 0 ? formatDuration(Math.max(0, nowMs - fetchedAt)) : "unknown";
-		if (weeklyOnly) {
-			let known = 0;
-			let total = 0;
-			for (const account of accounts) {
-				if (account.pressure < 0) continue;
-				known++;
-				total += account.pressure;
-			}
-			const fraction = known > 0 ? total / known : undefined;
-			const headlineColor: ThemeColor = provider === "anthropic" ? "customMessageLabel" : "accent";
-			const label = `${name} · ${provider === "anthropic" ? "Fable weekly avg" : "Weekly avg"}`;
-			const coverage = known < accounts.length ? ` (${known}/${accounts.length} known)` : "";
-			const value = ` ${fraction === undefined ? "—" : `${formatNumber(fraction * 100)}%`}${coverage}`;
-			const omittedText =
-				visibleWidth(`${label} ${value} · ${omitted} omitted`) + 1 <= width
-					? ` · ${omitted} omitted`
-					: ` · ${omitted}omit`;
-			const barWidth = Math.min(10, Math.max(1, width - visibleWidth(label + value + omittedText) - 1));
-			let header = `${theme.bold(theme.fg(headlineColor, label))} ${renderFractionBar(fraction, theme, barWidth, headlineColor, headlineColor)}${theme.fg(headlineColor, value)}`;
-			const details = [
-				` · ${accounts.length} accounts${omittedText} · ${exhausted} exhausted · oldest ${age}${age === "unknown" ? "" : " ago"}`,
-				`${omittedText} · ${exhausted}exh old:${age}`,
-				`${omittedText} · ${exhausted}exh`,
-				omittedText,
-			];
-			header += theme.fg(
-				headlineColor,
-				details.find(detail => visibleWidth(header + detail) <= width) ?? omittedText,
-			);
-			rows.push(truncateToWidth(header, width));
-		} else {
-			let header = `${name} · ${accounts.length} accounts · ${omitted} omitted · ${exhausted} exhausted · oldest ${age}${age === "unknown" ? "" : " ago"}`;
-			if (visibleWidth(header) > width) {
-				const counts = ` ${accounts.length}a ${omitted}omit ${exhausted}exh old:${age}`;
-				header = `${truncateToWidth(name, Math.max(1, width - visibleWidth(counts)))}${counts}`;
-			}
-			rows.push(theme.bold(theme.fg(exhausted > 0 ? "warning" : "accent", truncateToWidth(header, width))));
+	if (snapshot.reports !== null) {
+		const summary = summarizePooledUsage(snapshot.reports);
+		const sections = (summary ? [...summary] : [])
+			.sort(([a], [b]) => usageProviderRank(a) - usageProviderRank(b) || a.localeCompare(b))
+			.map(([provider, usage]) => {
+				const windows: Array<[string, PooledUsageWindow | undefined]> =
+					provider === "anthropic"
+						? [
+								["Fable Weekly", usage.fableWeekly],
+								["Weekly", usage.weekly],
+								["Five Hour", usage.fiveHour],
+							]
+						: [
+								["Weekly", usage.weekly],
+								["Five Hour", usage.fiveHour],
+							];
+				return { heading: usageProviderHeading(provider), windows };
+			});
+		if (sections.length === 0) rows.push(theme.fg("dim", truncateToWidth("No pooled usage data.", width)));
+		let labelWidth = 0;
+		for (const section of sections) {
+			for (const [label] of section.windows) labelWidth = Math.max(labelWidth, label.length);
 		}
-		for (const account of accounts.slice(0, allocation)) {
-			const { report, index, limits, active } = account;
-			if (weeklyOnly) {
-				const selected = limits[0];
-				rows.push(
-					formatLiveWeeklyAccount(
-						report,
-						selected?.limit,
-						selected && selected.fraction >= 0 ? selected.fraction : undefined,
-						account.exhausted,
-						active,
-						nowMs,
-						width,
-					),
-				);
-				continue;
+		for (const [index, section] of sections.entries()) {
+			if (index > 0) rows.push("");
+			rows.push(truncateToWidth(section.heading, width));
+			for (const [label, window] of section.windows) {
+				rows.push(truncateToWidth(`  - ${label.padEnd(labelWidth)} ${renderUsageWindowBar(window)}`, width));
 			}
-			const identityLimit = report.limits[0];
-			const label = liveUsageText(
-				identityLimit
-					? formatAccountLabel(identityLimit, report, index)
-					: formatUnlimitedReportLabel(report, index),
-			);
-			const marker = active ? "● " : "";
-			let identityWidth = Math.min(visibleWidth(label), Math.max(4, Math.floor((width - 4) / 3)));
-			const detailWidth = Math.max(1, width - 5 - visibleWidth(marker) - identityWidth);
-			let detail = "usage unknown";
-			if (limits.length > 0) {
-				const parts: string[] = [];
-				for (const { limit } of limits) {
-					const part = formatLiveUsageLimit(limit, nowMs, detailWidth);
-					const hidden = limits.length - parts.length - 1;
-					const overflow = hidden > 0 ? ` · +${hidden} limits` : "";
-					const candidate = [...parts, part].join(" · ");
-					if (visibleWidth(candidate + overflow) > detailWidth) {
-						if (parts.length === 0)
-							parts.push(formatLiveUsageLimit(limit, nowMs, Math.max(1, detailWidth - visibleWidth(overflow))));
-						break;
-					}
-					parts.push(part);
-				}
-				const hidden = limits.length - parts.length;
-				detail = parts.join(" · ") + (hidden > 0 ? ` · +${hidden} limits` : "");
-			}
-			const resets = report.resetCredits?.availableCount ?? 0;
-			if (resets > 0) detail += ` · ${resets} saved reset${resets === 1 ? "" : "s"}`;
-			const notes = [...new Set([...(report.notes ?? []), ...report.limits.flatMap(limit => limit.notes ?? [])])];
-			if (notes.length > 0) detail += ` · ${liveUsageText(notes.join(" · "))}`;
-			// Short quota summaries leave room for the full account/org identity.
-			identityWidth = Math.min(
-				visibleWidth(label),
-				Math.max(identityWidth, width - 5 - visibleWidth(marker) - visibleWidth(detail)),
-			);
-			const org = liveUsageText(orgSuffix(report));
-			let identity = truncateToWidth(label, identityWidth);
-			if (org && label.endsWith(org) && visibleWidth(label) > identityWidth) {
-				const orgWidth = Math.min(visibleWidth(org), Math.floor(identityWidth / 2));
-				identity =
-					truncateToWidth(label.slice(0, -org.length), identityWidth - orgWidth) + truncateToWidth(org, orgWidth);
-			}
-			const prefix = `  ${marker}${identity} · `;
-			const row = truncateToWidth(prefix + detail, width);
-			rows.push(active ? theme.fg("accent", row) : account.exhausted ? theme.fg("warning", row) : row);
 		}
 	}
-	if (state.message) rows.push(theme.fg("dim", truncateToWidth(liveUsageText(state.message), width)));
-	let footer = "Live usage · /usage off · cached, refresh 30s";
-	if (visibleWidth(footer) > width) footer = "/usage off · cached, refresh 30s";
-	if (visibleWidth(footer) > width) footer = "/usage off · cached 30s";
+	if (snapshot.message) {
+		rows.push(
+			theme.fg("dim", truncateToWidth(replaceTabs(sanitizeText(snapshot.message.replace(/[\r\n]+/g, " "))), width)),
+		);
+	}
+	const fetched =
+		snapshot.fetchedAt === undefined ? "fetching…" : `fetched ${usageFetchTime.format(snapshot.fetchedAt)}`;
+	let footer = `Usage snapshot · ${fetched} · /usage clear`;
+	if (visibleWidth(footer) > width) footer = `${fetched} · /usage clear`;
+	if (visibleWidth(footer) > width) footer = "/usage clear";
 	rows.push(theme.fg("dim", truncateToWidth(footer, width)));
 	return rows;
 }
 
-interface LiveUsageState {
-	session: InteractiveModeContext["session"];
-	sessionId: string;
-	reports: UsageReport[] | null;
-	message: string;
-}
-
 export class CommandController {
-	#liveUsage: LiveUsageState | undefined;
-	#liveUsageTimer: ReturnType<typeof setInterval> | undefined;
-	#liveUsageFetching = false;
+	#usageSnapshot: UsageSnapshot | undefined;
 
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
@@ -1018,63 +787,57 @@ export class CommandController {
 		this.ctx.showUsageDashboard(usageReports);
 	}
 
-	setLiveUsageEnabled(enabled: boolean): void {
-		if (!enabled) {
-			if (this.#liveUsageTimer) clearInterval(this.#liveUsageTimer);
-			this.#liveUsageTimer = undefined;
-			if (!this.#liveUsage) return;
-			this.#liveUsage = undefined;
-			this.ctx.liveUsageContainer.disposeChildren();
+	/**
+	 * Pin (or clear) a static usage snapshot above the prompt. Pinning while
+	 * already pinned refetches once and replaces the snapshot; the previous
+	 * reports stay visible until the new fetch settles.
+	 */
+	setUsagePinned(pinned: boolean): void {
+		if (!pinned) {
+			if (!this.#usageSnapshot) return;
+			this.#usageSnapshot = undefined;
+			this.ctx.usageContainer.disposeChildren();
 			this.ctx.ui.requestRender();
 			return;
 		}
-		if (this.#liveUsage && this.#isLiveUsageCurrent(this.#liveUsage)) return;
-		const state: LiveUsageState = {
+		const previous = this.#currentUsageSnapshot();
+		const snapshot: UsageSnapshot = {
 			session: this.ctx.session,
 			sessionId: this.ctx.session.sessionId,
-			reports: null,
+			reports: previous?.reports ?? null,
+			fetchedAt: previous?.fetchedAt,
 			message: "Fetching usage data…",
 		};
-		this.#liveUsage = state;
-		this.ctx.liveUsageContainer.addChild(
-			new LiveUsagePanel(this.ctx, () => (this.#isLiveUsageCurrent(state) ? state : undefined)),
-		);
-		this.#liveUsageTimer = setInterval(() => {
-			if (!this.#isLiveUsageCurrent(state)) return;
-			this.ctx.ui.requestRender();
-			void this.#refreshLiveUsage(state);
-		}, LIVE_USAGE_REFRESH_MS);
-		this.#liveUsageTimer.unref();
+		this.#usageSnapshot = snapshot;
+		if (!previous) this.ctx.usageContainer.addChild(new UsagePanel(() => this.#currentUsageSnapshot()));
 		this.ctx.ui.requestRender();
-		void this.#refreshLiveUsage(state);
+		void this.#fetchUsageSnapshot(snapshot);
 	}
 
-	#isLiveUsageCurrent(state: LiveUsageState): boolean {
-		if (this.#liveUsage !== state) return false;
-		if (this.ctx.session !== state.session || this.ctx.session.sessionId !== state.sessionId) {
-			this.setLiveUsageEnabled(false);
-			return false;
+	/** The pinned snapshot, or undefined (after unpinning) once the session it was taken from is gone. */
+	#currentUsageSnapshot(): UsageSnapshot | undefined {
+		const snapshot = this.#usageSnapshot;
+		if (!snapshot) return undefined;
+		if (this.ctx.session !== snapshot.session || this.ctx.session.sessionId !== snapshot.sessionId) {
+			this.setUsagePinned(false);
+			return undefined;
 		}
-		return true;
+		return snapshot;
 	}
 
-	async #refreshLiveUsage(state: LiveUsageState): Promise<void> {
-		if (!this.#isLiveUsageCurrent(state) || this.#liveUsageFetching) return;
-		this.#liveUsageFetching = true;
+	async #fetchUsageSnapshot(snapshot: UsageSnapshot): Promise<void> {
 		try {
-			const reports = await state.session.fetchUsageReports();
-			if (!this.#isLiveUsageCurrent(state)) return;
-			state.reports = reports;
-			state.message = reports?.length ? "" : "No usage data available.";
+			const reports = await snapshot.session.fetchUsageReports();
+			// A later `show` or `clear` owns the panel now; this result is stale.
+			if (this.#currentUsageSnapshot() !== snapshot) return;
+			snapshot.reports = reports ?? [];
+			snapshot.fetchedAt = Date.now();
+			snapshot.message = "";
 		} catch (error) {
-			if (!this.#isLiveUsageCurrent(state)) return;
-			state.message = `Failed to fetch usage data: ${error instanceof Error ? error.message : String(error)}`;
-		} finally {
-			this.#liveUsageFetching = false;
-			if (this.#isLiveUsageCurrent(state)) this.ctx.ui.requestRender();
-			// A new enable waits for the old request rather than overlapping it.
-			else if (this.#liveUsage) void this.#refreshLiveUsage(this.#liveUsage);
+			if (this.#currentUsageSnapshot() !== snapshot) return;
+			snapshot.message = `Failed to fetch usage data: ${error instanceof Error ? error.message : String(error)}`;
 		}
+		this.ctx.ui.requestRender();
 	}
 
 	async handleChangelogCommand(showFull = false): Promise<void> {
@@ -2437,16 +2200,9 @@ function renderUsageBar(limit: UsageLimit, uiTheme: Theme, barWidth: number): st
 	return renderFractionBar(resolveUsedFraction(limit), uiTheme, barWidth, resolveStatusColor(limit.status));
 }
 
-function renderFractionBar(
-	fraction: number | undefined,
-	uiTheme: Theme,
-	barWidth: number,
-	color: ThemeColor,
-	emptyColor: ThemeColor = "dim",
-	fillAnsi?: string,
-): string {
+function renderFractionBar(fraction: number | undefined, uiTheme: Theme, barWidth: number, color: ThemeColor): string {
 	if (fraction === undefined) {
-		return uiTheme.fg(emptyColor, "·".repeat(barWidth));
+		return uiTheme.fg("dim", "·".repeat(barWidth));
 	}
 	const clamped = Math.min(Math.max(fraction, 0), 1);
 	const exact = clamped * barWidth;
@@ -2457,8 +2213,7 @@ function renderFractionBar(
 	else if (remainder >= 1 / 3) partial = "▒";
 	const leading = "█".repeat(fullCells) + partial;
 	const empty = "░".repeat(Math.max(0, barWidth - fullCells - (partial ? 1 : 0)));
-	const filled = fillAnsi === undefined ? uiTheme.fg(color, leading) : `${fillAnsi}${leading}\x1b[39m`;
-	return `${filled}${uiTheme.fg(emptyColor, empty)}`;
+	return `${uiTheme.fg(color, leading)}${uiTheme.fg("dim", empty)}`;
 }
 
 /**
@@ -2600,9 +2355,7 @@ export function renderUsageReports(
 			}
 		}
 		if (resetAccountLines.length > 0) {
-			lines.push(
-				`  ${uiTheme.fg("accent", "Saved rate-limit resets")} ${uiTheme.fg("dim", "(/usage reset to spend)")}`,
-			);
+			lines.push(`  ${uiTheme.fg("accent", "Saved rate-limit resets")}`);
 			for (const line of resetAccountLines) lines.push(uiTheme.fg("dim", line));
 		}
 
