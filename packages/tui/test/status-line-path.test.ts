@@ -295,7 +295,7 @@ describe("status line path segment", () => {
 		};
 		expect(render("/home/ubuntu/code", null)).toBe("…/home/ubuntu/code");
 		expect(render("/home/ubuntu/code/oh-my-pi", "main")).toBe("…/ubuntu/code/oh-my-pi [main]");
-		expect(render("/tmp")).toBe("tmp");
+		expect(render("/tmp")).toBe("");
 		expect(render("/a/b")).toBe("a/b");
 	});
 });
