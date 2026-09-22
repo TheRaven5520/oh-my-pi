@@ -2,6 +2,7 @@
 
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionPreparation } from "@oh-my-pi/pi-agent-core/compaction";
+import { sendsImageInputOnWire } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import type { AssistantMessage, ImageContent, Message, Model, SimpleStreamOptions, TextContent } from "@oh-my-pi/pi-ai";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
@@ -14,7 +15,9 @@ import { deobfuscateSessionContext, obfuscateMessages } from "../secrets/message
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { stripPendingSecretPlaceholderSuffix } from "../secrets/placeholder";
 import { normalizeModelContextImages } from "../utils/image-loading";
+import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { describeAttachedImagesForTextModel } from "../utils/image-vision-fallback";
+import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
 import { type CustomMessage, convertToLlm } from "./messages";
 import { IMAGE_ATTACHMENT_DESCRIPTION_TYPE } from "./queued-messages";
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
@@ -48,7 +51,7 @@ export class SessionProviderBoundary {
 	}
 
 	/** Latest image attachments addressable by tools as `Image #N` or `attachment://N`. */
-	getImageAttachments(): { label: string; uri: string; image: ImageContent }[] {
+	getImageAttachments(): { label: string; uri: string; image: ImageContent; sourcePath: string }[] {
 		for (let i = this.#host.agent.state.messages.length - 1; i >= 0; i--) {
 			const message = this.#host.agent.state.messages[i];
 			if (!message || (message.role !== "user" && message.role !== "developer") || !Array.isArray(message.content)) {
@@ -56,11 +59,27 @@ export class SessionProviderBoundary {
 			}
 			const images = message.content.filter((part): part is ImageContent => part.type === "image");
 			if (images.length === 0) continue;
-			return images.map((image, index) => ({
-				label: `Image #${index + 1}`,
-				uri: `attachment://${index + 1}`,
-				image,
-			}));
+			return images.flatMap((image, index) => {
+				const label = `Image #${index + 1}`;
+				const uri = `attachment://${index + 1}`;
+				// File-backed attachments resolve to their original path so tools and
+				// clickable links open the user's real file; clipboard payloads have no
+				// source file and materialize a blob copy instead.
+				const originalPath = imageAttachmentSource(image)?.path;
+				if (originalPath) return [{ label, uri, image, sourcePath: originalPath }];
+				try {
+					const sourcePath = this.#host.sessionManager.putBlobSync(Buffer.from(image.data, "base64"), {
+						extension: blobExtensionForImageMimeType(image.mimeType),
+					}).displayPath;
+					return [{ label, uri, image, sourcePath }];
+				} catch (error) {
+					logger.warn("failed to materialize image attachment; attachment omitted", {
+						label,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return [];
+				}
+			});
 		}
 		return [];
 	}
@@ -216,7 +235,7 @@ export class SessionProviderBoundary {
 		const model = this.#host.model();
 		const shouldDescribe =
 			!!model &&
-			!model.input.includes("image") &&
+			!sendsImageInputOnWire(model) &&
 			!this.#host.settings.get("images.blockImages") &&
 			this.#host.settings.get("images.describeForTextModels");
 		if (!shouldDescribe || !model) return undefined;

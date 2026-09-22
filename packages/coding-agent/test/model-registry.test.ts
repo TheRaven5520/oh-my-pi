@@ -1,13 +1,23 @@
 import { Database } from "bun:sqlite";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Effort, type FetchImpl, type Model, type OpenAICompat, type ThinkingConfig } from "@oh-my-pi/pi-ai";
+import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
+import { streamSimple } from "@oh-my-pi/pi-ai/stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
+import { fingerprintStaticModels } from "@oh-my-pi/pi-catalog/model-manager";
+import * as catalogModels from "@oh-my-pi/pi-catalog/models";
+import { calculateUsageCost, getBundledModels } from "@oh-my-pi/pi-catalog/models";
+import { modelKind } from "@oh-my-pi/pi-catalog/types";
+import { finalizeCustomModel } from "@oh-my-pi/pi-coding-agent/config/custom-models";
+import { applyModelPatch, mergeDiscoveredModel } from "@oh-my-pi/pi-coding-agent/config/model-patch";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resolveRoleChain } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { roleCandidatePool } from "@oh-my-pi/pi-coding-agent/config/model-roles";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -30,6 +40,7 @@ describe("ModelRegistry", () => {
 	let bootOllamaBaseUrl: string | undefined;
 	let bootOllamaHost: string | undefined;
 	let bootOllamaContextLength: string | undefined;
+	const spies: Array<{ mockRestore: () => void }> = [];
 
 	beforeEach(async () => {
 		resetSettingsForTest();
@@ -50,6 +61,7 @@ describe("ModelRegistry", () => {
 
 	afterEach(() => {
 		resetSettingsForTest();
+		for (const spy of spies.splice(0)) spy.mockRestore();
 		if (originalOllamaBaseUrl === undefined) {
 			delete Bun.env.OLLAMA_BASE_URL;
 		} else {
@@ -168,6 +180,12 @@ describe("ModelRegistry", () => {
 		return compat && "replayUnsignedThinking" in compat ? compat.replayUnsignedThinking : undefined;
 	}
 
+	/** The resolved Responses view the driver gates `configuration_update` emission on. */
+	function getSupportsConfigurationUpdate(model: Model | undefined): boolean | undefined {
+		const compat = model?.compat;
+		return compat && "supportsConfigurationUpdate" in compat ? compat.supportsConfigurationUpdate : undefined;
+	}
+
 	/** Create a baseUrl-only override (no custom models) */
 	function overrideConfig(baseUrl: string, headers?: Record<string, string>) {
 		return { baseUrl, ...(headers && { headers }) };
@@ -222,6 +240,139 @@ describe("ModelRegistry", () => {
 			opts?.fetch ? { fetch: opts.fetch } : undefined,
 		);
 	}
+
+	describe("model kind pools", () => {
+		test("zero-argument pools remain chat-only while find remains kind-agnostic", () => {
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+			expect(registry.getAll().every(model => modelKind(model) === "chat")).toBe(true);
+			expect(registry.getAvailable().every(model => modelKind(model) === "chat")).toBe(true);
+			expect(registry.getAll().some(model => ["local", "web", "typesafe"].includes(model.provider))).toBe(false);
+			expect(registry.getAvailable().some(model => ["local", "web", "typesafe"].includes(model.provider))).toBe(
+				false,
+			);
+			expect(registry.find("local", "falcon-h1-90m")).toMatchObject({ kind: "tiny" });
+			expect(registry.find("web", "duckduckgo")).toMatchObject({ kind: "search" });
+			expect(registry.find("typesafe", "jev-latest")).toMatchObject({ kind: "judge" });
+		});
+
+		test("all and kind pools expose keyless runners and authenticated TypeSafe models", () => {
+			let allowTypeSafeAuth = false;
+			const hasAuth = authStorage.hasAuth.bind(authStorage);
+			spies.push(
+				spyOn(authStorage, "hasAuth").mockImplementation(provider =>
+					provider === "typesafe" && !allowTypeSafeAuth ? false : hasAuth(provider),
+				),
+			);
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+			expect(registry.getAll("all")).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ provider: "local", id: "falcon-h1-90m", kind: "tiny" }),
+					expect.objectContaining({ provider: "local", id: "kokoro", kind: "tts" }),
+					expect.objectContaining({ provider: "local", id: "whisper-base", kind: "stt" }),
+					expect.objectContaining({ provider: "web", id: "duckduckgo", kind: "search" }),
+					expect.objectContaining({ provider: "typesafe", id: "jev-latest", kind: "judge" }),
+				]),
+			);
+			expect(registry.getAvailable("tiny")).toContainEqual(
+				expect.objectContaining({ provider: "local", id: "falcon-h1-90m" }),
+			);
+			expect(registry.getAvailable("tts")).toContainEqual(
+				expect.objectContaining({ provider: "local", id: "kokoro" }),
+			);
+			expect(registry.getAvailable("stt")).toContainEqual(
+				expect.objectContaining({ provider: "local", id: "whisper-base" }),
+			);
+			expect(registry.getAvailable("search")).toContainEqual(
+				expect.objectContaining({ provider: "web", id: "duckduckgo" }),
+			);
+			expect(registry.getAvailable("judge").some(model => model.provider === "typesafe")).toBe(false);
+			expect(registry.getAvailable("all").some(model => model.provider === "typesafe")).toBe(false);
+
+			authStorage.setRuntimeApiKey("typesafe", "typesafe-test-key");
+			allowTypeSafeAuth = true;
+			expect(registry.getAvailable("judge")).toContainEqual(
+				expect.objectContaining({ provider: "typesafe", id: "jev-latest" }),
+			);
+			expect(registry.getAvailable("all")).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ provider: "local", id: "falcon-h1-90m" }),
+					expect.objectContaining({ provider: "web", id: "duckduckgo" }),
+					expect.objectContaining({ provider: "typesafe", id: "jev-latest" }),
+				]),
+			);
+		});
+
+		test("keeps image and speech fallback runners across authoritative chat cache and refresh", async () => {
+			authStorage.setRuntimeApiKey("deepinfra", "deepinfra-test-key");
+			const settings = Settings.isolated({
+				modelRoles: { image: "deepinfra/missing-image", speech: "deepinfra/missing-speech" },
+				"retry.fallbackChains": {
+					image: ["deepinfra/black-forest-labs/FLUX-2-pro"],
+					speech: ["deepinfra/hexgrad/Kokoro-82M"],
+				},
+			});
+			const cachedChat = buildModel({
+				id: "cached-chat",
+				name: "Cached Chat",
+				provider: "deepinfra",
+				api: "openai-completions",
+				baseUrl: "https://api.deepinfra.com/v1/openai",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 32_000,
+				maxTokens: 4096,
+			});
+			writeModelCache(
+				"deepinfra",
+				Date.now(),
+				[cachedChat],
+				true,
+				fingerprintStaticModels(getBundledModels("deepinfra"), true),
+				path.join(tempDir, "models.db"),
+			);
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+				settings,
+				fetch: async () => Response.json({ data: [] }),
+			});
+			const runnerRoutes = () =>
+				["image", "speech"].flatMap(role =>
+					resolveRoleChain(role, settings, roleCandidatePool(role, settings, registry)).map(
+						({ model }) => `${model.provider}/${model.id}`,
+					),
+				);
+			const expectedRoutes = ["deepinfra/black-forest-labs/FLUX-2-pro", "deepinfra/hexgrad/Kokoro-82M"];
+
+			expect(runnerRoutes()).toEqual(expectedRoutes);
+			expect(
+				registry
+					.getAll()
+					.filter(model => model.provider === "deepinfra")
+					.map(model => model.id),
+			).toEqual([cachedChat.id]);
+			expect(runnerRoutes()).toEqual(expectedRoutes);
+
+			await registry.refreshProvider("deepinfra", "online");
+
+			expect(runnerRoutes()).toEqual(expectedRoutes);
+			expect(registry.getAll().filter(model => model.provider === "deepinfra")).toEqual([]);
+		});
+
+		test("disabled runner providers remain excluded from available kind and all pools", () => {
+			authStorage.setRuntimeApiKey("typesafe", "typesafe-test-key");
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+				settings: Settings.isolated({ disabledProviders: ["local", "web", "typesafe"] }),
+			});
+
+			for (const kind of ["tiny", "tts", "stt", "search", "judge", "all"] as const) {
+				expect(
+					registry.getAvailable(kind).some(model => ["local", "web", "typesafe"].includes(model.provider)),
+				).toBe(false);
+			}
+		});
+	});
 
 	describe("OpenRouter routed suffix fallback", () => {
 		let registry: ModelRegistry;
@@ -342,18 +493,18 @@ describe("ModelRegistry", () => {
 			}
 		});
 
-		test("overriding headers merges with model headers", () => {
+		test("overriding headers merges with model headers", async () => {
 			const anthropicModels = getModelsForProvider(anthropicProxyHeaders, "anthropic");
 			for (const model of anthropicModels) {
-				expect(model.headers?.["X-Custom-Header"]).toBe("custom-value");
+				expect((await anthropicProxyHeaders.resolveModelHeaders(model))?.["X-Custom-Header"]).toBe("custom-value");
 			}
 		});
 
-		test("headers-only override applies to built-in models", () => {
+		test("headers-only override applies to built-in models", async () => {
 			const anthropicModels = getModelsForProvider(anthropicHeadersOnly, "anthropic");
 			expect(anthropicModels.length).toBeGreaterThan(1);
 			for (const model of anthropicModels) {
-				expect(model.headers?.["X-Custom-Header"]).toBe("custom-only");
+				expect((await anthropicHeadersOnly.resolveModelHeaders(model))?.["X-Custom-Header"]).toBe("custom-only");
 			}
 		});
 
@@ -364,20 +515,21 @@ describe("ModelRegistry", () => {
 			expect(model?.supportsComputerUse).toBe(false);
 		});
 
-		test("provider header lookup excludes unrelated model overrides", () => {
-			expect(xaiModelScopedHeaders.find("xai", otherXaiModelId)?.headers?.["X-Model-Tenant"]).toBe(
+		test("provider header lookup excludes unrelated model overrides", async () => {
+			const model = xaiModelScopedHeaders.find("xai", otherXaiModelId);
+			expect(model && (await xaiModelScopedHeaders.resolveModelHeaders(model))?.["X-Model-Tenant"]).toBe(
 				"other-model-tenant",
 			);
-			expect({ ...xaiModelScopedHeaders.getProviderHeaders("xai") }).toEqual({
+			expect({ ...(await xaiModelScopedHeaders.getProviderHeaders("xai")) }).toEqual({
 				"X-Provider-Tenant": "search-tenant",
 			});
 		});
 
-		test("authHeader override applies bearer auth to built-in models without custom models", () => {
+		test("authHeader override applies bearer auth to built-in models without custom models", async () => {
 			const anthropicModels = getModelsForProvider(anthropicAuthHeader, "anthropic");
 			expect(anthropicModels.length).toBeGreaterThan(1);
 			for (const model of anthropicModels) {
-				expect(model.headers?.Authorization).toBe("Bearer issue-929-key");
+				expect((await anthropicAuthHeader.resolveModelHeaders(model))?.Authorization).toBe("Bearer issue-929-key");
 			}
 		});
 
@@ -554,6 +706,7 @@ describe("ModelRegistry", () => {
 		let customAnthropicCompat: ModelRegistry;
 		let customModelCompat: ModelRegistry;
 		let customResponsesCompat: ModelRegistry;
+		let customAstraProxyCompat: ModelRegistry;
 		beforeAll(() => {
 			providerCompat = readonlyRegistry({
 				providers: {
@@ -651,6 +804,28 @@ describe("ModelRegistry", () => {
 					},
 				},
 			});
+			customAstraProxyCompat = readonlyRegistry({
+				providers: {
+					"astra-proxy": {
+						baseUrl: "https://proxy.example.com/v1",
+						apiKey: "PROXY_KEY",
+						api: "openai-responses",
+						compat: {
+							supportsConfigurationUpdate: false,
+						},
+						models: [
+							{
+								id: "gpt-6-astra",
+								reasoning: true,
+								input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								contextWindow: 400_000,
+								maxTokens: 128_000,
+							},
+						],
+					},
+				},
+			});
 			customModelCompat = readonlyRegistry({
 				providers: {
 					demo: {
@@ -734,10 +909,63 @@ describe("ModelRegistry", () => {
 			expect(getReplayUnsignedThinking(registry.find("anthropic", "claude-sonnet-5"))).toBe(false);
 		});
 
+		test("catalog metrics enrich models discovered through a custom provider", async () => {
+			// Metrics only fill unscored models, so the id must be absent from the
+			// bundled catalog — otherwise a regen that scores it silently wins here.
+			writeRawModelsJson({
+				cliproxy: {
+					baseUrl: "https://proxy.example/v1",
+					apiKey: "TEST_KEY",
+					api: "openai-responses",
+					discovery: { type: "openai-models-list" },
+					models: [],
+				},
+			});
+			const fetchMock: FetchImpl = async input => {
+				const url = String(input);
+				if (url === "https://catalog.stencil.so/models.json.zstd") {
+					return Response.json({
+						openai: {
+							id: "openai",
+							name: "OpenAI",
+							models: {
+								"gpt-5.7-sol": {
+									id: "gpt-5.7-sol",
+									name: "GPT-5.7 Sol",
+									tool_call: true,
+									int: 60.9,
+									tps: 70.4,
+								},
+							},
+						},
+					});
+				}
+				if (url === "https://proxy.example/v1/models") {
+					return Response.json({ data: [{ id: "gpt-5.7-sol" }] });
+				}
+				throw new Error(`Unexpected URL: ${url}`);
+			};
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+
+			await registry.refresh("online");
+
+			const model = registry.find("cliproxy", "gpt-5.7-sol");
+			expect(model?.int).toBe(60.9);
+			expect(model?.tps).toBe(70.4);
+		});
+
 		test("custom Responses providers can disable original image detail", () => {
 			const model = customResponsesCompat.find("cc-switch", "gpt-5.5");
 			const compat = getOpenAICompat(model);
 			expect(compat?.supportsImageDetailOriginal).toBe(false);
+		});
+
+		test("custom Responses providers can disable configuration_update items for gpt-6-astra", () => {
+			const model = customAstraProxyCompat.find("astra-proxy", "gpt-6-astra");
+			// The sparse override survives models.yml validation…
+			expect(getOpenAICompat(model)?.supportsConfigurationUpdate).toBe(false);
+			// …and beats the gpt-6-astra class rule on the resolved view the driver reads.
+			expect(getSupportsConfigurationUpdate(model)).toBe(false);
 		});
 
 		test("custom Responses providers preserve compaction config", () => {
@@ -759,6 +987,236 @@ describe("ModelRegistry", () => {
 			const compat = getOpenAICompat(model);
 			expect(compat?.supportsUsageInStreaming).toBe(true);
 			expect(compat?.maxTokensField).toBe("max_completion_tokens");
+		});
+	});
+
+	describe("mixed provider routes", () => {
+		let registry: ModelRegistry;
+
+		beforeAll(() => {
+			registry = readonlyRegistry({
+				providers: {
+					zai: {
+						baseUrl: "https://api.z.ai/api/anthropic",
+						apiKey: "TEST_KEY",
+						models: [
+							{
+								id: "glm-5.3",
+								api: "anthropic-messages",
+								name: "GLM-5.3",
+								reasoning: true,
+								input: ["text"],
+								cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
+								contextWindow: 1_000_000,
+								maxTokens: 131_072,
+							},
+						],
+					},
+				},
+			});
+		});
+
+		test("preserves Z.AI streamed content through the final assistant message", async () => {
+			const flash = registry.find("zai", "glm-5.3-flash");
+			if (!flash || flash.api !== "openai-completions") {
+				throw new Error("expected the bundled Z.AI flash model to use OpenAI Completions");
+			}
+			const openAIFlash = flash as Model<"openai-completions">;
+			expect(openAIFlash.baseUrl).toBe("https://api.z.ai/api/coding/paas/v4");
+			let requestUrl: string | undefined;
+			const fetchMock: FetchImpl = input => {
+				requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (requestUrl !== "https://api.z.ai/api/coding/paas/v4/chat/completions") {
+					return Promise.resolve(
+						new Response(JSON.stringify({ code: 500, msg: "404_NOT_FOUND", success: false }), {
+							status: 200,
+							headers: { "content-type": "application/json" },
+						}),
+					);
+				}
+				const events = [
+					{
+						id: "chatcmpl-zai-fixture",
+						choices: [{ index: 0, delta: { role: "assistant", reasoning_content: "thinking..." } }],
+					},
+					{
+						id: "chatcmpl-zai-fixture",
+						choices: [{ index: 0, delta: { role: "assistant", content: "OK" } }],
+					},
+					{
+						id: "chatcmpl-zai-fixture",
+						choices: [{ index: 0, finish_reason: "stop", delta: { role: "assistant", content: "" } }],
+						usage: { prompt_tokens: 1, completion_tokens: 3, total_tokens: 4 },
+					},
+				];
+				const payload = `${events.map(event => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\ndata: [DONE]\n\n`;
+				return Promise.resolve(
+					new Response(payload, {
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					}),
+				);
+			};
+
+			const result = await streamOpenAICompletions(
+				openAIFlash,
+				{
+					messages: [{ role: "user", content: "Reply with exactly OK.", timestamp: Date.now() }],
+				},
+				{ apiKey: "TEST_KEY", fetch: fetchMock },
+			).result();
+
+			expect(requestUrl).toBe("https://api.z.ai/api/coding/paas/v4/chat/completions");
+			expect(result.content).toEqual(expect.arrayContaining([{ type: "text", text: "OK" }]));
+			expect(result.stopReason).toBe("stop");
+			expect(registry.find("zai", "glm-5.3")).toMatchObject({
+				api: "anthropic-messages",
+				baseUrl: "https://api.z.ai/api/anthropic",
+			});
+		});
+
+		test("keeps a discovered model route when the provider override uses another API", () => {
+			const model = buildModel({
+				id: "glm-5.3-flash",
+				name: "GLM-5.3 Flash",
+				api: "openai-completions",
+				provider: "zai",
+				baseUrl: "https://api.z.ai/api/coding/paas/v4",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 131_072,
+			});
+			const merged = mergeDiscoveredModel(model, model, {
+				baseUrlApis: ["anthropic-messages"],
+				baseUrl: "https://api.z.ai/api/anthropic",
+			});
+			expect(merged).toMatchObject({
+				api: "openai-completions",
+				baseUrl: "https://api.z.ai/api/coding/paas/v4",
+			});
+		});
+
+		test("scopes multiple custom APIs sharing the provider baseUrl", () => {
+			const multiApiRegistry = readonlyRegistry({
+				providers: {
+					zai: {
+						baseUrl: "https://api.z.ai/api/anthropic",
+						apiKey: "TEST_KEY",
+						models: [
+							{
+								id: "glm-anthropic",
+								api: "anthropic-messages",
+								name: "GLM Anthropic",
+								reasoning: true,
+								input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								contextWindow: 1_000_000,
+								maxTokens: 131_072,
+							},
+							{
+								id: "glm-openai",
+								api: "openai-completions",
+								name: "GLM OpenAI",
+								reasoning: true,
+								input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								contextWindow: 1_000_000,
+								maxTokens: 131_072,
+							},
+						],
+					},
+				},
+			});
+			const flash = multiApiRegistry.find("zai", "glm-5.3-flash");
+			const glmAnthropic = multiApiRegistry.find("zai", "glm-anthropic");
+			const glmOpenai = multiApiRegistry.find("zai", "glm-openai");
+			expect(flash).toMatchObject({ api: "openai-completions", baseUrl: "https://api.z.ai/api/anthropic" });
+			expect(glmAnthropic).toMatchObject({ baseUrl: "https://api.z.ai/api/anthropic" });
+			expect(glmOpenai).toMatchObject({ baseUrl: "https://api.z.ai/api/anthropic" });
+		});
+
+		test("override-only provider api keeps a bundled model on its catalog route", () => {
+			const apiOnlyRegistry = readonlyRegistry({
+				providers: {
+					zai: {
+						baseUrl: "https://api.z.ai/api/anthropic",
+						apiKey: "TEST_KEY",
+						api: "anthropic-messages",
+					},
+				},
+			});
+			const flash = apiOnlyRegistry.find("zai", "glm-5.3-flash");
+			expect(flash).toMatchObject({
+				api: "openai-completions",
+				baseUrl: "https://api.z.ai/api/coding/paas/v4",
+			});
+		});
+
+		test("a custom model baseUrl keeps its own host and does not scope the provider", () => {
+			const directHostRegistry = readonlyRegistry({
+				providers: {
+					zai: {
+						baseUrl: "https://api.z.ai/api/anthropic",
+						apiKey: "TEST_KEY",
+						models: [
+							{
+								id: "glm-direct",
+								api: "anthropic-messages",
+								name: "GLM Direct",
+								baseUrl: "https://direct.example.com",
+								reasoning: true,
+								input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								contextWindow: 1_000_000,
+								maxTokens: 131_072,
+							},
+						],
+					},
+				},
+			});
+			const direct = directHostRegistry.find("zai", "glm-direct");
+			const flash = directHostRegistry.find("zai", "glm-5.3-flash");
+			expect(direct).toMatchObject({ baseUrl: "https://direct.example.com" });
+			expect(flash).toMatchObject({ baseUrl: "https://api.z.ai/api/anthropic" });
+		});
+
+		test("refresh keeps pi-native gateway baseUrl across APIs", async () => {
+			writeRawModelsJson({
+				zai: {
+					baseUrl: "http://localhost:4000",
+					apiKey: "gateway-token",
+					api: "anthropic-messages",
+					transport: "pi-native",
+					models: [
+						{
+							id: "glm-anthropic",
+							api: "anthropic-messages",
+							name: "GLM Anthropic",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 1_000_000,
+							maxTokens: 131_072,
+						},
+					],
+				},
+			});
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			await registry.refreshProvider("zai", "offline");
+
+			const flash = registry.find("zai", "glm-5.3-flash");
+			expect(flash).toMatchObject({
+				api: "openai-completions",
+				baseUrl: "http://localhost:4000",
+				transport: "pi-native",
+			});
+			const glmAnthropic = registry.find("zai", "glm-anthropic");
+			expect(glmAnthropic).toMatchObject({
+				api: "anthropic-messages",
+				baseUrl: "http://localhost:4000",
+			});
 		});
 	});
 
@@ -924,6 +1382,154 @@ describe("ModelRegistry", () => {
 			});
 		});
 
+		describe("provider transport on custom models", () => {
+			const customModel = {
+				id: "transport-fixture",
+				name: "Transport Fixture",
+				api: "openai-completions" as const,
+				reasoning: false,
+				input: ["text" as const],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 32000,
+				maxTokens: 4000,
+				headers: { "X-Route": "model" },
+			};
+
+			async function loadRegistry(transport?: "pi-native", modelBaseUrl?: string): Promise<ModelRegistry> {
+				const modelsPath = path.join(tempDir, "models.yml");
+				await Bun.write(
+					modelsPath,
+					Bun.YAML.stringify({
+						providers: {
+							openai: {
+								baseUrl: "https://gateway.example",
+								apiKey: "gateway-bearer",
+								api: "openai-completions",
+								...(transport && { transport }),
+								headers: { "X-Route": "provider" },
+								models: [{ ...customModel, ...(modelBaseUrl && { baseUrl: modelBaseUrl }) }],
+							},
+						},
+					}),
+				);
+				return new ModelRegistry(authStorage, modelsPath);
+			}
+
+			async function requestModel(registry: ModelRegistry, model: Model | undefined, native: boolean) {
+				if (!model) throw new Error("custom transport fixture was not loaded");
+				let request: Request | undefined;
+				const fetch: FetchImpl = async (input, init) => {
+					request = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+					const events = native
+						? [
+								{
+									type: "done",
+									reason: "stop",
+									message: {
+										role: "assistant",
+										api: "openai-completions",
+										provider: "openai",
+										model: customModel.id,
+										content: [{ type: "text", text: "OK" }],
+										usage: {
+											input: 1,
+											output: 1,
+											cacheRead: 0,
+											cacheWrite: 0,
+											totalTokens: 2,
+											cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+										},
+										stopReason: "stop",
+										timestamp: 0,
+									},
+								},
+							]
+						: [
+								{
+									id: "chatcmpl-transport-fixture",
+									choices: [{ index: 0, delta: { role: "assistant", content: "OK" } }],
+								},
+								{
+									id: "chatcmpl-transport-fixture",
+									choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+									usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+								},
+							];
+					return new Response(
+						`${events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`,
+						{ headers: { "Content-Type": "text/event-stream" } },
+					);
+				};
+				const result = await streamSimple(
+					model,
+					{ messages: [{ role: "user", content: "Reply OK.", timestamp: 0 }] },
+					{ apiKey: await registry.getApiKey(model), fetch },
+				).result();
+				if (!request) throw new Error("custom transport fixture did not make a request");
+				const body = (await request.json()) as Record<string, unknown>;
+				return { request, body, result };
+			}
+
+			test("new custom model uses native gateway routing instead of /chat/completions on lazy find", async () => {
+				const registry = await loadRegistry("pi-native");
+				const { request, body, result } = await requestModel(
+					registry,
+					registry.find("openai", customModel.id),
+					true,
+				);
+
+				expect(request.url).toBe("https://gateway.example/v1/pi/stream");
+				expect(request.method).toBe("POST");
+				expect(body.modelId).toBe(`openai/${customModel.id}`);
+				expect(body.stream).toBe(true);
+				expect(request.headers.get("Authorization")).toBe("Bearer gateway-bearer");
+				expect(request.headers.get("X-Route")).toBe("model");
+				expect(result.content).toEqual([{ type: "text", text: "OK" }]);
+				expect(result.stopReason).toBe("stop");
+			});
+
+			test("same-ID custom replacement sends native requests to the provider gateway, not its model baseUrl", async () => {
+				const bundledModel = buildModel({
+					...customModel,
+					provider: "openai",
+					baseUrl: "https://bundled.example/v1",
+				});
+				const originalGetBundledModels = catalogModels.getBundledModels;
+				spies.push(
+					spyOn(catalogModels, "getBundledModels").mockImplementation(provider =>
+						provider === "openai" ? [bundledModel] : originalGetBundledModels(provider),
+					),
+				);
+				const registry = await loadRegistry("pi-native", "https://model.example/v1");
+				// A fresh full snapshot must not reuse a model already composed by find().
+				const model = registry.getAll().find(model => model.provider === "openai" && model.id === customModel.id);
+				const { request, body, result } = await requestModel(registry, model, true);
+
+				expect(request.url).toBe("https://gateway.example/v1/pi/stream");
+				expect(body.modelId).toBe(`openai/${customModel.id}`);
+				expect(request.headers.get("Authorization")).toBe("Bearer gateway-bearer");
+				expect(request.headers.get("X-Route")).toBe("model");
+				expect(result.content).toEqual([{ type: "text", text: "OK" }]);
+				expect(result.stopReason).toBe("stop");
+			});
+
+			test("without provider transport, custom model keeps /chat/completions at its explicit model baseUrl", async () => {
+				const registry = await loadRegistry(undefined, "https://model.example/v1");
+				const { request, body, result } = await requestModel(
+					registry,
+					registry.find("openai", customModel.id),
+					false,
+				);
+
+				expect(request.url).toBe("https://model.example/v1/chat/completions");
+				expect(body.model).toBe(customModel.id);
+				expect(body.modelId).toBeUndefined();
+				expect(request.headers.get("X-Route")).toBe("model");
+				expect(result.content).toEqual(expect.arrayContaining([{ type: "text", text: "OK" }]));
+				expect(result.stopReason).toBe("stop");
+			});
+		});
+
 		test("custom provider with same name as built-in merges with built-in models", () => {
 			const anthropicModels = getModelsForProvider(anthropicCustom, "anthropic");
 			// Built-in models still present, custom model merged in
@@ -940,11 +1546,12 @@ describe("ModelRegistry", () => {
 			expect(sonnetModels[0].baseUrl).toBe("https://my-proxy.example.com/v1");
 		});
 
-		test("custom same-id replacement does not keep bundled headers", () => {
+		test("custom same-id replacement does not keep bundled headers", async () => {
 			const model = copilotReplace.find("github-copilot", "gpt-4o");
-			expect(model?.headers).toEqual({ "X-Proxy": "proxy" });
-			expect(model?.headers?.["User-Agent"]).toBeUndefined();
-			expect(model?.headers?.["Editor-Version"]).toBeUndefined();
+			const headers = model ? await copilotReplace.resolveModelHeaders(model) : undefined;
+			expect(headers).toEqual({ "X-Proxy": "proxy" });
+			expect(headers?.["User-Agent"]).toBeUndefined();
+			expect(headers?.["Editor-Version"]).toBeUndefined();
 		});
 
 		test("custom provider with same name as built-in does not affect other built-in providers", () => {
@@ -1056,7 +1663,9 @@ describe("ModelRegistry", () => {
 
 			const model = registry.find("custom-local", "gpt-5.4");
 			expect(model?.contextWindow).toBe(1_000_000);
-			expect(model?.baseUrl).toBe("http://127.0.0.1:8080");
+			// llama.cpp discovery probes the bare root (`/models`, `/props`); chat
+			// traffic must go to the OpenAI-compatible `/v1` prefix.
+			expect(model?.baseUrl).toBe("http://127.0.0.1:8080/v1");
 		});
 
 		test("discoverable custom compat survives refresh", async () => {
@@ -1136,8 +1745,9 @@ describe("ModelRegistry", () => {
 
 			const discovered = registry.find("openai", "gpt-5.5");
 			expect(discovered?.baseUrl).toBe("https://provider.example.com/v1");
-			expect(discovered?.headers?.["X-Provider"]).toBe("provider");
-			expect(discovered?.headers?.["X-Model"]).toBeUndefined();
+			const headers = discovered ? await registry.resolveModelHeaders(discovered) : undefined;
+			expect(headers?.["X-Provider"]).toBe("provider");
+			expect(headers?.["X-Model"]).toBeUndefined();
 		});
 
 		test("same-id replacement uses configured compat without bundled compat leak", () => {
@@ -1252,6 +1862,7 @@ describe("ModelRegistry", () => {
 		let addHeaders: ModelRegistry;
 		let omitOnBuiltin: ModelRegistry;
 		let omitOnCustom: ModelRegistry;
+		let scheduledPrices: ModelRegistry;
 		beforeAll(() => {
 			single = readonlyRegistry({
 				providers: {
@@ -1313,6 +1924,25 @@ describe("ModelRegistry", () => {
 			});
 			costPartial = readonlyRegistry({
 				providers: { openai: { modelOverrides: { "gpt-5.6": { cost: { input: 99 } } } } },
+			});
+			scheduledPrices = readonlyRegistry({
+				providers: {
+					deepseek: {
+						api: "openai-completions",
+						baseUrl: "https://api.deepseek.com",
+						auth: "none",
+						modelOverrides: {
+							"deepseek-v4-flash": { name: "Renamed Flash" },
+							"deepseek-v4-pro": { cost: { input: 8, output: 16, cacheRead: 2, cacheWrite: 0 } },
+						},
+						models: [
+							{
+								id: "deepseek-v4-flash-vision-exp",
+								cost: { input: 4, output: 8, cacheRead: 1, cacheWrite: 0 },
+							},
+						],
+					},
+				},
 			});
 			addHeaders = readonlyRegistry({
 				providers: {
@@ -1449,9 +2079,47 @@ describe("ModelRegistry", () => {
 			});
 		});
 
-		test("model override can add headers", () => {
+		test("non-price overrides keep scheduled rates while user prices stay fixed across tariff changes", () => {
+			expect(scheduledPrices.getError()).toBeUndefined();
+			const renamed = scheduledPrices.find("deepseek", "deepseek-v4-flash");
+			const overridden = scheduledPrices.find("deepseek", "deepseek-v4-pro");
+			const custom = scheduledPrices.find("deepseek", "deepseek-v4-flash-vision-exp");
+			if (!renamed || !overridden || !custom) throw new Error("Expected configured DeepSeek models");
+			const standalone = finalizeCustomModel(
+				{
+					id: "deepseek-v4-pro",
+					provider: "deepseek",
+					api: overridden.api,
+					baseUrl: overridden.baseUrl,
+					cost: { input: 3, output: 6, cacheRead: 1, cacheWrite: 0 },
+				},
+				{ useDefaults: true },
+			);
+			const repatched = applyModelPatch(overridden, { contextWindow: 250_000 }, "merge");
+			const usage = {
+				input: 1_000_000,
+				output: 1_000_000,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2_000_000,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			};
+			const peak = Date.parse("2026-09-10T03:00:00Z");
+			const offPeak = Date.parse("2026-09-10T04:00:00Z");
+			const afterRateChange = Date.parse("2026-09-14T04:00:00Z");
+			expect(calculateUsageCost(renamed.cost, usage, peak).total).toBeCloseTo(1.5, 8);
+			expect(calculateUsageCost(renamed.cost, usage, offPeak).total).toBeCloseTo(0.75, 8);
+			for (const timestamp of [peak, offPeak, afterRateChange]) {
+				expect(calculateUsageCost(overridden.cost, usage, timestamp).total).toBe(24);
+				expect(calculateUsageCost(custom.cost, usage, timestamp).total).toBe(12);
+				expect(calculateUsageCost(standalone.cost, usage, timestamp).total).toBe(9);
+				expect(calculateUsageCost(repatched.cost, usage, timestamp).total).toBe(24);
+			}
+		});
+
+		test("model override can add headers", async () => {
 			const sonnet = getModelsForProvider(addHeaders, "openrouter").find(m => m.id === "anthropic/claude-sonnet-4");
-			expect(sonnet?.headers?.["X-Custom-Model-Header"]).toBe("value");
+			expect(sonnet && (await addHeaders.resolveModelHeaders(sonnet))?.["X-Custom-Model-Header"]).toBe("value");
 		});
 
 		test("refresh() picks up model override changes", async () => {
@@ -1661,6 +2329,255 @@ describe("ModelRegistry", () => {
 			expect(disabledProbeUrls).toEqual([]);
 		});
 	});
+	describe("extended context", () => {
+		const thinking: ThinkingConfig = {
+			mode: "effort",
+			efforts: [Effort.Low, Effort.Medium],
+			defaultLevel: Effort.Low,
+		};
+
+		test.each(
+			[
+				["openai-codex", "gpt-6-astra"],
+				["openai-codex", "gpt-5.6-luna"],
+				["anthropic", "claude-opus-5"],
+				["anthropic", "claude-mythos-5"],
+				["amazon-bedrock", "anthropic.claude-opus-5"],
+				["amazon-bedrock", "au.anthropic.claude-opus-5"],
+				["amazon-bedrock", "eu.anthropic.claude-opus-5"],
+				["amazon-bedrock", "global.anthropic.claude-opus-5"],
+				["amazon-bedrock", "us-gov.anthropic.claude-opus-5"],
+				["amazon-bedrock", "us.anthropic.claude-opus-5"],
+				["amazon-bedrock", "global.openai.gpt-5.6-luna"],
+				["bedrock-mantle", "openai.gpt-5.6-luna"],
+			].flatMap(([provider, id]) => [false, true].map(extendedContext => [provider, id, extendedContext] as const)),
+		)("%s/%s extendedContext=%j preserves capacity across effort restrictions", (provider, id, extendedContext) => {
+			const testSettings = Settings.isolated({ extendedContext });
+			const baselineRegistry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			const baseline = baselineRegistry.find(provider, id);
+			expect(baseline).toBeDefined();
+			if (!baseline?.thinking) throw new Error(`Missing thinking-capable model: ${provider}/${id}`);
+			const overrideThinking: ThinkingConfig = {
+				...baseline.thinking,
+				efforts: [Effort.Low, Effort.Medium],
+				defaultLevel: Effort.Low,
+			};
+			writeRawModelsJson({
+				[provider]: { modelOverrides: { [id]: { thinking: overrideThinking } } },
+			});
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			const actual = registry.find(provider, id);
+			expect(actual?.thinking).toEqual(overrideThinking);
+			expect(actual?.contextWindow).toBe(baseline.contextWindow);
+			expect(actual?.maxTokens).toBe(baseline.maxTokens);
+		});
+
+		test("preserves Astra capacity with a thinking-only override across policy toggles", async () => {
+			writeRawModelsJson({
+				"openai-codex": { modelOverrides: { "gpt-6-astra": { thinking } } },
+			});
+			const testSettings = Settings.isolated();
+			testSettings.set("extendedContext", true);
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			expect(registry.find("openai-codex", "gpt-6-astra")?.thinking).toEqual(thinking);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(922_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(922_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.thinking).toEqual(thinking);
+		});
+
+		test("toggles bundled Astra between its standard and documented extended windows", async () => {
+			const testSettings = Settings.isolated();
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(922_000);
+			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+		});
+
+		test("keeps bundled Astra at its default window without a settings source", () => {
+			// `beforeEach` leaves global settings uninitialized, so this
+			// reaches the no-settings fallback: it must match the schema
+			// default (off), never silently elevated windows.
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+		});
+
+		test("preserves an explicit Astra context override across extended context toggles", async () => {
+			writeRawModelsJson({
+				"openai-codex": { modelOverrides: { "gpt-6-astra": { contextWindow: 400_000, thinking } } },
+			});
+			const testSettings = Settings.isolated();
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(400_000);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(400_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(400_000);
+		});
+
+		test("clamps an explicit Astra override to the Codex ceiling", async () => {
+			writeRawModelsJson({
+				"openai-codex": { modelOverrides: { "gpt-6-astra": { contextWindow: 2_000_000, thinking } } },
+			});
+			const testSettings = Settings.isolated({ extendedContext: true });
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			// Explicit intent wins over the toggle, but upstream never honors
+			// more than the server ceiling (curated 922K input cap here).
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(922_000);
+		});
+
+		test("clamps a cached Astra row already carrying the applied override", async () => {
+			writeRawModelsJson({
+				"openai-codex": { modelOverrides: { "gpt-6-astra": { contextWindow: 2_000_000 } } },
+			});
+			const testSettings = Settings.isolated({ extendedContext: true });
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			const astra = registry.find("openai-codex", "gpt-6-astra");
+			if (!astra) throw new Error("Expected bundled Astra model");
+			// Wire-value row, as discovery persists it; the cache loader
+			// applies the models.yml override before composition sees it, so
+			// the clamp must hold on every override pass, not just the last.
+			writeModelCache(
+				"openai-codex",
+				Date.now(),
+				[{ ...astra, contextWindow: 272_000, maxContextWindow: 872_000 }],
+				true,
+				"",
+				path.join(tempDir, "models.db"),
+			);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(922_000);
+		});
+
+		test("restores the opt-in for cached Astra and worker rows with stale or invalid maxima", async () => {
+			const testSettings = Settings.isolated();
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			const astra = registry.find("openai-codex", "gpt-6-astra");
+			if (!astra) throw new Error("Expected bundled Astra model");
+			writeModelCache(
+				"openai-codex",
+				Date.now(),
+				[
+					{ ...astra, contextWindow: 1_050_000, maxContextWindow: 872_000 },
+					{ ...astra, id: "gpt-6-astra-wm", contextWindow: 1_050_000, maxContextWindow: 0 },
+				],
+				true,
+				"",
+				path.join(tempDir, "models.db"),
+			);
+			await registry.reapplyModelPolicies();
+			for (const id of ["gpt-6-astra", "gpt-6-astra-wm"]) {
+				expect(registry.find("openai-codex", id)?.contextWindow).toBe(272_000);
+			}
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			for (const id of ["gpt-6-astra", "gpt-6-astra-wm"]) {
+				expect(registry.find("openai-codex", id)?.contextWindow).toBe(922_000);
+			}
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			for (const id of ["gpt-6-astra", "gpt-6-astra-wm"]) {
+				expect(registry.find("openai-codex", id)?.contextWindow).toBe(272_000);
+			}
+		});
+
+		test("uses higher discovered Astra maxima without retaining them across catalog rebuilds", async () => {
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+				settings: Settings.isolated({ extendedContext: true }),
+			});
+			const astra = registry.find("openai-codex", "gpt-6-astra");
+			if (!astra) throw new Error("Expected bundled Astra model");
+			const dbPath = path.join(tempDir, "models.db");
+			writeModelCache("openai-codex", Date.now(), [{ ...astra, maxContextWindow: 1_200_000 }], true, "", dbPath);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_200_000);
+
+			writeModelCache("openai-codex", Date.now(), [{ ...astra, maxContextWindow: 872_000 }], true, "", dbPath);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(922_000);
+		});
+
+		test("restores a discovered maximum from cache ahead of the default on each toggle", async () => {
+			const testSettings = Settings.isolated();
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			const legacy = registry.find("openai-codex", "gpt-5.5");
+			const extended = registry.find("openai-codex", "gpt-5.6-luna");
+			if (!legacy || !extended) throw new Error("Expected bundled Codex models");
+			writeModelCache(
+				"openai-codex",
+				Date.now(),
+				[
+					{ ...legacy, maxContextWindow: 640_000 },
+					{ ...extended, maxContextWindow: 64_000 },
+				],
+				true,
+				"",
+				path.join(tempDir, "models.db"),
+			);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(640_000);
+			// An advertised maximum smaller than the current window cannot shrink it.
+			expect(registry.find("openai-codex", "gpt-5.6-luna")?.contextWindow).toBe(1_000_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(640_000);
+		});
+
+		test("off caps billable premium models without shrinking subscription estimates", async () => {
+			await Settings.init({ inMemory: true, overrides: { extendedContext: false } });
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+
+			// GPT-5.6 bills 2x input above 272K on both the API and Codex.
+			expect(registry.find("openai", "gpt-5.6-sol")?.contextWindow).toBe(272_000);
+			expect(registry.find("openai-codex", "gpt-5.6-sol")?.contextWindow).toBe(272_000);
+			// Standard-priced 1M models (no long-context tier) keep their window.
+			expect(registry.find("anthropic", "claude-opus-4-8")?.contextWindow).toBe(1_000_000);
+			// SuperGrok carries public xAI tiers for stats estimates, not billing.
+			expect(registry.find("xai-oauth", "grok-4.20-0309-reasoning")?.contextWindow).toBe(2_000_000);
+		});
+
+		test("reapplyModelPolicies re-clamps and restores premium windows on toggle", async () => {
+			await Settings.init({ inMemory: true });
+			settings.set("extendedContext", true);
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
+
+			settings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(272_000);
+
+			settings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
+			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(1_000_000);
+		});
+	});
 	describe("bundled Anthropic catalog availability", () => {
 		let anthropicAuth: AuthStorage;
 		let registry: ModelRegistry;
@@ -1756,6 +2673,113 @@ describe("ModelRegistry", () => {
 			const model = myProxyCustom.find("my-proxy", "claude-sonnet-4");
 			expect(model).toBeDefined();
 			expect((model?.compat as { disableStrictTools?: boolean } | undefined)?.disableStrictTools).toBe(true);
+		});
+	});
+
+	describe("amazon-bedrock guardrails", () => {
+		let guardrailOverride: ModelRegistry;
+		beforeAll(() => {
+			guardrailOverride = readonlyRegistry({
+				providers: {
+					"amazon-bedrock": {
+						guardrailIdentifier: "arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234",
+						guardrailVersion: "1",
+						guardrailTrace: "enabled",
+						requestMetadata: { team: "growth", environment: "prod" },
+					},
+					"custom-bedrock": {
+						baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+						apiKey: "TEST_KEY",
+						api: "bedrock-converse-stream",
+						guardrailIdentifier: "arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234",
+						guardrailVersion: "1",
+						guardrailTrace: "enabled",
+						requestMetadata: { team: "growth", environment: "prod" },
+						models: [
+							{
+								id: "custom-bedrock-model",
+								name: "Custom Bedrock Model",
+								reasoning: false,
+								input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								contextWindow: 128000,
+								maxTokens: 4096,
+							},
+						],
+					},
+				},
+			});
+		});
+
+		test("guardrail provider config applies to built-in bedrock models", () => {
+			const models = getModelsForProvider(guardrailOverride, "amazon-bedrock");
+			expect(models.length).toBeGreaterThan(0);
+			for (const model of models) {
+				expect(model.guardrailIdentifier).toBe("arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234");
+				expect(model.guardrailVersion).toBe("1");
+				expect(model.guardrailTrace).toBe("enabled");
+				expect(model.requestMetadata).toEqual({ team: "growth", environment: "prod" });
+			}
+		});
+
+		test("guardrail provider config applies to a non-bundled Bedrock model", () => {
+			const model = guardrailOverride.find("custom-bedrock", "custom-bedrock-model");
+			expect(model).toBeDefined();
+			expect(model?.guardrailIdentifier).toBe("arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234");
+			expect(model?.guardrailVersion).toBe("1");
+			expect(model?.guardrailTrace).toBe("enabled");
+			expect(model?.requestMetadata).toEqual({ team: "growth", environment: "prod" });
+		});
+
+		test("guardrail fields are absent on built-in bedrock models without override", () => {
+			const models = getModelsForProvider(sharedBuiltin, "amazon-bedrock");
+			expect(models.length).toBeGreaterThan(0);
+			for (const model of models) {
+				expect(model.guardrailIdentifier).toBeUndefined();
+				expect(model.guardrailVersion).toBeUndefined();
+				expect(model.guardrailTrace).toBeUndefined();
+				expect(model.requestMetadata).toBeUndefined();
+			}
+		});
+
+		test("guardrail provider config applies to a synthesized inference-profile ARN model", () => {
+			const profileArn = "arn:aws:bedrock:us-east-2:123456789012:application-inference-profile/company-opus-48";
+			const model = guardrailOverride.find("amazon-bedrock", profileArn);
+			expect(model).toBeDefined();
+			expect(model?.id).toBe(profileArn);
+			expect(model?.api).toBe("bedrock-converse-stream");
+			expect(model?.guardrailIdentifier).toBe("arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234");
+			expect(model?.guardrailVersion).toBe("1");
+			expect(model?.guardrailTrace).toBe("enabled");
+		});
+
+		test("guardrail fields are absent on a synthesized ARN model without override", () => {
+			const profileArn = "arn:aws:bedrock:us-east-2:123456789012:application-inference-profile/company-opus-48";
+			const model = sharedBuiltin.find("amazon-bedrock", profileArn);
+			expect(model).toBeDefined();
+			expect(model?.guardrailIdentifier).toBeUndefined();
+			expect(model?.guardrailVersion).toBeUndefined();
+			expect(model?.guardrailTrace).toBeUndefined();
+		});
+
+		test("transport and header overrides apply to a synthesized ARN model", async () => {
+			const transportOverride = readonlyRegistry({
+				providers: {
+					"amazon-bedrock": {
+						transport: "pi-native",
+						headers: { "X-Custom-Header": "custom-value" },
+						guardrailIdentifier: "arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234",
+					},
+				},
+			});
+			const profileArn = "arn:aws:bedrock:us-east-2:123456789012:application-inference-profile/company-opus-48";
+			const model = transportOverride.find("amazon-bedrock", profileArn);
+			expect(model).toBeDefined();
+			expect(model?.transport).toBe("pi-native");
+			expect(model && (await transportOverride.resolveModelHeaders(model))).toEqual({
+				"X-Custom-Header": "custom-value",
+			});
+			expect(model?.guardrailIdentifier).toBe("arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234");
 		});
 	});
 
@@ -1878,6 +2902,8 @@ describe("ModelRegistry", () => {
 		let vertexNonAuthoritative: ModelRegistry;
 		let vertexStale: ModelRegistry;
 		let litellmStaleNamespaceCache: ModelRegistry;
+		let sharedCatalogCache: ModelRegistry;
+		let staticOnlySharedCatalogCache: ModelRegistry;
 		let litellmCurrentNamespaceCache: ModelRegistry;
 		let openaiModelsListStaleNamespaceCache: ModelRegistry;
 		const vertexProjectModel = () =>
@@ -1894,6 +2920,65 @@ describe("ModelRegistry", () => {
 				maxTokens: 8_888,
 			});
 		beforeAll(() => {
+			sharedCatalogCache = readonlyRegistry(
+				{ providers: {} },
+				{
+					seedCache: dbPath => {
+						const bundledModels = getBundledModels("zai");
+						const bundledModel = bundledModels[0];
+						if (!bundledModel) throw new Error("ZAI bundled catalog is empty");
+						writeModelCache(
+							"zai",
+							Date.now(),
+							[
+								{
+									...bundledModel,
+									name: "Stale cached name",
+									contextWindow: bundledModel.contextWindow === 1 ? 2 : 1,
+									maxTokens: bundledModel.maxTokens === 1 ? 2 : 1,
+								},
+								...bundledModels.slice(1),
+								buildModel({
+									id: "glm-experimental-probe",
+									name: "GLM Experimental Probe",
+									api: "anthropic-messages",
+									provider: "zai",
+									baseUrl: "https://api.z.ai/api/anthropic",
+									reasoning: true,
+									input: ["text", "image"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 1_000_000,
+									maxTokens: 131_072,
+								}),
+							],
+							true,
+							"merge-v3:stale-bundle",
+							dbPath,
+						);
+					},
+				},
+			);
+			staticOnlySharedCatalogCache = readonlyRegistry(
+				{ providers: {} },
+				{
+					seedCache: dbPath => {
+						for (const [providerId, dynamicModelsAuthoritative] of [
+							["zai", false],
+							["anthropic", true],
+						] as const) {
+							const bundledModels = getBundledModels(providerId);
+							writeModelCache(
+								providerId,
+								Date.now(),
+								bundledModels,
+								false,
+								fingerprintStaticModels(bundledModels, dynamicModelsAuthoritative),
+								dbPath,
+							);
+						}
+					},
+				},
+			);
 			legacySentinels = readonlyRegistry(
 				{
 					providers: {
@@ -1974,7 +3059,7 @@ describe("ModelRegistry", () => {
 								}),
 							],
 							true,
-							"",
+							fingerprintStaticModels(getBundledModels("ollama-cloud")),
 							dbPath,
 						);
 					},
@@ -2152,11 +3237,11 @@ describe("ModelRegistry", () => {
 					maxTokens: 16_384,
 				});
 			litellmStaleNamespaceCache = readonlyRegistry(litellmProxyConfig(), {
-				// Row under the retired pre-reseller-suffix-stripping namespace; the
-				// rich-v2 bump must orphan it instead of serving the stale name.
+				// Rows cached before mode filtering must be orphaned instead of
+				// serving stale non-conversational entries.
 				seedCache: dbPath =>
 					writeModelCache(
-						"litellm-proxy:litellm-rich-v1",
+						"litellm-proxy:litellm-rich-v4",
 						Date.now(),
 						[litellmCachedModel("MiniMax-M3 (3x usage)")],
 						true,
@@ -2167,7 +3252,7 @@ describe("ModelRegistry", () => {
 			litellmCurrentNamespaceCache = readonlyRegistry(litellmProxyConfig(), {
 				seedCache: dbPath =>
 					writeModelCache(
-						"litellm-proxy:litellm-rich-v2",
+						"litellm-proxy:litellm-rich-v5",
 						Date.now(),
 						[litellmCachedModel("MiniMax-M3")],
 						true,
@@ -2253,14 +3338,12 @@ describe("ModelRegistry", () => {
 			});
 		});
 
-		test("ignores litellm discovery rows cached under the retired rich-v1 namespace", () => {
-			// PR #3717 changed the LiteLLM mappers (reseller usage-suffix stripping);
-			// warm rich-v1 rows carry pre-change display names and must not load.
+		test("ignores litellm discovery rows cached under the retired rich-v4 namespace", () => {
 			expect(litellmStaleNamespaceCache.find("litellm-proxy", "minimax/minimax-m3")).toBeUndefined();
 			expect(getModelsForProvider(litellmStaleNamespaceCache, "litellm-proxy")).toHaveLength(0);
 		});
 
-		test("loads litellm discovery rows cached under the rich-v2 namespace", () => {
+		test("loads litellm discovery rows cached under the rich-v5 namespace", () => {
 			const model = litellmCurrentNamespaceCache.find("litellm-proxy", "minimax/minimax-m3");
 			expect(model?.name).toBe("MiniMax-M3");
 			expect(model?.provider).toBe("litellm-proxy");
@@ -2323,6 +3406,44 @@ describe("ModelRegistry", () => {
 			const vertexModels = getModelsForProvider(vertexStale, "google-vertex");
 			expect(vertexModels.some(model => model.id === "zai-org/glm-4.7-maas")).toBe(true);
 			expect(vertexModels.some(model => model.id.startsWith("gemini-"))).toBe(true);
+		});
+
+		test("hydrates only shared-catalog additions from cache", () => {
+			const bundledModel = getBundledModels("zai")[0];
+			if (!bundledModel) throw new Error("ZAI bundled catalog is empty");
+			expect(sharedCatalogCache.find("zai", bundledModel.id)).toMatchObject({
+				name: bundledModel.name,
+				contextWindow: bundledModel.contextWindow,
+				maxTokens: bundledModel.maxTokens,
+			});
+			expect(sharedCatalogCache.find("zai", "glm-experimental-probe")).toMatchObject({
+				contextWindow: 1_000_000,
+				maxTokens: 131_072,
+			});
+			expect(sharedCatalogCache.getProviderDiscoveryState("zai")).toMatchObject({
+				provider: "zai",
+				status: "cached",
+				optional: false,
+				stale: false,
+				source: "cache",
+			});
+		});
+
+		test("reports static-only shared-catalog startup caches as bundled", () => {
+			for (const providerId of ["zai", "anthropic"] as const) {
+				const bundledModel = getBundledModels(providerId)[0];
+				if (!bundledModel) throw new Error(`${providerId} bundled catalog is empty`);
+				expect(staticOnlySharedCatalogCache.find(providerId, bundledModel.id)).toBeDefined();
+				const discovery = staticOnlySharedCatalogCache.getProviderDiscoveryState(providerId);
+				expect(discovery).toMatchObject({
+					provider: providerId,
+					status: "unavailable",
+					optional: false,
+					stale: true,
+					source: "bundled",
+				});
+				expect(discovery?.fetchedAt).toBeUndefined();
+			}
 		});
 	});
 

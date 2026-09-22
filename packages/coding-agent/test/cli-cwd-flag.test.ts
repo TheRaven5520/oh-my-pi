@@ -1,19 +1,22 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
 import { applyStartupCwd } from "@oh-my-pi/pi-coding-agent/cli/startup-cwd";
-import { getProjectDir, normalizePathForComparison, setProjectDir } from "@oh-my-pi/pi-utils";
+import * as utils from "@oh-my-pi/pi-utils";
 import { runCli } from "../src/cli";
 import { WRAPPER_ALLOW_HOME_ARG, WRAPPER_ALLOW_HOME_KEY } from "../src/process-supervisor";
 
-const originalProjectDir = getProjectDir();
+const originalProjectDir = utils.getProjectDir();
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 const wrapperAllowHomeKey = WRAPPER_ALLOW_HOME_KEY;
 
 afterEach(() => {
+	vi.restoreAllMocks();
+	if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
 	Reflect.deleteProperty(globalThis, wrapperAllowHomeKey);
-	setProjectDir(originalProjectDir);
+	utils.setProjectDir(originalProjectDir);
 });
 describe("parseArgs — --cwd flag", () => {
 	it("parses --cwd with a space-separated directory", () => {
@@ -39,14 +42,14 @@ describe("parseArgs — --cwd flag", () => {
 	it("applies --cwd before session lookup callers read the project directory", async () => {
 		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-launch-"));
 		const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-target-"));
-		setProjectDir(launchDir);
+		utils.setProjectDir(launchDir);
 
 		const parsed = parseArgs(["--cwd", targetDir, "--continue"]);
 		await applyStartupCwd(parsed);
 
 		expect(parsed.continue).toBe(true);
-		expect(getProjectDir()).toBe(targetDir);
-		expect(normalizePathForComparison(process.cwd())).toBe(normalizePathForComparison(targetDir));
+		expect(utils.getProjectDir()).toBe(targetDir);
+		expect(utils.normalizePathForComparison(process.cwd())).toBe(utils.normalizePathForComparison(targetDir));
 	});
 
 	it("normalizes a relative --cwd target to the resolved absolute path", async () => {
@@ -54,7 +57,7 @@ describe("parseArgs — --cwd flag", () => {
 		const childName = "repo";
 		const childDir = path.join(launchDir, childName);
 		fs.mkdirSync(childDir);
-		setProjectDir(launchDir);
+		utils.setProjectDir(launchDir);
 
 		const parsed = parseArgs(["--cwd", childName]);
 		await applyStartupCwd(parsed);
@@ -62,23 +65,79 @@ describe("parseArgs — --cwd flag", () => {
 		// parsed.cwd must be the resolved absolute target, not the raw relative
 		// string that would re-resolve against the new cwd (e.g. repo/repo).
 		expect(path.isAbsolute(parsed.cwd ?? "")).toBe(true);
-		expect(parsed.cwd).toBe(getProjectDir());
-		expect(getProjectDir()).toBe(childDir);
+		expect(parsed.cwd).toBe(utils.getProjectDir());
+		expect(utils.getProjectDir()).toBe(childDir);
 		// Re-resolving the normalized value against the (now changed) process cwd
 		// is idempotent — no doubled "repo/repo" segment.
-		expect(path.resolve(parsed.cwd ?? "")).toBe(getProjectDir());
+		expect(path.resolve(parsed.cwd ?? "")).toBe(utils.getProjectDir());
 		expect(parsed.cwd?.endsWith(`${childName}${path.sep}${childName}`)).toBe(false);
+	});
+
+	it("reports a clean error when the cwd change is denied", async () => {
+		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-denied-launch-"));
+		utils.setProjectDir(launchDir);
+		const targetDir = path.join(launchDir, "blocked");
+		const parsed = parseArgs(["--cwd", targetDir]);
+		const chdir = vi.spyOn(process, "chdir").mockImplementation(() => {
+			throw new Error("operation not permitted");
+		});
+
+		try {
+			await expect(applyStartupCwd(parsed)).rejects.toThrow(
+				`Cannot change working directory to ${targetDir}: operation not permitted`,
+			);
+		} finally {
+			chdir.mockRestore();
+		}
+		expect(utils.getProjectDir()).toBe(launchDir);
+	});
+
+	it("appends the macOS permission hint only for permission errors", async () => {
+		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-hint-launch-"));
+		utils.setProjectDir(launchDir);
+		const targetDir = path.join(launchDir, "blocked");
+		const parsed = parseArgs(["--cwd", targetDir]);
+		const chdir = vi.spyOn(process, "chdir").mockImplementation(() => {
+			throw Object.assign(new Error("operation not permitted"), { code: "EACCES" });
+		});
+
+		try {
+			await expect(applyStartupCwd(parsed)).rejects.toThrow(
+				/operation not permitted\. On macOS, grant omp Files & Folders/,
+			);
+		} finally {
+			chdir.mockRestore();
+		}
+	});
+
+	it("uses the system temporary directory for Windows home launches", async () => {
+		const home = String.raw`C:\Users\reporter`;
+		const fallback = String.raw`C:\Users\reporter\AppData\Local\Temp`;
+		if (!platformDescriptor) throw new Error("process.platform descriptor is unavailable");
+		Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+		vi.spyOn(os, "homedir").mockReturnValue(home);
+		vi.spyOn(os, "tmpdir").mockReturnValue(fallback);
+		vi.spyOn(utils, "getProjectDir").mockReturnValue(home);
+		vi.spyOn(utils, "directoryExists").mockImplementation(async candidate => {
+			return candidate === "/tmp" || candidate === fallback;
+		});
+		const setProjectDir = vi.spyOn(utils, "setProjectDir").mockImplementation(() => {});
+
+		await applyStartupCwd(parseArgs([]));
+
+		expect(setProjectDir).toHaveBeenCalledTimes(1);
+		expect(setProjectDir).toHaveBeenCalledWith(fallback);
 	});
 });
 
 it("preserves wrapper-launched home and consumes the process-local marker", async () => {
 	const home = os.homedir();
-	setProjectDir(home);
+	utils.setProjectDir(home);
 	Reflect.set(globalThis, wrapperAllowHomeKey, true);
 
 	await applyStartupCwd(parseArgs([]));
 
-	expect(getProjectDir()).toBe(home);
+	expect(utils.getProjectDir()).toBe(home);
 	expect(Reflect.has(globalThis, wrapperAllowHomeKey)).toBe(false);
 });
 
@@ -87,7 +146,6 @@ it("does not retain wrapper cwd intent in auth service commands", async () => {
 
 	expect(Reflect.has(globalThis, wrapperAllowHomeKey)).toBe(false);
 });
-
 
 for (const [command, timing] of [
 	["auth-broker", false],

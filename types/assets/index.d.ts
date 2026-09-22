@@ -3,6 +3,11 @@ declare module "*.md" {
 	export default content;
 }
 
+declare module "*.wasm" {
+	const path: string;
+	export default path;
+}
+
 declare module "*.txt" {
 	const content: string;
 	export default content;
@@ -61,3 +66,9 @@ declare module "*.generated.js" {
 	export default content;
 }
 
+// axe-core's minified browser build, imported as text by the browser a11y audit
+// (coding-agent src/tools/browser/a11y/audit.ts) and evaluated inside the page.
+declare module "axe-core/axe.min.js" {
+	const content: string;
+	export default content;
+}

@@ -46,6 +46,11 @@ export OMP_LAUNCH_CWD OMP_REFRESH_COMMAND OMP_SUPERVISOR_SPAWN_CWD
 # system/tool context (including a restricted tool slate).
 unset PI_CODING_AGENT PI_SESSION_FILE PI_SESSION_ID PI_PROVIDER PI_MODEL PI_REASONING_LEVEL
 unset OMP_WRAPPER_ALLOW_HOME
+# A compiled omp session exports its define-folded PI_COMPILED marker and the
+# supervisor's child markers to every subprocess. Inherited here they make the
+# source launcher believe it is a compiled, already-supervised child and drop
+# the entrypoint from the re-spawn command (`Script not found`).
+unset PI_COMPILED OMP_SUPERVISOR_CHILD OMP_LAUNCHER_OWNS_CLI OMP_INTERNAL_REFRESH
 # Never enable OpenTelemetry export merely because the parent environment has
 # an OTLP endpoint configured. Model-provider traffic remains necessary.
 export OTEL_SDK_DISABLED=true

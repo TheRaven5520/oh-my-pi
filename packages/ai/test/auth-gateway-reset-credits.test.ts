@@ -127,14 +127,14 @@ test("redeem targets only credentialId and forwards the client idempotency key",
 		const capturing: RedeemResetCredit = async options => {
 			targets.push(options.target);
 			keys.push(options.redeemRequestId);
-			return { ok: true, code: "reset", creditId: options.creditId ?? "RateLimitResetCredit_auto" };
+			return { ok: true, code: "reset", creditId: options.target.creditId ?? "RateLimitResetCredit_auto" };
 		};
 		storage.redeemResetCredit = capturing;
 		const redeemRequestId = crypto.randomUUID();
 		const response = await redeem(
 			url,
-			// email/accountId in the body must be ignored: redeemResetCredit ORs its
-			// target fields, so honouring them could spend the wrong account.
+			// email/accountId in the body must be ignored: the durable credential row
+			// id is the only account selector, so honouring them could spend the wrong account.
 			JSON.stringify({
 				credentialId: 7,
 				creditId: "RateLimitResetCredit_abc",
@@ -149,7 +149,7 @@ test("redeem targets only credentialId and forwards the client idempotency key",
 			code: "reset",
 			creditId: "RateLimitResetCredit_abc",
 		});
-		expect(targets).toEqual([{ credentialId: 7 }]);
+		expect(targets).toEqual([{ provider: "openai-codex", credentialId: 7, creditId: "RateLimitResetCredit_abc" }]);
 		expect(keys).toEqual([redeemRequestId]);
 	});
 });

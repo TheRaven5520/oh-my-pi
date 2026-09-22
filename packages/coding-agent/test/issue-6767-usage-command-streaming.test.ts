@@ -5,7 +5,7 @@ import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -75,7 +75,7 @@ describe("issue #6767 /usage output during streaming", () => {
 
 	afterEach(async () => {
 		mode?.stop();
-		HistoryStorage.resetInstance();
+		HistoryStorage.close();
 		vi.restoreAllMocks();
 		await session?.dispose();
 		authStorage?.close();
@@ -83,13 +83,34 @@ describe("issue #6767 /usage output during streaming", () => {
 		resetSettingsForTest();
 	});
 
-	it("pins plain usage during streaming without transcript insertion and keeps it until off", async () => {
+	it("opens the usage dashboard overlay without touching the transcript, even mid-stream", async () => {
+		const streamedReply = new Text("agent is streaming", 0, 0);
+		mode.chatContainer.addChild(streamedReply);
+		const showDashboard = vi.fn();
+		mode.showUsageDashboard = showDashboard;
+
+		await mode.handleUsageCommand(usageReports);
+
+		// /usage renders as an overlay (the /settings idiom): nothing may mount
+		// into the transcript, mid-stream or otherwise — mounting above the
+		// growing live block is what duplicated in native scrollback (#6767).
+		expect(showDashboard).toHaveBeenCalledTimes(1);
+		expect(showDashboard).toHaveBeenCalledWith(usageReports);
+		expect(mode.chatContainer.children).toEqual([streamedReply]);
+
+		streaming = false;
+		await mode.eventController.handleEvent({ type: "agent_end", messages: [] } as AgentSessionEvent);
+
+		// Turn end must not flush any deferred usage panel either.
+		expect(mode.chatContainer.children).toEqual([streamedReply]);
+	});
+
+	it("pins live usage during streaming without transcript insertion and keeps it until off", async () => {
 		const fetchUsageReports = vi.spyOn(session, "fetchUsageReports").mockResolvedValue(usageReports);
-		vi.spyOn(session, "getUsageReportingModelSelectors").mockReturnValue([]);
 		const streamedReply = new Text("agent is streaming", 0, 0);
 		mode.chatContainer.addChild(streamedReply);
 
-		expect(await executeBuiltinSlashCommand("/usage", { ctx: mode })).toBe(true);
+		expect(await executeBuiltinSlashCommand("/usage on", { ctx: mode })).toBe(true);
 		for (let i = 0; i < 10; i++) await Promise.resolve();
 
 		expect(fetchUsageReports).toHaveBeenCalledTimes(1);

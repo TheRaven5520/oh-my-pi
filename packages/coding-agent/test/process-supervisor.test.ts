@@ -42,10 +42,19 @@ describe("process supervisor", () => {
 	});
 
 	test("replaces children under one stable parent and preserves wrapper cwd intent", async () => {
+		// The probe models a fresh top-level launch. When this suite itself runs
+		// inside a compiled, supervised omp session, the parent's markers would
+		// otherwise make the probe skip the supervisor or drop its entrypoint.
+		const env = { ...process.env };
+		delete env.PI_COMPILED;
+		delete env.OMP_SUPERVISOR_CHILD;
+		delete env.OMP_LAUNCHER_OWNS_CLI;
+		delete env.OMP_INTERNAL_REFRESH;
 		for (const wrapperAllowsHome of [false, true]) {
 			const args = wrapperAllowsHome ? [WRAPPER_ALLOW_HOME_ARG, "initial"] : ["initial"];
 			const proc = Bun.spawn([process.execPath, PROBE, ...args], {
 				cwd: path.resolve(import.meta.dir, ".."),
+				env,
 				stdin: "ignore",
 				stdout: "pipe",
 				stderr: "pipe",

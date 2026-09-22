@@ -20,9 +20,9 @@ import { createMockModel, type MockHandler, type MockModel } from "@oh-my-pi/pi-
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { CustomEditor } from "@oh-my-pi/pi-coding-agent/modes/components/custom-editor";
+import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
-import { getEditorTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getEditorTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -83,7 +83,7 @@ describe("AgentSession queued steer delivery", () => {
 		return { session, sessionManager, mock };
 	}
 
-	function steerCollabPrompt(target: AgentSession, text: string): Promise<void> {
+	function steerCollabPrompt(target: AgentSession, text: string): Promise<boolean> {
 		return target.promptCustomMessage(
 			{
 				customType: COLLAB_PROMPT_TYPE,
@@ -149,6 +149,81 @@ describe("AgentSession queued steer delivery", () => {
 		expect(await entryAppended).toBe("guest steer at yield");
 		expect(mock.calls.length).toBe(2);
 		expect(session.agent.hasQueuedMessages()).toBe(false);
+	});
+
+	it("persists an agent-authored steer with its steering marker", async () => {
+		const { session, sessionManager } = await createSession([
+			{ content: ["host answer"] },
+			{ content: ["ack parent"] },
+		]);
+		let injected = false;
+		session.agent.setOnBeforeYield(async () => {
+			if (injected) return;
+			injected = true;
+			await session.sendUserMessage("parent budget notice", {
+				deliverAs: "steer",
+				attribution: "agent",
+			});
+		});
+
+		await session.prompt("hello");
+
+		const entry = sessionManager.getEntries().find(candidate => {
+			if (candidate.type !== "message" || candidate.message.role !== "user") return false;
+			const content = candidate.message.content;
+			return (
+				Array.isArray(content) && content.some(part => part.type === "text" && part.text === "parent budget notice")
+			);
+		});
+		if (entry?.type !== "message" || entry.message.role !== "user") {
+			throw new Error("Expected persisted parent steer");
+		}
+		expect(entry.message.attribution).toBe("agent");
+		expect(entry.message.steering).toBe(true);
+	});
+
+	it("defaults direct user steers and idle prompts to user attribution", async () => {
+		const { session } = await createSession([{ content: ["ack user"] }]);
+
+		await session.sendUserMessage("typed normally");
+		const promptMessage = session.state.messages.find(candidate => {
+			if (candidate.role !== "user") return false;
+			const content = candidate.content;
+			return (
+				content === "typed normally" ||
+				(Array.isArray(content) && content.some(part => part.type === "text" && part.text === "typed normally"))
+			);
+		});
+		if (promptMessage?.role !== "user") {
+			throw new Error("Expected user prompt in session state");
+		}
+		expect(promptMessage.attribution).toBe("user");
+
+		await session.steer("user steer");
+		const steer = session.agent.popLastSteer();
+		if (steer?.role !== "user") throw new Error("Expected queued user steer");
+		expect(steer.attribution).toBe("user");
+		expect(steer.steering).toBe(true);
+	});
+
+	it("preserves explicit agent attribution across queued text-message APIs", async () => {
+		const { session } = await createSession([]);
+
+		await session.steer("parent steer", undefined, { attribution: "agent" });
+		const steer = session.agent.popLastSteer();
+		if (steer?.role !== "user") throw new Error("Expected queued agent-attributed steer");
+		expect(steer.attribution).toBe("agent");
+		expect(steer.steering).toBe(true);
+
+		await session.followUp("parent follow-up", undefined, { attribution: "agent" });
+		const followUp = session.agent.popLastFollowUp();
+		if (followUp?.role !== "user") throw new Error("Expected queued agent-attributed follow-up");
+		expect(followUp.attribution).toBe("agent");
+
+		await session.sendUserMessage("host steer", { deliverAs: "steer", attribution: "agent" });
+		const hostSteer = session.agent.popLastSteer();
+		if (hostSteer?.role !== "user") throw new Error("Expected queued host steer");
+		expect(hostSteer.attribution).toBe("agent");
 	});
 
 	it("drains a steer stranded in the agent queue when the session settles", async () => {
@@ -241,7 +316,7 @@ describe("AgentSession queued steer delivery", () => {
 		new InputController(ctx).setupEditorSubmitHandler();
 		const submissions: Promise<void>[] = [];
 		const submit = editor.onSubmit!;
-		editor.onSubmit = text => {
+		editor.onSubmit = (text: string) => {
 			const submission = Promise.resolve(submit(text));
 			submissions.push(submission);
 			return submission;

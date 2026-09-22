@@ -11,6 +11,8 @@
  * rich context for the orchestrating agent to distribute work across
  * multiple reviewer agents based on diff weight and locality.
  */
+
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { CustomCommand, CustomCommandAPI } from "../../../../extensibility/custom-commands/types";
 import type { HookCommandContext } from "../../../../extensibility/hooks/types";
@@ -18,8 +20,6 @@ import reviewCustomRequestTemplate from "../../../../prompts/review-custom-reque
 import reviewHeadlessRequestTemplate from "../../../../prompts/review-headless-request.md" with { type: "text" };
 import reviewRequestTemplate from "../../../../prompts/review-request.md" with { type: "text" };
 import * as gh from "../../../../tools/gh";
-import * as git from "../../../../utils/git";
-import * as jj from "../../../../utils/jj";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -479,9 +479,13 @@ export class ReviewCommand implements CustomCommand {
 	constructor(private api: CustomCommandAPI) {}
 
 	async execute(args: string[], ctx: HookCommandContext): Promise<string | undefined> {
+		// api.cwd freezes at command-load time; after /move or /wt the live
+		// session cwd comes from the session manager (issue #12501).
+		const liveCwd = ctx.sessionManager?.getCwd?.() || this.api.cwd;
+		const api: CustomCommandAPI = liveCwd === this.api.cwd ? this.api : { ...this.api, cwd: liveCwd };
 		const parsedArgs = extractReviewPrRefFromArgs(args);
 		if (parsedArgs.prRef) {
-			return buildPrReviewPrompt(this.api, ctx, parsedArgs.prRef, parsedArgs.extraInstructions);
+			return buildPrReviewPrompt(api, ctx, parsedArgs.prRef, parsedArgs.extraInstructions);
 		}
 
 		const extraInstructions = parsedArgs.extraInstructions || undefined;
@@ -526,10 +530,10 @@ export class ReviewCommand implements CustomCommand {
 
 		switch (selectedChoice.kind) {
 			case "detected-pr":
-				return buildPrReviewPrompt(this.api, ctx, selectedChoice.ref, extraInstructions ?? "");
+				return buildPrReviewPrompt(api, ctx, selectedChoice.ref, extraInstructions ?? "");
 
 			case "base-branch": {
-				const branches = await getGitBranches(this.api);
+				const branches = await getGitBranches(api);
 				if (branches.length === 0) {
 					ctx.ui.notify("No git branches found", "error");
 					return undefined;
@@ -538,10 +542,20 @@ export class ReviewCommand implements CustomCommand {
 				const baseBranch = await ctx.ui.select("Select base branch to compare against", branches);
 				if (!baseBranch) return undefined;
 
-				const currentBranch = await getCurrentBranch(this.api);
+				const currentBranch = await getCurrentBranch(api);
 				let diffText: string;
 				try {
-					diffText = await git.diff(this.api.cwd, { base: `${baseBranch}...${currentBranch}` });
+					const repository = vcs.requireGit(api.cwd);
+					// PR-style review compares the merge base against the current
+					// branch (`base...head`), so base-only commits are excluded.
+					const mergeBase = await repository.mergeBase(baseBranch, currentBranch);
+					if (!mergeBase) {
+						// No common ancestor: `git diff base...head` aborts here
+						// rather than comparing unrelated trees tip-to-tip.
+						ctx.ui.notify(`No common history between ${baseBranch} and ${currentBranch}`, "error");
+						return undefined;
+					}
+					diffText = await repository.diffText({ base: mergeBase, head: currentBranch });
 				} catch (err) {
 					ctx.ui.notify(`Failed to get diff: ${err instanceof Error ? err.message : String(err)}`, "error");
 					return undefined;
@@ -557,7 +571,7 @@ export class ReviewCommand implements CustomCommand {
 			}
 
 			case "uncommitted": {
-				const reviewDiff = await getUncommittedReviewDiff(this.api).catch(err => {
+				const reviewDiff = await getUncommittedReviewDiff(api).catch(err => {
 					ctx.ui.notify(`Failed to get diff: ${err instanceof Error ? err.message : String(err)}`, "error");
 					return undefined;
 				});
@@ -574,7 +588,7 @@ export class ReviewCommand implements CustomCommand {
 			}
 
 			case "commit": {
-				const commits = await getRecentCommits(this.api, 20);
+				const commits = await getRecentCommits(api, 20);
 				if (commits.length === 0) {
 					ctx.ui.notify("No commits found", "error");
 					return undefined;
@@ -587,7 +601,8 @@ export class ReviewCommand implements CustomCommand {
 
 				let diffText: string;
 				try {
-					diffText = await git.show(this.api.cwd, hash, { format: "" });
+					const result = await vcs.requireGit(api.cwd).showCommit(hash);
+					diffText = result.data.toString("utf8");
 				} catch (err) {
 					ctx.ui.notify(`Failed to get commit: ${err instanceof Error ? err.message : String(err)}`, "error");
 					return undefined;
@@ -612,7 +627,7 @@ export class ReviewCommand implements CustomCommand {
 				);
 				if (!instructions?.trim()) return undefined;
 
-				const reviewDiff = await getUncommittedReviewDiff(this.api).catch(() => undefined);
+				const reviewDiff = await getUncommittedReviewDiff(api).catch(() => undefined);
 
 				if (reviewDiff?.diffText.trim()) {
 					const stats = parseDiff(reviewDiff.diffText);
@@ -635,7 +650,7 @@ export class ReviewCommand implements CustomCommand {
 
 async function getGitBranches(api: CustomCommandAPI): Promise<string[]> {
 	try {
-		return await git.branch.list(api.cwd, { all: true });
+		return await vcs.requireGit(api.cwd).listBranches(true);
 	} catch {
 		return [];
 	}
@@ -643,53 +658,27 @@ async function getGitBranches(api: CustomCommandAPI): Promise<string[]> {
 
 async function getCurrentBranch(api: CustomCommandAPI): Promise<string> {
 	try {
-		return (await git.branch.current(api.cwd)) ?? "HEAD";
+		return (await vcs.git(api.cwd)?.currentBranch()) ?? "HEAD";
 	} catch {
 		return "HEAD";
 	}
 }
 
-async function getGitStatus(api: CustomCommandAPI): Promise<string> {
-	try {
-		return await git.status(api.cwd);
-	} catch {
-		return "";
-	}
-}
-
 async function getUncommittedReviewDiff(api: CustomCommandAPI): Promise<CurrentReviewDiff> {
-	if (await jj.repo.is(api.cwd)) {
-		return {
-			diffText: await jj.diff(api.cwd),
-			diffInstruction: JJ_UNCOMMITTED_DIFF_INSTRUCTION,
-			emptyMessage: "No uncommitted changes found",
-			mode: "Reviewing JJ working-copy changes",
-		};
-	}
-
-	const status = await getGitStatus(api);
-	if (!status.trim()) {
-		return {
-			diffText: "",
-			diffInstruction: GIT_UNCOMMITTED_DIFF_INSTRUCTION,
-			emptyMessage: "No uncommitted changes found",
-			mode: "Reviewing uncommitted changes (staged + unstaged)",
-		};
-	}
-
-	const [unstagedDiff, stagedDiff] = await Promise.all([git.diff(api.cwd), git.diff(api.cwd, { cached: true })]);
-	const combinedDiff = [unstagedDiff, stagedDiff].filter(Boolean).join("\n");
+	const repository = vcs.require(api.cwd);
+	const diffText = await repository.uncommittedDiff([]);
+	const isJj = repository.kind() === "jj";
 	return {
-		diffText: combinedDiff,
-		diffInstruction: GIT_UNCOMMITTED_DIFF_INSTRUCTION,
-		emptyMessage: "No diff content found",
-		mode: "Reviewing uncommitted changes (staged + unstaged)",
+		diffText,
+		diffInstruction: isJj ? JJ_UNCOMMITTED_DIFF_INSTRUCTION : GIT_UNCOMMITTED_DIFF_INSTRUCTION,
+		emptyMessage: isJj || !diffText.trim() ? "No uncommitted changes found" : "No diff content found",
+		mode: isJj ? "Reviewing JJ working-copy changes" : "Reviewing uncommitted changes (staged + unstaged)",
 	};
 }
 
 async function getRecentCommits(api: CustomCommandAPI, count: number): Promise<string[]> {
 	try {
-		return await git.log.onelines(api.cwd, count);
+		return await vcs.require(api.cwd).logOnelines(count);
 	} catch {
 		return [];
 	}

@@ -3,7 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
@@ -247,22 +247,36 @@ describe("/usage live panel", () => {
 		expect(rows.at(-1)).toContain("30s");
 	});
 
-	it("rejects show with current help without fetching or enabling a panel", async () => {
-		const status = vi.spyOn(mode, "showStatus").mockImplementation(() => {});
+	it("treats show as an alias of plain usage: pins the panel once and refreshes on the timer", async () => {
 		expect(await executeBuiltinSlashCommand("/usage show", { ctx: mode })).toBe(true);
-		expect(status).toHaveBeenCalledWith("Usage: /usage [on|off|reset [account|active]]");
+		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
+		await flushMicrotasks();
+		expect(panel()).toContain("first@example.test");
+		expect(panel()).toContain("/usage off");
+		expect(mode.chatContainer.children).toHaveLength(0);
+		await executeBuiltinSlashCommand("/usage", { ctx: mode });
+		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(30_000);
+		await flushMicrotasks();
+		expect(fetchUsageReports).toHaveBeenCalledTimes(2);
+	});
+
+	it("rejects unknown verbs with the current help without touching the panel", async () => {
+		const status = vi.spyOn(mode, "showStatus").mockImplementation(() => {});
+		expect(await executeBuiltinSlashCommand("/usage bogus", { ctx: mode })).toBe(true);
+		expect(status).toHaveBeenCalledWith("Usage: /usage [show|on|off|reset [provider/credential-id|provider/active]]");
 		expect(fetchUsageReports).not.toHaveBeenCalled();
 		expect(panel()).toBe("");
 		vi.advanceTimersByTime(60_000);
 		expect(fetchUsageReports).not.toHaveBeenCalled();
 	});
 
-	it("offers on, off, and reset completions but not show", async () => {
+	it("offers show, on, off, and reset completions", async () => {
 		const usage = BUILTIN_SLASH_COMMANDS.find(command => command.name === "usage");
 		expect(usage?.getArgumentCompletions).toBeDefined();
 		const completions = await usage?.getArgumentCompletions?.("");
-		expect(completions?.map(item => item.value.trimEnd())).toEqual(["on", "off", "reset"]);
-		expect(await usage?.getArgumentCompletions?.("show")).toBeNull();
+		expect(completions?.map(item => item.value.trimEnd())).toEqual(["show", "on", "off", "reset"]);
+		expect((await usage?.getArgumentCompletions?.("sh"))?.map(item => item.label)).toEqual(["show"]);
 	});
 
 	it("keeps reset on its existing selector path without toggling live usage", async () => {
