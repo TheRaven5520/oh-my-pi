@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Hosts can request cooperative backgrounding of a running tool without cancelling its work.
+
 ## [18.2.9] - 2026-09-22
 
 ### Fixed
