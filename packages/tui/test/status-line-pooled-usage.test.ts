@@ -1,13 +1,19 @@
 import { describe, expect, it } from "bun:test";
 import { pooledProviderMatches, summarizePooledUsage } from "../src/status-line/pooled-usage";
 
-function pooledReport(provider: string, account: string, limits: Array<[id: string, usedFraction: number]>) {
+function pooledReport(
+	provider: string,
+	account: string,
+	limits: Array<[id: string, usedFraction: number, label?: string]>,
+) {
 	return {
 		provider,
 		fetchedAt: 0,
 		metadata: { sprilicredAccountId: account },
-		limits: limits.map(([id, usedFraction]) => ({
+		limits: limits.map(([id, usedFraction, label]) => ({
 			id,
+			label: label ?? id,
+			window: { id, label: label ?? id },
 			scope: { provider, windowId: id },
 			amount: { usedFraction, used: usedFraction * 100, unit: "percent" },
 		})),
@@ -49,15 +55,34 @@ describe("summarizePooledUsage", () => {
 	it("uses aggregate OpenAI weekly capacity and ignores nonexistent five-hour windows", () => {
 		const summary = summarizePooledUsage([
 			pooledReport("openai-codex", "x", [
-				["chat:primary", 0.01],
-				["chat:secondary", 1],
+				["chat:primary", 0.01, "Five Hour"],
+				["chat:secondary", 1, "Weekly"],
 			]),
-			pooledReport("openai-codex", "y", [["chat:secondary", 0.25]]),
+			pooledReport("openai-codex", "y", [["chat:secondary", 0.25, "Weekly"]]),
 		]);
 		const codex = summary?.get("openai-codex");
 		expect(codex?.weekly?.usedPercent).toBeCloseTo(62.5);
 		expect(codex?.fiveHour).toBeUndefined();
 		expect(codex?.fableWeekly).toBeUndefined();
+	});
+
+	it("identifies weekly quota by duration or label, not primary/secondary position", () => {
+		const report = pooledReport("openai-codex", "a", [
+			["chat:primary", 0.8, "Weekly"],
+			["chat:secondary", 0.1, "Five Hour"],
+		]);
+		expect(summarizePooledUsage([report])?.get("openai-codex")?.weekly?.usedPercent).toBeCloseTo(80);
+		const durationReports = [
+			{
+				...report,
+				limits: report.limits.map((limit, index) => ({
+					...limit,
+					window: { ...limit.window, label: "Quota", durationMs: index === 0 ? 604_800_000 : 18_000_000 },
+				})),
+			},
+		];
+		expect(summarizePooledUsage(durationReports)?.get("openai-codex")?.weekly?.usedPercent).toBeCloseTo(80);
+		expect(summarizePooledUsage([pooledReport("openai-codex", "a", [["chat:secondary", 0.1]])])).toBeNull();
 	});
 
 	it("ignores reports that are not pooled", () => {

@@ -248,7 +248,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "usage",
 		icon: "gauge",
-		description: "Pin a usage snapshot above the prompt; clear to hide",
+		description: "Toggle a usage snapshot above the prompt",
 		acpDescription: "Show token usage",
 		acpInputHint: "[show|clear]",
 		subcommands: [

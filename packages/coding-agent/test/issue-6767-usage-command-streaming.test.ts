@@ -120,15 +120,15 @@ describe("issue #6767 /usage output during streaming", () => {
 		expect(mode.usageContainer.children).toHaveLength(1);
 		const pinned = stripVTControlCharacters(mode.usageContainer.render(120).join("\n"));
 		expect(pinned).toContain("Usage snapshot");
-		expect(pinned).toContain("- Weekly    [xxxxxxxx--]");
+		expect(pinned).toContain("Weekly");
+		expect(pinned).toContain("25% left");
 
 		streaming = false;
 		await mode.eventController.handleEvent({ type: "agent_end", messages: [] } as AgentSessionEvent);
 
 		expect(mode.chatContainer.children).toEqual([streamedReply]);
 		expect(mode.deferredCommandContainer.children).toHaveLength(0);
-		expect(mode.usageContainer.children).toHaveLength(1);
-		expect(stripVTControlCharacters(mode.usageContainer.render(120).join("\n"))).toContain("[xxxxxxxx--]");
+		expect(stripVTControlCharacters(mode.usageContainer.render(120).join("\n"))).toContain("25% left");
 		expect(mode.chatContainer.render(120).join("\n")).not.toContain("Usage");
 		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
 

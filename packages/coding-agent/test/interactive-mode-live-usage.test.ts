@@ -106,15 +106,39 @@ describe("/usage pinned snapshot", () => {
 		expect(mode.deferredCommandContainer.children).toHaveLength(0);
 	});
 
-	it("toggles plain /usage off without refetching", async () => {
+	it("toggles plain /usage off and on", async () => {
 		expect(await executeBuiltinSlashCommand("/usage", { ctx: mode })).toBe(true);
 		await flushMicrotasks();
 		expect(panel()).toContain("OpenAI");
 		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
+		expect(mode.usageContainer.children).toHaveLength(1);
 
 		expect(await executeBuiltinSlashCommand("/usage", { ctx: mode })).toBe(true);
 		expect(panel()).toBe("");
 		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
+		expect(mode.usageContainer.children).toHaveLength(0);
+
+		expect(await executeBuiltinSlashCommand("/usage", { ctx: mode })).toBe(true);
+		await flushMicrotasks();
+		expect(panel()).toContain("OpenAI");
+		expect(fetchUsageReports).toHaveBeenCalledTimes(2);
+		expect(mode.usageContainer.children).toHaveLength(1);
+	});
+
+	it("shows a new snapshot when toggled after a session switch with an old fetch pending", async () => {
+		const pending = Promise.withResolvers<UsageReport[] | null>();
+		fetchUsageReports.mockImplementationOnce(() => pending.promise);
+		await executeBuiltinSlashCommand("/usage", { ctx: mode });
+		Object.defineProperty(mode.session, "sessionId", { value: "replacement-session" });
+		await executeBuiltinSlashCommand("/usage", { ctx: mode });
+		await flushMicrotasks();
+		expect(panel()).toContain("80% left");
+		expect(fetchUsageReports).toHaveBeenCalledTimes(2);
+		expect(mode.usageContainer.children).toHaveLength(1);
+		pending.resolve(reports(0.9));
+		await flushMicrotasks();
+		expect(panel()).toContain("80% left");
+		expect(panel()).not.toContain("10% left");
 	});
 
 	it("re-running show refetches once and replaces the snapshot while keeping the old one visible", async () => {

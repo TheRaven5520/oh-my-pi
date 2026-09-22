@@ -25,6 +25,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { discoverAuthStorage } from "../sdk";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import { computeProviderWindowStats, type ProviderWindowStat } from "@oh-my-pi/pi-tui/status-line/pooled-usage";
 import { collapseSharedUsageReports, summarizeUsageResetCredits } from "@oh-my-pi/pi-tui/overlays/usage-display";
 
 const BAR_WIDTH = 28;
@@ -471,78 +472,6 @@ function collectProviderLimitTemplates(reports: UsageReport[]): ProviderLimitTem
 function formatMissingLimitLine(template: ProviderLimitTemplate, labelWidth: number): string {
 	const padded = template.title.padEnd(labelWidth);
 	return `      ${chalk.dim("○")} ${padded}  ${chalk.dim("·".repeat(BAR_WIDTH))}  ${chalk.dim("not reported")}`;
-}
-
-/** Per-window capacity stat: how much account quota is burned and left. */
-export interface ProviderWindowStat {
-	/** Compact window label, e.g. "5h", "7d". */
-	window: string;
-	durationMs?: number;
-	/** Meter identity when a provider keeps independent meters in one window. */
-	meter?: string;
-	/** Accounts reporting a limit in this window. */
-	accounts: number;
-	/** Sum of each account's binding used fraction - accounts' worth of quota burned. */
-	usedAccounts: number;
-	/** Accounts' worth of quota still available across reporting accounts. */
-	remainingAccounts: number;
-}
-
-function meterForLimit(report: UsageReport, limit: UsageLimit): string | undefined {
-	if (report.provider !== "openai-codex") return undefined;
-	const tier = limit.scope.tier?.trim().toLowerCase();
-	if (tier) return tier;
-	const slug = limit.id.toLowerCase().split(":")[1];
-	return slug && slug !== "primary" && slug !== "secondary" ? slug : "chat";
-}
-
-/**
- * Aggregate one provider's reports into per-window quota capacity stats.
- *
- * Limits are bucketed by window duration (5h, 7d, ...). Within a bucket each
- * account contributes its single highest used fraction. Codex keeps each meter
- * in its own bucket because chat and Spark can share a window duration.
- */
-export function computeProviderWindowStats(reports: UsageReport[]): ProviderWindowStat[] {
-	const buckets = new Map<string, { window: string; durationMs?: number; meter?: string; fractions: number[] }>();
-	for (const report of reports) {
-		const accountMax = new Map<string, number>();
-		for (const limit of report.limits) {
-			const fraction = resolveUsedFraction(limit);
-			if (fraction === undefined) continue;
-			const durationMs = limit.window?.durationMs;
-			const windowKey =
-				durationMs !== undefined ? `d:${durationMs}` : (limit.scope.windowId ?? limit.window?.label ?? limit.label);
-			const meter = meterForLimit(report, limit);
-			const key = meter === undefined ? windowKey : `m:${meter}\0${windowKey}`;
-			const previous = accountMax.get(key);
-			if (previous === undefined || fraction > previous) accountMax.set(key, fraction);
-			if (!buckets.has(key)) {
-				const window =
-					durationMs !== undefined
-						? formatDuration(durationMs)
-						: (limit.window?.label ?? limit.scope.windowId ?? limit.label);
-				buckets.set(key, { window, durationMs, meter, fractions: [] });
-			}
-		}
-		for (const [key, fraction] of accountMax) buckets.get(key)!.fractions.push(fraction);
-	}
-	return [...buckets.values()]
-		.sort((a, b) => {
-			const duration = (a.durationMs ?? Number.POSITIVE_INFINITY) - (b.durationMs ?? Number.POSITIVE_INFINITY);
-			return duration !== 0 ? duration : (a.meter ?? "").localeCompare(b.meter ?? "");
-		})
-		.map(bucket => {
-			const usedAccounts = bucket.fractions.reduce((sum, fraction) => sum + fraction, 0);
-			return {
-				window: bucket.window,
-				durationMs: bucket.durationMs,
-				...(bucket.meter === undefined ? {} : { meter: bucket.meter }),
-				accounts: bucket.fractions.length,
-				usedAccounts,
-				remainingAccounts: Math.max(0, bucket.fractions.length - usedAccounts),
-			};
-		});
 }
 
 /** Re-login warnings render once remaining grant life drops below this. */

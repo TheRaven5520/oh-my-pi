@@ -18,6 +18,7 @@ import { getSessionAccentAnsi, getSessionAccentHex } from "../theme/session-colo
 import { summarizeLoopCondition } from "./loop";
 import { formatMetric } from "../components/metric";
 import { formatBillingSummary } from "./metrics";
+import { pooledProviderMatches } from "./pooled-usage";
 import { sanitizeStatusText } from "../chrome/shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "../chrome/context-thresholds";
 import type { RenderedSegment, SegmentContext, StatusLineSegment, StatusLineSegmentId } from "./types";
@@ -949,7 +950,6 @@ function formatUsageReset(value: number, unit: "m" | "h"): string {
 	return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
 }
 
-
 const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
@@ -959,7 +959,7 @@ const usageSegment: StatusLineSegment = {
 			// meter, so do not invent a `5h —` gauge for it.
 			const week = u?.sevenDay?.percent ?? u?.monthly?.percent;
 			const provider = ctx.session.model?.provider;
-			if (provider === "openai-codex" || provider === "sprilicred-openai") {
+			if (provider !== undefined && pooledProviderMatches(provider, "openai-codex")) {
 				return { content: claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week), visible: true };
 			}
 			const fiveHour = u?.fiveHour?.percent ?? u?.daily?.percent;

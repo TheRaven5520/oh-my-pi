@@ -186,7 +186,7 @@ function pooledReport(provider: string, account: string, windows: Record<string,
 			id: windowId,
 			label: windowId,
 			scope: { provider, windowId },
-			window: { id: windowId, label: windowId },
+			window: { id: windowId, label: windowId === "chat:secondary" ? "Weekly" : windowId },
 			amount: { usedFraction, unit: "percent" as const },
 			status: usedFraction >= 1 ? ("exhausted" as const) : ("ok" as const),
 		})),
@@ -248,7 +248,6 @@ describe("CommandController pinned /usage snapshot", () => {
 			pooledReport("anthropic", "claude-a", { "5h": 0.1, "7d": 0.3, "7d:fable": 0.6 }),
 			pooledReport("anthropic", "claude-b", { "5h": 0.5, "7d": 0.9, "7d:fable": 0.2 }),
 		]);
-		const fetched = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 		expect(rows).toHaveLength(8);
 		expect(rows[0]).toBe("Anthropic");
 		// Fable = tighter of 7d and 7d:fable per account (a: 60, b: 90) → a; weekly and 5h best are a's too.
@@ -258,7 +257,6 @@ describe("CommandController pinned /usage snapshot", () => {
 		expect(rows[4]).toBe("");
 		expect(rows[5]).toBe("OpenAI");
 		expect(rows[6]).toMatch(windowRow("Weekly", 12, "0% left"));
-		expect(rows[7]).toBe(`Usage snapshot · fetched ${fetched.format(now)} · /usage to hide`);
 		expect(rows.join("\n")).not.toContain("codex-a");
 		expect(rows.join("\n")).not.toContain("claude-a");
 	});
@@ -271,6 +269,16 @@ describe("CommandController pinned /usage snapshot", () => {
 		expect(rows[2]).toContain("Usage snapshot · fetched ");
 	});
 
+	it("renders dotted missing windows for an Anthropic report", async () => {
+		const rows = await renderPinnedSnapshot([pooledReport("anthropic", "claude-a", { "7d": 0.25 })]);
+		expect(rows[0]).toBe("Anthropic");
+		expect(rows[1]).toMatch(/^  Fable Weekly +·{16} +—$/);
+		expect(rows[2]).toMatch(/^  Weekly +[█▓▒░]{16} +75% left$/);
+		expect(rows[3]).toMatch(/^  Five Hour +·{16} +—$/);
+		expect(rows[1].indexOf("·")).toBe(rows[2].indexOf("█"));
+		expect(rows[3].indexOf("·")).toBe(rows[2].indexOf("█"));
+	});
+
 	it("colors headings by provider brand and weekly bars by headroom", async () => {
 		const [heading, weekly] = await renderPinnedSnapshot(
 			[pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.5 })],
@@ -280,7 +288,6 @@ describe("CommandController pinned /usage snapshot", () => {
 		expect(heading).toContain(colorToAnsi("#10a37f", theme.getColorMode()));
 		expect(weekly).toContain(theme.fg("success", "████████"));
 	});
-
 
 	it("capitalizes other providers and orders Anthropic, OpenAI, then the rest", async () => {
 		const rows = await renderPinnedSnapshot([

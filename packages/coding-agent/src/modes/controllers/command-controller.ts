@@ -840,7 +840,7 @@ export class CommandController {
 
 	/** Toggle the pinned usage snapshot without refetching when hiding it. */
 	toggleUsagePinned(): void {
-		this.setUsagePinned(this.#usageSnapshot === undefined);
+		this.setUsagePinned(this.#currentUsageSnapshot() === undefined);
 	}
 
 	/** The pinned snapshot, or undefined (after unpinning) once the session it was taken from is gone. */
