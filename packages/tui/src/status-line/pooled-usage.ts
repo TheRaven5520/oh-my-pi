@@ -1,13 +1,11 @@
 /**
  * Pool headline over Sprilicred's pooled usage reports.
  *
- * Sprilicred routes each request to any pooled account with headroom, so the
- * meaningful number for a window is the *best* headroom any account still has
- * — not the active account's (there is none) and not the average. This mirrors
- * the Claude statusline script's jq: per account, take the minimum remaining
- * share across the requested window ids (an account must report all of them);
- * across accounts, take the maximum. Fable's weekly is the tighter of the
- * shared `7d` and the scoped `7d:fable`, so it is `best(["7d","7d:fable"])`.
+ * Anthropic routing needs the best headroom any account still has for a
+ * request. OpenAI's pooled weekly meter is different: the broker exposes one
+ * fleet capacity meter, so its usage is the sum of each account's used share
+ * divided by the reporting account count. This mirrors `omp usage --json`'s
+ * `capacity` field instead of showing the least-used account as the pool.
  */
 
 export interface PooledUsageWindow {
@@ -34,8 +32,7 @@ const POOLED_WINDOW_IDS: Readonly<Record<string, PooledWindowId>> = {
 	"5h": "5h",
 	"7d": "7d",
 	"7d:fable": "7d:fable",
-	// OpenAI Codex: primary = rolling 5h, secondary = weekly.
-	"chat:primary": "5h",
+	// OpenAI Codex: secondary is the only reported ChatGPT quota window.
 	"chat:secondary": "7d",
 };
 
@@ -115,6 +112,30 @@ function toWindow(bestRemainingPercent: number | undefined): PooledUsageWindow |
 	return bestRemainingPercent === undefined ? undefined : { usedPercent: 100 - bestRemainingPercent };
 }
 
+/** Average used share across accounts reporting every requested window. */
+function averageUsedPercent(
+	accounts: ReadonlyArray<ReadonlyMap<PooledWindowId, number>>,
+	ids: readonly PooledWindowId[],
+): number | undefined {
+	let total = 0;
+	let count = 0;
+	for (const account of accounts) {
+		let tightest: number | undefined;
+		for (const id of ids) {
+			const remaining = account.get(id);
+			if (remaining === undefined) {
+				tightest = undefined;
+				break;
+			}
+			tightest = tightest === undefined ? remaining : Math.min(tightest, remaining);
+		}
+		if (tightest === undefined) continue;
+		total += 100 - tightest;
+		count += 1;
+	}
+	return count === 0 ? undefined : total / count;
+}
+
 /** Summarize pooled reports per provider; null when `reports` holds no pooled account with a recognized window. */
 export function summarizePooledUsage(reports: unknown): PooledUsageSummary | null {
 	if (!Array.isArray(reports)) return null;
@@ -144,10 +165,18 @@ export function summarizePooledUsage(reports: unknown): PooledUsageSummary | nul
 	const summary = new Map<string, PooledProviderUsage>();
 	for (const [provider, accounts] of byProvider) {
 		const entry: PooledProviderUsage = { accounts: accounts.length };
-		const fiveHour = toWindow(bestRemaining(accounts, ["5h"]));
-		const weekly = toWindow(bestRemaining(accounts, ["7d"]));
+		const weekly =
+			provider === "openai-codex"
+				? (() => {
+						const usedPercent = averageUsedPercent(accounts, ["7d"]);
+						return usedPercent === undefined ? undefined : { usedPercent };
+					})()
+				: toWindow(bestRemaining(accounts, ["7d"]));
 		const fableWeekly = toWindow(bestRemaining(accounts, ["7d", "7d:fable"]));
-		if (fiveHour) entry.fiveHour = fiveHour;
+		if (provider !== "openai-codex") {
+			const fiveHour = toWindow(bestRemaining(accounts, ["5h"]));
+			if (fiveHour) entry.fiveHour = fiveHour;
+		}
 		if (weekly) entry.weekly = weekly;
 		if (fableWeekly) entry.fableWeekly = fableWeekly;
 		summary.set(provider, entry);

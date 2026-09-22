@@ -14,7 +14,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 
 const fetchedAt = 1_700_000_000_000;
 
-/** One pooled Codex account with the given weekly usage (5h left unreported). */
+/** One pooled Codex account with the given weekly usage. */
 function reports(weeklyUsedFraction: number): UsageReport[] {
 	return [
 		{
@@ -91,12 +91,12 @@ describe("/usage pinned snapshot", () => {
 		expect(await executeBuiltinSlashCommand("/usage", { ctx: mode })).toBe(true);
 		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
 		expect(panel()).toContain("Fetching usage data");
-		expect(panel()).toContain("Usage snapshot · fetching… · /usage clear");
+		expect(panel()).toContain("Usage snapshot · fetching… · /usage to hide");
 		pending.resolve(reports(0.2));
 		await flushMicrotasks();
 		expect(panel()).toContain("OpenAI");
 		expect(panel()).toMatch(/Weekly +[█▓▒░]{16} +80% left/);
-		expect(panel()).toMatch(/Five Hour +·{16} +—/);
+		expect(panel()).not.toContain("Five Hour");
 		expect(panel()).not.toContain("Fetching usage data");
 		vi.advanceTimersByTime(10 * 60_000);
 		await flushMicrotasks();
@@ -104,6 +104,17 @@ describe("/usage pinned snapshot", () => {
 		expect(mode.usageContainer.children).toHaveLength(1);
 		expect(mode.chatContainer.children).toHaveLength(0);
 		expect(mode.deferredCommandContainer.children).toHaveLength(0);
+	});
+
+	it("toggles plain /usage off without refetching", async () => {
+		expect(await executeBuiltinSlashCommand("/usage", { ctx: mode })).toBe(true);
+		await flushMicrotasks();
+		expect(panel()).toContain("OpenAI");
+		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
+
+		expect(await executeBuiltinSlashCommand("/usage", { ctx: mode })).toBe(true);
+		expect(panel()).toBe("");
+		expect(fetchUsageReports).toHaveBeenCalledTimes(1);
 	});
 
 	it("re-running show refetches once and replaces the snapshot while keeping the old one visible", async () => {
@@ -193,7 +204,7 @@ describe("/usage pinned snapshot", () => {
 		mode.setUsagePinned(true);
 		await flushMicrotasks();
 		expect(panel()).toContain("No pooled usage data.");
-		expect(panel()).toContain("/usage clear");
+		expect(panel()).toContain("/usage to hide");
 		fetchUsageReports.mockRejectedValueOnce(new Error("offline"));
 		mode.setUsagePinned(true);
 		await flushMicrotasks();

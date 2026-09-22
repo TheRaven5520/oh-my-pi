@@ -426,8 +426,10 @@ export interface InteractiveModeContext {
 	handleAdvisorStatusCommand(): Promise<void>;
 	handleJobsCommand(): Promise<void>;
 	handleUsageCommand(reports?: UsageReport[] | null): Promise<void>;
-	/** Pin (or clear) a static usage snapshot above the prompt. */
+	/** Pin, clear, or explicitly refresh the static usage snapshot above the prompt. */
 	setUsagePinned(pinned: boolean): void;
+	/** Toggle the static usage snapshot without refetching when hiding it. */
+	toggleUsagePinned(): void;
 	handleChangelogCommand(showFull?: boolean): Promise<void>;
 	handleHotkeysCommand(): void;
 	handleToolsCommand(): void;

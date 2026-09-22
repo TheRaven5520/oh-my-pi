@@ -99,7 +99,7 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 	ctx.presentCommandOutput(block);
 }
 
-/** One `/usage show` fetch. Pinned above the prompt until `/usage clear` or the next `show` replaces it. */
+/** One usage fetch for the pinned snapshot; plain `/usage` toggles it off and on. */
 interface UsageSnapshot {
 	session: InteractiveModeContext["session"];
 	sessionId: string;
@@ -216,10 +216,7 @@ function renderUsageSnapshotRows(snapshot: UsageSnapshot, width: number): string
 								["Weekly", usage.weekly],
 								["Five Hour", usage.fiveHour],
 							]
-						: [
-								["Weekly", usage.weekly],
-								["Five Hour", usage.fiveHour],
-							];
+						: [["Weekly", usage.weekly]];
 				return { heading: usageProviderHeading(provider), windows };
 			});
 		if (sections.length === 0) rows.push(theme.fg("dim", truncateToWidth("No pooled usage data.", width)));
@@ -247,9 +244,9 @@ function renderUsageSnapshotRows(snapshot: UsageSnapshot, width: number): string
 	}
 	const fetched =
 		snapshot.fetchedAt === undefined ? "fetching…" : `fetched ${usageFetchTime.format(snapshot.fetchedAt)}`;
-	let footer = `Usage snapshot · ${fetched} · /usage clear`;
-	if (visibleWidth(footer) > width) footer = `${fetched} · /usage clear`;
-	if (visibleWidth(footer) > width) footer = "/usage clear";
+	let footer = `Usage snapshot · ${fetched} · /usage to hide`;
+	if (visibleWidth(footer) > width) footer = `${fetched} · /usage to hide`;
+	if (visibleWidth(footer) > width) footer = "/usage";
 	rows.push(theme.fg("dim", truncateToWidth(footer, width)));
 	return rows;
 }
@@ -839,6 +836,11 @@ export class CommandController {
 		if (!previous) this.ctx.usageContainer.addChild(new UsagePanel(() => this.#currentUsageSnapshot()));
 		this.ctx.ui.requestRender();
 		void this.#fetchUsageSnapshot(snapshot);
+	}
+
+	/** Toggle the pinned usage snapshot without refetching when hiding it. */
+	toggleUsagePinned(): void {
+		this.setUsagePinned(this.#usageSnapshot === undefined);
 	}
 
 	/** The pinned snapshot, or undefined (after unpinning) once the session it was taken from is gone. */

@@ -270,10 +270,12 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 		handleTui: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
-			// Plain and `show` pin a one-shot snapshot (re-pinning refetches); `clear`
-			// removes it. The dashboard overlay stays reachable through
+			// Plain `/usage` toggles; explicit `show` refetches and explicit `clear`
+			// removes the snapshot. The dashboard overlay stays reachable through
 			// ctx.showUsageDashboard for callers that already hold reports.
-			if ((!verb || verb === "show") && !rest) {
+			if (!verb && !rest) {
+				runtime.ctx.toggleUsagePinned();
+			} else if (verb === "show" && !rest) {
 				runtime.ctx.setUsagePinned(true);
 			} else if (verb === "clear" && !rest) {
 				runtime.ctx.setUsagePinned(false);

@@ -6561,6 +6561,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController.setUsagePinned(pinned);
 	}
 
+	toggleUsagePinned(): void {
+		this.#commandController.toggleUsagePinned();
+	}
+
 	async handleChangelogCommand(showFull = false): Promise<void> {
 		await this.#commandController.handleChangelogCommand(showFull);
 	}

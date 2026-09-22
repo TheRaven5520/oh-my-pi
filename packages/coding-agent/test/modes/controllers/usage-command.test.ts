@@ -241,15 +241,15 @@ describe("CommandController pinned /usage snapshot", () => {
 		return new RegExp(`^  ${label.padEnd(labelWidth).replace(/ /g, " ")}  [█▓▒░]{16}  ${readout}$`);
 	}
 
-	it("renders one pool headline per provider from the best-headroom account, no account rows", async () => {
+	it("renders one pool headline per provider from aggregate OpenAI capacity, no account rows", async () => {
 		const rows = await renderPinnedSnapshot([
-			pooledReport("openai-codex", "codex-a", { "chat:primary": 1, "chat:secondary": 1 }),
-			pooledReport("openai-codex", "codex-b", { "chat:primary": 0.04, "chat:secondary": 1 }),
+			pooledReport("openai-codex", "codex-a", { "chat:secondary": 1 }),
+			pooledReport("openai-codex", "codex-b", { "chat:secondary": 1 }),
 			pooledReport("anthropic", "claude-a", { "5h": 0.1, "7d": 0.3, "7d:fable": 0.6 }),
 			pooledReport("anthropic", "claude-b", { "5h": 0.5, "7d": 0.9, "7d:fable": 0.2 }),
 		]);
 		const fetched = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-		expect(rows).toHaveLength(9);
+		expect(rows).toHaveLength(8);
 		expect(rows[0]).toBe("Anthropic");
 		// Fable = tighter of 7d and 7d:fable per account (a: 60, b: 90) → a; weekly and 5h best are a's too.
 		expect(rows[1]).toMatch(windowRow("Fable Weekly", 12, "40% left"));
@@ -258,33 +258,29 @@ describe("CommandController pinned /usage snapshot", () => {
 		expect(rows[4]).toBe("");
 		expect(rows[5]).toBe("OpenAI");
 		expect(rows[6]).toMatch(windowRow("Weekly", 12, "0% left"));
-		expect(rows[7]).toMatch(windowRow("Five Hour", 12, "96% left"));
-		expect(rows[8]).toBe(`Usage snapshot · fetched ${fetched.format(now)} · /usage clear`);
+		expect(rows[7]).toBe(`Usage snapshot · fetched ${fetched.format(now)} · /usage to hide`);
 		expect(rows.join("\n")).not.toContain("codex-a");
 		expect(rows.join("\n")).not.toContain("claude-a");
 	});
 
-	it("renders an unreported window as a dotted bar with a dash and pads labels to the widest", async () => {
+	it("renders no OpenAI five-hour row", async () => {
 		const rows = await renderPinnedSnapshot([pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.75 })]);
-		expect(rows).toHaveLength(4);
+		expect(rows).toHaveLength(3);
 		expect(rows[0]).toBe("OpenAI");
-		expect(rows[1]).toMatch(windowRow("Weekly", 9, "25% left"));
-		expect(rows[2]).toBe(`  Five Hour  ${"·".repeat(16)}  —`);
-		expect(rows[3]).toContain("Usage snapshot · fetched ");
+		expect(rows[1]).toMatch(windowRow("Weekly", 6, "25% left"));
+		expect(rows[2]).toContain("Usage snapshot · fetched ");
 	});
 
-	it("colors headings by provider brand and bars by headroom", async () => {
-		const [heading, weekly, fiveHour] = await renderPinnedSnapshot(
-			[pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.5, "chat:primary": 0.95 })],
+	it("colors headings by provider brand and weekly bars by headroom", async () => {
+		const [heading, weekly] = await renderPinnedSnapshot(
+			[pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.5 })],
 			{ raw: true },
 		);
-		// OpenAI brand green heading.
+		// OpenAI brand green heading; 50% left uses the success fill.
 		expect(heading).toContain(colorToAnsi("#10a37f", theme.getColorMode()));
-		// 50% left → success fill; 5% left → error fill.
 		expect(weekly).toContain(theme.fg("success", "████████"));
-		expect(fiveHour).toContain(theme.fg("error", "███████████████"));
-		expect(fiveHour).toContain(theme.fg("error", "  5% left"));
 	});
+
 
 	it("capitalizes other providers and orders Anthropic, OpenAI, then the rest", async () => {
 		const rows = await renderPinnedSnapshot([
@@ -325,8 +321,8 @@ describe("CommandController pinned /usage snapshot", () => {
 	it("shortens the footer before clipping it on narrow terminals", async () => {
 		const reports = [pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.1 })];
 		expect((await renderPinnedSnapshot(reports, { width: 30 })).at(-1)).toMatch(
-			/^fetched \d\d:\d\d · \/usage clear$/,
+			/^fetched \d\d:\d\d · \/usage to hide$/,
 		);
-		expect((await renderPinnedSnapshot(reports, { width: 14 })).at(-1)).toBe("/usage clear");
+		expect((await renderPinnedSnapshot(reports, { width: 14 })).at(-1)).toBe("/usage");
 	});
 });

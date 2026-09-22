@@ -949,17 +949,20 @@ function formatUsageReset(value: number, unit: "m" | "h"): string {
 	return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
 }
 
+
 const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
 		const u = ctx.usage;
 		if (ctx.claudeStyle) {
-			// Claude always prints the 5h and wk gauges (`—` for a window the backend
-			// lacks) and appends `fable` only when a model-scoped weekly cap is known —
-			// a permanent `fable —` on a backend that cannot report it is just noise.
-			// The daily window stands in for 5h on providers that only report a day.
-			const fiveHour = u?.fiveHour?.percent ?? u?.daily?.percent;
+			// Claude prints 5h and wk. OpenAI Codex only reports the weekly ChatGPT
+			// meter, so do not invent a `5h —` gauge for it.
 			const week = u?.sevenDay?.percent ?? u?.monthly?.percent;
+			const provider = ctx.session.model?.provider;
+			if (provider === "openai-codex" || provider === "sprilicred-openai") {
+				return { content: claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week), visible: true };
+			}
+			const fiveHour = u?.fiveHour?.percent ?? u?.daily?.percent;
 			const sep = ` ${CLAUDE_DIM_ANSI}|\x1b[39m `;
 			let content = `${claudeGauge(ctx, CLAUDE_COLORS.fiveHour, "5h", fiveHour)}${sep}${claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week)}`;
 			if (u?.modelWeekly)

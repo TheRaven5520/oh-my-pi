@@ -46,13 +46,16 @@ describe("summarizePooledUsage", () => {
 		expect(anthropic?.fableWeekly?.usedPercent).toBeCloseTo(70);
 	});
 
-	it("maps Codex chat windows and omits windows no account reports", () => {
+	it("uses aggregate OpenAI weekly capacity and ignores nonexistent five-hour windows", () => {
 		const summary = summarizePooledUsage([
-			pooledReport("openai-codex", "x", [["chat:secondary", 1]]),
+			pooledReport("openai-codex", "x", [
+				["chat:primary", 0.01],
+				["chat:secondary", 1],
+			]),
 			pooledReport("openai-codex", "y", [["chat:secondary", 0.25]]),
 		]);
 		const codex = summary?.get("openai-codex");
-		expect(codex?.weekly?.usedPercent).toBeCloseTo(25);
+		expect(codex?.weekly?.usedPercent).toBeCloseTo(62.5);
 		expect(codex?.fiveHour).toBeUndefined();
 		expect(codex?.fableWeekly).toBeUndefined();
 	});
