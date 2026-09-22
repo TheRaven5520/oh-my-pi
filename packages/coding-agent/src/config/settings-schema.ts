@@ -2153,14 +2153,16 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Off by default in this fork: it is a self-built binary, so the upstream
+	// "run `omp update`" banner would invite replacing it with a stock release.
 	"startup.checkUpdate": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "interaction",
 			group: "Startup & Updates",
 			label: "Check for Updates",
-			description: "Check for omp updates on startup",
+			description: "Check for omp updates on startup (off by default; no registry request is made while off)",
 		},
 	},
 	"update.channel": {
