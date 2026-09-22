@@ -85,7 +85,6 @@ describe("Agent", () => {
 
 	it("accepts a background request only while a backgroundable tool runs", async () => {
 		const toolSchema = type({ value: type("string") });
-		let agent: Agent;
 		const acceptedDuringRun: boolean[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
 			name: "detach",
@@ -107,7 +106,7 @@ describe("Agent", () => {
 				{ content: ["done"] },
 			],
 		});
-		agent = new Agent({
+		const agent = new Agent({
 			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
 			streamFn: mock.stream,
 		});

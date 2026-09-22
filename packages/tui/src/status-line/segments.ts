@@ -103,11 +103,17 @@ function claudeGauge(
 	return claudeFg(color, `${label} ${left}%`);
 }
 
-/** Last three path components, prefixed with `…/` when the path is deeper. */
+/**
+ * Last three path components, prefixed with `…/` when clipped. Mirrors the
+ * script's `awk -F/`, where an absolute path's leading empty field counts
+ * toward its width: `/home/ubuntu/code` → `…/home/ubuntu/code`,
+ * `/home/ubuntu` → `home/ubuntu`, `rel/a/b` → `rel/a/b`.
+ */
 function claudeShortDir(dir: string): string {
 	const parts = dir.split(/[\\/]+/).filter(Boolean);
 	const tail = parts.slice(-3).join("/");
-	return parts.length > 3 ? `…/${tail}` : tail;
+	const visibleLimit = /^[\\/]/.test(dir) ? 2 : 3;
+	return parts.length > visibleLimit ? `…/${tail}` : tail;
 }
 
 /** Left-truncate a path/label to `maxLen`, prefixing an ellipsis when clipped. */
