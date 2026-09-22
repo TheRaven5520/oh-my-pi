@@ -298,6 +298,21 @@ describe("status line path segment", () => {
 		expect(render("/tmp")).toBe("");
 		expect(render("/a/b")).toBe("a/b");
 	});
+	it("hides /tmp when TMPDIR points elsewhere", () => {
+		const previous = process.env.TMPDIR;
+		process.env.TMPDIR = "/var/tmp/omp-status-line-other-temp";
+		try {
+			const ctx: SegmentContext = {
+				...createPathContext(),
+				claudeStyle: true,
+				activeRepo: { cwd: "/tmp", relativeRepoRoot: "." } as unknown as SegmentContext["activeRepo"],
+			};
+			expect(renderSegment("path", ctx)).toEqual({ content: "", visible: false });
+		} finally {
+			if (previous === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previous;
+		}
+	});
 });
 
 describe("status line path segment in a linked worktree", () => {

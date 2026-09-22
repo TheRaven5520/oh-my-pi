@@ -495,16 +495,12 @@ const pathSegment: StatusLineSegment = {
 			// `…/a/b/c [branch]`: Claude keeps the branch inside the path section
 			// (no separator between them) in one fixed color, with no dirty state.
 			const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
-			if (
-				!ctx.startupPlaceholder &&
-				normalizePathForComparison(projectDir) === normalizePathForComparison(os.tmpdir())
-			) {
+			const shortDir = claudeShortDir(projectDir);
+			if (!ctx.startupPlaceholder && shortDir === "tmp") {
 				if (!ctx.git.branch) return { content: "", visible: false };
 				return { content: claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, ctx.git.branch)}]`), visible: true };
 			}
-			const dir = ctx.startupPlaceholder
-				? STARTUP_PLACEHOLDER
-				: fileHyperlink(projectDir, claudeShortDir(projectDir));
+			const dir = ctx.startupPlaceholder ? STARTUP_PLACEHOLDER : fileHyperlink(projectDir, shortDir);
 			let content = claudeFg(CLAUDE_COLORS.path, dir);
 			if (ctx.git.branch) content += ` ${claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, ctx.git.branch)}]`)}`;
 			return { content, visible: true };
