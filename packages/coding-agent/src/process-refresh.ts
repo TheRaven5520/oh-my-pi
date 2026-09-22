@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isCompiledSource } from "./process-supervisor";
 
 /** Inputs kept injectable so the refresh handoff can be tested without spawning. */
 export interface RefreshInvocationSource {
@@ -31,7 +32,7 @@ export function buildRefreshInvocation(
 	if (!path.isAbsolute(sessionFile)) {
 		throw new Error("Cannot refresh an in-memory session");
 	}
-	const compiled = source.env.PI_COMPILED === "true";
+	const compiled = isCompiledSource(source);
 	const launcher = source.env.OMP_REFRESH_COMMAND;
 	const entrypoint = !compiled && source.argv[1] ? [source.argv[1]] : [];
 	return {
@@ -40,7 +41,9 @@ export function buildRefreshInvocation(
 		// directory before its preload restores the user cwd. Re-enter it when
 		// available instead of bypassing that safety boundary with bare Bun.
 		command: launcher || source.execPath,
-		args: launcher ? ["--resume", sessionFile] : [...source.execArgv, ...entrypoint, "--resume", sessionFile],
+		args: launcher
+			? ["--resume", sessionFile]
+			: [...(compiled ? [] : source.execArgv), ...entrypoint, "--resume", sessionFile],
 		// Mark this purely for diagnostics and future handoff-safe subsystems;
 		// it deliberately carries no secret or session payload.
 		env: { ...source.env, OMP_INTERNAL_REFRESH: "true" },

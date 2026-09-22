@@ -27,6 +27,17 @@ export interface SupervisorInvocationSource {
 	env: NodeJS.ProcessEnv;
 }
 
+/**
+ * Whether `source` is a compiled release binary. `process.env.PI_COMPILED` is
+ * define-folded into release binaries and never present in the real
+ * environment, so the live process must read it verbatim; injected sources
+ * (tests) carry the marker in their own `env`.
+ */
+export function isCompiledSource(source: Pick<SupervisorInvocationSource, "env">): boolean {
+	if (source === process) return process.env.PI_COMPILED === "true";
+	return source.env.PI_COMPILED === "true";
+}
+
 export function isSupervisedChildProcess(
 	env: NodeJS.ProcessEnv = process.env,
 	sender: IpcSend | undefined = PROCESS_IPC_SEND,
@@ -69,9 +80,12 @@ export async function requestSupervisedRefresh(sessionFile: string, cwd: string)
 
 /** Re-enter the same source entrypoint, or the same compiled executable. */
 export function buildSupervisedChildCommand(source: SupervisorInvocationSource = process): string[] {
-	const compiled = source.env.PI_COMPILED === "true";
+	const compiled = isCompiledSource(source);
+	// A compiled executable already carries its build-time execArgv (bun embeds
+	// `--user-agent=…`); re-passing them would reach the CLI as unknown flags.
+	const runtimeArgs = compiled ? [] : source.execArgv;
 	const entrypoint = !compiled && source.argv[1] ? [source.argv[1]] : [];
-	return [source.execPath, ...source.execArgv, ...entrypoint, ...source.argv.slice(2)];
+	return [source.execPath, ...runtimeArgs, ...entrypoint, ...source.argv.slice(2)];
 }
 
 /**
@@ -111,8 +125,7 @@ export async function runProcessSupervisor(source: SupervisorInvocationSource = 
 			if (refreshed) env.OMP_INTERNAL_REFRESH = "true";
 			else delete env.OMP_INTERNAL_REFRESH;
 
-			const spawnCwd =
-				source.env.PI_COMPILED === "true" ? childCwd : source.env[SUPERVISOR_SPAWN_CWD_ENV] || childCwd;
+			const spawnCwd = isCompiledSource(source) ? childCwd : source.env[SUPERVISOR_SPAWN_CWD_ENV] || childCwd;
 			child = Bun.spawn({
 				cmd: [...commandPrefix, ...argv],
 				cwd: spawnCwd,

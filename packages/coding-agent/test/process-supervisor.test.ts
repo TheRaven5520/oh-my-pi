@@ -22,7 +22,7 @@ describe("process supervisor", () => {
 		expect(
 			buildSupervisedChildCommand({
 				execPath: "/opt/omp",
-				execArgv: [],
+				execArgv: ["--user-agent=omp/18.2.9"],
 				argv: ["/opt/omp", "ignored-placeholder", "--help"],
 				env: { PI_COMPILED: "true" },
 			}),
