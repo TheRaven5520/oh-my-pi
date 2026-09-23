@@ -289,6 +289,8 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		prepareSessionSwitch: vi.fn(async () => {}),
 		clearOptimisticUserMessage: vi.fn(),
 		replaceOptimisticUserMessage: vi.fn(),
+		markAwaitingModel: vi.fn(),
+		markUserMessagesReceived: vi.fn(),
 		reconcileOptimisticSkillMessage: vi.fn(),
 		flushCompactionQueue: vi.fn(async () => {}),
 		flushPendingModelSwitch: vi.fn(async () => {}),

@@ -213,6 +213,7 @@ import { PlanSaveOverlay, type PlanSaveOverlayResult } from "@oh-my-pi/pi-tui/ov
 import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import { SessionInfoOverlay } from "@oh-my-pi/pi-tui/overlays/session-info-overlay";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "./status-line-host";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
@@ -969,6 +970,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#pendingSubmissionPreservesDraft = false;
 	#optimisticUserMessageComponents: Component[] = [];
 	#optimisticSkillMessageComponents: Component[] = [];
+	/** User rows shown dim until the model starts responding (see {@link markUserMessagesReceived}). */
+	readonly #awaitingModelUserMessages = new Set<UserMessageComponent>();
 	/** True while an optimistically-rendered `/skill:` row awaits its canonical
 	 *  `message_start`. Read by the event controller to reconcile the row. */
 	optimisticSkillMessagePending = false;
@@ -2495,6 +2498,21 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.chatContainer.children.slice(start);
 	}
 
+	markAwaitingModel(components: readonly Component[]): void {
+		for (const component of components) {
+			if (!(component instanceof UserMessageComponent)) continue;
+			component.setAwaitingModel(true);
+			this.#awaitingModelUserMessages.add(component);
+		}
+	}
+
+	markUserMessagesReceived(): void {
+		if (this.#awaitingModelUserMessages.size === 0) return;
+		for (const component of this.#awaitingModelUserMessages) component.setAwaitingModel(false);
+		this.#awaitingModelUserMessages.clear();
+		this.ui.requestRender();
+	}
+
 	clearOptimisticUserMessage(): void {
 		this.optimisticUserMessageSignature = undefined;
 		this.#pendingSubmissionDispose?.();
@@ -2630,6 +2648,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					{ imageLinks: input.imageLinks },
 				);
 			});
+			this.markAwaitingModel(this.#optimisticUserMessageComponents);
 		} else {
 			this.clearOptimisticUserMessage();
 		}
@@ -2728,6 +2747,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (this.loadingAnimation) {
 				this.#stopLoadingAnimation(true);
 			}
+			this.markUserMessagesReceived();
 		}
 	}
 
@@ -3033,6 +3053,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				{ imageLinks: submission.imageLinks },
 			);
 		});
+		this.markAwaitingModel(this.#optimisticUserMessageComponents);
 	}
 
 	#formatTodoLine(todo: TodoItem, prefix: string, matched: boolean): string {

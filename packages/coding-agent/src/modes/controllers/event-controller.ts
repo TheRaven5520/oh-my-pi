@@ -1012,6 +1012,12 @@ export class EventController {
 				// links via the synchronous putBlobSync fallback, so no await is needed here.
 				this.ctx.addMessageToChat(event.message);
 			}
+			// A user prompt entering the turn stays dim until the model starts
+			// responding (an optimistic row was already dimmed when it was painted).
+			if (!wasOptimistic && !event.message.synthetic && event.message.attribution !== "agent") {
+				const component = this.ctx.transcriptMessageComponents.get(event.message);
+				if (component) this.ctx.markAwaitingModel([component]);
+			}
 
 			// Never clear the editor here. A local submission (optimistic or
 			// queued-while-streaming) already cleared it at submit time, so clearing
@@ -1273,6 +1279,11 @@ export class EventController {
 		if (!this.#vocalizedMessageUpdates.delete(event)) {
 			this.#vocalizeDelta(event);
 		}
+		// The provider emits `start` before sending the request; the first real
+		// delta is the model's own response arriving.
+		if (event.message.role === "assistant" && event.assistantMessageEvent?.type !== "start") {
+			this.ctx.markUserMessagesReceived();
+		}
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
 			const unlockedThinkingVisibility = this.ctx.noteDisplayableThinkingContent(event.message);
 			if (unlockedThinkingVisibility) {
@@ -1451,6 +1462,7 @@ export class EventController {
 	}
 
 	async #handleMessageEnd(event: Extract<AgentSessionEvent, { type: "message_end" }>): Promise<void> {
+		if (event.message.role === "assistant") this.ctx.markUserMessagesReceived();
 		// The persistence slot exists before message_end notification, unlike
 		// tool_execution_end. Resolve HUD identity only after canonical append.
 		if (event.message.role === "toolResult" && event.message.toolName === "todo" && !event.message.isError) {
@@ -2020,6 +2032,7 @@ export class EventController {
 		// the loader and finalizes it at its own agent_end (isStreaming === false by
 		// then). Mirrors the collab guest's !isStreaming loader reconciler.
 		if (this.ctx.session.isStreaming) return;
+		this.ctx.markUserMessagesReceived();
 		// A non-terminal settle (`isTerminal: false`) is a scheduling pause, not the
 		// end of the run: an unsuppressed async job (a `/vibe` worker turn, a bash
 		// `async` job, etc.) will re-wake the loop when its result is delivered.

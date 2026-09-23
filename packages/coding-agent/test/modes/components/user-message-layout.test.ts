@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 
 const WIDTH = 40;
 
@@ -35,5 +35,18 @@ describe("UserMessageComponent layout", () => {
 		expect(reacted[0]).toStartWith("❯ ship it?");
 		expect(reacted[0]).toEndWith("🚀 ");
 		for (const line of reacted) expect(Bun.stringWidth(line)).toBe(WIDTH);
+	});
+
+	it("draws the text dim while awaiting the model and restores it afterwards", () => {
+		const component = new UserMessageComponent("hello");
+		const normal = component.render(WIDTH).join("\n");
+
+		component.setAwaitingModel(true);
+		const awaiting = component.render(WIDTH).join("\n");
+		expect(awaiting).toContain(`${theme.getFgAnsi("dim")}hello`);
+		expect(Bun.stripANSI(awaiting)).toBe(Bun.stripANSI(normal));
+
+		component.setAwaitingModel(false);
+		expect(component.render(WIDTH).join("\n")).toBe(normal);
 	});
 });

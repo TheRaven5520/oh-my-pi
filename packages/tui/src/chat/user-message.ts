@@ -108,9 +108,17 @@ export function userBubbleColor(
  * Component that renders a user message the way Claude Code does: a dim `❯`
  * pointer, then the text on the tinted bubble with no padding rows. Accepts an
  * agent reaction badge (see {@link ReactionTarget}) drawn at the end of the first row.
+ * While awaiting the model (sent, but no response has started streaming) the
+ * text is dim, as Claude Code greys a prompt until the model receives it.
  */
 export class UserMessageComponent extends Container implements ReactionTarget {
 	readonly #md: Markdown;
+	readonly #text: string;
+	readonly #options: UserBubbleOptions;
+	readonly #mentionLabels: string[];
+	/** Dim rendering used only while awaiting the model; built on first use. */
+	#awaitingMd: Markdown | undefined;
+	#awaitingModel = false;
 	// Memoized on the Markdown render (same source ref ⇒ identical rows) so this
 	// component stays reference-stable for the transcript's incremental assembly.
 	#source: readonly string[] | undefined;
@@ -131,12 +139,37 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 			mentionLabels.push(label);
 			return label;
 		});
-		this.#md = new Markdown(text, 0, 0, getMarkdownTheme(), {
-			bgColor: (value: string) => theme.bg("userMessageBg", value),
-			color: userBubbleColor(options, composerTokenRegex(mentionLabels)),
-		});
-		this.#md.setIgnoreTight(true);
+		this.#text = text;
+		this.#options = options;
+		this.#mentionLabels = mentionLabels;
+		this.#md = this.#markdown(options);
 		this.addChild(this.#md);
+	}
+
+	#markdown(options: UserBubbleOptions): Markdown {
+		const md = new Markdown(this.#text, 0, 0, getMarkdownTheme(), {
+			bgColor: (value: string) => theme.bg("userMessageBg", value),
+			color: userBubbleColor(options, composerTokenRegex(this.#mentionLabels)),
+		});
+		md.setIgnoreTight(true);
+		return md;
+	}
+
+	/** Dim the text until the model starts responding to this prompt. */
+	setAwaitingModel(awaiting: boolean): void {
+		if (this.#awaitingModel === awaiting) return;
+		this.#awaitingModel = awaiting;
+		this.#lines = undefined;
+	}
+
+	get awaitingModel(): boolean {
+		return this.#awaitingModel;
+	}
+
+	override invalidate(): void {
+		super.invalidate();
+		this.#awaitingMd?.invalidate();
+		this.#lines = undefined;
 	}
 
 	setReaction(emoji: string): void {
@@ -149,7 +182,10 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 		const reaction = this.#reaction;
 		// Right edge: one cell of bubble padding, or ` <badge> ` on the first row.
 		const rightWidth = reaction === undefined ? 1 : visibleWidth(reaction) + 2;
-		const inner = this.#md.render(Math.max(1, width - USER_POINTER_WIDTH - rightWidth));
+		const md = this.#awaitingModel
+			? (this.#awaitingMd ??= this.#markdown({ ...this.#options, synthetic: true }))
+			: this.#md;
+		const inner = md.render(Math.max(1, width - USER_POINTER_WIDTH - rightWidth));
 		if (inner.length === 0) return inner;
 		if (this.#source === inner && this.#lines !== undefined) return this.#lines;
 		const bubble = (value: string) => theme.bg("userMessageBg", value);
