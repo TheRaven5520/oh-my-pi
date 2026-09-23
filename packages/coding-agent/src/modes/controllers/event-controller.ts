@@ -89,6 +89,29 @@ interface ApprovalPreviewGate {
 	started: boolean;
 }
 
+/**
+ * Render-dedupe key for a custom/hook message. The same message can arrive twice
+ * (an IRC relay plus its message_start). Timestamp alone is not unique: batched
+ * cards — e.g. advisor notes flushed together at the end of a turn — share one
+ * millisecond, so the content distinguishes them.
+ */
+function customMessageSignature(message: {
+	role: string;
+	customType?: string;
+	timestamp?: number;
+	content?: unknown;
+}): string {
+	const content =
+		typeof message.content === "string"
+			? message.content
+			: Array.isArray(message.content)
+				? message.content
+						.map(part => (part && typeof part === "object" && "text" in part ? String(part.text) : ""))
+						.join("")
+				: "";
+	return `${message.role}:${message.customType}:${message.timestamp}:${content}`;
+}
+
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 	/** Timestamp of the current turn's user prompt; drives the usage row's prompt→yield delta. */
@@ -921,7 +944,7 @@ export class EventController {
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
-			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
+			const signature = customMessageSignature(event.message);
 			if (this.#renderedCustomMessages.has(signature)) {
 				return;
 			}
@@ -1044,7 +1067,7 @@ export class EventController {
 	}
 
 	async #handleIrcMessage(event: Extract<AgentSessionEvent, { type: "irc_message" }>): Promise<void> {
-		const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
+		const signature = customMessageSignature(event.message);
 		if (this.#renderedCustomMessages.has(signature)) {
 			return;
 		}
