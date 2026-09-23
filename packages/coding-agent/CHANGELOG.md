@@ -5,7 +5,6 @@
 ### Added
 
 - Added `/usage show` (or plain `/usage`) to pin a static usage snapshot above the prompt and `/usage clear` to remove it without interrupting active work. The pinned panel shows one pool headline per provider from Sprilicred's pooled accounts — Anthropic Fable Weekly / Weekly / Five Hour and OpenAI Weekly / Five Hour ten-cell bars — plus the fetch time; running `/usage show` again refetches and replaces the snapshot.
-- `/btw` now runs as a tool-enabled side agent forked from the current session: it can read files, search the web, and edit, while its transcript stays separate from the main conversation. Follow-ups reopen the same side agent, which is parked between answers; `--no-session` keeps it in memory.
 
 ### Changed
 

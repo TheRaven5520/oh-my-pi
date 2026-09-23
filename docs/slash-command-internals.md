@@ -274,23 +274,31 @@ From the pause screen, press Esc, Enter, Space, or Ctrl+C to resume. Ctrl+C resu
 
 ## 11) Built-in command note: `/btw`
 
-`/btw <question>` asks a side question in a tool-enabled side agent forked from
-the current session. Bare `/btw` opens this session's history, with the newest
-question selected. The side agent inherits the main conversation, model,
-thinking level, system prompt, enabled tools, MCP proxies, and extensions, so it
-can read files, search the web, run commands, and edit. Its turns are written to
-its own transcript (`Btw-<id>.jsonl` under the session artifact directory), never
-to the main transcript. Each new `/btw <question>` forks a fresh side agent from
-the main session as it stands at that moment.
+`/btw <question>` asks an independent side question using the current session
+context. Bare `/btw` opens this session's history, with the newest question selected.
+Saved side questions are not appended to the main transcript or sent as history
+to unrelated turns. Each new `/btw <question>` remains independent; explicit
+follow-ups include only the selected side conversation alongside the current
+main-session context.
 
-Follow-ups reuse the topic's side agent. Between answers it is parked (its live
-session disposed); the next follow-up revives it from its transcript, so the full
-side conversation, including tool calls and results, is the context. Topics saved
-before this change have no side agent; their first follow-up forks one and seeds
-it with the saved question/answer pairs. With `--no-session` the side agent is an
-in-memory fork that stays live until the session closes.
-Session moves wait for running side turns and park side agents first; a
-relocated transcript is re-registered at its new path on the next follow-up.
+Previous questions and answers are replayed as separate `user` and `assistant`
+messages, followed by the new user question, rather than embedded in one prompt.
+The original question template stays in the same position across follow-ups.
+History is snapshotted before asynchronous conversion and uses the normal
+provider normalization and secret-obfuscation pipeline.
+
+The main prompt-cache key and static system/tool prefix are retained. Each BTW
+topic has its own stable provider-side conversation identity, separate from the
+main conversation and other topics. Successful serialized follow-ups reuse it;
+after a cancelled, failed, or interrupted turn the next request uses a new
+transport generation, so an unwinding request cannot share its state.
+Standalone ephemeral callers without a conversation key keep per-request IDs.
+Actual cache hits depend on the provider. The main-session context is still
+current, not frozen at the first question; advancing or compacting it can change
+the prefix.
+Saved BTW records contain visible answer text, not opaque provider reasoning or
+replay signatures, so restoration preserves the dialogue roles and text rather
+than a byte-for-byte native provider transcript.
 
 - While an inline BTW is running, `Esc` cancels the request and keeps its partial
   answer visible as `Cancelled`. Press `Esc` again to close the panel.
@@ -382,7 +390,6 @@ copy or remove those artifacts; it does not move the conversation leaf.
 
 The existing inline `b` action promotes a completed single-turn answer to a chat
 branch only when the original session/leaf is unchanged and the main session is
-idle. It promotes the visible answer text only; tool calls made by the side agent
-stay in its transcript. Multi-turn side conversations remain in BTW history;
-promoting only their latest pair would discard earlier context. History browsing
-does not promote answers or relax these branch guards.
+idle. Multi-turn side conversations remain in BTW history; promoting only their
+latest pair would discard earlier context. History browsing does not promote
+answers or relax these branch guards.

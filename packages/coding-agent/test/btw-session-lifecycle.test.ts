@@ -8,7 +8,6 @@ import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extens
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { SessionSelectorComponent } from "@oh-my-pi/pi-tui/overlays/session-selector";
 import { BtwController } from "@oh-my-pi/pi-coding-agent/modes/controllers/btw-controller";
-import * as forkedSideAgent from "@oh-my-pi/pi-coding-agent/modes/controllers/forked-side-agent";
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
@@ -41,17 +40,9 @@ function answer(text: string) {
 	return { replyText: text, assistantMessage };
 }
 
-interface SideTurnResult {
-	replyText: string;
-	assistantMessage: AssistantMessage;
-}
-
 interface SideTurn {
 	signal?: AbortSignal;
-	deferAbort: boolean;
-	aborted: Promise<void>;
-	settled: Promise<unknown>;
-	resolve: (result: SideTurnResult) => void;
+	resolve: (result: { replyText: string; assistantMessage: AssistantMessage }) => void;
 }
 
 describe("BTW session boundaries", () => {
@@ -104,49 +95,11 @@ describe("BTW session boundaries", () => {
 		vi.spyOn(mode, "showStatus").mockImplementation(() => {});
 		vi.spyOn(mode, "showError").mockImplementation(() => {});
 		turns = [];
-		let nextAgentId = 0;
-		vi.spyOn(forkedSideAgent, "createForkedSideAgent").mockImplementation(
-			async (_ctx, existingAgentId, _legacyHistory) => {
-				const id = existingAgentId ?? `btw-lifecycle-agent-${++nextAgentId}`;
-				return {
-					id,
-					sessionFile: path.join(directory.path(), `${id}.jsonl`),
-					run: args => {
-						const pending = Promise.withResolvers<SideTurnResult>();
-						const aborted = Promise.withResolvers<void>();
-						let deferAbort = false;
-						const onAbort = () => {
-							aborted.resolve();
-							if (deferAbort) return;
-							const error = new Error("The operation was aborted");
-							error.name = "AbortError";
-							pending.reject(error);
-						};
-						const turn: SideTurn = {
-							signal: args.signal,
-							get deferAbort() {
-								return deferAbort;
-							},
-							set deferAbort(value: boolean) {
-								deferAbort = value;
-							},
-							settled: pending.promise,
-							aborted: aborted.promise,
-							resolve: result => {
-								args.signal?.removeEventListener("abort", onAbort);
-								pending.resolve(result);
-							},
-						};
-						if (args.signal?.aborted) onAbort();
-						else args.signal?.addEventListener("abort", onAbort, { once: true });
-						turns.push(turn);
-						return pending.promise;
-					},
-					park: async () => {},
-					close: async () => {},
-				};
-			},
-		);
+		vi.spyOn(session, "runEphemeralTurn").mockImplementation(args => {
+			const pending = Promise.withResolvers<{ replyText: string; assistantMessage: AssistantMessage }>();
+			turns.push({ signal: args.signal, resolve: pending.resolve });
+			return pending.promise;
+		});
 		const start = BtwController.prototype.start;
 		vi.spyOn(BtwController.prototype, "start").mockImplementation(function (this: BtwController, question) {
 			btw = this;
@@ -237,9 +190,8 @@ describe("BTW session boundaries", () => {
 	}
 
 	it.each(["delete command", "picker delete", "picker resume"] as const)(
-		"%s waits for cancelled BTW persistence and tools before changing the source session",
+		"%s waits for cancelled BTW persistence before changing the source session",
 		async action => {
-			turns[0]!.deferAbort = true;
 			const entered = Promise.withResolvers<void>();
 			const release = Promise.withResolvers<void>();
 			const upsert = BtwHistoryStore.prototype.upsert;
@@ -258,13 +210,9 @@ describe("BTW session boundaries", () => {
 				expect(await Bun.file(sourceFile).exists()).toBe(true);
 				expect(await Bun.file(recordPath).text()).toBe(originalRecord);
 				release.resolve();
-				await btw.flush();
-				expect(manager.getSessionId()).toBe(sourceId);
-				expect(await Bun.file(sourceFile).exists()).toBe(true);
-				expect((await Bun.file(recordPath).json()).status).toBe("cancelled");
-				turns[0]!.resolve(answer("Late answer must not resurrect deleted history"));
 				await finished;
 				expect(manager.getSessionId()).not.toBe(sourceId);
+				turns[0]!.resolve(answer("Late answer must not resurrect deleted history"));
 				await Promise.resolve();
 				await btw.flush();
 				if (action === "picker resume") {
@@ -274,8 +222,8 @@ describe("BTW session boundaries", () => {
 					expect(await Bun.file(recordPath).exists()).toBe(false);
 				}
 				await mode.handleBtwCommand("New session side question");
+				expect(turns).toHaveLength(2);
 				turns[1]!.resolve(answer("New session answer"));
-				await turns[1]!.settled.catch(() => {});
 				await Promise.resolve();
 				await btw.flush();
 				expect((await BtwHistoryStore.open(manager.getArtifactsDir() ?? undefined)).getRecords()[0]?.answer).toBe(
@@ -283,7 +231,6 @@ describe("BTW session boundaries", () => {
 				);
 			} finally {
 				release.resolve();
-				turns[0]!.resolve(answer("Release cancelled run during cleanup"));
 			}
 		},
 	);
@@ -349,26 +296,18 @@ describe("BTW session boundaries", () => {
 			"%s settles BTW before switching and ignores the old request's late answer",
 			async action => {
 				const run = await transition(action);
-				const oldTurn = turns[0]!;
-				oldTurn.deferAbort = true;
-				const finished = run();
-				try {
-					await oldTurn.aborted;
-					await btw.flush();
-					expect(manager.getSessionId()).toBe(sourceId);
-					expect(await Bun.file(sourceFile).exists()).toBe(true);
-					expect((await Bun.file(recordPath).json()).status).toBe("cancelled");
-					oldTurn.resolve(answer("Late answer from the old session"));
-					expect(await finished).toEqual({ cancelled: false });
-					expect(manager.getSessionId()).not.toBe(sourceId);
-					expect((await Bun.file(recordPath).json()).answer).toBe("");
-				} finally {
-					oldTurn.resolve(answer("Release cancelled run during cleanup"));
-					await finished;
-				}
+				expect(await run()).toEqual({ cancelled: false });
+				expect(manager.getSessionId()).not.toBe(sourceId);
+				expect(turns[0]!.signal?.aborted).toBe(true);
+				const saved = await Bun.file(recordPath).text();
+				expect(JSON.parse(saved).status).toBe("cancelled");
+				turns[0]!.resolve(answer("Late answer from the old session"));
+				await Promise.resolve();
+				await btw.flush();
+				expect(await Bun.file(recordPath).text()).toBe(saved);
 				await mode.handleBtwCommand("Side question in the destination");
+				expect(turns).toHaveLength(2);
 				turns[1]!.resolve(answer("Destination answer"));
-				await turns[1]!.settled.catch(() => {});
 				await Promise.resolve();
 				await btw.flush();
 				expect(

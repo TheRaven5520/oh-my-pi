@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Message } from "@oh-my-pi/pi-ai";
 import { type OverlayHandle, replaceTabs } from "@oh-my-pi/pi-tui";
 import { logger, prompt, Snowflake, toError, withTimeout } from "@oh-my-pi/pi-utils";
 import btwUserPrompt from "../../prompts/system/btw-user.md" with { type: "text" };
@@ -16,7 +16,6 @@ import { BtwHistoryPanel } from "@oh-my-pi/pi-tui/overlays/btw-history-panel";
 import { BtwPanelComponent } from "@oh-my-pi/pi-tui/overlays/btw-panel";
 import { sanitizeErrorLine } from "@oh-my-pi/pi-tui/chrome/error-block";
 import type { InteractiveModeContext } from "../types";
-import { createForkedSideAgent, type ForkedSideAgent } from "./forked-side-agent";
 
 interface BtwRequest {
 	component: BtwPanelComponent;
@@ -24,12 +23,13 @@ interface BtwRequest {
 	question: string;
 	leafId: string | null;
 	sessionId: string;
+	session: InteractiveModeContext["session"];
 	store: BtwHistoryStore;
 	record: BtwHistoryRecord;
 	history?: readonly BtwHistoryTurn[];
-	sideAgent: ForkedSideAgent;
 	/** At least one checkpoint belongs to this request; later failures must block lifecycle changes. */
 	persisted: boolean;
+	conversationKey: string;
 }
 
 function assistantMessageWithReplyText(assistantMessage: AssistantMessage, replyText: string): AssistantMessage {
@@ -75,8 +75,6 @@ export class BtwController {
 	#historyOverlay: OverlayHandle | undefined;
 	readonly #writes = new Set<Promise<boolean>>();
 	readonly #failedWrites = new Map<BtwRequest, Error>();
-	readonly #sideAgents = new Map<string, ForkedSideAgent>();
-	readonly #runs = new Set<Promise<void>>();
 
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
@@ -231,10 +229,6 @@ export class BtwController {
 			// A timeout must stop the caller before it moves/deletes the old path.
 			// Keep the current view/store available until outstanding writes settle.
 			await this.flush();
-			await this.#drainRuns();
-			await this.flush();
-			await this.#settleSideAgents("close");
-			this.#sideAgents.clear();
 			this.#closeHistory();
 			this.#hideInline();
 			this.#activeRequest?.component.close();
@@ -254,23 +248,6 @@ export class BtwController {
 			this.#drainWrites(),
 			timeoutMs,
 			"BTW history is still being saved. The session operation was stopped; retry when storage responds.",
-		);
-	}
-
-	async #drainRuns(): Promise<void> {
-		await withTimeout(
-			Promise.all(this.#runs),
-			10_000,
-			"BTW tools are still stopping. The session operation was stopped; retry when they finish.",
-		);
-	}
-
-	/** Park keeps follow-ups revivable; close also releases in-memory side agents. */
-	async #settleSideAgents(action: "park" | "close"): Promise<void> {
-		await withTimeout(
-			Promise.all([...this.#sideAgents.values()].map(agent => agent[action]())),
-			10_000,
-			"BTW agents are still closing. The session operation was stopped; retry when they finish.",
 		);
 	}
 
@@ -305,9 +282,6 @@ export class BtwController {
 		this.#transitionCount++;
 		try {
 			await this.flush();
-			await this.#drainRuns();
-			await this.flush();
-			await this.#settleSideAgents("park");
 			const moved = await operation();
 			if (moved) await this.dispose();
 			return moved;
@@ -402,27 +376,9 @@ export class BtwController {
 				this.ctx.showError("No active model available for /btw.");
 				return false;
 			}
-			await this.#drainRuns();
-			const history = previous ? getBtwTurns(previous) : undefined;
-			let sideAgent = previous?.agentId ? this.#sideAgents.get(previous.agentId) : undefined;
-			if (!sideAgent) {
-				try {
-					sideAgent = await createForkedSideAgent(this.ctx, previous?.agentId, history);
-					this.#sideAgents.set(sideAgent.id, sideAgent);
-				} catch (error) {
-					this.ctx.showError(sanitizeErrorLine(`Cannot open tool-enabled /btw: ${toError(error).message}`));
-					return false;
-				}
-			}
 			await this.ctx.sessionManager.ensureOnDisk();
-			if (
-				signal?.aborted ||
-				generation !== this.#generation ||
-				sessionId !== this.ctx.sessionManager.getSessionId()
-			) {
-				await sideAgent.park();
+			if (signal?.aborted || generation !== this.#generation || sessionId !== this.ctx.sessionManager.getSessionId())
 				return false;
-			}
 			if (!previous) this.#closeHistory();
 			this.#activeRequest?.component.close();
 			this.#clearCompletedState();
@@ -436,8 +392,12 @@ export class BtwController {
 				updatedAt: now,
 			};
 			const record: BtwHistoryRecord = previous
-				? { ...previous, agentId: sideAgent.id, followUps: [...(previous.followUps ?? []), turn] }
-				: { ...turn, id: Snowflake.next(), leafId, agentId: sideAgent.id };
+				? { ...previous, followUps: [...(previous.followUps ?? []), turn] }
+				: { ...turn, id: Snowflake.next(), leafId };
+			const history = previous ? getBtwTurns(previous) : undefined;
+			// A cancelled/failed transport may still be unwinding. Start a fresh
+			// lineage after that boundary, while successful follow-ups share one.
+			const transportEpoch = (history?.findLastIndex(item => item.status !== "complete") ?? -1) + 1;
 			const request: BtwRequest = {
 				component: new BtwPanelComponent({
 					question: trimmedQuestion,
@@ -449,10 +409,11 @@ export class BtwController {
 				question: trimmedQuestion,
 				leafId,
 				sessionId,
+				session,
 				store,
 				record,
 				history,
-				sideAgent,
+				conversationKey: `btw:${record.id}:${transportEpoch}`,
 				persisted: false,
 			};
 			this.#activeRequest = request;
@@ -469,7 +430,6 @@ export class BtwController {
 					this.#storePromise = undefined;
 					this.#historyPanel?.update(store.getRecords());
 				}
-				await sideAgent.park();
 				return false;
 			}
 			if (
@@ -486,12 +446,7 @@ export class BtwController {
 				return false;
 			}
 			this.#refreshHistory();
-			const run = this.#runRequest(request);
-			this.#runs.add(run);
-			void run.then(
-				() => this.#runs.delete(run),
-				() => this.#runs.delete(run),
-			);
+			void this.#runRequest(request);
 			return true;
 		} catch (error) {
 			this.ctx.showError(sanitizeErrorLine(`Cannot open /btw history: ${toError(error).message}`));
@@ -617,9 +572,41 @@ export class BtwController {
 	async #runRequest(request: BtwRequest): Promise<void> {
 		try {
 			const promptText = prompt.render(btwUserPrompt, { question: request.question });
-			const { replyText, assistantMessage } = await request.sideAgent.run({
-				question: promptText,
-				signal: request.abortController.signal,
+			const model = request.session.model;
+			if (!model) throw new Error("No active model available for /btw.");
+			const history: Message[] = [];
+			for (const turn of request.history ?? []) {
+				history.push({
+					role: "user",
+					content: [{ type: "text", text: prompt.render(btwUserPrompt, { question: turn.question }) }],
+					attribution: "agent",
+					timestamp: turn.createdAt,
+				});
+				if (!turn.answer) continue;
+				// Saved BTW history contains visible text, not provider-native reasoning
+				// or replay signatures. These are context messages, not new billed turns.
+				history.push({
+					role: "assistant",
+					content: [{ type: "text", text: turn.answer }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: turn.updatedAt,
+				});
+			}
+			const { replyText, assistantMessage } = await request.session.runEphemeralTurn({
+				promptText,
+				history,
+				conversationKey: request.conversationKey,
 				onTextDelta: delta => {
 					const latest = getBtwLatestTurn(request.record);
 					if (latest.status !== "running") return;
@@ -629,6 +616,7 @@ export class BtwController {
 						this.#refreshHistory();
 					}
 				},
+				signal: request.abortController.signal,
 			});
 			if (getBtwLatestTurn(request.record).status !== "running") return;
 			this.#updateRequest(request, { answer: replyText, status: "complete", updatedAt: Date.now() });
@@ -658,15 +646,9 @@ export class BtwController {
 				if (cancelled) request.component.markAborted();
 				else request.component.markError(message);
 			}
-		} finally {
-			await this.#persist(request);
-			if (this.#isActiveRequest(request)) this.#refreshHistory();
-			try {
-				await request.sideAgent.park();
-			} catch (error) {
-				this.ctx.showError(sanitizeErrorLine(`Cannot park /btw: ${toError(error).message}`));
-			}
 		}
+		this.#persist(request);
+		if (this.#isActiveRequest(request)) this.#refreshHistory();
 	}
 
 	#hideInline(): void {

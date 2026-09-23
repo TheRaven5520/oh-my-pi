@@ -3731,30 +3731,6 @@ export class SessionManager {
 		return manager;
 	}
 
-	/** Fork a session's current in-memory transcript without creating a JSONL file. */
-	static forkInMemory(
-		source: SessionManager,
-		options?: { resetInheritedCost?: boolean; repairInterruptedTail?: boolean },
-	): SessionManager {
-		const header = source.getHeader();
-		const manager = new SessionManager(source.getCwd(), "", false, new MemorySessionStorage());
-		manager.#resetToNewSession({
-			parentSession: header?.id,
-			providerPromptCacheKey: header?.providerPromptCacheKey ?? header?.id,
-			additionalDirectories: header?.additionalDirectories,
-		});
-		const history = structuredClone(source.getEntries());
-		if (options?.resetInheritedCost) SessionManager.#resetInheritedUsageCost(history);
-		manager.#entries = history;
-		manager.#index.rebuild(history);
-		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
-		if (options?.repairInterruptedTail) {
-			SessionManager.#repairForkedInterruptedTail(history, manager.#index.pathTo());
-			manager.#index.rebuild(history);
-		}
-		return manager;
-	}
-
 	/**
 	 * List sessions for a project directory.
 	 * @param sessionDir Optional dir; defaults to the cwd-derived dir.

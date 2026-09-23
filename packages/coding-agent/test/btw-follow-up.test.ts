@@ -2,10 +2,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Message, Usage } from "@oh-my-pi/pi-ai";
 import { BtwHistoryPanel } from "@oh-my-pi/pi-tui/overlays/btw-history-panel";
 import { BtwController } from "@oh-my-pi/pi-coding-agent/modes/controllers/btw-controller";
-import * as forkedSideAgent from "@oh-my-pi/pi-coding-agent/modes/controllers/forked-side-agent";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { type BtwHistoryRecord, BtwHistoryStore, getBtwTurns } from "@oh-my-pi/pi-coding-agent/session/btw-history";
@@ -15,7 +14,9 @@ import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { Container, type TUI } from "@oh-my-pi/pi-tui";
 
 interface TurnArgs {
-	question: string;
+	promptText: string;
+	history?: readonly Message[];
+	conversationKey?: string;
 	onTextDelta?: (delta: string) => void;
 	signal?: AbortSignal;
 }
@@ -27,8 +28,6 @@ interface TurnResult {
 
 interface PendingTurn {
 	args: TurnArgs;
-	deferAbort?: boolean;
-	settled: Promise<unknown>;
 	resolve: (result: TurnResult) => void;
 	reject: (error: Error) => void;
 }
@@ -85,54 +84,15 @@ async function harness() {
 	const manager = SessionManager.create(directory, directory);
 	const managers = [manager];
 	const requests: PendingTurn[] = [];
-	let nextAgentId = 0;
-	const createSideAgent = vi
-		.spyOn(forkedSideAgent, "createForkedSideAgent")
-		.mockImplementation(async (_ctx, existingAgentId, _legacyHistory) => {
-			const id = existingAgentId ?? `btw-test-agent-${++nextAgentId}`;
-			const sideAgent = {
-				id,
-				sessionFile: path.join(directory, `${id}.jsonl`),
-				run: (args: TurnArgs): Promise<TurnResult> => {
-					const pending = Promise.withResolvers<TurnResult>();
-					let deferAbort = false;
-					const onAbort = () => {
-						if (deferAbort) return;
-						const error = new Error("The operation was aborted");
-						error.name = "AbortError";
-						request.reject(error);
-					};
-					const request: PendingTurn = {
-						args,
-						get deferAbort() {
-							return deferAbort;
-						},
-						set deferAbort(value: boolean) {
-							deferAbort = value;
-						},
-						settled: pending.promise,
-						resolve: result => {
-							args.signal?.removeEventListener("abort", onAbort);
-							pending.resolve(result);
-						},
-						reject: error => {
-							args.signal?.removeEventListener("abort", onAbort);
-							pending.reject(error);
-						},
-					};
-					if (args.signal?.aborted) onAbort();
-					else args.signal?.addEventListener("abort", onAbort, { once: true });
-					requests.push(request);
-					return pending.promise;
-				},
-				park: async () => {},
-				close: async () => {},
-			};
-			return sideAgent;
-		});
+	const runEphemeralTurn = vi.fn((args: TurnArgs) => {
+		const pending = Promise.withResolvers<TurnResult>();
+		requests.push({ args, resolve: pending.resolve, reject: pending.reject });
+		return pending.promise;
+	});
 	const session = {
 		model: { provider: "anthropic", id: "claude-sonnet-4-5" },
 		isStreaming: false,
+		runEphemeralTurn,
 	} as unknown as InteractiveModeContext["session"];
 	const ctx = {
 		ui: {
@@ -151,7 +111,6 @@ async function harness() {
 	} as unknown as InteractiveModeContext;
 	const controller = new BtwController(ctx);
 	cleanups.push(async () => {
-		for (const request of requests) request.resolve(answer("Cleanup"));
 		await controller.dispose();
 		for (const item of managers) await item.flush();
 		await fs.rm(directory, { recursive: true, force: true });
@@ -163,7 +122,6 @@ async function harness() {
 		const request = requests.at(-1);
 		if (!request) throw new Error("Expected a pending BTW turn");
 		request.resolve(answer(text));
-		await request.settled.catch(() => {});
 		await drain();
 		await controller.flush();
 	}
@@ -176,7 +134,7 @@ async function harness() {
 		return record;
 	}
 
-	return { directory, manager, managers, ctx, controller, requests, complete, root, createSideAgent };
+	return { directory, manager, managers, ctx, controller, requests, runEphemeralTurn, complete, root };
 }
 
 describe("BTW follow-up lifecycle", () => {
@@ -300,7 +258,7 @@ describe("BTW follow-up lifecycle", () => {
 		}
 	});
 
-	it("rejects a stale topic before dispatch and records a retry from saved history", async () => {
+	it("rejects a stale topic before model dispatch and retries with refreshed history", async () => {
 		const h = await harness();
 		const topic = await h.root("Topic", "Original answer");
 		const overlay = vi.spyOn(h.ctx.ui, "showOverlay");
@@ -321,7 +279,7 @@ describe("BTW follow-up lifecycle", () => {
 			],
 		});
 		expect(await h.controller.startFollowUp(topic.id, "Stale question")).toBe(false);
-		expect(h.requests).toHaveLength(1);
+		expect(h.runEphemeralTurn).toHaveBeenCalledTimes(1);
 		expect((await records(h.manager))[0]?.followUps?.map(turn => turn.question)).toEqual(["Other process question"]);
 
 		const originalStart = h.controller.startFollowUp.bind(h.controller);
@@ -335,11 +293,8 @@ describe("BTW follow-up lifecycle", () => {
 		panel.handleInput("\r");
 		if (!accepted) throw new Error("Expected follow-up submission");
 		expect(await accepted).toBe(true);
+		expect(JSON.stringify(h.requests.at(-1)?.args.history)).toContain("Other process answer");
 		await h.complete("Retried answer");
-		expect((await records(h.manager))[0]?.followUps?.map(turn => turn.question)).toEqual([
-			"Other process question",
-			"Retry with latest history",
-		]);
 	});
 
 	it("copies the preceding answer when the last follow-up fails without text", async () => {
@@ -533,7 +488,7 @@ describe("BTW follow-up lifecycle", () => {
 				release.resolve();
 				expect(await settled.promise).toBe(false);
 				await h.controller.flush();
-				expect(h.requests).toHaveLength(1);
+				expect(h.runEphemeralTurn).toHaveBeenCalledTimes(1);
 				const saved = (await records(h.manager))[0]!;
 				expect(saved.answer).toBe("Original answer");
 				if (boundary === "BTW checkpoint") {
@@ -551,7 +506,7 @@ describe("BTW follow-up lifecycle", () => {
 				panel.pasteText("Accepted follow-up");
 				panel.handleInput("\r");
 				expect(await settled.promise).toBe(true);
-				expect(h.requests).toHaveLength(2);
+				expect(h.runEphemeralTurn).toHaveBeenCalledTimes(2);
 				expect(h.requests.at(-1)!.args.signal?.aborted).toBe(false);
 				await h.complete("Accepted answer");
 				expect((await records(h.manager))[0]!.followUps?.at(-1)).toMatchObject({
@@ -602,7 +557,7 @@ describe("BTW follow-up lifecycle", () => {
 		expect(h.controller.hasActiveRequest()).toBe(false);
 		const panel = overlay.mock.calls.at(-1)?.[0];
 		if (!(panel instanceof BtwHistoryPanel)) throw new Error("Expected BTW follow-up composer");
-		expect(h.requests).toHaveLength(2);
+		expect(h.runEphemeralTurn).toHaveBeenCalledTimes(2);
 		const started = Promise.withResolvers<boolean>();
 		const start = h.controller.startFollowUp.bind(h.controller);
 		vi.spyOn(h.controller, "startFollowUp").mockImplementation(async (...args) => {
@@ -613,11 +568,13 @@ describe("BTW follow-up lifecycle", () => {
 		panel.pasteText("Continue this topic");
 		panel.handleInput("\r");
 		expect(await started.promise).toBe(true);
-		expect(h.requests).toHaveLength(3);
+		expect(h.runEphemeralTurn).toHaveBeenCalledTimes(3);
+		const request = h.requests.at(-1)!.args;
+		expect(JSON.stringify(request.history)).toContain("Current answer");
+		expect(JSON.stringify(request.history)).not.toContain("Earlier answer");
 		await h.complete("Continued answer");
 		const topics = await records(h.manager);
 		expect(topics.find(topic => topic.question === "Current topic")?.followUps?.[0]?.answer).toBe("Continued answer");
-		expect(topics.find(topic => topic.question === "Earlier topic")?.followUps).toBeUndefined();
 	});
 
 	it("resumes only the selected chronological conversation, including cancelled partial output, without promoting it into main chat", async () => {
@@ -627,23 +584,20 @@ describe("BTW follow-up lifecycle", () => {
 		const leaf = h.manager.getLeafId();
 		const context = JSON.stringify(h.manager.buildSessionContext());
 		const root = await h.root("Selected root question", "Selected root answer");
+		const originalPrompt = h.requests[0]!.args.promptText;
+		const originalConversationKey = h.requests[0]!.args.conversationKey;
 		await h.root("Unrelated private question", "Unrelated private answer");
-		const create = h.createSideAgent;
-		const rootAgentId = root.agentId;
-		expect(rootAgentId).toBeDefined();
+		expect(h.requests.at(-1)!.args.conversationKey).not.toBe(originalConversationKey);
 
 		expect(await h.controller.startFollowUp(root.id, "First follow-up question")).toBe(true);
+		expect(h.requests.at(-1)!.args.conversationKey).toBe(originalConversationKey);
 		await h.complete("First follow-up answer");
 		expect(await h.controller.startFollowUp(root.id, "Cancelled follow-up question")).toBe(true);
-		// Follow-ups keep talking to the topic's own side agent within the process.
-		expect(create).toHaveBeenCalledTimes(2);
 		const cancelled = h.requests.at(-1)!;
-		cancelled.deferAbort = true;
 		cancelled.args.onTextDelta?.("Cancelled partial answer");
 		expect(h.controller.handleCancel()).toBe(true);
 		expect(cancelled.args.signal?.aborted).toBe(true);
 		cancelled.resolve(answer("Ignored cancellation result"));
-		await cancelled.settled.catch(() => {});
 		await drain();
 		await h.controller.flush();
 		const beforeReopen = (await records(h.manager)).find(item => item.id === root.id)!;
@@ -658,30 +612,45 @@ describe("BTW follow-up lifecycle", () => {
 		h.managers.push(reopened);
 		h.ctx.sessionManager = reopened;
 		expect(await h.controller.startFollowUp(root.id, "Continue after cancellation")).toBe(true);
-		// After the session is reopened the saved side agent is revived, not re-forked.
-		expect(create.mock.calls.at(-1)?.[1]).toBe(rootAgentId);
+		const request = h.requests.at(-1)!.args;
+		expect(request.conversationKey).not.toBe(originalConversationKey);
+		expect(request.history?.map(message => message.role)).toEqual([
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+		const texts = request.history?.map(message =>
+			typeof message.content === "string"
+				? message.content
+				: message.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join(""),
+		);
+		expect(texts?.[0]).toBe(originalPrompt);
+		expect(texts?.[1]).toBe("Selected root answer");
+		expect(texts?.[2]).toContain("First follow-up question");
+		expect(texts?.[3]).toBe("First follow-up answer");
+		expect(texts?.[4]).toContain("Cancelled follow-up question");
+		expect(texts?.[5]).toBe("Cancelled partial answer");
+		expect(request.promptText).toContain("Continue after cancellation");
+		expect(request.promptText).not.toContain("Selected root question");
+		const combined = JSON.stringify(request);
+		expect(combined).not.toContain("Unrelated private question");
+		expect(combined).not.toContain("Unrelated private answer");
+		expect(combined).not.toContain("Ignored cancellation result");
 		await h.complete("Resumed follow-up answer");
 		await h.controller.dispose();
 		const saved = await records(reopened);
 		expect(saved).toHaveLength(2);
 		const selected = saved.find(item => item.id === root.id)!;
 		expect(selected.leafId).toBe(leaf);
-		expect(JSON.stringify(selected)).not.toContain("Unrelated private question");
-		expect(JSON.stringify(selected)).not.toContain("Unrelated private answer");
-		expect(JSON.stringify(selected)).not.toContain("Ignored cancellation result");
 		expect(getBtwTurns(selected).map(turn => [turn.question, turn.answer, turn.status])).toEqual([
 			["Selected root question", "Selected root answer", "complete"],
 			["First follow-up question", "First follow-up answer", "complete"],
 			["Cancelled follow-up question", "Cancelled partial answer", "cancelled"],
 			["Continue after cancellation", "Resumed follow-up answer", "complete"],
 		]);
-		const unrelated = saved.find(item => item.question === "Unrelated private question")!;
-		expect(getBtwTurns(unrelated).map(turn => [turn.question, turn.answer])).toEqual([
-			["Unrelated private question", "Unrelated private answer"],
-		]);
-		expect(saved.find(item => item.question === "Unrelated private question")?.answer).toBe(
-			"Unrelated private answer",
-		);
 		expect(await Bun.file(file).text()).toBe(journal);
 		expect(reopened.getLeafId()).toBe(leaf);
 		expect(JSON.stringify(reopened.buildSessionContext())).toBe(context);
@@ -730,7 +699,7 @@ describe("BTW follow-up lifecycle", () => {
 		const before = await records(h.manager);
 		expect(await h.controller.startFollowUp(root.id, " \n\t ")).toBe(false);
 		expect(await records(h.manager)).toEqual(before);
-		expect(h.requests).toHaveLength(1);
+		expect(h.runEphemeralTurn).toHaveBeenCalledTimes(1);
 
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
@@ -745,7 +714,7 @@ describe("BTW follow-up lifecycle", () => {
 		expect(await starting).toBe(true);
 		await h.controller.start("Overlapping new root");
 		expect(await h.controller.startFollowUp(root.id, "Overlapping running turn")).toBe(false);
-		expect(h.requests).toHaveLength(2);
+		expect(h.runEphemeralTurn).toHaveBeenCalledTimes(2);
 		expect(h.requests.at(-1)!.args.signal?.aborted).toBe(false);
 		await h.complete("Accepted answer");
 		const saved = await records(h.manager);
@@ -753,26 +722,18 @@ describe("BTW follow-up lifecycle", () => {
 		expect(saved[0]!.followUps?.map(turn => turn.question)).toEqual(["Accepted continuation"]);
 	});
 
-	it("drains a cancelled turn before continuing its topic and ignores stale output", async () => {
+	it("rotates a cancelled topic transport before a new follow-up while the old request unwinds", async () => {
 		const h = await harness();
 		const root = await h.root("Topic", "Original answer");
 		expect(await h.controller.startFollowUp(root.id, "Cancelled request")).toBe(true);
 		const cancelled = h.requests.at(-1)!;
-		cancelled.deferAbort = true;
 		cancelled.args.onTextDelta?.("Partial answer");
 		expect(h.controller.handleCancel()).toBe(true);
-		const starting = h.controller.startFollowUp(root.id, "New request");
-		try {
-			await h.controller.flush();
-			expect(h.requests).toHaveLength(2);
-			cancelled.args.onTextDelta?.("Stale output");
-			cancelled.resolve(answer("Stale final answer"));
-			expect(await starting).toBe(true);
-			expect(h.requests).toHaveLength(3);
-		} finally {
-			cancelled.resolve(answer("Release cancelled run during cleanup"));
-			await starting;
-		}
+		expect(await h.controller.startFollowUp(root.id, "New request")).toBe(true);
+		const current = h.requests.at(-1)!;
+		expect(current.args.conversationKey).not.toBe(cancelled.args.conversationKey);
+		cancelled.args.onTextDelta?.("Stale output");
+		cancelled.resolve(answer("Stale final answer"));
 		await h.complete("Current answer");
 		const saved = (await records(h.manager))[0]!;
 		expect(getBtwTurns(saved).map(turn => [turn.answer, turn.status])).toEqual([
@@ -781,30 +742,18 @@ describe("BTW follow-up lifecycle", () => {
 			["Current answer", "complete"],
 		]);
 		expect(await h.controller.startFollowUp(root.id, "Continue successfully")).toBe(true);
+		expect(h.requests.at(-1)!.args.conversationKey).toBe(current.args.conversationKey);
 		await h.complete("Continued answer");
 	});
 
-	it("drains cancelled output on disposal and ignores stale streams while a different session runs", async () => {
+	it("ignores late stream and result after disposal while a different session runs its own follow-up", async () => {
 		const h = await harness();
 		const oldRoot = await h.root("Old root", "Old answer");
 		expect(await h.controller.startFollowUp(oldRoot.id, "Old follow-up")).toBe(true);
 		const oldRequest = h.requests.at(-1)!;
-		oldRequest.deferAbort = true;
 		oldRequest.args.onTextDelta?.("Old partial answer");
-		let disposed = false;
-		const disposing = h.controller.dispose().then(() => {
-			disposed = true;
-		});
-		try {
-			await h.controller.flush();
-			expect(oldRequest.args.signal?.aborted).toBe(true);
-			expect(disposed).toBe(false);
-			oldRequest.resolve(answer("Leaked late result"));
-			await disposing;
-		} finally {
-			oldRequest.resolve(answer("Release cancelled run during cleanup"));
-			await disposing;
-		}
+		await h.controller.dispose();
+		expect(oldRequest.args.signal?.aborted).toBe(true);
 
 		const next = SessionManager.create(h.directory, h.directory);
 		h.managers.push(next);
@@ -812,6 +761,7 @@ describe("BTW follow-up lifecycle", () => {
 		const newRoot = await h.root("New root", "New answer");
 		expect(await h.controller.startFollowUp(newRoot.id, "New follow-up")).toBe(true);
 		oldRequest.args.onTextDelta?.("Leaked late delta");
+		oldRequest.resolve(answer("Leaked late result"));
 		await drain();
 		await h.complete("New follow-up answer");
 		await h.controller.dispose();
@@ -846,7 +796,7 @@ describe("BTW follow-up lifecycle", () => {
 		h.ctx.sessionManager = next;
 		release.resolve();
 		expect(await starting).toBe(false);
-		expect(h.requests).toHaveLength(1);
+		expect(h.runEphemeralTurn).toHaveBeenCalledTimes(1);
 		expect(await records(next)).toEqual([]);
 		expect((await records(h.manager))[0]!.followUps ?? []).toEqual([]);
 	});
