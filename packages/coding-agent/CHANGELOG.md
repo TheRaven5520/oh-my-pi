@@ -22,6 +22,7 @@
 ### Fixed
 
 - Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
+- Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.
 
 ## [17.3.1] - 2026-08-13
 
