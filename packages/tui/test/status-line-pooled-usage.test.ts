@@ -21,12 +21,12 @@ function pooledReport(
 }
 
 describe("summarizePooledUsage", () => {
-	it("averages pooled usage and uses the tighter Fable cap per account", () => {
+	it("averages each pooled dashboard window independently", () => {
 		const summary = summarizePooledUsage([
 			pooledReport("anthropic", "a", [
 				["5h", 0],
 				["7d", 0.95],
-				["7d:fable", 1],
+				["7d:fable", 0.8],
 			]),
 			pooledReport("anthropic", "b", [
 				["5h", 0.36],
@@ -48,8 +48,18 @@ describe("summarizePooledUsage", () => {
 		expect(anthropic?.accounts).toBe(4);
 		expect(anthropic?.fiveHour?.usedPercent).toBeCloseTo(12.75);
 		expect(anthropic?.weekly?.usedPercent).toBeCloseTo(53.75);
-		// Fable per account = max(7d, 7d:fable): a=100, b=70, c=90; d ineligible.
-		expect(anthropic?.fableWeekly?.usedPercent).toBeCloseTo(86.6667);
+		// Fable uses only the provider's 7d:fable rows: a=80, b=70, c=90.
+		expect(anthropic?.fableWeekly?.usedPercent).toBeCloseTo(80);
+	});
+
+	it("recognizes Fable ids with a shared seven-day scope", () => {
+		const report = pooledReport("anthropic", "fable", [["anthropic:7d:fable", 0.6, "7 Day"]]);
+		const limit = report.limits[0]!;
+		limit.window = { id: "7d", label: "7 Day" };
+		limit.scope = { provider: "anthropic", windowId: "7d" };
+		Object.assign(limit.scope, { tier: "fable" });
+		const summary = summarizePooledUsage([report]);
+		expect(summary?.get("anthropic")?.fableWeekly?.usedPercent).toBeCloseTo(60);
 	});
 
 	it("uses aggregate OpenAI weekly capacity and ignores nonexistent five-hour windows", () => {

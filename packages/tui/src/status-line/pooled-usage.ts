@@ -4,11 +4,11 @@ import { formatDuration } from "@oh-my-pi/pi-utils";
 /**
  * Pool headline over Sprilicred's pooled usage reports.
  *
- * Each account contributes its binding used share, then pooled headlines are
- * averaged across accounts reporting the requested window(s). For Fable, an
- * account's binding share is the tighter of its shared weekly and Fable caps.
- * OpenAI's pooled weekly headline is computed by `computeProviderWindowStats`,
- * shared with `omp usage --json`.
+ * Each account's used share for a named window is averaged across the enabled
+ * pool accounts reporting that window. This matches Sprilicred's Overview pool
+ * gauges; Fable is the provider's exact `7d:fable` window, not a synthetic
+ * tighter-of-two bucket. OpenAI's pooled weekly headline is computed by
+ * `computeProviderWindowStats`, shared with `omp usage --json`.
  */
 
 export interface PooledUsageWindow {
@@ -21,7 +21,7 @@ export interface PooledProviderUsage {
 	accounts: number;
 	fiveHour?: PooledUsageWindow;
 	weekly?: PooledUsageWindow;
-	/** Anthropic only: the average tighter share of shared and Fable weekly caps. */
+	/** Anthropic only: the provider's pooled `7d:fable` average. */
 	fableWeekly?: PooledUsageWindow;
 }
 
@@ -87,11 +87,24 @@ function pooledWindowId(limit: object): PooledWindowId | undefined {
 	const scope = "scope" in limit ? limit.scope : undefined;
 	const window = "window" in limit ? limit.window : undefined;
 	const windowObject = window && typeof window === "object" ? window : undefined;
+	const scopeObject = scope && typeof scope === "object" ? scope : undefined;
+	const rawId = "id" in limit ? limit.id : undefined;
+	const scopeTier = scopeObject && "tier" in scopeObject ? scopeObject.tier : undefined;
+	const scopeWindowId = scopeObject && "windowId" in scopeObject ? scopeObject.windowId : undefined;
+	const normalizedRawId = typeof rawId === "string" ? rawId.trim().toLowerCase() : undefined;
+	const normalizedTier = typeof scopeTier === "string" ? scopeTier.trim().toLowerCase() : undefined;
+	const normalizedScopeWindowId = typeof scopeWindowId === "string" ? scopeWindowId.trim().toLowerCase() : undefined;
+	if (
+		normalizedRawId === "7d:fable" ||
+		normalizedRawId?.endsWith(":7d:fable") ||
+		(normalizedTier === "fable" && normalizedScopeWindowId === "7d")
+	)
+		return "7d:fable";
 	const candidates = [
 		windowObject && "label" in windowObject ? windowObject.label : undefined,
 		windowObject && "id" in windowObject ? windowObject.id : undefined,
-		scope && typeof scope === "object" && "windowId" in scope ? scope.windowId : undefined,
-		"id" in limit ? limit.id : undefined,
+		scopeObject && "windowId" in scopeObject ? scopeObject.windowId : undefined,
+		rawId,
 	];
 	for (const candidate of candidates) {
 		if (typeof candidate !== "string") continue;
@@ -170,25 +183,17 @@ export function computeProviderWindowStats(reports: UsageReport[]): ProviderWind
 		});
 }
 
-/** Average binding used share across accounts reporting every requested id. */
+/** Average used share across accounts reporting one named window. */
 function averageUsedPercent(
 	accounts: ReadonlyArray<ReadonlyMap<PooledWindowId, number>>,
-	ids: readonly PooledWindowId[],
+	id: PooledWindowId,
 ): number | undefined {
 	let total = 0;
 	let count = 0;
 	for (const account of accounts) {
-		let bindingUsed: number | undefined;
-		for (const id of ids) {
-			const remaining = account.get(id);
-			if (remaining === undefined) {
-				bindingUsed = undefined;
-				break;
-			}
-			bindingUsed = Math.max(bindingUsed ?? 0, 100 - remaining);
-		}
-		if (bindingUsed === undefined) continue;
-		total += bindingUsed;
+		const remaining = account.get(id);
+		if (remaining === undefined) continue;
+		total += 100 - remaining;
 		count++;
 	}
 	return count === 0 ? undefined : total / count;
@@ -229,9 +234,9 @@ export function summarizePooledUsage(reports: unknown): PooledUsageSummary | nul
 	const summary = new Map<string, PooledProviderUsage>();
 	for (const [provider, accounts] of byProvider) {
 		const entry: PooledProviderUsage = { accounts: accounts.length };
-		const weekly = toWindow(averageUsedPercent(accounts, ["7d"]));
-		const fableWeekly = toWindow(averageUsedPercent(accounts, ["7d", "7d:fable"]));
-		const fiveHour = toWindow(averageUsedPercent(accounts, ["5h"]));
+		const weekly = toWindow(averageUsedPercent(accounts, "7d"));
+		const fableWeekly = toWindow(averageUsedPercent(accounts, "7d:fable"));
+		const fiveHour = toWindow(averageUsedPercent(accounts, "5h"));
 		if (fiveHour) entry.fiveHour = fiveHour;
 		if (weekly) entry.weekly = weekly;
 		if (fableWeekly) entry.fableWeekly = fableWeekly;

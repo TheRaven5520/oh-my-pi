@@ -250,10 +250,10 @@ describe("CommandController pinned /usage snapshot", () => {
 		]);
 		expect(rows).toHaveLength(8);
 		expect(rows[0]).toBe("Anthropic");
-		// Fable = tighter of 7d and 7d:fable per account (a: 60, b: 90) → a; weekly and 5h best are a's too.
-		expect(rows[1]).toMatch(windowRow("Fable Weekly", 12, "40% left"));
-		expect(rows[2]).toMatch(windowRow("Weekly", 12, "70% left"));
-		expect(rows[3]).toMatch(windowRow("Five Hour", 12, "90% left"));
+		// Each dashboard window is averaged independently: Fable uses only 7d:fable.
+		expect(rows[1]).toMatch(windowRow("Fable Weekly", 12, "60% left"));
+		expect(rows[2]).toMatch(windowRow("Weekly", 12, "40% left"));
+		expect(rows[3]).toMatch(windowRow("Five Hour", 12, "70% left"));
 		expect(rows[4]).toBe("");
 		expect(rows[5]).toBe("OpenAI");
 		expect(rows[6]).toMatch(windowRow("Weekly", 12, "0% left"));

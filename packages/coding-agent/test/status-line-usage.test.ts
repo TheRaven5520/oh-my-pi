@@ -879,16 +879,16 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		// best(5h) = c (2% used), best(7d) = c (40% used); c has no 7d:fable so fable = b (max(60,70) = 70% used).
-		expect(content).toContain("5h 2%");
-		expect(content).toContain("7d 40%");
-		expect(content).not.toContain("90%");
+		// The dashboard reports average used share; the Claude gauge reports remaining share.
+		expect(content).toContain("5h 43%");
+		expect(content).toContain("7d 65%");
+		expect(content).not.toContain("2%");
 		expect(content).not.toContain("95%");
 
 		component.updateSettings({ preset: "claude", sessionAccent: false });
 		const claude = stripVTControlCharacters(component.renderBottomBar(200, "full"));
-		expect(claude).toContain("5h 98%");
-		expect(claude).toContain("wk 60%");
-		expect(claude).toContain("fable 30%");
+		expect(claude).toContain("5h 57%");
+		expect(claude).toContain("wk 35%");
+		expect(claude).toContain("fable 15%");
 	});
 });
