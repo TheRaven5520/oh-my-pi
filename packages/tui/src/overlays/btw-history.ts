@@ -10,6 +10,7 @@ export interface BtwHistoryTurn {
 export interface BtwHistoryRecord extends BtwHistoryTurn {
 	id: string;
 	leafId: string | null;
+	agentId?: string;
 	followUps?: readonly BtwHistoryTurn[];
 }
 

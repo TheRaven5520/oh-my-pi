@@ -12,6 +12,7 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { Container, replaceTabs, type TUI } from "@oh-my-pi/pi-tui";
+import * as forkedSideAgentModule from "@oh-my-pi/pi-coding-agent/modes/controllers/forked-side-agent";
 
 const usage: Usage = {
 	input: 0,
@@ -35,24 +36,31 @@ function createAssistantMessage(text: string): AssistantMessage {
 	};
 }
 
-interface RunEphemeralTurnArgs {
-	promptText: string;
+interface RunSideTurnArgs {
+	question: string;
 	onTextDelta?: (delta: string) => void;
 	signal?: AbortSignal;
 }
 
-interface RunEphemeralTurnResult {
+interface RunSideTurnResult {
 	replyText: string;
 	assistantMessage: AssistantMessage;
 }
 
 function makeFakeSession(
-	runEphemeralTurn: (args: RunEphemeralTurnArgs) => Promise<RunEphemeralTurnResult>,
+	runSideTurn: (args: RunSideTurnArgs) => Promise<RunSideTurnResult>,
 ): InteractiveModeContext["session"] {
+	const sideAgent = {
+		id: "Btw-test-agent",
+		sessionFile: "/tmp/Btw-test-agent.jsonl",
+		run: runSideTurn,
+		park: vi.fn(async () => {}),
+		close: vi.fn(async () => {}),
+	};
+	vi.spyOn(forkedSideAgentModule, "createForkedSideAgent").mockImplementation(async () => sideAgent);
 	return {
 		model: { provider: "anthropic", id: "claude-sonnet-4-5" },
 		isStreaming: false,
-		runEphemeralTurn,
 	} as unknown as InteractiveModeContext["session"];
 }
 
@@ -101,6 +109,12 @@ async function drainBtwRequest(): Promise<void> {
 	await Promise.resolve();
 }
 
+function abortError(): Error {
+	const error = new Error("The operation was aborted");
+	error.name = "AbortError";
+	return error;
+}
+
 describe("BtwPanelComponent", () => {
 	it("is branchable only after a complete non-empty answer", () => {
 		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
@@ -131,88 +145,134 @@ describe("BtwPanelComponent", () => {
 
 describe("BtwController", () => {
 	it("refuses a second question without cancelling a running request viewed in history", async () => {
-		const first = Promise.withResolvers<RunEphemeralTurnResult>();
-		const runEphemeralTurn = vi.fn((_args: RunEphemeralTurnArgs) => first.promise);
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const first = Promise.withResolvers<RunSideTurnResult>();
+		const second = Promise.withResolvers<RunSideTurnResult>();
+		let call = 0;
+		const runSideTurn = vi.fn(({ signal }: RunSideTurnArgs) => {
+			const pending = call++ === 0 ? first : second;
+			signal?.addEventListener("abort", () => pending.reject(abortError()), { once: true });
+			return pending.promise;
+		});
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const controller = new BtwController(ctx);
 
 		await controller.start("First?");
 		await controller.start("");
 		await controller.start("Second?");
 
-		expect(runEphemeralTurn).toHaveBeenCalledTimes(1);
-		expect(runEphemeralTurn.mock.calls[0]?.[0].signal?.aborted).toBe(false);
+		expect(runSideTurn).toHaveBeenCalledTimes(1);
+		expect(runSideTurn.mock.calls[0]?.[0].signal?.aborted).toBe(false);
 		first.resolve({ replyText: "first", assistantMessage: createAssistantMessage("first") });
 		await drainBtwRequest();
 		await controller.start("Third?");
-		expect(runEphemeralTurn).toHaveBeenCalledTimes(2);
+		expect(runSideTurn).toHaveBeenCalledTimes(2);
 		await controller.dispose();
 	});
 
 	it("cancels a running answer on Escape and closes its retained panel on the next Escape", async () => {
-		const pending = Promise.withResolvers<RunEphemeralTurnResult>();
-		const runEphemeralTurn = vi.fn((_args: RunEphemeralTurnArgs) => pending.promise);
+		const pending = Promise.withResolvers<RunSideTurnResult>();
+		const runSideTurn = vi.fn(({ signal }: RunSideTurnArgs) => {
+			signal?.addEventListener("abort", () => pending.reject(abortError()), { once: true });
+			return pending.promise;
+		});
 		const btwContainer = new Container();
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn), btwContainer);
+		const ctx = makeCtx(makeFakeSession(runSideTurn), btwContainer);
 		const controller = new BtwController(ctx);
 
 		await controller.start("Question?");
 		expect(btwContainer.children).toHaveLength(1);
 		expect(controller.handleEscape()).toBe(true);
-		expect(runEphemeralTurn.mock.calls[0]?.[0].signal?.aborted).toBe(true);
+		expect(runSideTurn.mock.calls[0]?.[0].signal?.aborted).toBe(true);
 		expect(btwContainer.children).toHaveLength(1);
 		expect(controller.hasActiveRequest()).toBe(true);
 		expect(controller.handleEscape()).toBe(true);
 		expect(btwContainer.children).toHaveLength(0);
 		expect(controller.hasActiveRequest()).toBe(false);
-		pending.resolve({ replyText: "Late answer", assistantMessage: createAssistantMessage("Late answer") });
 		await drainBtwRequest();
 		await controller.dispose();
 	});
 
+	it("waits for a cancelled side run to finish before disposal returns", async () => {
+		const pending = Promise.withResolvers<RunSideTurnResult>();
+		const abortObserved = Promise.withResolvers<void>();
+		const runSideTurn = vi.fn(({ signal }: RunSideTurnArgs) => {
+			signal?.addEventListener(
+				"abort",
+				() => {
+					abortObserved.resolve();
+				},
+				{ once: true },
+			);
+			return pending.promise;
+		});
+		const controller = new BtwController(makeCtx(makeFakeSession(runSideTurn)));
+
+		await controller.start("Question?");
+		const disposal = controller.dispose();
+		await abortObserved.promise;
+		let disposed = false;
+		void disposal.then(() => {
+			disposed = true;
+		});
+		try {
+			await new Promise<void>(resolve => setImmediate(resolve));
+			expect(disposed).toBe(false);
+		} finally {
+			pending.reject(abortError());
+			await disposal;
+		}
+		expect(disposed).toBe(true);
+	});
+
 	it("opens history without a model request when invoked without a question", async () => {
-		const runEphemeralTurn = vi.fn(async () => ({
+		const runSideTurn = vi.fn(async () => ({
 			replyText: "n/a",
 			assistantMessage: createAssistantMessage("n/a"),
 		}));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const controller = new BtwController(ctx);
 		await controller.start("   ");
-		expect(runEphemeralTurn).not.toHaveBeenCalled();
+		expect(runSideTurn).not.toHaveBeenCalled();
 		expect(ctx.ui.showOverlay).toHaveBeenCalledTimes(1);
 		expect(controller.hasActiveRequest()).toBe(false);
 		await controller.dispose();
 	});
 
 	it("shows an error message when no model is configured", async () => {
-		const runEphemeralTurn = vi.fn(async () => ({
+		const runSideTurn = vi.fn(async () => ({
 			replyText: "n/a",
 			assistantMessage: createAssistantMessage("n/a"),
 		}));
-		const session = { model: undefined, runEphemeralTurn } as unknown as InteractiveModeContext["session"];
+		const session = makeFakeSession(runSideTurn);
+		Object.defineProperty(session, "model", { value: undefined });
 		const ctx = makeCtx(session);
 		const controller = new BtwController(ctx);
 
 		await controller.start("Anything?");
-		expect(runEphemeralTurn).not.toHaveBeenCalled();
+		expect(runSideTurn).not.toHaveBeenCalled();
 		expect(ctx.showError).toHaveBeenCalled();
 	});
 
 	it("does not allow branch while /btw is still running", async () => {
-		const runEphemeralTurn = vi.fn(async () => Promise.withResolvers<RunEphemeralTurnResult>().promise);
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const runSideTurn = vi.fn(({ signal }: RunSideTurnArgs) => {
+			const pending = Promise.withResolvers<RunSideTurnResult>();
+			signal?.addEventListener("abort", () => pending.reject(abortError()), { once: true });
+			return pending.promise;
+		});
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const controller = new BtwController(ctx);
 
 		await controller.start("Question?");
 
 		expect(controller.canBranch()).toBe(false);
 		expect(controller.handlesBranchKey()).toBe(false);
+		await controller.dispose();
 	});
 
 	it("does not allow branch when the completed answer has no originating leaf", async () => {
 		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn)) as InteractiveModeContext & {
+		const runSideTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const ctx = makeCtx(makeFakeSession(runSideTurn)) as InteractiveModeContext & {
 			setTestLeafId(nextLeafId: string | null): void;
 		};
 		ctx.setTestLeafId(null);
@@ -227,8 +287,8 @@ describe("BtwController", () => {
 
 	it("allows branch after a complete non-empty reply", async () => {
 		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const runSideTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const controller = new BtwController(ctx);
 
 		await controller.start("Question?");
@@ -240,8 +300,8 @@ describe("BtwController", () => {
 
 	it("refuses branch when the loaded session changed but the leaf id still matches", async () => {
 		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn)) as InteractiveModeContext & {
+		const runSideTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const ctx = makeCtx(makeFakeSession(runSideTurn)) as InteractiveModeContext & {
 			setTestSessionId(nextSessionId: string): void;
 		};
 		const controller = new BtwController(ctx);
@@ -262,8 +322,8 @@ describe("BtwController", () => {
 
 	it("refuses a completed branch while the main turn is streaming", async () => {
 		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const session = makeFakeSession(runEphemeralTurn);
+		const runSideTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const session = makeFakeSession(runSideTurn);
 		Object.defineProperty(session, "isStreaming", { value: true });
 		const btwContainer = new Container();
 		const ctx = makeCtx(session, btwContainer);
@@ -278,11 +338,11 @@ describe("BtwController", () => {
 	});
 
 	it("does not allow branch after a complete empty reply", async () => {
-		const runEphemeralTurn = vi.fn(async () => ({
+		const runSideTurn = vi.fn(async () => ({
 			replyText: "   ",
 			assistantMessage: createAssistantMessage("   "),
 		}));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const controller = new BtwController(ctx);
 
 		await controller.start("Question?");
@@ -293,11 +353,16 @@ describe("BtwController", () => {
 	});
 
 	it("does not allow branch after aborted or errored requests", async () => {
-		const abortedRun = vi.fn(async () => Promise.withResolvers<RunEphemeralTurnResult>().promise);
+		const abortedRun = vi.fn(({ signal }: RunSideTurnArgs) => {
+			const pending = Promise.withResolvers<RunSideTurnResult>();
+			signal?.addEventListener("abort", () => pending.reject(abortError()), { once: true });
+			return pending.promise;
+		});
 		const abortedController = new BtwController(makeCtx(makeFakeSession(abortedRun)));
 		await abortedController.start("Question?");
 		expect(abortedController.handleEscape()).toBe(true);
 		expect(abortedController.canBranch()).toBe(false);
+		await abortedController.dispose();
 
 		const erroredRun = vi.fn(async () => {
 			throw new Error("boom");
@@ -309,8 +374,8 @@ describe("BtwController", () => {
 	});
 
 	it("handleBranch returns false and does not call the context when not branchable", async () => {
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "", assistantMessage: createAssistantMessage("") }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const runSideTurn = vi.fn(async () => ({ replyText: "", assistantMessage: createAssistantMessage("") }));
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const controller = new BtwController(ctx);
 
 		await controller.start("Question?");
@@ -322,8 +387,8 @@ describe("BtwController", () => {
 
 	it("handleBranch calls the context with the question and full assistant message when branchable", async () => {
 		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const runSideTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const controller = new BtwController(ctx);
 
 		await controller.start("Question?");
@@ -336,9 +401,9 @@ describe("BtwController", () => {
 	it("keeps a pending branch visible and refuses to dismiss it", async () => {
 		const branch = Promise.withResolvers<void>();
 		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const runSideTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
 		const btwContainer = new Container();
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn), btwContainer);
+		const ctx = makeCtx(makeFakeSession(runSideTurn), btwContainer);
 		ctx.handleBtwBranch = vi.fn(async () => {
 			await branch.promise;
 		});
@@ -366,16 +431,16 @@ describe("BtwController", () => {
 				{
 					type: "thinking",
 					thinking: "Keep this reasoning.",
-					thinkingSignature: "signed-for-ephemeral-prompt",
+					thinkingSignature: "signed-for-side-turn-prompt",
 					itemId: "item-1",
 				},
-				{ type: "redactedThinking", data: "encrypted-ephemeral-thinking" },
+				{ type: "redactedThinking", data: "encrypted-side-turn-thinking" },
 				{ type: "text", text: "raw repeated repeated repeated" },
 				{ type: "text", text: "raw duplicate tail" },
 			],
 		};
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "sanitized", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const runSideTurn = vi.fn(async () => ({ replyText: "sanitized", assistantMessage }));
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const controller = new BtwController(ctx);
 
 		await controller.start("Question?");
@@ -397,14 +462,14 @@ describe("BtwController", () => {
 	});
 	it("copies the sanitized visible reply text after a complete non-empty reply", async () => {
 		const copySpy = vi.spyOn(clipboard, "copyToClipboard").mockResolvedValue(undefined);
-		const runEphemeralTurn = vi.fn(async (args: RunEphemeralTurnArgs) => {
+		const runSideTurn = vi.fn(async (args: RunSideTurnArgs) => {
 			args.onTextDelta?.("duplicate streaming draft");
 			return {
 				replyText: "  Visible\tanswer\n\nfrom /btw  ",
 				assistantMessage: createAssistantMessage("raw assistant payload"),
 			};
 		});
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn), new Container());
+		const ctx = makeCtx(makeFakeSession(runSideTurn), new Container());
 		const controller = new BtwController(ctx);
 
 		await controller.start("Question?");
@@ -420,12 +485,12 @@ describe("BtwController", () => {
 		const copySpy = vi.spyOn(clipboard, "copyToClipboard").mockImplementation(async () => {
 			await copyGate;
 		});
-		const runEphemeralTurn = vi.fn(async () => ({
+		const runSideTurn = vi.fn(async () => ({
 			replyText: "First answer",
 			assistantMessage: createAssistantMessage("First answer"),
 		}));
 		const btwContainer = new Container();
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn), btwContainer);
+		const ctx = makeCtx(makeFakeSession(runSideTurn), btwContainer);
 		const controller = new BtwController(ctx);
 		try {
 			await controller.start("First?");
@@ -445,12 +510,16 @@ describe("BtwController", () => {
 	it("does not copy running, empty, or errored /btw answers", async () => {
 		const copySpy = vi.spyOn(clipboard, "copyToClipboard").mockResolvedValue(undefined);
 
-		const runningRun = vi.fn(async () => Promise.withResolvers<RunEphemeralTurnResult>().promise);
+		const runningRun = vi.fn(({ signal }: RunSideTurnArgs) => {
+			const pending = Promise.withResolvers<RunSideTurnResult>();
+			signal?.addEventListener("abort", () => pending.reject(abortError()), { once: true });
+			return pending.promise;
+		});
 		const runningController = new BtwController(makeCtx(makeFakeSession(runningRun)));
 		await runningController.start("Question?");
 		expect(runningController.canCopy()).toBe(false);
 		expect(await runningController.handleCopy()).toBe(false);
-		runningController.dispose();
+		await runningController.dispose();
 
 		const emptyRun = vi.fn(async () => ({ replyText: "   ", assistantMessage: createAssistantMessage("   ") }));
 		const emptyController = new BtwController(makeCtx(makeFakeSession(emptyRun)));
@@ -476,21 +545,21 @@ describe("BtwController", () => {
 			type: "openaiResponsesHistory" as const,
 			provider: "openai-codex",
 			dt: true,
-			items: [{ type: "reasoning", encrypted_content: "raw-ephemeral-output" }],
+			items: [{ type: "reasoning", encrypted_content: "raw-side-turn-output" }],
 		};
 		const assistantMessage: AssistantMessage = {
-			...createAssistantMessage("raw ephemeral output"),
+			...createAssistantMessage("raw side-turn output"),
 			api: "openai-codex-responses",
 			provider: "openai-codex",
 			model: "gpt-5-codex",
 			content: [
 				{ type: "thinking", thinking: "reasoning", thinkingSignature: "native-signature", itemId: "rs_1" },
-				{ type: "text", text: "raw ephemeral output" },
+				{ type: "text", text: "raw side-turn output" },
 			],
 			providerPayload,
 		};
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "sanitized", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const runSideTurn = vi.fn(async () => ({ replyText: "sanitized", assistantMessage }));
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const controller = new BtwController(ctx);
 
 		await controller.start("Question?");
@@ -514,8 +583,8 @@ describe("BtwController", () => {
 
 	it("ignores duplicate branch requests while branch promotion is in flight", async () => {
 		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn));
+		const runSideTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const ctx = makeCtx(makeFakeSession(runSideTurn));
 		const branchStarted = Promise.withResolvers<void>();
 		const releaseBranch = Promise.withResolvers<void>();
 		ctx.handleBtwBranch = vi.fn(async () => {
@@ -540,8 +609,8 @@ describe("BtwController", () => {
 
 	it("does not branch a completed answer after the session leaf changes", async () => {
 		const assistantMessage = createAssistantMessage("Answer");
-		const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
-		const ctx = makeCtx(makeFakeSession(runEphemeralTurn)) as InteractiveModeContext & {
+		const runSideTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+		const ctx = makeCtx(makeFakeSession(runSideTurn)) as InteractiveModeContext & {
 			setTestLeafId(nextLeafId: string | null): void;
 		};
 		const controller = new BtwController(ctx);
@@ -558,22 +627,22 @@ describe("BtwController", () => {
 	});
 
 	it("clears stored branch state on escape and dispose", async () => {
-		const runEphemeralTurn = vi.fn(async () => ({
+		const runSideTurn = vi.fn(async () => ({
 			replyText: "Answer",
 			assistantMessage: createAssistantMessage("Answer"),
 		}));
-		const escapeController = new BtwController(makeCtx(makeFakeSession(runEphemeralTurn)));
+		const escapeController = new BtwController(makeCtx(makeFakeSession(runSideTurn)));
 		await escapeController.start("Question?");
 		await drainBtwRequest();
 		expect(escapeController.canBranch()).toBe(true);
 		expect(escapeController.handleEscape()).toBe(true);
 		expect(escapeController.canBranch()).toBe(false);
 
-		const disposeController = new BtwController(makeCtx(makeFakeSession(runEphemeralTurn)));
+		const disposeController = new BtwController(makeCtx(makeFakeSession(runSideTurn)));
 		await disposeController.start("Question?");
 		await drainBtwRequest();
 		expect(disposeController.canBranch()).toBe(true);
-		disposeController.dispose();
+		await disposeController.dispose();
 		expect(disposeController.canBranch()).toBe(false);
 	});
 
@@ -622,8 +691,11 @@ describe("BtwController", () => {
 
 	it("persists cancellation and ignores late output after switching sessions", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-btw-cancel-"));
-		const pending = Promise.withResolvers<RunEphemeralTurnResult>();
-		const run = vi.fn((_args: RunEphemeralTurnArgs) => pending.promise);
+		const pending = Promise.withResolvers<RunSideTurnResult>();
+		const run = vi.fn(({ signal }: RunSideTurnArgs) => {
+			signal?.addEventListener("abort", () => pending.reject(abortError()), { once: true });
+			return pending.promise;
+		});
 		const ctx = makeCtx(makeFakeSession(run));
 		const showOverlay = vi.spyOn(ctx.ui, "showOverlay");
 		ctx.sessionManager = SessionManager.create(directory, directory);
@@ -631,10 +703,11 @@ describe("BtwController", () => {
 		try {
 			await controller.start("Cancel this");
 			const artifacts = ctx.sessionManager.getArtifactsDir()!;
-			run.mock.calls[0]?.[0].onTextDelta?.("Partial answer");
+			const onTextDelta = run.mock.calls[0]?.[0].onTextDelta;
+			onTextDelta?.("Partial answer");
 			await controller.dispose();
 			ctx.sessionManager = SessionManager.inMemory();
-			pending.resolve({ replyText: "Late answer", assistantMessage: createAssistantMessage("Late answer") });
+			onTextDelta?.("Late answer");
 			await drainBtwRequest();
 			await controller.flush();
 			const saved = (await BtwHistoryStore.open(artifacts)).getRecords();
