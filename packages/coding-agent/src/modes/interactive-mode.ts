@@ -719,10 +719,15 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 // the full Agent Hub just to inspect or enter a child conversation.
 const SUBAGENT_HUD_VISIBLE_LIMIT = 4;
 
+/** Dock rows: only subagents still working. Finished and aborted agents stay reachable in Agent Hub. */
+function activeDockChildren(sessions: readonly ObservableSession[]): ObservableSession[] {
+	return sessions.filter(session => session.kind === "subagent" && session.status === "active");
+}
+
 /**
- * Pi-style compact agent dock: an explicit `main` root followed by retained
- * child rows (active and completed), scrolled so the selected row stays
- * visible. Used by `#renderSubagentList` in place of the plain jump list.
+ * Pi-style compact agent dock: an explicit `main` root followed by the active
+ * child rows, scrolled so the selected row stays visible. Used by
+ * `#renderSubagentList` in place of the plain jump list.
  */
 export function renderSubagentDockLines(
 	sessions: ObservableSession[],
@@ -730,10 +735,7 @@ export function renderSubagentDockLines(
 	selectedId?: string,
 	expanded = false,
 ): string[] {
-	// Retain completed children like Pi's panel so their result remains easy to
-	// enter. Aborted rows are deliberately omitted; Agent Hub remains available
-	// for their tombstones and diagnostics.
-	const children = sessions.filter(session => session.kind === "subagent" && session.status !== "aborted");
+	const children = activeDockChildren(sessions);
 	if (children.length === 0) return [];
 	const visibleLimit = expanded ? children.length : SUBAGENT_HUD_VISIBLE_LIMIT;
 
@@ -745,8 +747,7 @@ export function renderSubagentDockLines(
 	const visible = children.slice(firstVisibleChildIndex, firstVisibleChildIndex + visibleLimit);
 	const aboveCount = firstVisibleChildIndex;
 	const belowCount = children.length - aboveCount - visible.length;
-	const active = children.filter(session => session.status === "active").length;
-	// Pi's dock has an explicit main root before the retained child rows.
+	// Pi's dock has an explicit main root before the active child rows.
 	const mainSelected = selectedId === MAIN_AGENT_ID;
 	const rows = [
 		`${mainSelected ? theme.fg("accent", "›") : " "} ${theme.fg("accent", "●")} ${theme.fg(
@@ -757,12 +758,7 @@ export function renderSubagentDockLines(
 		...visible.map(session => {
 			const selected = session.id === selectedId;
 			const pointer = selected ? theme.fg("accent", "›") : " ";
-			const glyph =
-				session.status === "active"
-					? theme.fg("accent", "●")
-					: session.status === "completed"
-						? theme.fg("success", "✓")
-						: theme.fg("error", "×");
+			const glyph = theme.fg("accent", "●");
 			const displayId = formatTaskId(session.id);
 			const description =
 				session.description?.trim() || session.progress?.description?.trim() || session.progress?.task?.trim();
@@ -778,8 +774,11 @@ export function renderSubagentDockLines(
 	if (selectedId && selectedId !== MAIN_AGENT_ID) {
 		rows.push(theme.fg("dim", "↑/↓ select · Enter open · x interrupt · Esc cancel"));
 	}
-	const header = `${active > 0 ? `${active} active · ` : ""}${children.length} agents`;
-	return ["", theme.bold(theme.fg("accent", `agents · main · ${header}`)), ...rows.map(line => ` ${line}`)];
+	return [
+		"",
+		theme.bold(theme.fg("accent", `agents · main · ${children.length} active`)),
+		...rows.map(line => ` ${line}`),
+	];
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
@@ -3371,9 +3370,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Pi-style compact subagent panel navigation from an empty main editor. */
 	moveSubagentDockSelection(direction: "next" | "previous"): boolean {
-		const children = this.#dockSessions().filter(
-			session => session.kind === "subagent" && session.status !== "aborted",
-		);
+		const children = activeDockChildren(this.#dockSessions());
 		if (children.length === 0) return false;
 		const rows = [MAIN_AGENT_ID, ...children.map(session => session.id)];
 		const current = this.#subagentDockSelectedId ? rows.indexOf(this.#subagentDockSelectedId) : -1;
@@ -3525,15 +3522,15 @@ export class InteractiveMode implements InteractiveModeContext {
 	/**
 	 * Anchored Pi-style agent dock, mirroring the Todos block above the editor.
 	 * Driven by observer-registry and agent-registry change events, so rows
-	 * appear on spawn and completed children stay enterable until the session
-	 * forgets them. Returns whether the row count changed, so callers can skip a
-	 * full compose when only row contents moved.
+	 * appear on spawn and leave when the child stops working (Agent Hub keeps
+	 * finished children enterable). Returns whether the row count changed, so
+	 * callers can skip a full compose when only row contents moved.
 	 */
 	#renderSubagentList(): boolean {
 		this.subagentContainer.clear();
 		const mode = settings.get("display.pinnedAgents");
 		const sessions = this.#dockSessions();
-		const children = sessions.filter(session => session.kind === "subagent" && session.status !== "aborted");
+		const children = activeDockChildren(sessions);
 		if (
 			this.#subagentDockSelectedId !== MAIN_AGENT_ID &&
 			!children.some(child => child.id === this.#subagentDockSelectedId)

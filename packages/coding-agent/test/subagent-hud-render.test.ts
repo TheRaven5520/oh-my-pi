@@ -502,13 +502,17 @@ describe("subagent dock lines", () => {
 		expect(out).toContain("SchemaMigrator · Migrating the users table");
 	});
 
-	it("retains completed subagents and omits aborted ones", () => {
+	it("shows only active subagents and hides the dock once none are working", () => {
 		const out = renderDock([
+			makeSession({ id: "Running", description: "live work" }),
 			makeSession({ id: "Done", status: "completed", description: "finished work" }),
 			makeSession({ id: "Aborted", status: "aborted", description: "cancelled work" }),
 		]);
-		expect(out).toContain("Done · finished work");
+		expect(out).toContain("Running · live work");
+		expect(out).toContain("1 active");
+		expect(out).not.toContain("Done");
 		expect(out).not.toContain("Aborted");
+		expect(renderDock([makeSession({ id: "Done", status: "completed" })])).toBe("");
 	});
 
 	it("scrolls the compact window to keep the selected agent visible", () => {
