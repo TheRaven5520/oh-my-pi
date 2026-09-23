@@ -438,9 +438,9 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "fork",
+		name: "duplicate",
 		icon: "branch",
-		description: "Create a new fork from a previous message",
+		description: "Copy this session into a new session and switch to it",
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleForkCommand();

@@ -596,6 +596,7 @@ describe("ACP builtin slash commands", () => {
 			"/new",
 			"/delete",
 			"/fork",
+			"/duplicate",
 		];
 		for (const cmd of removedCommands) {
 			const { runtime } = createRuntime();
