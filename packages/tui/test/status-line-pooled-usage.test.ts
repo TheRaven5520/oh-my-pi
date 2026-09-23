@@ -21,7 +21,7 @@ function pooledReport(
 }
 
 describe("summarizePooledUsage", () => {
-	it("takes the best headroom across accounts and the tighter window for fable", () => {
+	it("averages pooled usage and uses the tighter Fable cap per account", () => {
 		const summary = summarizePooledUsage([
 			pooledReport("anthropic", "a", [
 				["5h", 0],
@@ -46,10 +46,10 @@ describe("summarizePooledUsage", () => {
 		]);
 		const anthropic = summary?.get("anthropic");
 		expect(anthropic?.accounts).toBe(4);
-		expect(anthropic?.fiveHour?.usedPercent).toBe(0);
-		expect(anthropic?.weekly?.usedPercent).toBeCloseTo(20);
-		// Fable per account = max(7d, 7d:fable): a=100, b=70, c=90, d ineligible → best is b.
-		expect(anthropic?.fableWeekly?.usedPercent).toBeCloseTo(70);
+		expect(anthropic?.fiveHour?.usedPercent).toBeCloseTo(12.75);
+		expect(anthropic?.weekly?.usedPercent).toBeCloseTo(53.75);
+		// Fable per account = max(7d, 7d:fable): a=100, b=70, c=90; d ineligible.
+		expect(anthropic?.fableWeekly?.usedPercent).toBeCloseTo(86.6667);
 	});
 
 	it("uses aggregate OpenAI weekly capacity and ignores nonexistent five-hour windows", () => {

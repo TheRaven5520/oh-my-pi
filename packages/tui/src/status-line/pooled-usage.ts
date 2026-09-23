@@ -4,15 +4,15 @@ import { formatDuration } from "@oh-my-pi/pi-utils";
 /**
  * Pool headline over Sprilicred's pooled usage reports.
  *
- * Anthropic routing needs the best headroom any account still has for a
- * request. OpenAI's pooled weekly headline is an aggregate: each reporting
- * account contributes its binding used share, then the shares are averaged.
- * The aggregate is computed by `computeProviderWindowStats`, shared with
- * `omp usage --json`, rather than showing the least-used account as the pool.
+ * Each account contributes its binding used share, then pooled headlines are
+ * averaged across accounts reporting the requested window(s). For Fable, an
+ * account's binding share is the tighter of its shared weekly and Fable caps.
+ * OpenAI's pooled weekly headline is computed by `computeProviderWindowStats`,
+ * shared with `omp usage --json`.
  */
 
 export interface PooledUsageWindow {
-	/** Used share, 0–100: OpenAI pool average; Anthropic best-headroom account. */
+	/** Average used share across pooled accounts, 0–100. */
 	usedPercent: number;
 }
 
@@ -21,7 +21,7 @@ export interface PooledProviderUsage {
 	accounts: number;
 	fiveHour?: PooledUsageWindow;
 	weekly?: PooledUsageWindow;
-	/** Anthropic only: the tighter of the shared weekly and the Fable-scoped weekly. */
+	/** Anthropic only: the average tighter share of shared and Fable weekly caps. */
 	fableWeekly?: PooledUsageWindow;
 }
 
@@ -170,30 +170,32 @@ export function computeProviderWindowStats(reports: UsageReport[]): ProviderWind
 		});
 }
 
-/** Best remaining share any account has across all of `ids`, or undefined when none reports them all. */
-function bestRemaining(
+/** Average binding used share across accounts reporting every requested id. */
+function averageUsedPercent(
 	accounts: ReadonlyArray<ReadonlyMap<PooledWindowId, number>>,
 	ids: readonly PooledWindowId[],
 ): number | undefined {
-	let best: number | undefined;
+	let total = 0;
+	let count = 0;
 	for (const account of accounts) {
-		let tightest: number | undefined;
+		let bindingUsed: number | undefined;
 		for (const id of ids) {
 			const remaining = account.get(id);
 			if (remaining === undefined) {
-				tightest = undefined;
+				bindingUsed = undefined;
 				break;
 			}
-			tightest = tightest === undefined ? remaining : Math.min(tightest, remaining);
+			bindingUsed = Math.max(bindingUsed ?? 0, 100 - remaining);
 		}
-		if (tightest === undefined) continue;
-		best = best === undefined ? tightest : Math.max(best, tightest);
+		if (bindingUsed === undefined) continue;
+		total += bindingUsed;
+		count++;
 	}
-	return best;
+	return count === 0 ? undefined : total / count;
 }
 
-function toWindow(bestRemainingPercent: number | undefined): PooledUsageWindow | undefined {
-	return bestRemainingPercent === undefined ? undefined : { usedPercent: 100 - bestRemainingPercent };
+function toWindow(usedPercent: number | undefined): PooledUsageWindow | undefined {
+	return usedPercent === undefined ? undefined : { usedPercent };
 }
 
 /** Summarize pooled reports per provider; null when `reports` holds no pooled account with a recognized window. */
@@ -227,9 +229,9 @@ export function summarizePooledUsage(reports: unknown): PooledUsageSummary | nul
 	const summary = new Map<string, PooledProviderUsage>();
 	for (const [provider, accounts] of byProvider) {
 		const entry: PooledProviderUsage = { accounts: accounts.length };
-		const weekly = toWindow(bestRemaining(accounts, ["7d"]));
-		const fableWeekly = toWindow(bestRemaining(accounts, ["7d", "7d:fable"]));
-		const fiveHour = toWindow(bestRemaining(accounts, ["5h"]));
+		const weekly = toWindow(averageUsedPercent(accounts, ["7d"]));
+		const fableWeekly = toWindow(averageUsedPercent(accounts, ["7d", "7d:fable"]));
+		const fiveHour = toWindow(averageUsedPercent(accounts, ["5h"]));
 		if (fiveHour) entry.fiveHour = fiveHour;
 		if (weekly) entry.weekly = weekly;
 		if (fableWeekly) entry.fableWeekly = fableWeekly;
