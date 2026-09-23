@@ -234,6 +234,8 @@ import { OmfgController } from "./controllers/omfg-controller";
 import { SelectorController } from "./controllers/selector-controller";
 import { SessionFocusController } from "./controllers/session-focus-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
+import { ForkCommandController } from "./controllers/fork-command-controller";
+import { isForkAgentId } from "../registry/fork-agent-id";
 import { TanCommandController } from "./controllers/tan-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
 import { imageReferenceHyperlink, materializeImageReferenceLinks } from "@oh-my-pi/pi-tui/prompt/image-references";
@@ -719,9 +721,16 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 // the full Agent Hub just to inspect or enter a child conversation.
 const SUBAGENT_HUD_VISIBLE_LIMIT = 4;
 
-/** Dock rows: only subagents still working. Finished and aborted agents stay reachable in Agent Hub. */
+/**
+ * Dock rows: subagents still working, plus `/fork` chats until they finish.
+ * Finished and aborted agents stay reachable in Agent Hub.
+ */
 function activeDockChildren(sessions: readonly ObservableSession[]): ObservableSession[] {
-	return sessions.filter(session => session.kind === "subagent" && session.status === "active");
+	return sessions.filter(
+		session =>
+			session.kind === "subagent" &&
+			(session.status === "active" || (isForkAgentId(session.id) && session.status !== "aborted")),
+	);
 }
 
 /**
@@ -758,10 +767,14 @@ export function renderSubagentDockLines(
 		...visible.map(session => {
 			const selected = session.id === selectedId;
 			const pointer = selected ? theme.fg("accent", "›") : " ";
-			const glyph = theme.fg("accent", "●");
+			const waitingFork = session.status !== "active" && isForkAgentId(session.id);
+			const glyph = waitingFork ? theme.fg("dim", "⑂") : theme.fg("accent", "●");
 			const displayId = formatTaskId(session.id);
 			const description =
-				session.description?.trim() || session.progress?.description?.trim() || session.progress?.task?.trim();
+				session.description?.trim() ||
+				session.progress?.description?.trim() ||
+				session.progress?.task?.trim() ||
+				(isForkAgentId(session.id) ? session.label.trim() : undefined);
 			const model = session.progress?.resolvedModel ?? session.progress?.modelRole;
 			const detail = [description, model].filter((value): value is string => Boolean(value)).join(" · ");
 			const budget = Math.max(12, columns - visibleWidth(`${pointer} ${glyph} ${displayId} · `) - 4);
@@ -772,13 +785,21 @@ export function renderSubagentDockLines(
 		...(expanded && children.length > SUBAGENT_HUD_VISIBLE_LIMIT ? [theme.fg("dim", "… show less")] : []),
 	];
 	if (selectedId && selectedId !== MAIN_AGENT_ID) {
-		rows.push(theme.fg("dim", "↑/↓ select · Enter open · x interrupt · Esc cancel"));
+		rows.push(theme.fg("dim", "↑/↓ select · Enter open · x interrupt/close fork · Esc cancel"));
 	}
 	return [
 		"",
-		theme.bold(theme.fg("accent", `agents · main · ${children.length} active`)),
+		theme.bold(theme.fg("accent", `agents · main · ${dockHeaderCounts(children)}`)),
 		...rows.map(line => ` ${line}`),
 	];
+}
+
+function dockHeaderCounts(children: readonly ObservableSession[]): string {
+	const active = children.filter(session => session.status === "active").length;
+	const waitingForks = children.length - active;
+	return waitingForks > 0
+		? `${active} active · ${waitingForks} fork${waitingForks === 1 ? "" : "s"}`
+		: `${active} active`;
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
@@ -1053,6 +1074,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #codexResetFireworksController: CodexResetFireworksController;
 	readonly #btwController: BtwController;
 	readonly #tanCommandController: TanCommandController;
+	readonly #forkCommandController: ForkCommandController;
 	readonly #omfgController: OmfgController;
 	readonly #cleanseController: CleanseCommandController;
 	readonly #commandController: CommandController;
@@ -1432,6 +1454,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
 		this.#tanCommandController = new TanCommandController(this);
+		this.#forkCommandController = new ForkCommandController(this);
 		this.#omfgController = new OmfgController(this);
 		this.#cleanseController = new CleanseCommandController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
@@ -1529,6 +1552,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			saveDraft: text => this.sessionManager.saveDraft(text),
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
+				await this.#forkCommandController.dispose();
 				await this.session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS, reason });
 			},
 		});
@@ -3409,6 +3433,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	async interruptSelectedSubagentDock(): Promise<boolean> {
 		const id = this.#subagentDockSelectedId;
 		if (id === MAIN_AGENT_ID) return false;
+		if (id && this.#forkCommandController.has(id) && AgentRegistry.global().get(id)?.status !== "running") {
+			return this.#forkCommandController.close(id);
+		}
 		const ref = id ? AgentRegistry.global().get(id) : undefined;
 		if (!ref?.session || ref.status !== "running") return false;
 		await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
@@ -5935,6 +5962,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#omfgController.dispose();
 			this.#cleanseController.dispose();
 			this.#focusController.dispose();
+			await this.#forkCommandController.dispose();
 
 			// Persist the draft and dispose the session through the shared teardown
 			// so a signal that arrives mid-shutdown cannot fire a second dispose.
@@ -6586,6 +6614,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async prepareSessionSwitch(): Promise<void> {
 		await this.#btwController.dispose();
+		await this.#forkCommandController.dispose();
 		this.#omfgController.dispose();
 		this.#cleanseController.dispose();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
@@ -6616,6 +6645,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	async handleForkCommand(): Promise<void> {
 		if (this.#vibeSessionTransitionBlocked()) return;
 		await this.#btwController.dispose();
+		await this.#forkCommandController.dispose();
 		this.#omfgController.dispose();
 		this.#cleanseController.dispose();
 		await this.#commandController.handleForkCommand();
@@ -6935,6 +6965,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#tanCommandController.start(work);
 	}
 
+	handleForkAgentCommand(request: string): Promise<void> {
+		return this.#forkCommandController.start(request);
+	}
+
 	hasActiveBtw(): boolean {
 		return this.#btwController.hasActiveRequest();
 	}
@@ -6985,6 +7019,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				return;
 			}
 			await this.#btwController.dispose();
+			await this.#forkCommandController.dispose();
 			this.#omfgController.dispose();
 			this.#cleanseController.dispose();
 			await this.renderInitialMessages({ clearTerminalHistory: true });

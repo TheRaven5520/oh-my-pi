@@ -514,6 +514,8 @@ export interface InteractiveModeContext {
 	handleQueueCommand(message: string): Promise<void>;
 	handleBtwCommand(question: string): Promise<void>;
 	handleTanCommand(work: string): Promise<void>;
+	/** `/fork`: open a forked chat in the agents panel that reports back to this session. */
+	handleForkAgentCommand(request: string): Promise<void>;
 	hasActiveBtw(): boolean;
 	handleBtwEscape(): boolean;
 	handleBtwBranchKey(): Promise<boolean>;

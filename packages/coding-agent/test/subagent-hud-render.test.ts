@@ -515,6 +515,18 @@ describe("subagent dock lines", () => {
 		expect(renderDock([makeSession({ id: "Done", status: "completed" })])).toBe("");
 	});
 
+	it("keeps an unfinished fork listed while it waits for the user", () => {
+		const out = renderDock([
+			makeSession({ id: "Fork-0001", label: "look into the flaky test", status: "completed" }),
+			makeSession({ id: "Done", status: "completed", description: "finished work" }),
+		]);
+		expect(out).toContain("⑂");
+		expect(out).toContain("look into the flaky test");
+		expect(out).toContain("0 active · 1 fork");
+		expect(out).not.toContain("Done");
+		expect(renderDock([makeSession({ id: "Fork-0001", status: "aborted" })])).toBe("");
+	});
+
 	it("scrolls the compact window to keep the selected agent visible", () => {
 		const active = Array.from({ length: 10 }, (_, index) =>
 			makeSession({ id: `Worker${index}`, description: `job ${index}` }),
@@ -527,7 +539,8 @@ describe("subagent dock lines", () => {
 		expect(out).not.toContain("Worker4 · job 4");
 		expect(out).toContain("… 5 above");
 		expect(out).toContain("… 1 more — expand");
-		expect(out).toContain("↑/↓ select · Enter open · x interrupt · Esc cancel");
+		// A selected row shows the navigation hint.
+		expect(out).toContain("Enter open");
 	});
 });
 

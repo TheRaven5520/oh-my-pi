@@ -501,6 +501,18 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 	},
 	{
+		name: "fork",
+		icon: "branch",
+		description: "Open a forked chat in the agents panel that reports back to this one",
+		inlineHint: "[request]",
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
+			const request = command.text.slice(`/${command.name}`.length).trim();
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleForkAgentCommand(request);
+		},
+	},
+	{
 		name: "omfg",
 		icon: "rule",
 		description: "Forge a TTSR rule from a complaint to stop a recurring behavior",
