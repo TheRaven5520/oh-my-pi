@@ -1110,7 +1110,8 @@ describe("AgentSession advisor toggle", () => {
 			},
 			streamFn: mock.stream,
 		});
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		// This test covers the withheld-note path, so hold mid-turn notes.
+		const settings = Settings.isolated({ "compaction.enabled": false, "advisor.holdNotesUntilTurnEnd": true });
 		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
 		const quotaSession = new AgentSession({
 			agent: primaryAgent,
@@ -1235,6 +1236,8 @@ describe("AgentSession advisor toggle", () => {
 			expect(JSON.stringify(rejected.content)).toContain("budget is spent");
 		};
 
+		// The budget is observed through withheld-note acknowledgments.
+		session.settings.set("advisor.holdNotesUntilTurnEnd", true);
 		session.settings.set("advisor.maxNotesPerUpdate", 2);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 

@@ -774,6 +774,27 @@ describe("advisor", () => {
 			expect(onAdvice).toHaveBeenCalledTimes(3);
 		});
 
+		it("delivers mid-turn notes immediately when holding is off", async () => {
+			const onAdvice = vi.fn();
+			let hold = false;
+			const tool = new AdviseTool(onAdvice, undefined, () => hold);
+
+			tool.beginUpdate(true);
+			const sent = await tool.execute("tc-1", { note: "The loop never checks the exit code.", severity: "nit" });
+
+			expect(onAdvice).toHaveBeenCalledWith("The loop never checks the exit code.", "nit");
+			expect(JSON.stringify(sent.content)).toContain("Delivered.");
+			// Ending the turn has nothing left to flush.
+			tool.beginUpdate(false);
+			expect(onAdvice).toHaveBeenCalledTimes(1);
+
+			// The setting is read per note: turning holding back on withholds the next one.
+			hold = true;
+			tool.beginUpdate(true);
+			await tool.execute("tc-2", { note: "A later separate concern.", severity: "concern" });
+			expect(onAdvice).toHaveBeenCalledTimes(1);
+		});
+
 		it("does not pile up duplicate deferred notes during a long mid-turn", async () => {
 			const onAdvice = vi.fn();
 			const tool = new AdviseTool(onAdvice);

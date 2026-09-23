@@ -15,6 +15,7 @@
 - The bottom agents dock now lists only subagents that are still working, plus `/fork` chats until they finish; finished and aborted agents remain available in Agent Hub.
 - The session-copy command formerly called `/fork` is now `/duplicate`.
 - `/tan` and `/fork` now build their clones through one shared factory.
+- Advisor notes are now delivered as soon as the advisor writes them, even while the main agent is mid-turn, instead of piling up until the turn ends. Set `advisor.holdNotesUntilTurnEnd: true` to restore the old batching.
 - Anthropic pooled usage headlines (5h, weekly, Fable) now average each window independently across the accounts that report it, matching the dashboard.
 
 - Restricted local memory extraction and consolidation to durable operational knowledge, user preferences, and general research or verification lessons, excluding individual experiment results and transient run state.

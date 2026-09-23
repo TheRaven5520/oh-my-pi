@@ -998,6 +998,7 @@ export class SessionAdvisors {
 			const adviseTool = new AdviseTool(
 				(note, severity) => this.#routeAdvice(advisorRef, note, severity),
 				emissionGuard,
+				() => this.#host.settings.get("advisor.holdNotesUntilTurnEnd") === true,
 			);
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared

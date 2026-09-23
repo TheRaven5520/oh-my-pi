@@ -209,10 +209,14 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 	 *   note is emitted (live or deferred). Defaults to a stock
 	 *   {@link AdvisorEmissionGuard} (default budget
 	 *   {@link ADVISOR_DEFAULT_BUDGET_PER_UPDATE}).
+	 * @param holdMidTurnNotes Whether non-blockers written while the primary is
+	 *   mid-turn are withheld until the turn ends; read per note so a settings
+	 *   change applies to the next one. When false every admitted note routes now.
 	 */
 	constructor(
 		private readonly onAdvice: (note: string, severity?: AdviseDetails["severity"]) => void,
 		guard?: AdvisorEmissionGuard,
+		private readonly holdMidTurnNotes: () => boolean = () => true,
 	) {
 		this.#guard = guard ?? new AdvisorEmissionGuard();
 	}
@@ -263,7 +267,7 @@ export class AdviseTool implements AgentTool<typeof adviseSchema, AdviseDetails>
 	): Promise<AgentToolResult<AdviseDetails>> {
 		const rank = advisorSeverityRank(args.severity);
 		const key = advisorNoteDedupeKey(args.note);
-		if (this.#inProgressUpdate && args.severity !== "blocker") {
+		if (this.#inProgressUpdate && args.severity !== "blocker" && this.holdMidTurnNotes()) {
 			// Withheld, not delivered: reserve for the deterministic flush at the
 			// completed-update transition / terminal boundary.
 			const pending = this.#deferredNotes.find(item => item.key === key);

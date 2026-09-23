@@ -390,6 +390,18 @@ export const SETTINGS_SCHEMA = {
 			condition: "advisorEnabled",
 		},
 	},
+	"advisor.holdNotesUntilTurnEnd": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Advisor",
+			label: "Hold Advisor Notes Until Turn End",
+			description:
+				"Withhold non-blocker notes the advisor writes while the main agent is mid-turn and deliver them together when the turn ends. Off delivers each note as soon as it is written.",
+			condition: "advisorEnabled",
+		},
+	},
 	"advisor.immuneTurns": {
 		type: "number",
 		default: 3,
