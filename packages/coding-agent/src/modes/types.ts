@@ -368,9 +368,9 @@ export interface InteractiveModeContext {
 		message: AgentMessage,
 		options?: { imageLinks?: readonly (string | undefined)[] },
 	): void;
-	/** Show these user rows dim until the model starts responding. */
+	/** Show these user rows dim until the provider accepts the request carrying them. */
 	markAwaitingModel(components: readonly Component[]): void;
-	/** The model started responding (or the turn ended): restore every dimmed user row. */
+	/** The provider accepted the request (or the turn ended): restore every dimmed user row. */
 	markUserMessagesReceived(): void;
 	/** True while an optimistically-rendered `/skill:` row awaits its canonical `message_start`. */
 	optimisticSkillMessagePending: boolean;

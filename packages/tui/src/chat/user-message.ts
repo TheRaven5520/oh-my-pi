@@ -108,8 +108,8 @@ export function userBubbleColor(
  * Component that renders a user message the way Claude Code does: a dim `❯`
  * pointer, then the text on the tinted bubble with no padding rows. Accepts an
  * agent reaction badge (see {@link ReactionTarget}) drawn at the end of the first row.
- * While awaiting the model (sent, but no response has started streaming) the
- * text is dim, as Claude Code greys a prompt until the model receives it.
+ * While the request is in flight (sent, but not yet accepted by the server) the
+ * text is dim, as Claude Code greys a prompt until the server receives it.
  */
 export class UserMessageComponent extends Container implements ReactionTarget {
 	readonly #md: Markdown;
@@ -155,7 +155,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 		return md;
 	}
 
-	/** Dim the text until the model starts responding to this prompt. */
+	/** Dim the text until the server accepts the request carrying this prompt. */
 	setAwaitingModel(awaiting: boolean): void {
 		if (this.#awaitingModel === awaiting) return;
 		this.#awaitingModel = awaiting;

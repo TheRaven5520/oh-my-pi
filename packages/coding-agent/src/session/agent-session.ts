@@ -1581,7 +1581,13 @@ export class AgentSession {
 			: (event, model) => {
 					this.rawSseDebugBuffer.recordEvent(event, model);
 				};
-		this.agent.setProviderResponseInterceptor(this.#onResponse);
+		// Only the primary agent's own requests signal acceptance; advisor and side
+		// requests share `#onResponse` but never pass through this interceptor.
+		const onResponse = this.#onResponse;
+		this.agent.setProviderResponseInterceptor((response, model) => {
+			if (response.status >= 200 && response.status < 300) this.#emit({ type: "request_accepted" });
+			return onResponse(response, model);
+		});
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
 		this.agent.setOnTurnEnd(async (messages, signal, context) => {
 			if (signal?.aborted) return;

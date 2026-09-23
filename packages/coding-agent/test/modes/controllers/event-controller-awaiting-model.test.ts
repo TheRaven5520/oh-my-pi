@@ -93,6 +93,24 @@ describe("user prompt dimmed until the model receives it", () => {
 		expect(userRow()?.awaitingModel).toBe(false);
 	});
 
+	it("brightens as soon as the provider accepts the request, before any reply", async () => {
+		const { controller, userRow } = createFixture();
+		const prompt = { role: "user", content: "hello", attribution: "user", timestamp: Date.now() } as AgentMessage;
+
+		await send(controller, { type: "message_start", message: prompt });
+		const partial = assistant("");
+		await send(controller, { type: "message_start", message: partial });
+		await send(controller, {
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: { type: "start", partial },
+		});
+		expect(userRow()?.awaitingModel).toBe(true);
+
+		await send(controller, { type: "request_accepted" });
+		expect(userRow()?.awaitingModel).toBe(false);
+	});
+
 	it("brightens when the request fails before any reply", async () => {
 		const { controller, userRow } = createFixture();
 		const prompt = { role: "user", content: "hello", attribution: "user", timestamp: Date.now() } as AgentMessage;

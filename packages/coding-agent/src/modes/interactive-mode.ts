@@ -970,7 +970,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#pendingSubmissionPreservesDraft = false;
 	#optimisticUserMessageComponents: Component[] = [];
 	#optimisticSkillMessageComponents: Component[] = [];
-	/** User rows shown dim until the model starts responding (see {@link markUserMessagesReceived}). */
+	/** User rows shown dim until the provider accepts the request (see {@link markUserMessagesReceived}). */
 	readonly #awaitingModelUserMessages = new Set<UserMessageComponent>();
 	/** True while an optimistically-rendered `/skill:` row awaits its canonical
 	 *  `message_start`. Read by the event controller to reconcile the row. */

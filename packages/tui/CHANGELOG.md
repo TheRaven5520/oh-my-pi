@@ -9,7 +9,7 @@
 ### Changed
 
 - User messages now render like Claude Code: a dim `❯` pointer, wrapped lines indented under the text, and no blank padding rows above or below the tinted band. Collab and skill prompt bubbles also drop their padding rows. The `titanium` theme's user message background is Claude Code's gray (`#373737`).
-- A submitted prompt is drawn dim until the model starts responding, then switches to normal text, as in Claude Code.
+- A submitted prompt is drawn dim until the provider accepts the request (its response headers arrive), then switches to normal text, as in Claude Code. Transports that report no response headers fall back to the model's first streamed output.
 
 ## [18.2.9] - 2026-09-22
 

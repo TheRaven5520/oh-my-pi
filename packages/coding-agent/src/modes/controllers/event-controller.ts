@@ -313,6 +313,7 @@ export class EventController {
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();
 			},
+			request_accepted: async () => this.ctx.markUserMessagesReceived(),
 			advisor_yielded: async () => {
 				// The advisor finished reviewing the yielded primary turn (no more
 				// comments coming) — repaint so the closed-eye state lands.
@@ -1012,8 +1013,8 @@ export class EventController {
 				// links via the synchronous putBlobSync fallback, so no await is needed here.
 				this.ctx.addMessageToChat(event.message);
 			}
-			// A user prompt entering the turn stays dim until the model starts
-			// responding (an optimistic row was already dimmed when it was painted).
+			// A user prompt entering the turn stays dim until the provider accepts the
+			// request (an optimistic row was already dimmed when it was painted).
 			if (!wasOptimistic && !event.message.synthetic && event.message.attribution !== "agent") {
 				const component = this.ctx.transcriptMessageComponents.get(event.message);
 				if (component) this.ctx.markAwaitingModel([component]);
@@ -1279,8 +1280,9 @@ export class EventController {
 		if (!this.#vocalizedMessageUpdates.delete(event)) {
 			this.#vocalizeDelta(event);
 		}
-		// The provider emits `start` before sending the request; the first real
-		// delta is the model's own response arriving.
+		// Fallback for transports that report no response headers (e.g. the Codex
+		// WebSocket): the provider emits `start` before sending the request, so the
+		// first real delta is the earliest proof the server has it.
 		if (event.message.role === "assistant" && event.assistantMessageEvent?.type !== "start") {
 			this.ctx.markUserMessagesReceived();
 		}
