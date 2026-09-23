@@ -1253,4 +1253,27 @@ describe("AgentSession advisor toggle", () => {
 		expect(session.applyAdvisorConfigs([{ name: "SettingsOnly" }], undefined, undefined)).toBe(1);
 		await exerciseBudget("settings", 2);
 	});
+
+	it("routes mid-turn advisor notes at once by default and holds them when configured", async () => {
+		const adviseTool = () => {
+			const tool = session.getAdvisorAgent()?.state.tools?.find(candidate => candidate.name === "advise");
+			if (!(tool instanceof advisorModule.AdviseTool)) throw new Error("Expected advise tool");
+			return tool;
+		};
+
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		let tool = adviseTool();
+		tool.beginUpdate(true);
+		const immediate = await tool.execute("now", { note: "Rename the helper before it spreads.", severity: "nit" });
+		expect(JSON.stringify(immediate.content)).not.toContain("Queued for the end of the turn");
+		expect(session.yieldQueue.has("advisor")).toBe(true);
+		session.yieldQueue.drainLazy();
+
+		session.settings.set("advisor.holdNotesUntilTurnEnd", true);
+		tool = adviseTool();
+		tool.beginUpdate(true);
+		const held = await tool.execute("later", { note: "Cover the empty-input case.", severity: "nit" });
+		expect(JSON.stringify(held.content)).toContain("Queued for the end of the turn");
+		expect(session.yieldQueue.has("advisor")).toBe(false);
+	});
 });

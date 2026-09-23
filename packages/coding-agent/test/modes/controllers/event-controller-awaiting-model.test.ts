@@ -98,6 +98,7 @@ describe("user prompt dimmed until the model receives it", () => {
 		const prompt = { role: "user", content: "hello", attribution: "user", timestamp: Date.now() } as AgentMessage;
 
 		await send(controller, { type: "message_start", message: prompt });
+		expect(userRow()?.awaitingModel).toBe(true);
 		await send(controller, { type: "message_end", message: { ...assistant(""), stopReason: "error" } });
 
 		expect(userRow()?.awaitingModel).toBe(false);

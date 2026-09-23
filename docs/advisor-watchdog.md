@@ -121,7 +121,7 @@ When you deliberately interrupt the agent (Esc, or a cancel from collab, ACP, RP
 
 A normal yield the agent drove itself is treated differently from a deliberate interrupt, but it is not a blanket "always steers and resumes". The loop state and completed turn first determine the normal delivery path:
 
-- **While the loop is still streaming**, advice steers into the live turn. With `advisor.holdNotesUntilTurnEnd` enabled, nits and concerns from an in-progress review are instead held until a final boundary; blockers always go through.
+- **While the loop is still streaming**, concerns and blockers steer into the live turn and nits ride a non-interrupting aside; both reach the primary at its next step boundary. With `advisor.holdNotesUntilTurnEnd` enabled, nits and concerns from an in-progress review are instead held until a final boundary; blockers always go through.
 - **Once the loop has yielded and gone idle**, delivery keys on how the turn ended:
   - If the primary's tail is a **terminal text answer with no queued work**, a late `concern` is preserved as a visible card rather than waking the agent to restate a completed turn (#4840) — it re-enters context on the next resume (a new message, `.`/`c`, or a steer/follow-up), exactly like the interrupt case. A `blocker` is the exception: it normally steers a triggered turn, because it means the agent handed off broken or unexercised work that must be acknowledged before the turn is considered done (#5628).
   - Otherwise (the agent yielded mid-work, no terminal answer), an idle `concern`/`blocker` normally triggers a fresh turn so the advice is acted on immediately.
