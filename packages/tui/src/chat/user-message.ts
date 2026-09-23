@@ -42,47 +42,9 @@ const OSC133_COMMAND_START = "\x1b]133;C\x07";
 const OSC133_COMMAND_DONE = "\x1b]133;D;0\x07";
 const OSC133_ZONE_CLOSE = OSC133_ZONE_END + OSC133_COMMAND_START + OSC133_COMMAND_DONE;
 
-/**
- * One-eighth-cell strips framing a user bubble, instead of full blank padding
- * rows: the lower strip sits flush on the bubble's first row and the upper strip
- * under its last row, so the tint reads as a thin margin. An optional badge is
- * right-aligned on the top edge. Terminal-default backgrounds draw blank edges.
- */
-export function userBubbleEdge(width: number, edge: "top" | "bottom", badge?: string): string {
-	const fg = theme.getBgAsFgAnsi("userMessageBg");
-	const glyph = edge === "top" ? "▁" : "▔";
-	const strip = (cells: number) => (cells <= 0 ? "" : fg ? `${fg}${glyph.repeat(cells)}\x1b[39m` : padding(cells));
-	if (badge === undefined) return strip(width);
-	return strip(width - 1 - visibleWidth(badge)) + badge + strip(1);
-}
-
-/** Frames a tinted child with {@link userBubbleEdge} rows; memoized on the child's render. */
-export class UserBubbleFrame implements Component {
-	#source: readonly string[] | undefined;
-	#lines: string[] | undefined;
-
-	constructor(readonly child: Component) {}
-
-	invalidate(): void {
-		this.child.invalidate?.();
-		this.#source = undefined;
-		this.#lines = undefined;
-	}
-
-	setIgnoreTight(ignore: boolean): this {
-		this.child.setIgnoreTight?.(ignore);
-		return this;
-	}
-
-	render(width: number): readonly string[] {
-		const inner = this.child.render(width);
-		if (this.#source === inner && this.#lines !== undefined) return this.#lines;
-		const lines = [userBubbleEdge(width, "top"), ...inner, userBubbleEdge(width, "bottom")];
-		this.#source = inner;
-		this.#lines = lines;
-		return lines;
-	}
-}
+/** Claude Code's prompt pointer, drawn at the start of every user message. */
+const USER_POINTER = "❯";
+const USER_POINTER_WIDTH = 2;
 
 /** How a user bubble styles its prose and chips (see {@link userBubbleColor}). */
 export interface UserBubbleOptions {
@@ -143,16 +105,16 @@ export function userBubbleColor(
 }
 
 /**
- * Component that renders a user message. Accepts an agent reaction badge
- * (see {@link ReactionTarget}) drawn right-aligned in the bubble's top padding row.
+ * Component that renders a user message the way Claude Code does: a dim `❯`
+ * pointer, then the text on the tinted bubble with no padding rows. Accepts an
+ * agent reaction badge (see {@link ReactionTarget}) drawn at the end of the first row.
  */
 export class UserMessageComponent extends Container implements ReactionTarget {
-	// Memoized OSC 133 zone wrapping keyed on the underlying container render
-	// (same source ref ⇒ identical rows ⇒ reuse the wrapped copy). Keeps this
-	// component reference-stable for the transcript's incremental assembly and
-	// never mutates the container's cached array.
-	#zoneSource: readonly string[] | undefined;
-	#zoneLines: string[] | undefined;
+	readonly #md: Markdown;
+	// Memoized on the Markdown render (same source ref ⇒ identical rows) so this
+	// component stays reference-stable for the transcript's incremental assembly.
+	#source: readonly string[] | undefined;
+	#lines: string[] | undefined;
 	#reaction: string | undefined;
 
 	constructor(text: string, options: UserBubbleOptions = {}) {
@@ -160,7 +122,7 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 		ensureThemeSync();
 		// Display-only collapse: the stored/wire text carries bracketed `[Image #N, WxH]` markers,
 		// but the transcript shows the same compact `<icon> #N` chip the composer used. Runs before
-		// Markdown layout so wrapping and bubble padding are computed on the visible text.
+		// Markdown layout so wrapping is computed on the visible text.
 		text = collapseImageMarkers(text, Number.POSITIVE_INFINITY, () => {});
 		const mentionLabels: string[] = [];
 		MODEL_MENTION_TAG_RE.lastIndex = 0;
@@ -169,41 +131,40 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 			mentionLabels.push(label);
 			return label;
 		});
-		const md = new Markdown(text, 1, 0, getMarkdownTheme(), {
+		this.#md = new Markdown(text, 0, 0, getMarkdownTheme(), {
 			bgColor: (value: string) => theme.bg("userMessageBg", value),
 			color: userBubbleColor(options, composerTokenRegex(mentionLabels)),
 		});
-		md.setIgnoreTight(true);
-		this.addChild(md);
+		this.#md.setIgnoreTight(true);
+		this.addChild(this.#md);
 	}
 
 	setReaction(emoji: string): void {
 		if (this.#reaction === emoji) return;
 		this.#reaction = emoji;
-		this.#zoneLines = undefined;
-	}
-
-	/** The top edge with the reaction badge right-aligned inside the horizontal padding. */
-	#reactionRow(width: number): string {
-		return userBubbleEdge(width, "top", this.#reaction);
+		this.#lines = undefined;
 	}
 
 	override render(width: number): readonly string[] {
-		const lines = super.render(width);
-		if (lines.length === 0) {
-			return lines;
-		}
-		if (this.#zoneSource === lines && this.#zoneLines !== undefined) {
-			return this.#zoneLines;
-		}
-		const wrapped = [
-			OSC133_ZONE_START + this.#reactionRow(width),
-			...lines,
-			userBubbleEdge(width, "bottom") + OSC133_ZONE_CLOSE,
-		];
-		this.#zoneSource = lines;
-		this.#zoneLines = wrapped;
-		return wrapped;
+		const reaction = this.#reaction;
+		// Right edge: one cell of bubble padding, or ` <badge> ` on the first row.
+		const rightWidth = reaction === undefined ? 1 : visibleWidth(reaction) + 2;
+		const inner = this.#md.render(Math.max(1, width - USER_POINTER_WIDTH - rightWidth));
+		if (inner.length === 0) return inner;
+		if (this.#source === inner && this.#lines !== undefined) return this.#lines;
+		const bubble = (value: string) => theme.bg("userMessageBg", value);
+		const pointer = bubble(`${theme.fg("dim", USER_POINTER)} `);
+		const indent = bubble(padding(USER_POINTER_WIDTH));
+		const rightPad = bubble(padding(rightWidth));
+		const lines = inner.map((line, index) => {
+			if (index > 0) return indent + line + rightPad;
+			return pointer + line + (reaction === undefined ? rightPad : bubble(` ${reaction} `));
+		});
+		lines[0] = OSC133_ZONE_START + lines[0];
+		lines[lines.length - 1] += OSC133_ZONE_CLOSE;
+		this.#source = inner;
+		this.#lines = lines;
+		return lines;
 	}
 }
 

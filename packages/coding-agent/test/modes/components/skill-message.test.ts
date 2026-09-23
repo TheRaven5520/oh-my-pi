@@ -56,9 +56,9 @@ describe("SkillMessageComponent", () => {
 		const lines = component.render(80);
 		const text = strip(lines);
 
-		// Every content row between the thin edges carries the rail; the header is the chip, not the raw token.
+		// Every row carries the rail; the header is the chip, not the raw token.
 		const rail = uiTheme.symbol("skill.rail");
-		for (const line of lines.slice(1, -1)) expect(Bun.stripANSI(line).startsWith(rail)).toBe(true);
+		for (const line of lines) expect(Bun.stripANSI(line).startsWith(rail)).toBe(true);
 		expect(text).toContain(chip());
 		expect(text).not.toContain("/skill:");
 

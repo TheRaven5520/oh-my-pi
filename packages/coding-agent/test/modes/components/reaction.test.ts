@@ -37,9 +37,9 @@ function plain(component: { render(width: number): readonly string[] }): string 
 		.trim();
 }
 
-/** The user bubble's top edge row with edge glyphs blanked; the badge lands here. */
+/** The user bubble's first row, ANSI stripped; the badge lands at its end. */
 function bubbleTopRow(user: UserMessageComponent): string {
-	return Bun.stripANSI(user.render(W)[0]!).replaceAll("▁", " ");
+	return Bun.stripANSI(user.render(W)[0]!);
 }
 
 beforeAll(async () => {

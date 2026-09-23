@@ -10,7 +10,7 @@ import { getMarkdownTheme, theme } from "../theme";
 import type { CustomMessage, SkillPromptDetails } from "./messages";
 import { fileHyperlink } from "../render";
 import { collapseSkillTokens, skillChipLabel, skillChipStyle, skillToken } from "../prompt/composer-attachments";
-import { type UserBubbleOptions, UserMessageComponent, userBubbleColor, userBubbleEdge } from "./user-message";
+import { type UserBubbleOptions, UserMessageComponent, userBubbleColor } from "./user-message";
 
 /**
  * Transcript row for a user-invoked skill. Two layouts, chosen by where the
@@ -212,7 +212,7 @@ class SkillCallout implements Component {
 		const inner = this.#box.render(Math.max(1, width - 1));
 		if (this.#source === inner && this.#lines !== undefined) return this.#lines;
 		const rail = theme.bg("userMessageBg", theme.fg("customMessageLabel", theme.symbol("skill.rail")));
-		const lines = [userBubbleEdge(width, "top"), ...inner.map(line => rail + line), userBubbleEdge(width, "bottom")];
+		const lines = inner.map(line => rail + line);
 		this.#source = inner;
 		this.#lines = lines;
 		return lines;
