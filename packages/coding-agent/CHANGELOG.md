@@ -5,12 +5,15 @@
 ### Added
 
 - Added `/usage show` (or plain `/usage`) to pin a static usage snapshot above the prompt and `/usage clear` to remove it without interrupting active work. The pinned panel shows one pool headline per provider from Sprilicred's pooled accounts — Anthropic Fable Weekly / Weekly / Five Hour and OpenAI Weekly / Five Hour ten-cell bars — plus the fetch time; running `/usage show` again refetches and replaces the snapshot.
+- `/btw` now runs as a tool-enabled side agent forked from the current session: it can read files, search the web, and edit, while its transcript stays separate from the main conversation. Follow-ups reopen the same side agent, which is parked between answers; `--no-session` keeps it in memory.
 
 ### Changed
 
 - The startup update check and its "Update Available" banner are now off by default in this fork; set `startup.checkUpdate` to `true` to bring them back. `omp update` is unchanged.
 - Interactive `/usage` no longer opens the one-shot dashboard overlay or lists per-account rows; it pins the pooled snapshot instead.
 - Removed `/usage on`, `/usage off`, and `/usage reset` together with the saved-reset account picker; saved rate-limit resets are still spent automatically via `codexResets.autoRedeem` / `claudeResets.autoRedeem` and through the auth-gateway `/v1/usage/reset-credits` endpoints.
+- The bottom agents dock now lists only subagents that are still working; finished and aborted agents remain available in Agent Hub.
+- Anthropic pooled usage headlines (5h, weekly, Fable) now average each window independently across the accounts that report it, matching the dashboard.
 
 - Restricted local memory extraction and consolidation to durable operational knowledge, user preferences, and general research or verification lessons, excluding individual experiment results and transient run state.
 

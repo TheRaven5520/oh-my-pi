@@ -6,6 +6,10 @@
 
 - Support graphical display equations, opt-in tmux scrollback frame coalescing, and following the latest line after transcript replacement.
 
+### Changed
+
+- User, collab, and skill prompt bubbles replace their blank full-row top and bottom padding with thin one-eighth-cell edges.
+
 ## [18.2.9] - 2026-09-22
 
 ### Added
