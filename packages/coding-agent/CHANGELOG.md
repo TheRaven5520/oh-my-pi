@@ -5,13 +5,16 @@
 ### Added
 
 - Added `/usage show` (or plain `/usage`) to pin a static usage snapshot above the prompt and `/usage clear` to remove it without interrupting active work. The pinned panel shows one pool headline per provider from Sprilicred's pooled accounts — Anthropic Fable Weekly / Weekly / Five Hour and OpenAI Weekly / Five Hour ten-cell bars — plus the fetch time; running `/usage show` again refetches and replaces the snapshot.
+- Added `/fork [request]`: a copy of the current chat that lives in the agents panel. Open it with `↓`/`Enter` to talk to it directly, `Esc` to return. The fork posts updates and a final report back to the main chat with its `hand_back` tool; the final report closes it and removes it from the panel. `x` on an idle fork closes it.
 
 ### Changed
 
 - The startup update check and its "Update Available" banner are now off by default in this fork; set `startup.checkUpdate` to `true` to bring them back. `omp update` is unchanged.
 - Interactive `/usage` no longer opens the one-shot dashboard overlay or lists per-account rows; it pins the pooled snapshot instead.
 - Removed `/usage on`, `/usage off`, and `/usage reset` together with the saved-reset account picker; saved rate-limit resets are still spent automatically via `codexResets.autoRedeem` / `claudeResets.autoRedeem` and through the auth-gateway `/v1/usage/reset-credits` endpoints.
-- The bottom agents dock now lists only subagents that are still working; finished and aborted agents remain available in Agent Hub.
+- The bottom agents dock now lists only subagents that are still working, plus `/fork` chats until they finish; finished and aborted agents remain available in Agent Hub.
+- The session-copy command formerly called `/fork` is now `/duplicate`.
+- `/tan` and `/fork` now build their clones through one shared factory.
 - Anthropic pooled usage headlines (5h, weekly, Fable) now average each window independently across the accounts that report it, matching the dashboard.
 
 - Restricted local memory extraction and consolidation to durable operational knowledge, user preferences, and general research or verification lessons, excluding individual experiment results and transient run state.

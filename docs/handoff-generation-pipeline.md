@@ -15,7 +15,7 @@ Covers:
 Does not cover:
 
 - Generic tree navigation/branch internals
-- Session commands (`/new`, `/fork`, `/resume`)
+- Session commands (`/new`, `/duplicate`, `/resume`)
 
 ## Implementation files
 
@@ -120,7 +120,7 @@ If auto generation returns no document, maintenance advances to the next configu
 
 `CommandController.handleHandoffCommand` behavior:
 
-- Refuses with a warning when `session.isStreaming` (matches `/fork` and `/move`) — the user must finish or abort the response before handing off.
+- Refuses with a warning when `session.isStreaming` (matches `/duplicate` and `/move`) — the user must finish or abort the response before handing off.
 - Shows a status loader: `Generating handoff… (esc to cancel)`.
 - Calls `await session.handoff(customInstructions)`.
 - If result is `undefined`: `showError("Handoff cancelled")`.

@@ -393,3 +393,29 @@ branch only when the original session/leaf is unchanged and the main session is
 idle. Multi-turn side conversations remain in BTW history; promoting only their
 latest pair would discard earlier context. History browsing does not promote
 answers or relax these branch guards.
+
+## 12) Built-in command note: `/fork`
+
+`/fork [request]` copies the current conversation into a separate chat that lives in
+the agents panel below the prompt. It shares the working tree and has the main
+session's model, tools, MCP proxies, and extensions. Its transcript is
+`Fork-<id>.jsonl` in the main session's artifact directory; the main transcript is
+unchanged.
+
+- With a request, the fork starts working on it in the background; select it with
+  `↓`/`↑` and `Enter` to watch or talk to it. Without one, the view switches into
+  the fork immediately so you can type to it.
+- While viewing a fork, submitted text goes to the fork. `Esc` returns to the main
+  session; slash commands run only in the main session.
+- The fork gets a `hand_back` tool. `done: false` posts an update to the main
+  session; `done: true` delivers its final report, and the fork closes once that
+  turn ends. Both arrive in the main chat as incoming agent messages, framed as
+  fork output rather than user instructions, and wake an idle main agent.
+- A fork stays in the panel (`⑂` while waiting for you) until it hands back its
+  final report. Pressing `x` on a selected idle fork closes it without a report.
+  Switching, duplicating, or leaving the main session closes all of its forks.
+- A persisted developer notice tells the fork that the earlier conversation is the
+  main session's; it is restored after auto-compaction.
+
+`/duplicate` (previously `/fork`) still copies the whole session into a new
+session file and switches to it.

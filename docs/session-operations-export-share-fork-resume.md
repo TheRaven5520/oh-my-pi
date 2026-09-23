@@ -23,7 +23,7 @@ This document describes operator-visible behavior for session export, sharing, c
 | `/fresh`                                | Slash command (TUI/headless) | Yes (provider-facing in-memory id/state only) | No; keeps current session file/header                                                      | None                                                                                |
 | `/clear`                                | Interactive slash command    | Yes (clears live/model conversation context)  | No; retains session identity, metadata, transcript file, and full on-disk history          | Appends a durable `reset_boundary`                                                  |
 | `/delete`                               | Interactive slash command    | Yes (starts an empty conversation)            | Attempts to delete the current persisted session and artifacts, then switches to a new one | None                                                                                |
-| `/fork`                                 | Interactive slash command    | Yes (active session identity changes)         | Creates new session file and switches current session to it (persistent mode only)         | Copies artifact directory to new session namespace when present                     |
+| `/duplicate`                            | Interactive slash command    | Yes (active session identity changes)         | Creates new session file and switches current session to it (persistent mode only)         | Copies artifact directory to new session namespace when present                     |
 | `--fork <id\|path>`                     | CLI startup                  | Yes after session creation                    | Creates a new session fork from the selected source into current cwd/session dir           | None                                                                                |
 | `/resume [id\|@claude\|@codex]`         | Interactive slash command    | Yes (active in-memory state replaced)         | Switches to a selected/matched session, or imports a selected foreign session              | None                                                                                |
 | `--resume`                              | CLI startup picker           | Yes after session creation                    | Opens selected existing session file (picker opens in current-folder scope; the global list is preloaded only for the empty-everything early exit and instant Tab switching) | None                |
@@ -220,13 +220,13 @@ a new one.
 conversation. See the [BTW command reference](slash-command-internals.md#11-built-in-command-note-btw)
 for keyboard controls, follow-ups, persistence, and migration safety.
 
-## Fork
+## Duplicate (session fork)
 
-Interactive `/fork` creates a new session from the current one and switches the active session identity.
+Interactive `/duplicate` creates a new session from the current one and switches the active session identity. (`/fork` is a different feature: it opens a forked chat in the agents panel; see the [slash command notes](slash-command-internals.md#12-built-in-command-note-fork).)
 
 ### Preconditions and immediate guards
 
-- If agent is streaming, `/fork` is rejected with warning.
+- If agent is streaming, `/duplicate` is rejected with warning.
 - UI status/loading indicators are cleared before operation.
 
 ### Session-level flow
@@ -376,7 +376,7 @@ These callbacks are observational; they do not cancel switch/fork.
 
 ### Other cancellation surfaces relevant to this doc
 
-- `/fork` is blocked while streaming (user must wait/abort current response first).
+- `/duplicate` is blocked while streaming (user must wait/abort current response first).
 - `/resume` selector can be cancelled by user closing selector.
 - Cross-project `--resume <id>` can be cancelled by declining the missing-directory move/re-root prompt.
 - `/share` has a UI abort path (`Share cancelled`); the upload itself is not killed mid-flight.
@@ -387,7 +387,7 @@ When session manager is created with `SessionManager.inMemory()` (`--no-session`
 
 - Session file path is absent.
 - `/export` fails with `Cannot export in-memory session to HTML` (propagated to command error UI). `/share` still works: the snapshot is built from live entries.
-- `/fork` fails because `SessionManager.fork()` requires persistence.
+- `/duplicate` fails because `SessionManager.fork()` requires persistence.
 - `/dump` still works because it serializes in-memory agent state.
 - CLI resume/continue semantics are bypassed if `--no-session` is set, because manager creation returns in-memory immediately.
 
