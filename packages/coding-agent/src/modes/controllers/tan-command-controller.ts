@@ -1,17 +1,14 @@
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { prompt, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
 import backgroundTanDispatchPrompt from "../../prompts/system/background-tan-dispatch.md" with { type: "text" };
 import tanContextSwitchPrompt from "../../prompts/system/tan-context-switch.md" with { type: "text" };
-import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { AgentRegistry } from "../../registry/agent-registry";
 import * as sdk from "../../sdk";
 import type { AgentSession } from "../../session/agent-session";
 import { BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE } from "../../session/messages";
-import { SessionManager } from "../../session/session-manager";
-import { createMCPProxyTools, createSubagentSettings } from "../../task/executor";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import type { InteractiveModeContext } from "../types";
+import { captureSessionCloneParent, removeCloneSession } from "./session-clone";
 
 const TAN_LABEL_PREVIEW_LENGTH = 80;
 
@@ -28,13 +25,6 @@ function extractAssistantText(message: AssistantMessage | undefined): string {
 		.map(content => content.text)
 		.join("")
 		.trim();
-}
-
-async function removeCloneSession(cloneFile: string): Promise<void> {
-	await Promise.allSettled([
-		fs.rm(cloneFile, { force: true }),
-		fs.rm(cloneFile.slice(0, -6), { recursive: true, force: true }),
-	]);
 }
 
 export class TanCommandController {
@@ -67,53 +57,12 @@ export class TanCommandController {
 			return;
 		}
 
-		const parentSessionId = session.sessionId;
-		// Providers route on `promptCacheKey ?? sessionId`, so the parent's live
-		// requests may cache under a pinned key that differs from its session id
-		// (the parent being itself a fork/tan). Mirror exactly what the parent
-		// populated the cache under — same rule as advisor and handoff calls.
-		const parentPromptCacheKey = session.agent.promptCacheKey ?? parentSessionId;
-		const thinkingLevel = session.configuredThinkingLevel();
+		const parent = captureSessionCloneParent(this.ctx, model, parentFile);
 		const systemPrompt = [...session.systemPrompt];
-		const toolNames = session.getEnabledToolNames();
-		const modelRegistry = session.modelRegistry;
-		// Snapshot the parent's rebindable extensions and root policy at dispatch.
-		// The child rebinds these (skipping discovery) so it re-registers the
-		// parent's runtime providers on the shared model registry before the SDK's
-		// syncExtensionSources prune runs — without this the child builds an empty
-		// extension set and unregisters the parent's provider auth (no-key error).
-		const parentPreparedExtensions = session.preparedExtensions;
-		// Path-list fallback for the (rare) parent build path that produced no
-		// prepared factories; the child rebinds from paths so it still re-registers
-		// providers rather than pruning the shared registry from an empty set.
-		const parentExtensionPaths = session.extensionPaths;
-		const parentExtensionRoots = session.effectiveExtensionRoots;
-		const ownerId = session.getAgentId() ?? MAIN_AGENT_ID;
-		const mcpManager = this.ctx.mcpManager;
-		const cwd = this.ctx.sessionManager.getCwd();
-		const parentArtifactsDir = this.ctx.sessionManager.getArtifactsDir();
-		// Snapshot the parent session's local:// mapping when dispatching. The
-		// interactive SessionManager is mutable and may switch transcripts while
-		// this background tan is still running. Use the session-manager id (not
-		// `session.sessionId`, which can diverge after `/fresh` or a provider
-		// session override) so the tan resolves the same local root the parent's
-		// large-paste writes and `local://` reads use — notably the Windows
-		// short-root fallback keys `%TEMP%/omp-local/<id>` off this id.
-		const parentLocalSessionId = this.ctx.sessionManager.getSessionId();
-		const localProtocolOptions = {
-			getArtifactsDir: () => parentArtifactsDir,
-			getSessionId: () => parentLocalSessionId,
-		};
-		// Nest the clone inside the parent's artifact directory (like a subagent
-		// session) rather than as a top-level sibling, so it shares the parent's
-		// artifacts in place — no copy needed.
-		const sessionDir = parentFile.slice(0, -6);
-		const settings = createSubagentSettings(this.ctx.settings);
-		const customTools = mcpManager ? createMCPProxyTools(mcpManager) : undefined;
-		const enableLsp = this.ctx.settings.get("task.enableLsp") !== false;
+		const ownerId = parent.ownerId;
 		const agentRegistry = AgentRegistry.global();
 		const cloneId = `Tan-${Snowflake.next()}`;
-		const cloneFile = path.join(sessionDir, `${cloneId}.jsonl`);
+		const cloneFile = parent.cloneFile(cloneId);
 		const label = `/tan ${previewWork(trimmedWork)}`;
 
 		await this.ctx.sessionManager.ensureOnDisk();
@@ -121,20 +70,7 @@ export class TanCommandController {
 
 		let jobId = "";
 		try {
-			const cloneManager = await SessionManager.forkFrom(parentFile, cwd, sessionDir, undefined, {
-				copyArtifacts: false,
-				suppressBreadcrumb: true,
-				sessionFile: cloneFile,
-				// A tan is a fresh agent forking the parent's transcript only for
-				// context; its cost must reflect its own work, not the parent's
-				// accumulated spend that session cost is otherwise derived from.
-				resetInheritedCost: true,
-				// The parent may be mid-turn: pair any tool call it left unresolved
-				// with a synthetic aborted result so the clone inherits a terminal
-				// transcript instead of rendering the parent's in-flight call as its
-				// own pending work (issue #11118).
-				repairInterruptedTail: true,
-			});
+			const cloneManager = await parent.forkTranscript(cloneFile);
 
 			jobId = manager.register(
 				"task",
@@ -144,37 +80,14 @@ export class TanCommandController {
 
 					let clone: AgentSession | undefined;
 					try {
-						const created = await sdk.createAgentSession({
-							cwd,
-							sessionManager: cloneManager,
-							model,
-							thinkingLevel,
-							systemPrompt,
-							toolNames,
-							providerSessionId: `${parentSessionId}:tan:${Snowflake.next()}`,
-							providerPromptCacheKey: parentPromptCacheKey,
-							modelRegistry,
-							authStorage: modelRegistry.authStorage,
-							settings,
-							hasUI: false,
-							enableMCP: false,
-							customTools,
-							enableLsp,
-							agentId: cloneId,
-							agentDisplayName: "tan",
-							parentTaskPrefix: cloneId,
-							parentAgentId: ownerId,
-							agentRegistry,
-							disableExtensionDiscovery: true,
-							// `[]` is truthy and would make the child pick bindPreparedExtensions([])
-							// over a populated path fallback, so collapse an empty list to undefined.
-							preloadedPreparedExtensions: parentPreparedExtensions?.length
-								? parentPreparedExtensions
-								: undefined,
-							preloadedExtensionPaths: parentExtensionPaths?.length ? [...parentExtensionPaths] : undefined,
-							extensionRoots: () => parentExtensionRoots,
-							localProtocolOptions,
-						});
+						const created = await sdk.createAgentSession(
+							parent.sessionOptions({
+								sessionManager: cloneManager,
+								agentId: cloneId,
+								displayName: "tan",
+								providerSessionId: `${parent.parentSessionId}:tan:${Snowflake.next()}`,
+							}),
+						);
 						clone = created.session;
 						clone.sessionManager?.appendSessionInit?.({
 							systemPrompt: clone.systemPrompt ? clone.systemPrompt.join("\n\n") : systemPrompt.join("\n\n"),
