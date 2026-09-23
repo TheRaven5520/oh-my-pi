@@ -416,6 +416,7 @@ function buildExecutorOptions(
 		additionalDirectories: session.additionalDirectories,
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
+		parentProviderSessionId: session.getProviderSessionId?.(),
 		agent: policy.effectiveAgent,
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),

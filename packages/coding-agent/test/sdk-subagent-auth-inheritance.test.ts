@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import type { OAuthCredential } from "@oh-my-pi/pi-ai";
+import type { StreamFn } from "@oh-my-pi/pi-agent-core";
+import type { OAuthCredential, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 import { resolveApiKeyOnce } from "@oh-my-pi/pi-ai/auth-retry";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -9,6 +10,8 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import * as settingsStreamFnModule from "@oh-my-pi/pi-coding-agent/session/settings-stream-fn";
+import { AGENT_ROLE_HEADER, PARENT_SESSION_ID_HEADER } from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
@@ -136,6 +139,7 @@ describe("task subagent OAuth pin inheritance", () => {
 			for (const childOptions of dispatched) {
 				expect(childOptions.getApiKey).toBeUndefined();
 				expect(childOptions.credentialSourceSessionId).toBe(parentProviderSessionId);
+				expect(childOptions.parentProviderSessionId).toBe(parentProviderSessionId);
 			}
 
 			// The spawn captured the old affinity. A later parent `/fresh` cannot
@@ -186,6 +190,7 @@ describe("task subagent OAuth pin inheritance", () => {
 			if (!nestedOptions) throw new Error("Expected nested child options");
 			expect(nestedOptions.getApiKey).toBeUndefined();
 			expect(nestedOptions.credentialSourceSessionId).toBe("child-provider-session-1");
+			expect(nestedOptions.parentProviderSessionId).toBe("child-provider-session-1");
 			const { session: grandchild } = await createAgentSession({
 				cwd: tempDir.path(),
 				agentDir: tempDir.path(),
@@ -207,6 +212,61 @@ describe("task subagent OAuth pin inheritance", () => {
 			expect(metadataUserId(grandchild.agent.metadataForProvider("anthropic"))).toMatchObject({
 				session_id: "grandchild-provider-session",
 				account_uuid: "account-b",
+			});
+		} finally {
+			for (const session of sessions.reverse()) await session.dispose();
+			authStorage.close();
+			tempDir.removeSync();
+		}
+	});
+
+	it("sends x-omp parent/role headers on subagent requests but not on the parent's", async () => {
+		const tempDir = TempDir.createSync("@pi-subagent-link-headers-");
+		const authStorage = createInMemoryAuthStorage();
+		const sessions: AgentSession[] = [];
+		try {
+			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+			if (!model) throw new Error("Expected bundled test model");
+			authStorage.setRuntimeApiKey("anthropic", "test-key");
+			const captured: Array<SimpleStreamOptions | undefined> = [];
+			const captureStreamFn: StreamFn = (_m, _ctx, opts) => {
+				captured.push(opts);
+				throw new Error("capture-stop");
+			};
+			vi.spyOn(settingsStreamFnModule, "createSettingsAwareStreamFn").mockReturnValue(captureStreamFn);
+			const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
+			const settings = Settings.isolated({ "async.enabled": false, "compaction.enabled": false });
+			const create = (providerSessionId: string, parentProviderSessionId?: string) =>
+				createAgentSession({
+					cwd: tempDir.path(),
+					agentDir: tempDir.path(),
+					sessionManager: SessionManager.inMemory(tempDir.path()),
+					authStorage,
+					modelRegistry,
+					settings,
+					model,
+					providerSessionId,
+					parentProviderSessionId,
+					toolNames: [],
+					disableExtensionDiscovery: true,
+				});
+			const { session: parent } = await create("parent-provider-session");
+			sessions.push(parent);
+			const { session: child } = await create("child-provider-session", "parent-provider-session");
+			sessions.push(child);
+
+			const context = { systemPrompt: ["Test"], messages: [] };
+			expect(() => parent.agent.streamFn(model, context, {})).toThrow("capture-stop");
+			expect(() => child.agent.streamFn(model, context, { headers: { "x-caller": "kept" } })).toThrow(
+				"capture-stop",
+			);
+			expect(captured).toHaveLength(2);
+			expect(captured[0]?.headers?.[PARENT_SESSION_ID_HEADER]).toBeUndefined();
+			expect(captured[0]?.headers?.[AGENT_ROLE_HEADER]).toBeUndefined();
+			expect(captured[1]?.headers).toEqual({
+				"x-caller": "kept",
+				[PARENT_SESSION_ID_HEADER]: "parent-provider-session",
+				[AGENT_ROLE_HEADER]: "subagent",
 			});
 		} finally {
 			for (const session of sessions.reverse()) await session.dispose();

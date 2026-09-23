@@ -408,6 +408,8 @@ export interface ExecutorOptions {
 	getApiKey?: CreateAgentSessionOptions["getApiKey"];
 	/** Parent session whose stored credential affinities seed the child session. */
 	credentialSourceSessionId?: string;
+	/** Parent's provider session id, sent on the subagent's requests as `x-omp-parent-session-id`. */
+	parentProviderSessionId?: string;
 	worktree?: string;
 	agent: AgentDefinition;
 	task: string;
@@ -3721,6 +3723,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				modelRegistry,
 				getApiKey: options.getApiKey,
 				credentialSourceSessionId: options.credentialSourceSessionId,
+				parentProviderSessionId: options.parentProviderSessionId,
 				settings: subagentSettings,
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,

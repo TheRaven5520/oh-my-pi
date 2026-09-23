@@ -176,6 +176,7 @@ import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
 import { collectMountedMCPToolRoutes, projectMountedMCPXdevGuidance } from "./session/session-tools";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
+import { withSideAgentHeaders } from "./session/side-agent-headers";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
 import { createSpeculativeToolExecutionConfig } from "./speculation/host";
@@ -399,6 +400,13 @@ export interface CreateAgentSessionOptions {
 	 * @internal
 	 */
 	credentialSourceSessionId?: string;
+	/**
+	 * Provider session id of the session that spawned this one (task subagents).
+	 * When set, every main-agent request carries `x-omp-parent-session-id` and
+	 * `x-omp-agent-role: subagent` so a proxy can link it to the parent.
+	 * @internal
+	 */
+	parentProviderSessionId?: string;
 
 	/** Model to use. Default: from settings, else first available */
 	model?: Model;
@@ -1835,6 +1843,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// sessions inherit stored affinity into the child's own provider session.
 			getApiKey: options.getApiKey,
 			getCredentialSourceSessionId: options.getApiKey ? undefined : () => agent.sessionId,
+			getProviderSessionId: () => agent.sessionId,
 			get additionalDirectories() {
 				return sessionManager.getAdditionalDirectories();
 			},
@@ -3727,7 +3736,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					agent.state.tools.some(tool => tool.name === "think") &&
 					supportsExternalThinking(streamModel);
 				return settingsAwareStreamFn(streamModel, context, {
-					...streamOptions,
+					...withSideAgentHeaders(streamOptions, options.parentProviderSessionId, "subagent"),
 					anthropicCacheRefresh: true,
 					forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
 					...(codeModeState.namespacesInfo === undefined

@@ -206,6 +206,8 @@ export interface ToolSession {
 	getApiKey?: AgentOptions["getApiKey"];
 	/** Current session whose stored credential affinities should seed a child session. */
 	getCredentialSourceSessionId?: () => string | undefined;
+	/** This session's live provider session id; linked from child sessions' requests. */
+	getProviderSessionId?: () => string | undefined;
 	/** Skip subprocess-kernel availability checks and warmup */
 	skipPythonPreflight?: boolean;
 	/** Pre-loaded context files (AGENTS.md, etc) */

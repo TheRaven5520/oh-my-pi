@@ -20,6 +20,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { AGENT_ROLE_HEADER, PARENT_SESSION_ID_HEADER } from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -295,6 +296,63 @@ describe("AgentSession advisor provider-options parity", () => {
 		expect(metadataSessionId(opts)).not.toBe(
 			metadataSessionId({ metadata: mainAgent.metadataForProvider("anthropic") }),
 		);
+	});
+
+	it("links advisor requests to the main session via x-omp headers, and the main agent sends none", async () => {
+		const capturedStreamOptions: Array<SimpleStreamOptions | undefined> = [];
+		const captureStreamFn: StreamFn = (_m, _ctx, opts) => {
+			capturedStreamOptions.push(opts);
+			throw new Error("capture-stop");
+		};
+		const mainStreamOptions: Array<SimpleStreamOptions | undefined> = [];
+		const mainAgent = new Agent({
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (_m, _ctx, opts) => {
+				mainStreamOptions.push(opts);
+				throw new Error("capture-stop");
+			},
+		});
+		session = new AgentSession({
+			agent: mainAgent,
+			sessionManager,
+			settings: settings(),
+			modelRegistry,
+			advisorTools: [],
+			advisorStreamFn: captureStreamFn,
+		});
+		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+
+		const advisor = session.getAdvisorAgent();
+		if (!advisor?.sessionId) throw new Error("Expected advisor agent with a provider session id");
+		const mainSessionId = mainAgent.sessionId;
+		if (!mainSessionId) throw new Error("Expected main agent provider session id");
+
+		await advisor.prompt("ping").catch(() => {});
+		const headers = capturedStreamOptions[0]?.headers;
+		// Parent id is exactly what the main agent sends as its own session id
+		// (X-Claude-Code-Session-Id / session_id), not the advisor's UUIDv7.
+		expect(headers?.[PARENT_SESSION_ID_HEADER]).toBe(mainSessionId);
+		expect(headers?.[AGENT_ROLE_HEADER]).toBe("advisor");
+		expect(headers?.[PARENT_SESSION_ID_HEADER]).not.toBe(advisor.sessionId);
+		// The advisor's own session identity is unchanged.
+		expect(metadataSessionId(capturedStreamOptions[0])).toBe(advisor.sessionId);
+
+		await mainAgent.prompt("ping").catch(() => {});
+		expect(mainStreamOptions.length).toBeGreaterThan(0);
+		for (const opts of mainStreamOptions) {
+			expect(opts?.headers?.[PARENT_SESSION_ID_HEADER]).toBeUndefined();
+			expect(opts?.headers?.[AGENT_ROLE_HEADER]).toBeUndefined();
+		}
+
+		// The parent id follows the primary across a conversation boundary.
+		expect(await session.newSession()).toBe(true);
+		const nextMainSessionId = mainAgent.sessionId;
+		expect(nextMainSessionId).not.toBe(mainSessionId);
+		await advisor.prompt("ping").catch(() => {});
+		const nextHeaders = capturedStreamOptions.at(-1)?.headers;
+		expect(nextHeaders?.[PARENT_SESSION_ID_HEADER]).toBe(nextMainSessionId);
+		expect(nextHeaders?.[AGENT_ROLE_HEADER]).toBe("advisor");
 	});
 
 	it("refreshes the advisor provider session identity after starting a new session", async () => {

@@ -14,6 +14,7 @@ import { estimateToolSchemaTokens } from "@oh-my-pi/pi-tui/status-line/context-u
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { AGENT_ROLE_HEADER, PARENT_SESSION_ID_HEADER } from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 import { asGlobalFetch } from "./helpers/fetch-mock";
@@ -453,7 +454,11 @@ describe("AgentSession advisor context maintenance", () => {
 			const userId = call.options?.metadata?.user_id;
 			if (typeof userId !== "string") throw new Error("Expected advisor metadata.user_id");
 			expect((JSON.parse(userId) as { session_id?: string }).session_id).toBe(advisor.sessionId);
+			// ...and links back to the primary's provider session id.
+			expect(call.options?.headers?.[PARENT_SESSION_ID_HEADER]).toBe(agent.sessionId);
+			expect(call.options?.headers?.[AGENT_ROLE_HEADER]).toBe("advisor");
 		}
+		expect(agent.sessionId).toBeTruthy();
 	});
 
 	it.each([true, false])(

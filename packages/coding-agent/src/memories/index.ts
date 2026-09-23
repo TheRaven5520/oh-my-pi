@@ -26,6 +26,7 @@ import readPathTemplate from "../prompts/memories/read-path.md" with { type: "te
 import stageOneInputTemplate from "../prompts/memories/stage_one_input.md" with { type: "text" };
 import stageOneSystemTemplate from "../prompts/memories/stage_one_system.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
+import { buildSideAgentHeaders } from "../session/side-agent-headers";
 import {
 	claimStage1Jobs,
 	clearMemoryData as clearMemoryDataInDb,
@@ -417,6 +418,7 @@ async function runPhase1(options: MemoryStartupOptions): Promise<void> {
 				modelMaxTokens: computeModelTokenBudget(phase1Model, config),
 				config,
 				metadata: session.agent?.metadataForProvider(phase1Model.provider),
+				headers: buildSideAgentHeaders(session.agent?.sessionId ?? session.sessionId, "memory"),
 			});
 			if (!isMemoryStartupActive(options)) return;
 
@@ -578,6 +580,7 @@ async function runPhase2(options: MemoryStartupOptions): Promise<void> {
 				apiKey: modelRegistry.resolver(phase2Model, session.sessionId),
 				sessionId: session.sessionId,
 				metadata: session.agent?.metadataForProvider(phase2Model.provider),
+				headers: buildSideAgentHeaders(session.agent?.sessionId ?? session.sessionId, "memory"),
 			});
 			if (!isMemoryStartupActive(options)) return;
 			await applyConsolidation(memoryRoot, consolidated);
@@ -756,6 +759,8 @@ async function runStage1Job(options: {
 	modelMaxTokens: number;
 	config: MemoryRuntimeConfig;
 	metadata?: Record<string, unknown>;
+	/** Side-agent link headers (`x-omp-parent-session-id`, `x-omp-agent-role`). */
+	headers?: Record<string, string>;
 }): Promise<
 	| {
 			kind: "output";
@@ -792,6 +797,7 @@ async function runStage1Job(options: {
 						apiKey,
 						sessionId: options.sessionId,
 						metadata: options.metadata,
+						headers: options.headers,
 						maxTokens: Math.max(1024, Math.min(4096, Math.floor(modelMaxTokens * 0.2))),
 						reasoning: clampThinkingLevelForModel(model, Effort.Low),
 					},
@@ -904,6 +910,8 @@ async function runConsolidationModel(options: {
 	apiKey: ApiKey;
 	sessionId: string;
 	metadata?: Record<string, unknown>;
+	/** Side-agent link headers (`x-omp-parent-session-id`, `x-omp-agent-role`). */
+	headers?: Record<string, string>;
 }): Promise<{
 	memoryMd: string;
 	memorySummary: string;
@@ -935,6 +943,7 @@ async function runConsolidationModel(options: {
 					apiKey,
 					sessionId: options.sessionId,
 					metadata: options.metadata,
+					headers: options.headers,
 					maxTokens: 8192,
 					reasoning: clampThinkingLevelForModel(model, Effort.Medium),
 				},
