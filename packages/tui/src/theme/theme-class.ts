@@ -363,6 +363,13 @@ export class Theme {
 		return ansi;
 	}
 
+	/** Foreground ANSI that paints a background color (edge glyphs); undefined for the terminal default. */
+	getBgAsFgAnsi(color: ThemeBg): string | undefined {
+		const ansi = this.getBgAnsi(color);
+		if (ansi === "\x1b[49m") return undefined;
+		return ansi.replace("\x1b[48;", "\x1b[38;");
+	}
+
 	/**
 	 * Foreground ANSI for text rendered over a controlled theme background.
 	 * Explicit theme colors win; terminal-default tokens become black or near-white.

@@ -5,6 +5,7 @@ import { Text } from "../components/text";
 import type { CollabPromptDetails } from "./messages";
 import type { CustomMessage } from "./messages";
 import { getMarkdownTheme, theme } from "../theme";
+import { UserBubbleFrame } from "./user-message";
 
 /**
  * Renders a collab guest prompt on every participant's transcript: a
@@ -24,11 +25,11 @@ export class CollabPromptMessageComponent extends Container {
 						.filter((content): content is TextContent => content.type === "text")
 						.map(content => content.text)
 						.join("");
-		const md = new Markdown(text, 1, 1, getMarkdownTheme(), {
+		const md = new Markdown(text, 1, 0, getMarkdownTheme(), {
 			bgColor: (value: string) => theme.bg("userMessageBg", value),
 			color: (value: string) => theme.fgOnBg("userMessageText", "userMessageBg", value),
 		});
 		md.setIgnoreTight(true);
-		this.addChild(md);
+		this.addChild(new UserBubbleFrame(md));
 	}
 }

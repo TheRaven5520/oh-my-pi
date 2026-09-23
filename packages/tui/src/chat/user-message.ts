@@ -1,4 +1,4 @@
-import { applyBackgroundToLine, padding, visibleWidth } from "../utils";
+import { padding, visibleWidth } from "../utils";
 import { type Component, Container } from "../tui";
 import { Disclosure } from "../components/disclosure";
 import { Markdown } from "../components/markdown";
@@ -41,6 +41,48 @@ const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_COMMAND_START = "\x1b]133;C\x07";
 const OSC133_COMMAND_DONE = "\x1b]133;D;0\x07";
 const OSC133_ZONE_CLOSE = OSC133_ZONE_END + OSC133_COMMAND_START + OSC133_COMMAND_DONE;
+
+/**
+ * One-eighth-cell strips framing a user bubble, instead of full blank padding
+ * rows: the lower strip sits flush on the bubble's first row and the upper strip
+ * under its last row, so the tint reads as a thin margin. An optional badge is
+ * right-aligned on the top edge. Terminal-default backgrounds draw blank edges.
+ */
+export function userBubbleEdge(width: number, edge: "top" | "bottom", badge?: string): string {
+	const fg = theme.getBgAsFgAnsi("userMessageBg");
+	const glyph = edge === "top" ? "▁" : "▔";
+	const strip = (cells: number) => (cells <= 0 ? "" : fg ? `${fg}${glyph.repeat(cells)}\x1b[39m` : padding(cells));
+	if (badge === undefined) return strip(width);
+	return strip(width - 1 - visibleWidth(badge)) + badge + strip(1);
+}
+
+/** Frames a tinted child with {@link userBubbleEdge} rows; memoized on the child's render. */
+export class UserBubbleFrame implements Component {
+	#source: readonly string[] | undefined;
+	#lines: string[] | undefined;
+
+	constructor(readonly child: Component) {}
+
+	invalidate(): void {
+		this.child.invalidate?.();
+		this.#source = undefined;
+		this.#lines = undefined;
+	}
+
+	setIgnoreTight(ignore: boolean): this {
+		this.child.setIgnoreTight?.(ignore);
+		return this;
+	}
+
+	render(width: number): readonly string[] {
+		const inner = this.child.render(width);
+		if (this.#source === inner && this.#lines !== undefined) return this.#lines;
+		const lines = [userBubbleEdge(width, "top"), ...inner, userBubbleEdge(width, "bottom")];
+		this.#source = inner;
+		this.#lines = lines;
+		return lines;
+	}
+}
 
 /** How a user bubble styles its prose and chips (see {@link userBubbleColor}). */
 export interface UserBubbleOptions {
@@ -111,7 +153,6 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 	// never mutates the container's cached array.
 	#zoneSource: readonly string[] | undefined;
 	#zoneLines: string[] | undefined;
-	readonly #bgColor: (value: string) => string;
 	#reaction: string | undefined;
 
 	constructor(text: string, options: UserBubbleOptions = {}) {
@@ -128,10 +169,8 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 			mentionLabels.push(label);
 			return label;
 		});
-		const bgColor = (value: string) => theme.bg("userMessageBg", value);
-		this.#bgColor = bgColor;
-		const md = new Markdown(text, 1, 1, getMarkdownTheme(), {
-			bgColor,
+		const md = new Markdown(text, 1, 0, getMarkdownTheme(), {
+			bgColor: (value: string) => theme.bg("userMessageBg", value),
 			color: userBubbleColor(options, composerTokenRegex(mentionLabels)),
 		});
 		md.setIgnoreTight(true);
@@ -144,10 +183,9 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 		this.#zoneLines = undefined;
 	}
 
-	/** The top padding row with the reaction badge right-aligned inside the horizontal padding. */
+	/** The top edge with the reaction badge right-aligned inside the horizontal padding. */
 	#reactionRow(width: number): string {
-		const emoji = this.#reaction!;
-		return applyBackgroundToLine(padding(width - 1 - visibleWidth(emoji)) + emoji, width, this.#bgColor);
+		return userBubbleEdge(width, "top", this.#reaction);
 	}
 
 	override render(width: number): readonly string[] {
@@ -158,10 +196,11 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 		if (this.#zoneSource === lines && this.#zoneLines !== undefined) {
 			return this.#zoneLines;
 		}
-		const wrapped = lines.slice();
-		if (this.#reaction !== undefined) wrapped[0] = this.#reactionRow(width);
-		wrapped[0] = OSC133_ZONE_START + wrapped[0];
-		wrapped[wrapped.length - 1] = wrapped[wrapped.length - 1] + OSC133_ZONE_CLOSE;
+		const wrapped = [
+			OSC133_ZONE_START + this.#reactionRow(width),
+			...lines,
+			userBubbleEdge(width, "bottom") + OSC133_ZONE_CLOSE,
+		];
 		this.#zoneSource = lines;
 		this.#zoneLines = wrapped;
 		return wrapped;
