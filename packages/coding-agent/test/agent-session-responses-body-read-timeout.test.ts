@@ -430,7 +430,9 @@ describe("AgentSession Responses request-body timeout recovery", () => {
 			harness.session.agent.replaceMessages(harness.sessionManager.buildSessionContext().messages);
 			await runPrompt(harness);
 			expect(harness.requests).toHaveLength(1);
-			expect(await fs.readdir(artifactsDir).catch(() => [])).toEqual([]);
+			// No request-body spill; `file-history/` is rewind's per-prompt checkpoint index.
+			const artifacts = await fs.readdir(artifactsDir).catch(() => []);
+			expect(artifacts.filter(name => name !== "file-history")).toEqual([]);
 			assertTerminalErrorState(harness);
 		} finally {
 			allocateArtifactPath.mockRestore();
