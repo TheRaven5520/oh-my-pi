@@ -2426,16 +2426,13 @@ export class InputController {
 			if (cycleModels.length > 0) {
 				const result = await this.ctx.viewSession.cycleModelPatterns(cycleModels, direction);
 				if (!result) {
-					this.ctx.showStatus(`Only one model matches cycleModels (${cycleModels.join(", ")})`);
+					this.ctx.showStatus(`cycleModels (${cycleModels.join(", ")}) matches at most one available model`);
 					return;
 				}
 				this.ctx.statusLine.invalidate();
 				this.ctx.updateEditorBorderColor();
 				this.ctx.showModelCycleTrack(
-					renderSegmentTrack(
-						result.models.map(model => ({ label: model.id })),
-						result.index,
-					),
+					renderSegmentTrack(result.models.map(model => ({ label: model.id })), result.index),
 				);
 				return;
 			}

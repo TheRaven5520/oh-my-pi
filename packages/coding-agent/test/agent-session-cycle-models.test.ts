@@ -38,6 +38,8 @@ describe("AgentSession.cycleModelPatterns", () => {
 						authHeader: true,
 						api: "openai-responses",
 						discovery: { type: "openai-models-list", injectV1: false },
+						// Written by an installer run when the gateway still offered it.
+						models: [{ id: "retired" }],
 					},
 					other: {
 						baseUrl: "https://other.example/v1",
@@ -58,13 +60,18 @@ describe("AgentSession.cycleModelPatterns", () => {
 		});
 		await registry.refreshProvider("gateway", "online");
 		refreshes = [];
-		const refresh = registry.refreshDiscoverableProviders.bind(registry);
-		vi.spyOn(registry, "refreshDiscoverableProviders").mockImplementation((ids, strategy) => {
+		watchRefreshes(registry);
+	});
+
+	/** Record the background list requests presses make on `target`, so tests can await them. */
+	function watchRefreshes(target: ModelRegistry): void {
+		const refresh = target.refreshDiscoverableProviders.bind(target);
+		vi.spyOn(target, "refreshDiscoverableProviders").mockImplementation((ids, strategy) => {
 			const pending = refresh(ids, strategy);
 			refreshes.push(pending);
 			return pending;
 		});
-	});
+	}
 
 	afterEach(async () => {
 		await Promise.all(refreshes);
@@ -151,5 +158,24 @@ describe("AgentSession.cycleModelPatterns", () => {
 		await active.cycleModelPatterns(["gateway/*"]);
 		await Promise.all(refreshes);
 		expect(fetches).toBe(before + 1);
+	});
+
+	test("a configured row the provider no longer lists stays out; before any answer, rows stand in", async () => {
+		const active = start("gateway", "alpha");
+		const listedNow = await active.cycleModelPatterns(["gateway/*"]);
+		expect(listedNow?.models.map(model => model.id)).toEqual(["alpha", "beta"]);
+		// Still a model the picker can reach by name; only the cycle follows the listing.
+		expect(registry.find("gateway", "retired")).toBeDefined();
+
+		const offline = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), {
+			cacheDbPath: path.join(tempDir, "empty-cache.db"),
+			fetch: () => Promise.reject(new Error("offline")),
+		});
+		registry = offline;
+		watchRefreshes(offline);
+		await active.dispose();
+		const unanswered = start("other", "other-model");
+		const rows = await unanswered.cycleModelPatterns(["gateway/*"]);
+		expect(rows?.models.map(model => model.id)).toEqual(["retired"]);
 	});
 });

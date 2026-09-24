@@ -410,11 +410,14 @@ export class ModelControls {
 	/**
 	 * Cycle through every available model matching `patterns` (the `cycleModels`
 	 * setting, enabledModels syntax). The patterns are resolved against the
-	 * registry on each call. Each press also asks the discovery providers the
-	 * cycle draws from for their current list, in the background and at most
-	 * once per {@link CYCLE_DISCOVERY_REFRESH_MS} each (the first press of a
-	 * session always asks), so a model a provider starts offering or withdraws
-	 * joins or leaves the cycle from a later press instead of after the day-long
+	 * registry on each call. A models.yml discovery provider that has answered
+	 * (live or from its cache) decides which of its models are in: a configured
+	 * row it does not list — withdrawn, or not this key's to use — stays out;
+	 * before any answer its rows stand in. Each press also asks those providers
+	 * for their current list, in the background and at most once per
+	 * {@link CYCLE_DISCOVERY_REFRESH_MS} each (the first press of a session
+	 * always asks), so a model a provider starts offering or withdraws joins or
+	 * leaves the cycle from a later press instead of after the day-long
 	 * discovery cache. A pattern's explicit `:level` applies on arrival;
 	 * otherwise the current thinking level carries over, as for roles. From a
 	 * model outside the cycle, forward enters at the first match and backward at
@@ -424,13 +427,21 @@ export class ModelControls {
 		patterns: readonly string[],
 		direction: "forward" | "backward" = "forward",
 	): Promise<ModelPatternCycleResult | undefined> {
-		const scope = await resolveModelScope(
+		const registry = this.#host.modelRegistry;
+		const matched = await resolveModelScope(
 			[...patterns],
-			this.#host.modelRegistry,
+			registry,
 			getModelMatchPreferences(this.#host.settings),
 			this.#host.settings,
 		);
-		this.#askCycleProvidersForTheirLists(patterns, scope);
+		const discoveryProviders = new Set(registry.getDiscoverableProviders());
+		const scope = matched.filter(entry => {
+			if (!discoveryProviders.has(entry.model.provider)) return true;
+			const listing = registry.getProviderDiscoveryState(entry.model.provider);
+			const answered = listing?.status === "ok" || listing?.status === "cached" || listing?.status === "empty";
+			return !answered || listing.models.includes(entry.model.id);
+		});
+		this.#askCycleProvidersForTheirLists(patterns, discoveryProviders, matched);
 		const currentIndex = scope.findIndex(entry => modelsAreEqual(entry.model, this.#model));
 		if (scope.length === 0 || (scope.length === 1 && currentIndex === 0)) return undefined;
 
@@ -449,19 +460,22 @@ export class ModelControls {
 		return { model: next.model, thinkingLevel: this.thinkingLevel, models: scope.map(entry => entry.model), index };
 	}
 
-	#askCycleProvidersForTheirLists(patterns: readonly string[], scope: readonly { model: Model }[]): void {
-		const registry = this.#host.modelRegistry;
+	#askCycleProvidersForTheirLists(
+		patterns: readonly string[],
+		discoveryProviders: ReadonlySet<string>,
+		matched: readonly { model: Model }[],
+	): void {
 		const now = Date.now();
-		const due = registry.getDiscoverableProviders().filter(provider => {
+		const due = [...discoveryProviders].filter(provider => {
 			const drawnFrom =
 				patterns.some(pattern => pattern.startsWith(`${provider}/`)) ||
-				scope.some(entry => entry.model.provider === provider);
+				matched.some(entry => entry.model.provider === provider);
 			const askedAt = this.#cycleDiscoveryAskedAt.get(provider);
 			return drawnFrom && (askedAt === undefined || now - askedAt >= CYCLE_DISCOVERY_REFRESH_MS);
 		});
 		if (due.length === 0) return;
 		for (const provider of due) this.#cycleDiscoveryAskedAt.set(provider, now);
-		void registry.refreshDiscoverableProviders(due, "online").catch(error => {
+		void this.#host.modelRegistry.refreshDiscoverableProviders(due, "online").catch(error => {
 			logger.warn("cycleModels discovery refresh failed", { providers: due, error: String(error) });
 		});
 	}
