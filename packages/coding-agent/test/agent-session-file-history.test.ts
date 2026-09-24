@@ -37,14 +37,18 @@ describe("AgentSession file history", () => {
 		});
 	}
 
-	async function open(sessionManager: SessionManager, model: MockModel): Promise<AgentSession> {
+	async function open(
+		sessionManager: SessionManager,
+		model: MockModel,
+		overrides: Record<string, unknown> = {},
+	): Promise<AgentSession> {
 		const { session } = await createAgentSession({
 			cwd: tempDir.path(),
 			agentDir: tempDir.path(),
 			sessionManager,
 			authStorage,
 			modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
-			settings: Settings.isolated({ "compaction.enabled": false, "advisor.enabled": false }),
+			settings: Settings.isolated({ "compaction.enabled": false, "advisor.enabled": false, ...overrides }),
 			model: model.model,
 			disableExtensionDiscovery: true,
 			skills: [],
@@ -86,5 +90,47 @@ describe("AgentSession file history", () => {
 		expect(fs.readFileSync(notes, "utf8")).toBe("v1");
 		await resumed.fileHistory.restore(prompts[0]!);
 		expect(fs.existsSync(notes)).toBe(false);
+	});
+
+	it("restores a file changed by the edit tool", async () => {
+		tempDir = TempDir.createSync("@omp-file-history-edit-");
+		authStorage = await AuthStorage.create(tempDir.join("auth.db"));
+		const model = createMockModel({
+			handler: (context: Context) =>
+				context.messages.at(-1)?.role === "user"
+					? {
+							content: [
+								{
+									type: "toolCall",
+									name: "edit",
+									arguments: { path: "code.ts", old_string: "const x = 1;", new_string: "const x = 2;" },
+								},
+							],
+						}
+					: { content: ["done"] },
+		});
+		authStorage.setRuntimeApiKey(model.provider, "test-key");
+		const code = tempDir.join("code.ts");
+		fs.writeFileSync(code, "const x = 1;\n");
+
+		const session = await open(SessionManager.inMemory(tempDir.path()), model, {
+			"edit.mode": "replace",
+			"edit.enforceSeenLines": false,
+		});
+		await session.prompt("bump x");
+		await session.waitForIdle();
+		expect(fs.readFileSync(code, "utf8")).toBe("const x = 2;\n");
+		const prompt = session.sessionManager
+			.getBranch()
+			.find(entry => entry.type === "message" && entry.message.role === "user");
+
+		await session.fileHistory.restore(prompt!.id);
+		expect(fs.readFileSync(code, "utf8")).toBe("const x = 1;\n");
+
+		// The restore can be undone until the next message starts a run.
+		expect(session.fileHistory.canUndoRestore).toBe(true);
+		await session.prompt("bump x again");
+		await session.waitForIdle();
+		expect(session.fileHistory.canUndoRestore).toBe(false);
 	});
 });

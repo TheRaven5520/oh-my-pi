@@ -47,6 +47,8 @@ import {
 import { initializeMathJaxRenderer } from "@oh-my-pi/pi-tui/theme/mathjax-cache";
 import type { AgentHubOpenOptions, InteractiveModeContext } from "../../modes/types";
 import type { SessionOAuthAccountList } from "../../session/agent-session-types";
+import type { FileRestoreResult } from "../../session/file-history";
+import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import {
 	createForeignSessionStore,
 	foreignSessionInfoToSessionInfo,
@@ -1551,23 +1553,44 @@ export class SelectorController {
 	/** Put files back to their state when prompt `entryId` was sent, stopping a running turn first. */
 	async #restoreCode(entryId: string, verb: string): Promise<void> {
 		try {
-			if (this.ctx.session.isStreaming) await this.ctx.session.abort();
+			// A user interrupt: queued steers and advisor notes must not start a
+			// run that edits the just-restored files (and drops the undo).
+			if (this.ctx.session.isStreaming) await this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 			const result = await this.ctx.session.fileHistory.restore(entryId);
-			const count = result.restored.length;
-			const cwd = this.ctx.sessionManager.getCwd();
-			const label = (paths: string[]) => paths.map(p => path.relative(cwd, p) || p).join(", ");
-			if (result.skipped.length > 0) {
-				this.ctx.showWarning(
-					`Restored the code, but skipped ${result.skipped.length} linked file${result.skipped.length === 1 ? "" : "s"}: ${label(result.skipped)}`,
-				);
-			}
-			if (result.failed.length > 0) {
-				this.ctx.showError(`Could not restore ${label(result.failed)}`);
-			}
-			this.ctx.showStatus(`${verb}: ${count} file${count === 1 ? "" : "s"}`);
+			const undoHint = this.ctx.session.fileHistory.canUndoRestore ? " · /rewind undo to put them back" : "";
+			this.#reportFileRestore(result, verb, undoHint);
 		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
+	}
+
+	/** Put back the files the last code restore overwrote; available until the next message is sent. */
+	async undoFileRestore(): Promise<void> {
+		const history = this.ctx.session.fileHistory;
+		if (!history.canUndoRestore) {
+			this.ctx.showStatus("Nothing to undo: no code restore since the last message");
+			return;
+		}
+		try {
+			this.#reportFileRestore(await history.undoRestore(), "Undid the code restore", "");
+		} catch (error) {
+			this.ctx.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	#reportFileRestore(result: FileRestoreResult, verb: string, suffix: string): void {
+		const count = result.restored.length;
+		const cwd = this.ctx.sessionManager.getCwd();
+		const label = (paths: string[]) => paths.map(p => path.relative(cwd, p) || p).join(", ");
+		if (result.skipped.length > 0) {
+			this.ctx.showWarning(
+				`${verb}, but skipped ${result.skipped.length} linked file${result.skipped.length === 1 ? "" : "s"}: ${label(result.skipped)}`,
+			);
+		}
+		if (result.failed.length > 0) {
+			this.ctx.showError(`Could not restore ${label(result.failed)}`);
+		}
+		this.ctx.showStatus(`${verb}: ${count} file${count === 1 ? "" : "s"}${suffix}`);
 	}
 
 	showCopySelector(): void {

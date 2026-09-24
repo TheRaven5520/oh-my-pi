@@ -39,6 +39,8 @@ Before `edit`, `write`, `ast_edit`, or an `lsp` rename/code action first changes
 - **Restore code** — restore the files and keep the conversation.
 - **Never mind** — return to the selector.
 
+Until you send your next message, `/rewind undo` puts back the file versions the last code restore overwrote (including files it deleted). Sending a message, or anything else that starts an agent run, drops the undo. It only covers files; to undo a conversation rewind, pick the abandoned branch in `/tree`.
+
 Without file changes the rewind happens immediately, as before. Snapshots live in `<session artifacts>/file-history/` (in memory for `--no-session`), survive `--resume`, and keep the 100 most recent checkpoints. Not tracked: bash commands, SQLite row writes, subagents (each keeps its own history), edits a language server applies on its own through `workspace/applyEdit`, and edits made outside omp. Symlinked and hard-linked files are skipped with a warning rather than written through.
 
 ## Tree UI model

@@ -432,9 +432,15 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		aliases: ["rewind"],
 		icon: "branch",
 		description: "Rewind to a previous message, keeping the old path as a branch",
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showUserMessageSelector();
+		inlineHint: "[undo]",
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
+			if (command.args.trim() === "undo") {
+				await runtime.ctx.undoFileRestore();
+				return;
+			}
+			runtime.ctx.showUserMessageSelector();
 		},
 	},
 	{

@@ -118,4 +118,28 @@ describe("FileHistory", () => {
 		expect(read("a.txt")).toBe("v0");
 		expect(fs.existsSync(path.join(root, "artifacts"))).toBe(false);
 	});
+	it("undoes the last restore, including recreating files it deleted, until dropped", async () => {
+		fs.writeFileSync(file("a.txt"), "v0");
+		const history = new FileHistory(owner());
+		await history.beginCheckpoint("A");
+		await edit(history, "a.txt", "v1");
+		await edit(history, "new.txt", "created");
+
+		expect(history.canUndoRestore).toBe(false);
+		await history.restore("A");
+		expect(read("a.txt")).toBe("v0");
+		expect(fs.existsSync(file("new.txt"))).toBe(false);
+
+		expect((await history.undoRestore()).restored.sort()).toEqual([file("a.txt"), file("new.txt")].sort());
+		expect(read("a.txt")).toBe("v1");
+		expect(read("new.txt")).toBe("created");
+		// One undo per restore.
+		expect((await history.undoRestore()).restored).toEqual([]);
+
+		await history.restore("A");
+		history.dropUndo();
+		expect(history.canUndoRestore).toBe(false);
+		expect((await history.undoRestore()).restored).toEqual([]);
+		expect(read("a.txt")).toBe("v0");
+	});
 });

@@ -69,6 +69,14 @@ export interface FileRestoreResult {
 	failed: string[];
 }
 
+/** A file's full contents (or absence) and permission bits. */
+interface FileState {
+	path: string;
+	/** `null` means the file does not exist. */
+	bytes: Uint8Array | null;
+	mode?: number;
+}
+
 /** Where a session's history lives; satisfied by `SessionManager`. */
 export interface FileHistoryOwner {
 	getArtifactsDir(): string | null;
@@ -82,6 +90,8 @@ export class FileHistory {
 	#stateKey: string | undefined;
 	/** Last checkpoint registration; captures wait for it so they attribute to the new prompt. */
 	#beginTail: Promise<void> = Promise.resolve();
+	/** What the last restore overwrote, until the next agent run or a session switch. */
+	#undo: { key: string; files: FileState[] } | undefined;
 
 	constructor(owner: FileHistoryOwner, options: { maxCheckpoints?: number } = {}) {
 		this.#owner = owner;
@@ -161,44 +171,60 @@ export class FileHistory {
 		return changed;
 	}
 
-	/** Put every file changed since checkpoint `entryId` back to its state when that prompt was sent. */
+	/**
+	 * Put every file changed since checkpoint `entryId` back to its state when
+	 * that prompt was sent. The versions it overwrites are kept so
+	 * {@link undoRestore} can put them back until {@link dropUndo}.
+	 */
 	async restore(entryId: string): Promise<FileRestoreResult> {
 		const state = await this.#load();
 		const result: FileRestoreResult = { restored: [], skipped: [], failed: [] };
+		const overwritten: FileState[] = [];
 		for (const target of await this.planRestore(entryId)) {
-			let stat: Stats | undefined;
-			try {
-				stat = await fs.lstat(target.path);
-			} catch (error) {
-				if (!isEnoent(error)) throw error;
-			}
-			if (stat && (!stat.isFile() || stat.nlink > 1)) {
-				result.skipped.push(target.path);
-				continue;
-			}
-			try {
-				if (target.before === null) {
-					if (stat) await fs.rm(target.path);
-					invalidateFsScanAfterDelete(target.path);
-				} else {
-					const bytes = await this.#readSnapshot(state, target.before);
-					await fs.mkdir(path.dirname(target.path), { recursive: true });
-					await Bun.write(target.path, bytes);
-					if (target.mode !== undefined) await fs.chmod(target.path, target.mode);
-					invalidateFsScanAfterWrite(target.path);
+			let bytes: Uint8Array | null = null;
+			if (target.before !== null) {
+				try {
+					bytes = await this.#readSnapshot(state, target.before);
+				} catch (error) {
+					logger.debug("file history: snapshot missing", { path: target.path, error: String(error) });
+					result.failed.push(target.path);
+					continue;
 				}
-				result.restored.push(target.path);
-			} catch (error) {
-				logger.debug("file history: restore failed", { path: target.path, error: String(error) });
-				result.failed.push(target.path);
 			}
+			const previous = await putFile({ path: target.path, bytes, mode: target.mode }, result);
+			if (previous) overwritten.push(previous);
 		}
+		if (overwritten.length > 0) this.#undo = { key: this.#key(), files: overwritten };
 		return result;
+	}
+
+	/** Whether the last restore can still be undone. */
+	get canUndoRestore(): boolean {
+		return this.#undo !== undefined && this.#undo.key === this.#key();
+	}
+
+	/** Put back the files the last restore overwrote. Only once; later calls do nothing. */
+	async undoRestore(): Promise<FileRestoreResult> {
+		const result: FileRestoreResult = { restored: [], skipped: [], failed: [] };
+		const undo = this.#undo;
+		this.#undo = undefined;
+		if (!undo || undo.key !== this.#key()) return result;
+		for (const file of undo.files) await putFile(file, result);
+		return result;
+	}
+
+	/** Forget the last restore's overwritten files; called when a new agent run starts. */
+	dropUndo(): void {
+		this.#undo = undefined;
+	}
+
+	#key(): string {
+		return this.#owner.getArtifactsDir() ?? `memory:${this.#owner.getSessionId()}`;
 	}
 
 	#load(): Promise<HistoryState> {
 		const dirRoot = this.#owner.getArtifactsDir();
-		const key = dirRoot ?? `memory:${this.#owner.getSessionId()}`;
+		const key = this.#key();
 		if (this.#state && this.#stateKey === key) return this.#state;
 		this.#stateKey = key;
 		const dir = dirRoot ? path.join(dirRoot, "file-history") : null;
@@ -356,6 +382,45 @@ async function readState(dir: string | null): Promise<HistoryState> {
 	}
 	state.current = state.checkpoints.at(-1);
 	return state;
+}
+
+/**
+ * Make `target.path` hold `target.bytes` (or not exist), recording the outcome
+ * in `result`. Symlinked, hard-linked, and non-regular paths are skipped rather
+ * than written through. Returns the state it replaced, or `undefined` when
+ * nothing changed.
+ */
+async function putFile(target: FileState, result: FileRestoreResult): Promise<FileState | undefined> {
+	let stat: Stats | undefined;
+	try {
+		stat = await fs.lstat(target.path);
+	} catch (error) {
+		if (!isEnoent(error)) throw error;
+	}
+	if (stat && (!stat.isFile() || stat.nlink > 1)) {
+		result.skipped.push(target.path);
+		return undefined;
+	}
+	try {
+		const previous: FileState = stat
+			? { path: target.path, bytes: await Bun.file(target.path).bytes(), mode: stat.mode & 0o7777 }
+			: { path: target.path, bytes: null };
+		if (target.bytes === null) {
+			if (stat) await fs.rm(target.path);
+			invalidateFsScanAfterDelete(target.path);
+		} else {
+			await fs.mkdir(path.dirname(target.path), { recursive: true });
+			await Bun.write(target.path, target.bytes);
+			if (target.mode !== undefined) await fs.chmod(target.path, target.mode);
+			invalidateFsScanAfterWrite(target.path);
+		}
+		result.restored.push(target.path);
+		return previous;
+	} catch (error) {
+		logger.debug("file history: restore failed", { path: target.path, error: String(error) });
+		result.failed.push(target.path);
+		return undefined;
+	}
 }
 
 async function readCurrent(filePath: string): Promise<Uint8Array | null> {

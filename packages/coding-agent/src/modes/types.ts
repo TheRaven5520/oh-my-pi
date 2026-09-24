@@ -491,6 +491,8 @@ export interface InteractiveModeContext {
 	switchSessionModel(model: Model, thinkingLevel?: ConfiguredThinkingLevel): Promise<void>;
 	showPluginSelector(mode?: "install" | "uninstall"): void;
 	showUserMessageSelector(): void;
+	/** Undo the last rewind code restore (until the next message is sent). */
+	undoFileRestore(): Promise<void>;
 	showCopySelector(): void;
 	showTreeSelector(): void;
 	showSessionSelector(source?: ForeignSessionSource): void;

@@ -6894,6 +6894,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showUserMessageSelector();
 	}
 
+	undoFileRestore(): Promise<void> {
+		return this.#selectorController.undoFileRestore();
+	}
+
 	showCopySelector(): void {
 		this.#selectorController.showCopySelector();
 	}

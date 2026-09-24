@@ -3116,6 +3116,8 @@ export class AgentSession {
 			this.#emitRunState("running");
 			this.#maintenance.noteTurnStarted();
 			this.#fileCheckpointPending = true;
+			// A new run may edit files; undoing an earlier restore could clobber them.
+			this.fileHistory.dropUndo();
 		}
 		// This must happen before event fan-out awaits: streamed tool-call deltas
 		// can otherwise queue validation that a delayed turn-start reset erases.
