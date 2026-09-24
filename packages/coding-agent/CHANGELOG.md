@@ -9,6 +9,7 @@
 - Rewind (double-Esc, `/branch`, `/rewind`) can now restore files, like Claude Code's `/rewind`. omp snapshots each file before `edit`, `write`, `ast_edit`, or an `lsp` rename/code action first changes it during a prompt's run; rewinding to that prompt offers **Restore code and conversation**, **Restore conversation**, **Restore code**, or **Never mind** when files changed since. `/rewind undo` puts back what the last code restore overwrote, until the next message is sent. Snapshots persist in the session's artifacts folder across `--resume` (last 100 prompts). Bash, subagent, and outside edits are not tracked; symlinked or hard-linked files are skipped with a warning.
 - Added `title.style: tag` for session names as short ALL-CAPS tags (`SPRILICRED`, `PI05 EVALS`, `MODIFY OMP`). The tag is re-checked every 10 user messages or 30 minutes and changes only when two checks in a row agree the work has moved on; manual names are never changed. The default `sentence` style is unchanged.
 - Added `retry.usageLimitFallbackChains`: fallback chains consulted only when a turn (or advisor call) fails on a usage limit, ahead of `retry.fallbackChains`. Use it for a reserve account, e.g. `{"sprilicred-anthropic/*": ["personal-anthropic/*"]}`, that must never be used for transient errors, role resolution, subagents, or titles.
+- The `claude` statusline preset now ends with the session name (for example a `title.style: tag` tag such as `MODIFY OMP`) as a final `| NAME` section, shows the short commit id on a detached HEAD as Claude Code does instead of `[detached]`, and hides a bare temp directory's `[branch]` together with the path.
 
 ### Changed
 
@@ -28,23 +29,6 @@
 - Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
 - Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.
 
-## [17.3.1] - 2026-08-13
-
-### Fixed
-
-- Fixed Claude Code user discovery ignoring CLAUDE_CONFIG_DIR for configuration, plugins, MCP servers, and imported sessions.
-- Fixed the status-line git branch display freezing after switching branches.
-- Fixed Pi extension contexts omitting the runtime mode, which caused TUI guards to silently disable extension UI.
-- Fixed extension-registered tool names being rejected by the --tools flag before extension discovery, which prevented least-privilege sessions from allowlisting plugin tools.
-- Fixed omp plugin install failing with cloning errors for legacy Pi extensions whose tool schemas use legacy-typebox builders.
-- Fixed omp update aborting with chmod ENOENT when concurrent update runs overlapped by using unique download temporary paths.
-- Fixed the browser tool executable probe launching the user's installed GUI Chromium on Windows: the `--version` version probe from ecb22957 was Linux-scoped but ran for every platform candidate, so on Windows it could hand off to a running `chrome.exe`, open a normal browser window, then reject the candidate and fall back to cached Chrome for Testing. The probe is now confined to Linux ([#8445](https://github.com/can1357/oh-my-pi/issues/8445)).
-
-## [17.3.0] - 2026-08-13
-
-### Breaking Changes
-
-- Removed the global `advisor.subagents` setting. Subagent advisors are now configured per agent via frontmatter or `task.agentAdvisor`. Existing configurations of `advisor.subagents: true` will automatically migrate to `task.agentAdvisor: { task: "on" }`.
 ## [18.3.0] - 2026-09-24
 
 ### Breaking Changes
@@ -1827,5 +1811,23 @@
 - Fixed `formatContent` reporting no-formatter as unchanged: when no configured server supports formatting, the result is now correctly classified as `FileFormatResult.UNSUPPORTED` ([#8388](https://github.com/can1357/oh-my-pi/issues/8388)).
 - Fixed MCP request timeouts surfacing as `Unexpected end of JSON input` instead of `Request timeout after Nms` when the abort lands mid-JSON-body read.
 - Fixed CJS modules being misclassified as ESM when imported from an ESM parent module. The extension loader now identifies unshadowed CommonJS syntax from Babel's parsed AST before deferring to the importer's module kind. This resolves `SyntaxError: Missing 'default' export` for packages with conditional exports (e.g. playwright-core) where an ESM wrapper re-exports from a CJS entry, while ambiguous files continue to inherit their importer's classification.
+
+## [17.3.1] - 2026-08-13
+
+### Fixed
+
+- Fixed Claude Code user discovery ignoring CLAUDE_CONFIG_DIR for configuration, plugins, MCP servers, and imported sessions.
+- Fixed the status-line git branch display freezing after switching branches.
+- Fixed Pi extension contexts omitting the runtime mode, which caused TUI guards to silently disable extension UI.
+- Fixed extension-registered tool names being rejected by the --tools flag before extension discovery, which prevented least-privilege sessions from allowlisting plugin tools.
+- Fixed omp plugin install failing with cloning errors for legacy Pi extensions whose tool schemas use legacy-typebox builders.
+- Fixed omp update aborting with chmod ENOENT when concurrent update runs overlapped by using unique download temporary paths.
+- Fixed the browser tool executable probe launching the user's installed GUI Chromium on Windows: the `--version` version probe from ecb22957 was Linux-scoped but ran for every platform candidate, so on Windows it could hand off to a running `chrome.exe`, open a normal browser window, then reject the candidate and fall back to cached Chrome for Testing. The probe is now confined to Linux ([#8445](https://github.com/can1357/oh-my-pi/issues/8445)).
+
+## [17.3.0] - 2026-08-13
+
+### Breaking Changes
+
+- Removed the global `advisor.subagents` setting. Subagent advisors are now configured per agent via frontmatter or `task.agentAdvisor`. Existing configurations of `advisor.subagents: true` will automatically migrate to `task.agentAdvisor: { task: "on" }`.
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@3642216898e4](https://github.com/can1357/oh-my-pi/blob/3642216898e473f6a4472e78f792e641891c6d62/packages/coding-agent/CHANGELOG.md).
