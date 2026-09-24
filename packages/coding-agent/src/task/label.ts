@@ -20,13 +20,20 @@ export function labelEchoesHandle(handle: string | undefined, label: string): bo
 	return /^\d+$/.test(suffix) && prefix.localeCompare(label, undefined, { sensitivity: "accent" }) === 0;
 }
 
-/** Compresses a delegated assignment into a one-sentence UI label via the tiny title model — fired by the executor spawn path because the task wire schema no longer carries a `description`; null on empty input or failure. */
+/**
+ * Compresses a delegated assignment into a one-sentence UI label via the tiny title model — fired by the executor spawn path because the task wire schema no longer carries a `description`; null on empty input or failure.
+ *
+ * `parentSessionId` is the spawning session's provider session id; the label
+ * request carries it as `x-omp-parent-session-id` (role `label`) so a proxy can
+ * link the request to the conversation that spawned the subagent.
+ */
 export async function generateTaskLabel(
 	assignment: string,
 	registry: ModelRegistry,
 	settings: Settings,
 	sessionId?: string,
 	signal?: AbortSignal,
+	parentSessionId?: string,
 ): Promise<string | null> {
 	const text = assignment.trim();
 	if (!text) return null;
@@ -40,6 +47,9 @@ export async function generateTaskLabel(
 			undefined,
 			TASK_LABEL_SYSTEM_PROMPT,
 			signal,
+			undefined,
+			parentSessionId,
+			"label",
 		);
 		if (!label || labelEchoesHandle(sessionId, label)) return null;
 		return label;

@@ -394,6 +394,7 @@ import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./ses
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
 import { SessionTools, type SessionToolsHost } from "./session-tools";
 import type { ShakeMode, ShakeResult } from "./shake-types";
+import { buildMainAgentLinkHeaders, withSideAgentHeaders } from "./side-agent-headers";
 import { skillPromptTitleInput } from "@oh-my-pi/pi-tui/chat/skill-title-input";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
@@ -1436,6 +1437,8 @@ export class AgentSession {
 			providerSessionState: this.#providerSessionState,
 			model: () => this.model,
 			sessionId: () => this.sessionId,
+			mainAgentLinkHeaders: () =>
+				buildMainAgentLinkHeaders(config.parentProviderSessionId, this.freshSessionParentId()),
 			promptGeneration: () => this.#promptGeneration,
 			resolveActiveEditMode: () => this.#tools.resolveActiveEditMode(),
 			syncAfterModelChange: previousEditMode => this.#tools.syncAfterModelChange(previousEditMode),
@@ -5110,6 +5113,17 @@ export class AgentSession {
 		}
 
 		this.#providerSessionState.clear();
+	}
+
+	/**
+	 * While `/fresh` or reset-context has swapped in a fresh provider session id
+	 * (a bare UUIDv7 nothing links to the chat), the id the chat is otherwise
+	 * sent under: the provider session override, else the session file id.
+	 * Main-agent requests name it as their `fresh` parent. Undefined otherwise.
+	 */
+	freshSessionParentId(): string | undefined {
+		if (!this.#freshProviderSessionId) return undefined;
+		return this.#providerSessionId ?? this.sessionManager.getSessionId();
 	}
 
 	freshSession(): FreshSessionResult | undefined {
@@ -9478,7 +9492,14 @@ export class AgentSession {
 		let providerReplyText = "";
 		let emittedReplyText = "";
 		let assistantMessage: AssistantMessage | undefined;
-		const stream = await this.#sideStreamFn(model, obfuscateProviderContext(this.#obfuscator, context), options);
+		// A `/btw` follow-up's lineage id (`<session>:side:conversation:<key>`)
+		// exceeds OpenAI's 64-char key limit and gets hashed; the header keeps
+		// the link.
+		const stream = await this.#sideStreamFn(
+			model,
+			obfuscateProviderContext(this.#obfuscator, context),
+			withSideAgentHeaders(options, cacheSessionId, "helper"),
+		);
 		for await (const event of stream) {
 			if (event.type === "text_delta") {
 				providerReplyText += event.delta;
@@ -10413,7 +10434,13 @@ export class AgentSession {
 				// Same per-provider concurrency cap rationale as the compaction
 				// path above (chatgpt-codex review on #3751).
 				completeImpl: async (requestModel, requestContext, requestOptions) => {
-					const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
+					// Carry the session identity (OpenAI otherwise sends none) and
+					// link the summary request to this conversation.
+					const stream = await this.#sideStreamFn(requestModel, requestContext, {
+						...withSideAgentHeaders(requestOptions, this.sessionId, "summary"),
+						sessionId: this.sessionId,
+						promptCacheKey: this.agent.promptCacheKey ?? this.agent.sessionId,
+					});
 					return stream.result();
 				},
 			});

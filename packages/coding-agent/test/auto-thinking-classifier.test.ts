@@ -8,6 +8,11 @@ import { classifyDifficulty } from "@oh-my-pi/pi-coding-agent/auto-thinking/clas
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
+	AGENT_ROLE_HEADER,
+	buildSideAgentHeaders,
+	PARENT_SESSION_ID_HEADER,
+} from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
+import {
 	AUTO_THINKING,
 	clampAutoThinkingEffort,
 	parseCliThinkingLevel,
@@ -266,6 +271,22 @@ describe("auto thinking classifier helpers", () => {
 			usage: fixture.usage,
 			stopReason: "stop",
 			errorMessage: undefined,
+		});
+	});
+
+	it("sends the caller's link headers on the chat judge's provider request", async () => {
+		const fixture = createOnlineFixture(buildLadderModel("mock-xhigh", XHIGH_LADDER), "high");
+		const headers = buildSideAgentHeaders("parent-provider-session", "subagent");
+
+		await classifyDifficulty("refactor the scheduler", {
+			...fixture.deps,
+			sessionId: "child-provider-session",
+			headers,
+		});
+
+		expect(fixture.completeSimpleMock.mock.calls[0]?.[2]?.headers).toEqual({
+			[PARENT_SESSION_ID_HEADER]: "parent-provider-session",
+			[AGENT_ROLE_HEADER]: "subagent",
 		});
 	});
 

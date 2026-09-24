@@ -176,7 +176,7 @@ import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
 import { collectMountedMCPToolRoutes, projectMountedMCPXdevGuidance } from "./session/session-tools";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
-import { withSideAgentHeaders } from "./session/side-agent-headers";
+import { buildMainAgentLinkHeaders, wrapStreamFnWithSideAgentHeaders } from "./session/side-agent-headers";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
 import { createSpeculativeToolExecutionConfig } from "./speculation/host";
@@ -3738,8 +3738,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					settings.get("externalThinking") &&
 					agent.state.tools.some(tool => tool.name === "think") &&
 					supportsExternalThinking(streamModel);
+				// A spawned session links to its spawner; a top-level session links to
+				// its chat only after `/fresh` swapped in an unlinked provider id.
+				// Read per request: `/fresh` happens mid-session.
+				const linkHeaders = buildMainAgentLinkHeaders(
+					options.parentProviderSessionId,
+					session?.freshSessionParentId(),
+				);
 				return settingsAwareStreamFn(streamModel, context, {
-					...withSideAgentHeaders(streamOptions, options.parentProviderSessionId, "subagent"),
+					...streamOptions,
+					...(linkHeaders ? { headers: { ...streamOptions?.headers, ...linkHeaders } } : {}),
 					anthropicCacheRefresh: true,
 					forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
 					...(codeModeState.namespacesInfo === undefined
@@ -3950,7 +3958,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			transformProviderContext,
 			onPayload,
 			onResponse,
-			sideStreamFn: settingsAwareStreamFn,
+			// A subagent's side requests (compaction, branch summaries, handoff)
+			// link to the spawning session like its main requests do. Advisors add
+			// their own `advisor` link in SessionAdvisors.
+			sideStreamFn: options.parentProviderSessionId
+				? wrapStreamFnWithSideAgentHeaders(settingsAwareStreamFn, () => options.parentProviderSessionId, "subagent")
+				: settingsAwareStreamFn,
 			advisorStreamFn: settingsAwareStreamFn,
 			preferWebsockets: preferOpenAICodexWebsockets,
 			convertToLlm: convertToLlmFinal,
@@ -3988,6 +4001,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			agentId: resolvedAgentId,
 			agentKind,
 			providerSessionId: options.providerSessionId,
+			parentProviderSessionId: options.parentProviderSessionId,
 			providerPromptCacheKeySource,
 			parentEvalSessionId: options.parentEvalSessionId,
 			advisorTools,
@@ -4331,7 +4345,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					kimiApiFormat,
 					preferWebsockets: preferOpenAICodexWebsockets,
 					getToolContext: toolCall => toolContextStore.getContext(toolCall),
-					streamFn: settingsAwareStreamFn,
+					// The capture turn runs under its own provider session id; link
+					// every request to the primary conversation it learns from.
+					streamFn: wrapStreamFnWithSideAgentHeaders(settingsAwareStreamFn, () => agent.sessionId, "capture"),
 					transformToolCallArguments,
 					// No fallback resolver. The capture agent advertises only
 					// `learn`/`manage_skill`, both of which stay top-level and never

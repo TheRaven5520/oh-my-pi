@@ -24,6 +24,7 @@ import { collectOnlineTinyCandidates, expandOnlineTinyModelFallbacks } from "../
 import type { Settings } from "../config/settings";
 import titleMarkerInstruction from "../prompts/system/title-marker-instruction.md" with { type: "text" };
 import titleSystemPrompt from "../prompts/system/title-system.md" with { type: "text" };
+import { buildSideAgentHeaders, type SideAgentRole } from "../session/side-agent-headers";
 import { formatTitleUserMessage } from "../tiny/message-preproc";
 import { isLowSignalTitleInput, normalizeGeneratedTitle } from "../tiny/text";
 import { tinyTitleClient } from "../tiny/title-client";
@@ -160,6 +161,11 @@ function getTitleModels(registry: ModelRegistry, settings: Settings, currentMode
  * @param signal Session-lifecycle cancellation for background title requests
  * @param credentialSourceSessionId Optional foreground session whose selected
  *   OAuth credential should seed an isolated title-request session.
+ * @param parentSessionId Provider session id of the conversation this title
+ *   serves, sent as `x-omp-parent-session-id` so a proxy can link the title
+ *   request to it. Defaults to `credentialSourceSessionId`.
+ * @param role Side-agent role sent with the parent link (`title`, or `label`
+ *   for subagent UI labels).
  */
 export async function generateSessionTitle(
 	firstMessage: string,
@@ -171,6 +177,8 @@ export async function generateSessionTitle(
 	customSystemPrompt?: string,
 	signal?: AbortSignal,
 	credentialSourceSessionId?: string,
+	parentSessionId: string | undefined = credentialSourceSessionId,
+	role: SideAgentRole = "title",
 ): Promise<string | null> {
 	// Defer titling for greetings / acknowledgements / empty input. The default
 	// tiny title model can't reliably decline trivial input, so this happens
@@ -199,6 +207,8 @@ export async function generateSessionTitle(
 			signal,
 			titleSystemPrompt,
 			credentialSourceSessionId,
+			parentSessionId,
+			role,
 		);
 	}
 
@@ -249,6 +259,8 @@ export async function generateTitleOnline(
 	signal?: AbortSignal,
 	customSystemPrompt?: string,
 	credentialSourceSessionId?: string,
+	parentSessionId: string | undefined = credentialSourceSessionId,
+	role: SideAgentRole = "title",
 ): Promise<string | null> {
 	const models = getTitleModels(registry, settings, currentModel);
 	if (models.length === 0) {
@@ -264,6 +276,8 @@ export async function generateTitleOnline(
 		signal,
 		customSystemPrompt,
 		credentialSourceSessionId,
+		parentSessionId,
+		role,
 	);
 }
 
@@ -276,8 +290,13 @@ async function generateTitleOnlineWithModels(
 	signal?: AbortSignal,
 	customSystemPrompt?: string,
 	credentialSourceSessionId?: string,
+	parentSessionId?: string,
+	role: SideAgentRole = "title",
 ): Promise<string | null> {
 	const titleSystemPrompt = customSystemPrompt?.trim() || undefined;
+	// Link the side request to the conversation it serves: the title request runs
+	// under its own isolated provider session id.
+	const headers = buildSideAgentHeaders(parentSessionId, role);
 	// The model is always asked to wrap the title in `<title>...</title>` and
 	// the title is parsed from text. A forced `set_title` tool call was the old
 	// scheme, but hosts that ignore or reject forced `tool_choice` then echoed
@@ -361,6 +380,7 @@ async function generateTitleOnlineWithModels(
 							// reject sampling params drop this via `supportsSamplingParams`.
 							temperature: 0,
 							metadata,
+							headers,
 							signal,
 						},
 					),
