@@ -181,6 +181,8 @@ export interface SegmentContext {
 	brandFgAnsi?: string;
 	git: {
 		branch: string | null;
+		/** HEAD's commit id when `branch` is the `"detached"` sentinel; null otherwise or when unknown. */
+		detachedCommit?: string | null;
 		status: { staged: number; unstaged: number; untracked: number } | null;
 		pr: { number: number; url: string } | null;
 	};

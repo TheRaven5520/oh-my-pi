@@ -464,6 +464,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#settings: StatusLineSettings = {};
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
 	#cachedBranch: string | null | undefined = undefined;
+	/** HEAD's commit when {@link #cachedBranch} is the `"detached"` sentinel; the claude preset shows it instead. */
+	#cachedDetachedCommit: string | null = null;
 	#cachedBranchRepoId: string | null | undefined = undefined;
 	#cachedBranchCwd: string | undefined = undefined;
 	// In-flight reftable resolve slot. Ownership is the launch id, not the cwd:
@@ -1210,6 +1212,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	invalidateGitCaches(): void {
 		this.#invalidateStatusLineRenderCache();
 		this.#cachedBranch = undefined;
+		this.#cachedDetachedCommit = null;
 		this.#cachedBranchRepoId = undefined;
 		this.#cachedBranchCwd = undefined;
 		// Abort before releasing the in-flight slot. Releasing alone would allow
@@ -1335,11 +1338,13 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			const generation = this.#branchCacheGeneration;
 			(async () => {
 				let next: string | null = null;
+				let detachedCommit: string | null = null;
 				let repoId: string | null = null;
 				try {
 					const headState = await gitRepository.head(request.controller.signal);
 					repoId = repoInfo.headPath;
 					next = headState.kind === "ref" ? (headState.branch ?? headState.refName ?? "HEAD") : "detached";
+					if (next === "detached") detachedCommit = headState.commit ?? null;
 				} catch {
 					next = null;
 				} finally {
@@ -1353,11 +1358,13 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 				// newer resolve superseded this one (or the component disposed).
 				if (this.#branchCacheGeneration !== generation || this.#disposed) return;
 				const prev = this.#cachedBranchCwd === gitCwd ? this.#cachedBranch : undefined;
+				const prevCommit = this.#cachedDetachedCommit;
 				this.#cachedBranchCwd = gitCwd;
 				this.#cachedBranchRepoId = repoId;
 				this.#cachedBranch = next;
+				this.#cachedDetachedCommit = detachedCommit;
 				this.#branchLastFetch = Date.now();
-				if (prev !== next) {
+				if (prev !== next || prevCommit !== detachedCommit) {
 					this.#invalidateStatusLineRenderCache();
 					this.#onBranchChange?.();
 				}
@@ -1379,9 +1386,11 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		this.#branchLastFetch = Date.now();
 		if (!head) {
 			this.#cachedBranch = null;
+			this.#cachedDetachedCommit = null;
 			return null;
 		}
 		this.#cachedBranch = head.kind === "ref" ? (head.branch ?? head.refName ?? "HEAD") : "detached";
+		this.#cachedDetachedCommit = this.#cachedBranch === "detached" ? (head.commit ?? null) : null;
 		return this.#cachedBranch ?? null;
 	}
 
@@ -2258,6 +2267,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			brandFgAnsi: this.#brandFgAnsi(turnElapsedMs !== null, sessionAccentEnabled),
 			git: {
 				branch: gitBranch,
+				detachedCommit: gitBranch === "detached" ? this.#cachedDetachedCommit : null,
 				status: gitStatus,
 				pr: gitPr,
 			},

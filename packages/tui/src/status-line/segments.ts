@@ -78,6 +78,7 @@ const CLAUDE_COLORS = {
 	fiveHour: 176,
 	week: 211,
 	fable: 217,
+	session: 223,
 } as const;
 
 /** Claude's `\e[90m` separator/dash color (bright black). */
@@ -118,6 +119,16 @@ function claudeShortDir(dir: string): string {
 	const fieldCount = normalized.startsWith("/") ? parts.length + 1 : parts.length;
 	const tail = parts.slice(-3).join("/");
 	return fieldCount > 3 ? `…/${tail}` : tail;
+}
+
+/**
+ * Claude's `[branch]` label: the branch name, or on a detached HEAD the short
+ * commit id (`git rev-parse --short HEAD`) — never the word "detached".
+ */
+function claudeBranchLabel(ctx: SegmentContext): string | null {
+	const { branch, detachedCommit } = ctx.git;
+	if (branch !== "detached") return branch;
+	return detachedCommit ? detachedCommit.slice(0, 7) : branch;
 }
 
 /** Left-truncate a path/label to `maxLen`, prefixing an ellipsis when clipped. */
@@ -496,13 +507,13 @@ const pathSegment: StatusLineSegment = {
 			// (no separator between them) in one fixed color, with no dirty state.
 			const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
 			const shortDir = claudeShortDir(projectDir);
-			if (!ctx.startupPlaceholder && shortDir === "tmp") {
-				if (!ctx.git.branch) return { content: "", visible: false };
-				return { content: claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, ctx.git.branch)}]`), visible: true };
-			}
+			// A bare temp dir is omp's fallback for launches from $HOME, not a
+			// project: hide the whole section, including any stray repo's branch.
+			if (!ctx.startupPlaceholder && shortDir === "tmp") return { content: "", visible: false };
 			const dir = ctx.startupPlaceholder ? STARTUP_PLACEHOLDER : fileHyperlink(projectDir, shortDir);
 			let content = claudeFg(CLAUDE_COLORS.path, dir);
-			if (ctx.git.branch) content += ` ${claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, ctx.git.branch)}]`)}`;
+			const branch = claudeBranchLabel(ctx);
+			if (branch) content += ` ${claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, branch)}]`)}`;
 			return { content, visible: true };
 		}
 
@@ -839,6 +850,7 @@ const sessionNameSegment: StatusLineSegment = {
 		if (!name) return { content: "", visible: false };
 
 		const content = ctx.startupPlaceholder ? STARTUP_PLACEHOLDER : sanitizeStatusText(name);
+		if (ctx.claudeStyle) return { content: claudeFg(CLAUDE_COLORS.session, content), visible: true };
 		return { content: accentFg(ctx, "accent", content), visible: true };
 	},
 };

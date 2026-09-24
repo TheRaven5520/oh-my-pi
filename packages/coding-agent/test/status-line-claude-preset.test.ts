@@ -18,7 +18,7 @@ afterAll(() => {
 	resetSettingsForTest();
 });
 
-function makeClaudeComponent(reports: unknown, modelId: string): StatusLineComponent {
+function makeClaudeComponent(reports: unknown, modelId: string, sessionName?: string): StatusLineComponent {
 	const model = { id: modelId, name: modelId, contextWindow: 1000, provider: "anthropic" };
 	const component = statusLines.track(
 		new StatusLineComponent(
@@ -26,6 +26,7 @@ function makeClaudeComponent(reports: unknown, modelId: string): StatusLineCompo
 				state: { messages: [], model },
 				model,
 				sessionManager: {
+					getSessionName: () => sessionName,
 					getUsageStatistics: () => ({
 						input: 0,
 						output: 0,
@@ -59,8 +60,8 @@ async function flushUsageRefresh(): Promise<void> {
 	await Promise.resolve();
 }
 
-async function renderClaudeLine(reports: unknown, modelId: string): Promise<string> {
-	const component = makeClaudeComponent(reports, modelId);
+async function renderClaudeLine(reports: unknown, modelId: string, sessionName?: string): Promise<string> {
+	const component = makeClaudeComponent(reports, modelId, sessionName);
 	component.refreshUsageInBackground();
 	await flushUsageRefresh();
 	return stripVTControlCharacters(component.getTopBorder(300).content);
@@ -96,5 +97,13 @@ describe("claude status-line preset", () => {
 		const content = await renderClaudeLine([], "claude-opus-5-5");
 
 		expect(content).toContain("5h — | wk —");
+	});
+
+	it("ends with the session name as its own section, and drops it while unnamed", async () => {
+		const named = await renderClaudeLine(anthropicReports, "claude-fable-5", "MODIFY OMP");
+		expect(named).toMatch(/wk 60% \| fable 30% \| MODIFY OMP(?! \|)/);
+
+		const unnamed = await renderClaudeLine(anthropicReports, "claude-fable-5");
+		expect(unnamed).toMatch(/wk 60% \| fable 30%(?! \|)/);
 	});
 });
