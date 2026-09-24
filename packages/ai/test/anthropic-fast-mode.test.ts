@@ -5,7 +5,8 @@ import {
 	isAnthropicFastModeFallbackDisabled,
 	streamAnthropic,
 } from "@oh-my-pi/pi-ai/providers/anthropic";
-import type { Context, Model, ProviderSessionState, ServiceTier } from "@oh-my-pi/pi-ai/types";
+import type { Context, Model, ModelSpec, ProviderSessionState, ServiceTier } from "@oh-my-pi/pi-ai/types";
+import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { withOfficialAnthropicEndpoint } from "./helpers";
 
@@ -137,6 +138,84 @@ describe("Anthropic priority service tier → speed='fast'", () => {
 			expect(differentModel.speed).toBe("fast");
 			expect(differentEndpoint.speed).toBe("fast");
 		});
+	});
+});
+
+describe("Anthropic-compatible gateway fast mode (compat.supportsFastMode)", () => {
+	const SPEED_400 =
+		'{"type":"error","error":{"type":"invalid_request_error","message":"\'claude-opus-5-5\' does not support the `speed` parameter."}}';
+	const OTHER_400 = '{"type":"error","error":{"type":"invalid_request_error","message":"captured"}}';
+
+	function makeGatewayModel(compat?: { supportsFastMode?: boolean }): Model<"anthropic-messages"> {
+		return buildModel({
+			id: "claude-opus-5-5",
+			name: "claude-opus-5-5 via gateway",
+			api: "anthropic-messages",
+			provider: "sprilicred-anthropic",
+			baseUrl: "https://gateway.example/anthropic",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 8_192,
+			compat,
+		} as ModelSpec<"anthropic-messages">);
+	}
+
+	type WireRequest = { beta: string[]; body: Record<string, unknown> };
+
+	/** Every request the provider puts on the wire; each is answered with `reply(index)`. */
+	async function captureWire(
+		model: Model<"anthropic-messages">,
+		opts: CaptureOptions & { reply?: (index: number) => string },
+	): Promise<WireRequest[]> {
+		const requests: WireRequest[] = [];
+		const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
+			const beta = new Headers(init?.headers).get("anthropic-beta") ?? "";
+			const body = (await new Response(init?.body).json()) as Record<string, unknown>;
+			requests.push({ beta: beta.split(",").filter(Boolean), body });
+			const reply = opts.reply?.(requests.length - 1) ?? OTHER_400;
+			return new Response(reply, { status: 400, headers: { "Content-Type": "application/json" } });
+		}) as typeof fetch;
+		await streamAnthropic(model, CONTEXT, {
+			apiKey: "sk-spr-test",
+			isOAuth: true,
+			serviceTier: opts.serviceTier,
+			providerSessionState: opts.providerSessionState,
+			fetch: fetchMock,
+		}).result();
+		return requests;
+	}
+
+	it("sends speed='fast' and the fast-mode beta when the gateway declares fast mode", async () => {
+		const model = makeGatewayModel({ supportsFastMode: true });
+		const [request] = await captureWire(model, { serviceTier: "priority" });
+
+		expect(request.body.speed).toBe("fast");
+		expect(request.beta).toContain("fast-mode-2026-02-01");
+		expect(realizesPriorityServiceTier("priority", model)).toBe(true);
+	});
+
+	it("leaves a gateway without the flag a standard request", async () => {
+		const model = makeGatewayModel();
+		const [request] = await captureWire(model, { serviceTier: "priority" });
+
+		expect(request.body.speed).toBeUndefined();
+		expect(request.beta).not.toContain("fast-mode-2026-02-01");
+		expect(realizesPriorityServiceTier("priority", model)).toBe(false);
+	});
+
+	it("retries a gateway's speed rejection once without speed and remembers it for the session", async () => {
+		const model = makeGatewayModel({ supportsFastMode: true });
+		const state = new Map<string, ProviderSessionState>();
+		const requests = await captureWire(model, {
+			serviceTier: "priority",
+			providerSessionState: state,
+			reply: index => (index === 0 ? SPEED_400 : OTHER_400),
+		});
+
+		expect(requests.map(request => request.body.speed)).toEqual(["fast", undefined]);
+		expect(isAnthropicFastModeFallbackDisabled(state, model)).toBe(true);
 	});
 });
 

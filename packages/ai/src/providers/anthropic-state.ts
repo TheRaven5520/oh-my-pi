@@ -1,6 +1,6 @@
 import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
 import { $env } from "@oh-my-pi/pi-utils";
-import type { Api, Model, ProviderSessionState } from "../types";
+import { type Api, type Model, type ProviderSessionState, realizesAnthropicFastMode } from "../types";
 import { isFoundryEnabled } from "../utils/foundry";
 
 /** Root key for Anthropic's per-session provider state. */
@@ -42,13 +42,16 @@ export function clearAnthropicFastModeFallback(
 	}
 }
 
-/** Inspect the direct model's fast-mode fallback without materializing state. */
+/** Inspect a fast-mode model's fallback without materializing state. */
 export function isAnthropicFastModeFallbackDisabled(
 	providerSessionState: Map<string, ProviderSessionState> | undefined,
 	model: Model<Api>,
 ): boolean {
-	if (!providerSessionState || model.provider !== "anthropic" || model.api !== "anthropic-messages") return false;
-	const baseUrl = resolveDirectAnthropicBaseUrl(model);
+	if (!providerSessionState || model.api !== "anthropic-messages" || !realizesAnthropicFastMode(model)) return false;
+	const baseUrl =
+		model.provider === "anthropic"
+			? resolveDirectAnthropicBaseUrl(model)
+			: (normalizeAnthropicBaseUrl(model.baseUrl) ?? "https://api.anthropic.com");
 	const key = anthropicProviderSessionStateKey(baseUrl, model.id);
 	const state = providerSessionState.get(key);
 	return state !== undefined && "fastModeDisabled" in state && state.fastModeDisabled === true;

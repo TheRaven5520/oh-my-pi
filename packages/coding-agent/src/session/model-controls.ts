@@ -685,17 +685,14 @@ export class ModelControls {
 
 	/**
 	 * True when `priority` is actually realized on the wire for the currently
-	 * selected model (OpenAI/Google `service_tier`, direct Anthropic fast mode,
+	 * selected model (OpenAI/Google `service_tier`, Anthropic fast mode,
 	 * or Fireworks priority). Returns false for tiers the active model can't
 	 * realize and when no model is selected.
 	 */
 	isFastModeActive(): boolean {
 		const model = this.#model;
 		if (!model || !realizesPriorityServiceTier(this.effectiveServiceTier(model), model)) return false;
-		if (model.provider === "anthropic") {
-			return !isAnthropicFastModeFallbackDisabled(this.#host.providerSessionState, model);
-		}
-		return true;
+		return !isAnthropicFastModeFallbackDisabled(this.#host.providerSessionState, model);
 	}
 
 	/**
