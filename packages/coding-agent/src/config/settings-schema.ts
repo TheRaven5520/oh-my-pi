@@ -4921,6 +4921,19 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"title.style": {
+		type: "enum",
+		values: ["tag", "sentence"] as const,
+		default: "sentence",
+		ui: {
+			tab: "tasks",
+			group: "Modes",
+			label: "Session Title Style",
+			description:
+				"tag: a one- or two-word ALL-CAPS label (e.g. SPRILICRED) renamed only when the work lastingly changes. sentence: a ~5-word title from the first message, refreshed on replans.",
+		},
+	},
+
 	"title.refreshOnReplan": {
 		type: "boolean",
 		default: true,
@@ -4928,7 +4941,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "tasks",
 			group: "Modes",
 			label: "Refresh Title on Replan",
-			description: "Refresh generated session titles after todo init replans unless the title was set by the user",
+			description:
+				"Refresh generated sentence-style titles after todo init replans unless the title was set by the user (tag titles use their own sparse checks)",
 		},
 	},
 

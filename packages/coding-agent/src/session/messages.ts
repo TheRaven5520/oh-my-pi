@@ -148,6 +148,19 @@ export function buildReplanTitleContext(messages: AgentMessage[]): string {
 	return formatTitleConversationContext(turns);
 }
 
+/** Builds the last `limit` user-authored messages, the context a session-tag check reads. */
+export function buildRecentUserTitleContext(messages: AgentMessage[], limit: number): string {
+	const turns: TitleConversationTurn[] = [];
+	for (let i = messages.length - 1; i >= 0 && turns.length < limit; i--) {
+		const message = messages[i];
+		if (!message || (message.role === "user" && message.attribution === "agent")) continue;
+		const turn = titleConversationTurnFromMessage(message);
+		if (turn?.role === "user") turns.push(turn);
+	}
+	turns.reverse();
+	return formatTitleConversationContext(turns);
+}
+
 /**
  * Compares session messages by provider-replay semantics, ignoring runtime-only
  * fields that do not change a restored request.

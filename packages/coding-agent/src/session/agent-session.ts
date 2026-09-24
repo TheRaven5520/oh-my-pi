@@ -185,6 +185,8 @@ import rewindReportTemplate from "../prompts/system/rewind-report.md" with { typ
 import sessionStopBlockedPrompt from "../prompts/system/session-stop-blocked.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
 import skillfulNoticePrompt from "../prompts/system/skillful-notice.md" with { type: "text" };
+import titleRetagPrompt from "../prompts/system/title-retag.md" with { type: "text" };
+import titleTagPrompt from "../prompts/system/title-tag.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import videoAttachmentPrompt from "../prompts/system/video-attachment.md" with { type: "text" };
 import {
@@ -274,6 +276,7 @@ import type {
 } from "./agent-session-types";
 import { writeArtifact } from "./artifacts";
 import { FileHistory } from "./file-history";
+import { isSessionTag, normalizeSessionTag, SessionTagTracker, TAG_CHECK_CONTEXT_MESSAGES } from "./session-tag";
 import { formatArtifactErrorNotice, type OutputMeta, stripOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import {
 	ASYNC_INLINE_RESULT_MAX_CHARS,
@@ -325,6 +328,7 @@ import {
 } from "./launch-completion";
 import {
 	type BashExecutionMessage,
+	buildRecentUserTitleContext,
 	buildReplanTitleContext,
 	CHECKPOINT_ACTIVE_REMINDER_TYPE,
 	type CustomMessage,
@@ -507,7 +511,7 @@ type ActiveAgentContinue = {
 };
 
 type SessionTitleSource = "auto" | "user";
-type SessionNameTrigger = "replan";
+type SessionNameTrigger = "replan" | "retag";
 type SetSessionNameWithTrigger = (
 	name: string,
 	source?: SessionTitleSource,
@@ -690,6 +694,9 @@ export class AgentSession {
 	/** Serialized tail of pooled-turn yield contract transitions; never rejects. */
 	#workPoolYieldTransition: Promise<void> = Promise.resolve();
 	#replanTitleRefreshInFlight: Promise<void> | undefined = undefined;
+	/** Cadence/hysteresis for tag-style names, keyed to the session it counts prompts for. */
+	#tagTracker: { sessionId: string; tracker: SessionTagTracker } | undefined;
+	#tagCheckInFlight = false;
 	/** Resolved TITLE_SYSTEM.md override applied to every automatic session-title
 	 *  generation path. Refresh via {@link AgentSession.setTitleSystemPrompt} when
 	 *  the session cwd changes. */
@@ -2946,6 +2953,7 @@ export class AgentSession {
 				this.#fileCheckpointPending = false;
 				void this.fileHistory.beginCheckpoint(entryId);
 			}
+			if (message.role === "user" && message.attribution !== "agent") this.#noteUserPromptForTag();
 		}
 	}
 
@@ -8098,6 +8106,8 @@ export class AgentSession {
 		// no focusable UI exists (print/RPC/ACP/eval/SDK/CI).
 		if (this.#agentKind === "sub" && !isInteractiveHost()) return;
 		if (this.#replanTitleRefreshInFlight) return;
+		// Tag-style names change only through their own sparse checks.
+		if (this.#usesTagTitles()) return;
 		if (!this.settings.get("title.refreshOnReplan")) return;
 		if (this.sessionManager.titleSource === "user") return;
 		const context = this.#buildReplanTitleContext();
@@ -8116,6 +8126,54 @@ export class AgentSession {
 				}
 			});
 		this.#replanTitleRefreshInFlight = refresh;
+	}
+
+	#usesTagTitles(): boolean {
+		return this.settings.get("title.style") === "tag";
+	}
+
+	/**
+	 * Count a user prompt toward the next tag check and run one when due (see
+	 * {@link SessionTagTracker}). Fire-and-forget; one check at a time.
+	 */
+	#noteUserPromptForTag(): void {
+		if (!this.#usesTagTitles() || $env.PI_NO_TITLE) return;
+		if (this.#agentKind === "sub" && !isInteractiveHost()) return;
+		if (this.sessionManager.titleSource === "user") return;
+		const sessionId = this.sessionManager.getSessionId();
+		const now = Date.now();
+		if (this.#tagTracker?.sessionId !== sessionId) {
+			this.#tagTracker = { sessionId, tracker: new SessionTagTracker(now) };
+		}
+		const { tracker } = this.#tagTracker;
+		if (!tracker.notePrompt(now) || this.#tagCheckInFlight) return;
+		const context = buildRecentUserTitleContext(this.agent.state.messages, TAG_CHECK_CONTEXT_MESSAGES);
+		if (!context) return;
+		this.#tagCheckInFlight = true;
+		void this.#checkSessionTag(context, sessionId, tracker)
+			.catch(err => {
+				logger.warn("title-generator: tag check failed", {
+					sessionId,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			})
+			.finally(() => {
+				this.#tagCheckInFlight = false;
+			});
+	}
+
+	/** Ask the title model whether the tag still fits the recent messages; apply its answer through the tracker. */
+	async #checkSessionTag(context: string, sessionId: string, tracker: SessionTagTracker): Promise<void> {
+		const current = this.sessionName;
+		const systemPrompt = isSessionTag(current)
+			? prompt.render(titleRetagPrompt, { current_tag: current })
+			: prompt.render(titleTagPrompt);
+		const proposed = normalizeSessionTag(await this.generateTitle(context, systemPrompt));
+		if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.titleSource === "user") return;
+		const next = tracker.resolve(this.sessionName, proposed);
+		if (!next) return;
+		const setSessionName = this.sessionManager.setSessionName as SetSessionNameWithTrigger;
+		await setSessionName.call(this.sessionManager, next, "auto", "retag");
 	}
 
 	/**
@@ -8151,12 +8209,14 @@ export class AgentSession {
 			}
 			throw error;
 		}
-		this.generateTitle(firstMessage)
-			.then(async title => {
+		const tagTitles = this.#usesTagTitles();
+		(tagTitles ? this.generateTitle(firstMessage, prompt.render(titleTagPrompt)) : this.generateTitle(firstMessage))
+			.then(async generated => {
 				// Re-check after generation so a later completion cannot replace
 				// the first title, and a request from a replaced session cannot
 				// name the current one.
 				if (this.sessionManager.getSessionId() !== sessionId) return;
+				const title = tagTitles ? normalizeSessionTag(generated) : generated;
 				if (title && !this.sessionName) {
 					await this.sessionManager.setSessionName(title, "auto");
 				}

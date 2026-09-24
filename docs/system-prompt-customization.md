@@ -190,6 +190,10 @@ If the message has no concrete task, output exactly `none`.
 
 Generated title output has an enforced normalization contract even with a custom prompt. OMP considers only the first trimmed line, strips surrounding quotes, `<title>...</title>` markers, and terminal punctuation, and treats `none` or `<title/>` as “no title yet.” A result longer than 80 characters or 12 words is rejected rather than truncated. Empty, deferred, or rejected output leaves the session unnamed, so a later eligible title attempt can name it.
 
+### Tag-style titles
+
+Set `title.style: tag` for short ALL-CAPS labels instead of sentence titles, e.g. `SPRILICRED`, `PI05 EVALS`, `MODIFY OMP`: one word when it says enough, never more than two, naming the project or kind of work rather than the current step. The first user message is tagged the same way sentence titles are generated. After that, every 10 user messages — or after 30 minutes with at least 3 new messages — the title model reads the last 10 user messages and says whether the tag still fits. A tag changes only when two consecutive checks both say the work has moved to something else, so tangents and side questions never rename the session. A name set by `/rename` (or any user source) is never touched, and replan refreshes are skipped in tag mode. `TITLE_SYSTEM.md` applies only to sentence titles; tag prompts are bundled (`prompts/system/title-tag.md`, `title-retag.md`).
+
 ## Programmatic API options
 
 Programmatic API callers use separate options, not CLI flags: `CreateAgentSessionOptions.systemPromptTemplate` and `buildSystemPrompt({ systemPromptTemplate })` take raw Handlebars source; `CreateAgentSessionOptions.customSystemPrompt` is already-loaded literal text, while `buildSystemPrompt`'s `customPrompt` is plain text with path-or-literal resolution (or `resolvedCustomPrompt` is already-loaded text).
