@@ -75,6 +75,12 @@ export class ModelControls {
 	readonly #host: ModelControlsHost;
 	#scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	#thinkingLevel: ThinkingLevel | undefined;
+	/**
+	 * The concrete level the user last chose, before any model clamps it. Model
+	 * switches re-clamp from this, so passing through a model with a shorter
+	 * effort ladder (Haiku stops at xhigh) never lowers the level later models get.
+	 */
+	#requestedThinkingLevel: Exclude<ThinkingLevel, typeof ThinkingLevel.Inherit> | undefined;
 	/** Hard per-session effort ceiling (e.g. a task spawn's `task.maxEffort` cap); recovery paths re-clamp to it. */
 	readonly #thinkingLevelCeiling: Effort | undefined;
 	#autoThinking = false;
@@ -105,6 +111,7 @@ export class ModelControls {
 				this.#thinkingLevelCeiling,
 			);
 		} else {
+			this.#requestedThinkingLevel = requestableLevel(options.thinkingLevel);
 			this.#thinkingLevel = clampThinkingLevelToCeiling(
 				this.#model,
 				options.thinkingLevel,
@@ -131,6 +138,11 @@ export class ModelControls {
 	/** Configured selector, preserving `auto` while classification is active. */
 	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined {
 		return this.#autoThinking ? AUTO_THINKING : this.#thinkingLevel;
+	}
+
+	/** The concrete level the user last chose, before the active model clamped it. */
+	get requestedThinkingLevel(): ThinkingLevel | undefined {
+		return this.#requestedThinkingLevel;
 	}
 
 	/** Whether per-turn automatic thinking classification is enabled. */
@@ -167,6 +179,7 @@ export class ModelControls {
 	restoreThinkingLevel(level: ConfiguredThinkingLevel | undefined): void {
 		this.#autoThinking = level === AUTO_THINKING;
 		this.#autoResolvedLevel = undefined;
+		if (level !== AUTO_THINKING) this.#requestedThinkingLevel = requestableLevel(level);
 		this.#thinkingLevel =
 			level === AUTO_THINKING
 				? clampThinkingLevelToCeiling(
@@ -382,7 +395,8 @@ export class ModelControls {
 	async applyRoleModel(entry: ResolvedRoleModel): Promise<void> {
 		await this.setModel(entry.model, entry.role);
 		if (entry.explicitThinkingLevel && entry.thinkingLevel !== undefined) {
-			this.setThinkingLevel(entry.thinkingLevel);
+			// A role's `:level` is that model's own pick, not the level the user asked for.
+			this.#applyThinkingLevel(entry.thinkingLevel, false, undefined);
 		}
 	}
 
@@ -455,7 +469,7 @@ export class ModelControls {
 		const next = scope[index];
 		await this.setModel(next.model);
 		if (next.explicitThinkingLevel && next.thinkingLevel !== undefined) {
-			this.setThinkingLevel(next.thinkingLevel);
+			this.#applyThinkingLevel(next.thinkingLevel, false, undefined);
 		}
 		return { model: next.model, thinkingLevel: this.thinkingLevel, models: scope.map(entry => entry.model), index };
 	}
@@ -523,7 +537,7 @@ export class ModelControls {
 		this.#host.settings.getStorage()?.recordModelUsage(`${next.model.provider}/${next.model.id}`);
 
 		// Apply the scoped model's configured thinking level, preserving auto.
-		this.setThinkingLevel(this.#autoThinking ? AUTO_THINKING : next.thinkingLevel);
+		this.#applyThinkingLevel(this.#autoThinking ? AUTO_THINKING : next.thinkingLevel, false, undefined);
 		await this.#host.syncAfterModelChange(previousEditMode);
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
@@ -580,12 +594,47 @@ export class ModelControls {
 	}
 
 	/**
-	 * Set the thinking level. `auto` enables per-turn classification. Entering
-	 * auto writes its provisional level plus `configured: "auto"` immediately,
-	 * giving external readers an authoritative selection receipt before the next
-	 * user turn. Later classifications persist only changed concrete resolutions.
+	 * Set the thinking level the user chose. `auto` enables per-turn
+	 * classification. A concrete level is remembered unclamped (see
+	 * {@link requestedThinkingLevel}); `persist` also makes it the default for
+	 * new sessions. Entering auto writes its provisional level plus
+	 * `configured: "auto"` immediately, giving external readers an authoritative
+	 * selection receipt before the next user turn. Later classifications persist
+	 * only changed concrete resolutions.
 	 */
 	setThinkingLevel(level: ConfiguredThinkingLevel | undefined, persist: boolean = false): void {
+		if (level === AUTO_THINKING) {
+			this.#applyThinkingLevel(level, persist, undefined);
+			return;
+		}
+		const requested = requestableLevel(level);
+		const requestChanged = requested !== this.#requestedThinkingLevel;
+		this.#requestedThinkingLevel = requested;
+		if (persist && requested !== undefined && requested !== ThinkingLevel.Off) {
+			this.#host.settings.set("defaultThinkingLevel", requested);
+		}
+		this.#applyThinkingLevel(level, false, requested, requestChanged);
+	}
+
+	/**
+	 * Apply a level for the active model only (turn-recovery fallbacks): the
+	 * level the user asked for is kept, so the next model switch re-clamps from it.
+	 */
+	applyThinkingLevel(level: ConfiguredThinkingLevel | undefined): void {
+		this.#applyThinkingLevel(level, false, this.#requestedThinkingLevel);
+	}
+
+	/**
+	 * Apply a level to the active model without changing what the user asked
+	 * for. `configured` is recorded as the session's selector, so a resume
+	 * restores the unclamped choice.
+	 */
+	#applyThinkingLevel(
+		level: ConfiguredThinkingLevel | undefined,
+		persist: boolean,
+		configured: ThinkingLevel | undefined,
+		forceRecord = false,
+	): void {
 		if (level === AUTO_THINKING) {
 			const provisional = clampThinkingLevelToCeiling(
 				this.#model,
@@ -622,28 +671,31 @@ export class ModelControls {
 		// Leaving auto must persist even when the resolved effort is unchanged (e.g.
 		// auto resolved to medium, then the user pins medium): otherwise the latest
 		// session entry keeps `configured: "auto"` and resume re-enables auto.
-		const isChanging = wasAuto || effectiveLevel !== this.#thinkingLevel;
+		const isChanging = wasAuto || forceRecord || effectiveLevel !== this.#thinkingLevel;
 
 		this.#thinkingLevel = effectiveLevel;
 		this.#applyThinkingLevelToAgent(effectiveLevel);
 
 		if (isChanging) {
 			this.#host.clearInheritedProviderPromptCacheKey();
-			this.#host.sessionManager.appendThinkingLevelChange(effectiveLevel, effectiveLevel);
-			if (persist && effectiveLevel !== undefined && effectiveLevel !== ThinkingLevel.Off) {
-				this.#host.settings.set("defaultThinkingLevel", effectiveLevel);
-			}
+			this.#host.sessionManager.appendThinkingLevelChange(effectiveLevel, configured ?? effectiveLevel);
 			this.#host.emit({ type: "thinking_level_changed", thinkingLevel: effectiveLevel });
 		}
 	}
 
 	/**
 	 * Re-apply the active thinking selection after a model change. Preserves `auto`
-	 * (re-clamping the provisional level to the new model); otherwise re-applies the
-	 * preferred default or the current effective level.
+	 * (re-clamping the provisional level to the new model); otherwise applies the
+	 * model's preferred default, else re-clamps the level the user asked for, so a
+	 * model with a shorter effort ladder never lowers the level later models get.
 	 */
 	#reapplyThinkingLevel(preferredDefault?: ThinkingLevel): void {
-		this.setThinkingLevel(this.#autoThinking ? AUTO_THINKING : (preferredDefault ?? this.#thinkingLevel));
+		if (this.#autoThinking) {
+			this.#applyThinkingLevel(AUTO_THINKING, false, undefined);
+			return;
+		}
+		const requested = this.#requestedThinkingLevel;
+		this.#applyThinkingLevel(preferredDefault ?? requested ?? this.#thinkingLevel, false, requested);
 	}
 
 	/**
@@ -665,7 +717,8 @@ export class ModelControls {
 		const nextLevel = levels[nextIndex];
 		if (!nextLevel) return undefined;
 
-		this.setThinkingLevel(nextLevel);
+		// Shift+Tab is the user's choice: remember it for later sessions too.
+		this.setThinkingLevel(nextLevel, true);
 		return nextLevel;
 	}
 
@@ -858,4 +911,11 @@ export class ModelControls {
 		if (!this.#model) return [];
 		return getSupportedEfforts(this.#model);
 	}
+}
+
+/** The concrete level a user can ask for, or undefined for `inherit`/unset. */
+function requestableLevel(
+	level: ConfiguredThinkingLevel | undefined,
+): Exclude<ThinkingLevel, typeof ThinkingLevel.Inherit> | undefined {
+	return level === undefined || level === AUTO_THINKING || level === ThinkingLevel.Inherit ? undefined : level;
 }

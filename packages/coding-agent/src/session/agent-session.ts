@@ -1472,7 +1472,8 @@ export class AgentSession {
 			textOutputCommitted: () => this.#textOutputCommitted,
 			thinkingLevel: () => this.thinkingLevel,
 			configuredThinkingLevel: () => this.configuredThinkingLevel(),
-			setThinkingLevel: level => this.setThinkingLevel(level),
+			// A fallback's level is for the fallback model; the level the user asked for stays.
+			setThinkingLevel: level => this.#models.applyThinkingLevel(level),
 			thinkingLevelCeiling: () => this.#models.thinkingLevelCeiling,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
@@ -8518,7 +8519,12 @@ export class AgentSession {
 			this.#queuedMessageDrainBlocked = false;
 			this.#usagePreflightReadyForNextModelCall = false;
 
-			this.sessionManager.appendThinkingLevelChange(this.thinkingLevel, this.configuredThinkingLevel());
+			this.sessionManager.appendThinkingLevelChange(
+				this.thinkingLevel,
+				this.#models.isAutoThinking
+					? AUTO_THINKING
+					: (this.#models.requestedThinkingLevel ?? this.configuredThinkingLevel()),
+			);
 			this.sessionManager.appendServiceTierChange(this.#models.serviceTierEntry());
 
 			this.#todo.resetCycle();
@@ -9841,7 +9847,9 @@ export class AgentSession {
 				hasThinkingEntry || (defaultThinkingLevel === AUTO_THINKING && sessionContext.thinkingLevel !== "off")
 					? restoredConfigured === AUTO_THINKING
 						? AUTO_THINKING
-						: (sessionContext.thinkingLevel as ThinkingLevel | undefined)
+						: // A concrete `configured` is the level the user asked for before
+							// the model clamped it; restore that so later switches re-clamp.
+							((restoredConfigured ?? sessionContext.thinkingLevel) as ThinkingLevel | undefined)
 					: defaultThinkingLevel;
 			this.#models.restoreThinkingLevel(restoredThinkingLevel);
 			this.#models.restoreServiceTiers(
