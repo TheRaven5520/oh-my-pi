@@ -32,7 +32,7 @@ describe("AgentSession tag-style titles", () => {
 	it("names with a tag, renames only after two checks agree, and never overrides a manual name", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		authStorage = createInMemoryAuthStorage();
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		session = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",

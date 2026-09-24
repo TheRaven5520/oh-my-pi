@@ -152,6 +152,7 @@ function buildStreamOptions(parsed: ParsedFormatRequest, api: Api, signal: Abort
 	if (options.frequencyPenalty !== undefined && !isCodex) opts.frequencyPenalty = options.frequencyPenalty;
 	if (options.repetitionPenalty !== undefined && !isCodex) opts.repetitionPenalty = options.repetitionPenalty;
 	if (options.metadata !== undefined) opts.metadata = options.metadata;
+	if (options.userProfileId !== undefined) opts.userProfileId = options.userProfileId;
 	if (options.headers !== undefined) opts.headers = { ...opts.headers, ...options.headers };
 	if (options.toolChoice !== undefined) {
 		opts.toolChoice =
@@ -694,7 +695,7 @@ async function handlePiNative(
  * surfaces the same data to HTTP callers (notably the macOS usage widget).
  */
 async function handleUsage(storage: AuthStorage, signal: AbortSignal): Promise<Response> {
-	const reports = (await storage.fetchUsageReports?.({ signal })) ?? [];
+	const reports = (await storage.usage.reports?.({ signal })) ?? [];
 	// Drop the heavy provider-specific `raw` payload — UI consumers only need
 	// `limits` + `metadata`. Match the broker's `/v1/usage` shape so a single
 	// client struct (Swift widget, llm-git, ...) works against either endpoint.
@@ -714,7 +715,7 @@ async function handleUsage(storage: AuthStorage, signal: AbortSignal): Promise<R
  * a clean diagnosis and getting a 429 storm.
  */
 async function handleCredentialsCheck(storage: AuthStorage, signal: AbortSignal): Promise<Response> {
-	const credentials = await storage.checkCredentials({ signal });
+	const credentials = await storage.health.check({ signal });
 	return json(200, { generatedAt: Date.now(), credentials });
 }
 
@@ -728,7 +729,7 @@ async function handleCredentialsCheck(storage: AuthStorage, signal: AbortSignal)
  * send back to redeem — one email can span several stored accounts.
  */
 async function handleResetCreditsList(storage: AuthStorage, signal: AbortSignal): Promise<Response> {
-	const accounts = await storage.listResetCredits({ signal });
+	const accounts = await storage.resets.list({ signal });
 	return json(200, { generatedAt: Date.now(), accounts });
 }
 
@@ -779,7 +780,7 @@ async function handleResetCreditRedeem(storage: AuthStorage, req: Request): Prom
 	}
 	let outcome: ResetCreditRedeemOutcome;
 	try {
-		outcome = await storage.redeemResetCredit({
+		outcome = await storage.resets.redeem({
 			target: { provider: "openai-codex", credentialId, creditId },
 			redeemRequestId,
 			signal: req.signal,

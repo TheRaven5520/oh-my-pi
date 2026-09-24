@@ -40,7 +40,7 @@ function makeClaudeComponent(reports: unknown, modelId: string): StatusLineCompo
 					}),
 				},
 				fetchUsageReports: async () => reports,
-				modelRegistry: { authStorage: { getOAuthAccountIdentity: () => undefined } },
+				modelRegistry: { authStorage: { oauth: { identity: () => undefined } } },
 				getAsyncJobSnapshot: () => ({ running: [] }),
 				getContextUsage: () => ({ tokens: 380, contextWindow: 1000, percent: 38 }),
 			} as unknown as ConstructorParameters<typeof StatusLineComponent>[0],

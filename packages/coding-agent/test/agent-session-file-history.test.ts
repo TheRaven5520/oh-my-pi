@@ -67,7 +67,7 @@ describe("AgentSession file history", () => {
 		tempDir = TempDir.createSync("@omp-file-history-session-");
 		authStorage = await AuthStorage.create(tempDir.join("auth.db"));
 		const model = writingModel();
-		authStorage.setRuntimeApiKey(model.provider, "test-key");
+		authStorage.keys.setRuntime(model.provider, "test-key");
 		const notes = tempDir.join("notes.txt");
 		const sessionFile = SessionManager.createEmptySessionFile(tempDir.path());
 
@@ -109,7 +109,7 @@ describe("AgentSession file history", () => {
 						}
 					: { content: ["done"] },
 		});
-		authStorage.setRuntimeApiKey(model.provider, "test-key");
+		authStorage.keys.setRuntime(model.provider, "test-key");
 		const code = tempDir.join("code.ts");
 		fs.writeFileSync(code, "const x = 1;\n");
 

@@ -10,6 +10,44 @@
 
 - User messages now render like Claude Code: a dim `❯` pointer, wrapped lines indented under the text, and no blank padding rows above or below the tinted band. Collab and skill prompt bubbles also drop their padding rows. The `titanium` theme's user message background is Claude Code's gray (`#373737`).
 - A submitted prompt is drawn dim until the provider accepts the request (its response headers arrive), then switches to normal text, as in Claude Code. Transports that report no response headers fall back to the model's first streamed output.
+## [18.3.0] - 2026-09-24
+
+### Added
+
+- Added proc:// and agent:// URI support for interacting with processes and agents.
+- Added support for xd:// documentation topic URLs.
+- Added rendering for background job state and peer-to-peer messages from the wait tool.
+- Added supervised bash service rendering with status, readiness, and output information.
+- Added a fullscreen annotation overlay for diffs and text, including multi-line notes, editing, deletion, and undo ([#12601](https://github.com/can1357/oh-my-pi/pull/12601) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+- Added Daybreak-enabled account listings to the usage dashboard.
+
+### Changed
+
+- Mermaid flowcharts and state diagrams now automatically choose a layout that best fits the available terminal width and reflow when the terminal is resized.
+- Plan Review annotations now support multi-line editing, deletion, and undo ([#12601](https://github.com/can1357/oh-my-pi/pull/12601) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+
+### Fixed
+
+- Fixed AltGr characters, including `[`, `]`, `{`, and `}`, being dropped in Windows Terminal when using the kitty keyboard protocol on Hungarian and other international keyboard layouts ([#12984](https://github.com/can1357/oh-my-pi/pull/12984) by [@H4vC](https://github.com/H4vC)).
+
+## [18.2.11] - 2026-09-23
+
+### Added
+
+- Added a Skills section to the settings.
+- Enabled OSC 8 hyperlinks in rio.
+
+### Fixed
+
+- Fixed scrolling startup release notes without requiring an initial Escape keypress.
+- Improved usage quota display so names remain distinguishable and readable in narrow and multi-column dashboards.
+
+## [18.2.10] - 2026-09-22
+
+### Changed
+
+- Added support for multiple concurrent TUI paint listeners to enable simultaneous session recording and streaming
+- Coalesced status event updates for progress-based operations to reduce TUI render overhead
 
 ## [18.2.9] - 2026-09-22
 

@@ -22,7 +22,7 @@ describe("AgentSession request_accepted", () => {
 				{ content: ["rejected"], responseHeaders: {}, responseStatus: 429 },
 			],
 		});
-		authStorage.setRuntimeApiKey(mockModel.provider, "test-key");
+		authStorage.keys.setRuntime(mockModel.provider, "test-key");
 		const session = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
