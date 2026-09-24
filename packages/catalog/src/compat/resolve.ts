@@ -863,6 +863,7 @@ function resolveAnthropicPolicy(
 		disableStrictTools: isAzure,
 		disableAdaptiveThinking: false,
 		allowAnthropicHeaderOverrides: false,
+		supportsFastMode: false,
 		supportsEagerToolInputStreaming: official,
 		supportsLongCacheRetention: official,
 		supportsMidConversationSystem: official && !facts.family("sonnet") && facts.anthropicAdaptiveGenAtLeast("4.8"),
