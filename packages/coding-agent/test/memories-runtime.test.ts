@@ -262,6 +262,60 @@ describe("memories runtime", () => {
 		expect(phase2Prompt?.systemPrompt?.[0]).toContain("memory-stage-two consolidator");
 	});
 
+	test("phase1 never sends a chat the person made private to a model", async () => {
+		// Sprilicred private mode: the person types exactly `private` (in
+		// backticks) and the proxy itself answers "OK". That transcript must not
+		// leave the machine as a memory-extraction prompt.
+		const fx = await createFixture();
+		const writeRollout = async (id: string, messages: Array<Record<string, unknown>>) => {
+			const rows = [
+				{ type: "session", id, cwd: fx.agentDir },
+				...messages.map(message => ({ type: "message", message })),
+			];
+			await fs.writeFile(
+				path.join(fx.sessionDir, `${id}.jsonl`),
+				`${rows.map(row => JSON.stringify(row)).join("\n")}\n`,
+			);
+		};
+		await writeRollout("thread-private", [
+			{ role: "user", content: "`private`" },
+			{ role: "assistant", content: [{ type: "text", text: "OK" }] },
+			{ role: "user", content: "private-secret-marker" },
+		]);
+		await writeRollout("thread-public", [{ role: "user", content: "public-rollout-marker" }]);
+
+		const isPhase2 = (context: ai.Context): boolean =>
+			context.systemPrompt?.some(part => part.includes("memory-stage-two consolidator")) ?? false;
+		const completeSpy = vi.spyOn(ai, "completeSimple").mockImplementation(async (_model, context) => {
+			const payload = isPhase2(context)
+				? { memory_md: "# Memory\n\nBody", memory_summary: "Summary", skills: [] }
+				: { rollout_summary: "Public summary", rollout_slug: "public", raw_memory: "Public memory" };
+			return {
+				stopReason: "end_turn",
+				content: [{ type: "text", text: JSON.stringify(payload) }],
+				usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
+			} as any;
+		});
+
+		startMemoryStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+
+		await settle(fx.whenSettled, "private-chat phase1");
+		const stage1Requests = completeSpy.mock.calls
+			.filter(call => !isPhase2(call[1]))
+			.map(call => JSON.stringify(call[1].messages));
+		expect(stage1Requests).toHaveLength(1);
+		expect(stage1Requests[0]).toContain("public-rollout-marker");
+		expect(completeSpy.mock.calls.some(call => JSON.stringify(call[1]).includes("private-secret-marker"))).toBe(
+			false,
+		);
+	});
+
 	test("clamps stage1 and phase2 reasoning effort against the model's supported range", async () => {
 		// Regression for #1480: memory pipeline hardcoded `Effort.Low`/`Effort.Medium`,
 		// which `requireSupportedEffort` rejects on models whose supported range starts

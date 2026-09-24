@@ -30,6 +30,7 @@ import {
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
+import { buildSideAgentHeaders } from "../session/side-agent-headers";
 import { Semaphore } from "../task/parallel";
 import type { ToolSession } from "../tools";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
@@ -309,6 +310,11 @@ async function executeCompletion(
 			]
 		: undefined;
 	const telemetry = resolveTelemetry(session.getTelemetry?.(), session.getSessionId?.() ?? undefined);
+	// The completion runs with no provider session id; link it to the chat.
+	const headers = buildSideAgentHeaders(
+		session.getProviderSessionId?.() ?? session.getSessionId?.() ?? undefined,
+		"helper",
+	);
 	const systemPrompt = system ? [system] : ["You are a helpful assistant."];
 	// Each fallback that issues a model request consumes one retry attempt,
 	// mirroring session recovery. Keyless candidates are skipped without
@@ -346,6 +352,7 @@ async function executeCompletion(
 					reasoning: candidate.reasoning,
 					disableReasoning: candidate.disableReasoning,
 					toolChoice: schema ? { type: "tool", name: STRUCTURED_TOOL_NAME } : undefined,
+					headers,
 				},
 				{ telemetry, oneshotKind: "eval_completion" },
 			);

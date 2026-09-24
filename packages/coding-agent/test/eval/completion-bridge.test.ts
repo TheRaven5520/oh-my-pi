@@ -21,6 +21,7 @@ import { IdleTimeout } from "../../src/eval/idle-timeout";
 import { disposeAllVmContexts } from "../../src/eval/js/context-manager";
 import { executeJs } from "../../src/eval/js/executor";
 import { disposeAllKernelSessions, type PythonResult } from "../../src/eval/py/executor";
+import { AGENT_ROLE_HEADER, PARENT_SESSION_ID_HEADER } from "../../src/session/side-agent-headers";
 import type { ToolSession } from "../../src/tools";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
@@ -223,6 +224,18 @@ describe("runEvalCompletion", () => {
 			return `${model.provider}/${model.id}`;
 		});
 		expect(resolved).toEqual(["p/smol", "p/default", "p/slow"]);
+	});
+
+	it("links the completion request to the chat's provider session", async () => {
+		const spy = vi.spyOn(ai, "completeSimple").mockResolvedValue(assistant({ text: "ok" }));
+		const session = { ...makeSession(), getProviderSessionId: () => "chat-provider-session" } as ToolSession;
+
+		await runEvalCompletionAndWait({ prompt: "q", model: "smol" }, { session });
+
+		expect(spy.mock.calls[0]?.[2]?.headers).toEqual({
+			[PARENT_SESSION_ID_HEADER]: "chat-provider-session",
+			[AGENT_ROLE_HEADER]: "helper",
+		});
 	});
 
 	it("prefers the session active model for the default tier, falling back to @default", async () => {

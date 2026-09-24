@@ -1274,6 +1274,8 @@ export class VibeSessionRegistry {
 		};
 		return {
 			cwd: session.cwd,
+			// Link the vibe subagent's requests to the conversation that spawned it.
+			parentProviderSessionId: session.getProviderSessionId?.(),
 			agent: record.agent,
 			task: message,
 			assignment: message,

@@ -178,6 +178,9 @@ export function createPersistedSubagentReviverFactory(
 						: ref.displayName,
 				parentTaskPrefix: ref.id,
 				parentAgentId: ref.parentId,
+				// Link the revived agent's requests to the root conversation's live
+				// provider session, like a live spawn's `x-omp-parent-session-id`.
+				parentProviderSessionId: ctx.session.sessionId,
 				expectedAgentRef: expectedRef,
 				taskDepth,
 				toolNames: revivedToolNames,

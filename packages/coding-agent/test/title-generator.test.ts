@@ -5,6 +5,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { formatModelStringWithRouting, resolveModelOverride } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AGENT_ROLE_HEADER, PARENT_SESSION_ID_HEADER } from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
 import { tinyTitleClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 import {
 	disposeTerminalTitleState,
@@ -73,6 +74,43 @@ describe("title generator", () => {
 		expect(options?.disableReasoning).toBe(true);
 		const messages = completeSimpleMock.mock.calls[0]?.[1].messages;
 		expect(messages?.map(message => message.role)).toEqual(["user"]);
+	});
+
+	it("links the isolated title request to the conversation it names", async () => {
+		// The title request runs under its own provider session id, so without the
+		// parent header a proxy cannot tell a private chat's title request apart.
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "text", text: "<title>Linked Title</title>" }],
+		} as never);
+		const registry = {
+			getAvailable: () => [model],
+			getApiKey: async () => "test-key",
+			getApiKeyForProvider: async () => "test-key",
+			authStorage: { listOAuthAccounts: () => [], rotateSessionCredential: async () => false },
+			resolver: () => async () => "test-key",
+		} as never;
+
+		const title = await generateSessionTitle(
+			"Investigate the resolver",
+			registry,
+			createSettings(model),
+			"title-side-session",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			"chat-provider-session",
+		);
+
+		expect(title).toBe("Linked Title");
+		const options = completeSimpleMock.mock.calls[0]?.[2];
+		expect(options?.sessionId).toBe("title-side-session");
+		expect(options?.headers).toEqual({
+			[PARENT_SESSION_ID_HEADER]: "chat-provider-session",
+			[AGENT_ROLE_HEADER]: "title",
+		});
 	});
 
 	it("selects an available local-inference model from the tiny role", async () => {
