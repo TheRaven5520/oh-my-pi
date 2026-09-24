@@ -1907,6 +1907,8 @@ export class AgentSession {
 				this.#recovery.retryFallbackChainKeys(selector, model, options),
 			findRetryFallbackCandidates: (role, selector, model) =>
 				this.#recovery.findRetryFallbackCandidates(role, selector, model),
+			usageLimitFallbackCandidates: (selector, model) =>
+				this.#recovery.usageLimitFallbackCandidates(selector, model),
 			isRetryFallbackSelectorSuppressed: selector => this.#recovery.isRetryFallbackSelectorSuppressed(selector),
 			noteRetryFallbackCooldown: (selector, retryAfterMs, errorMessage) =>
 				this.#recovery.noteRetryFallbackCooldown(selector, retryAfterMs, errorMessage),

@@ -1862,6 +1862,17 @@ export const SETTINGS_SCHEMA = {
 				'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix. A fallback entry may carry an explicit thinking suffix ("provider/model:low", ":high", ":max", ":off"); a bare entry inherits the failing turn\'s effort, and "provider/*" entries always inherit.',
 		},
 	},
+	"retry.usageLimitFallbackChains": {
+		type: "record",
+		default: {} as Record<string, string[]>,
+		ui: {
+			tab: "model",
+			group: "Retry & Fallback",
+			label: "Usage-Limit Fallback Chains",
+			description:
+				'Same format as retry.fallbackChains, e.g. {"sprilicred-anthropic/*":["personal-anthropic/*"]}, but consulted only when a turn fails on a usage limit (quota reached, pool exhausted), before retry.fallbackChains. Transient errors, startup model resolution, roles, subagent inheritance, and title models never use these chains, so a reserve account is spent only when the primary has run out.',
+		},
+	},
 	"retry.fallbackRevertPolicy": {
 		type: "enum",
 		values: ["cooldown-expiry", "never"] as const,

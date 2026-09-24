@@ -397,6 +397,11 @@ export interface SessionAdvisorsHost {
 		currentSelector: string,
 		currentModel?: Model | null,
 	): RetryFallbackSelector[];
+	/** `retry.usageLimitFallbackChains` candidates; consult only for a usage-limit failure. */
+	usageLimitFallbackCandidates(
+		currentSelector: string,
+		currentModel?: Model | null,
+	): Array<{ role: string; selector: RetryFallbackSelector }>;
 	isRetryFallbackSelectorSuppressed(selector: RetryFallbackSelector): boolean;
 	noteRetryFallbackCooldown(currentSelector: string, retryAfterMs: number | undefined, errorMessage: string): void;
 	createCodexCompactionContext(options: {
@@ -1695,47 +1700,47 @@ export class SessionAdvisors {
 			pinnedRole: advisor.retryFallback?.role,
 			roleHint: "advisor",
 		});
-		if (
-			!chainKeys.some(role => this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel).length > 0)
-		) {
-			return declineUsageLimit();
-		}
-
-		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
+		const candidates = usageLimit ? this.#host.usageLimitFallbackCandidates(currentSelector, currentModel) : [];
 		for (const role of chainKeys) {
 			for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
-				if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
-				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
-				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-				if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
-				if (!this.#canReplayAdvisorHistory(advisor, candidate)) continue;
-				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId, { signal });
-				if (!apiKey) continue;
-				signal.throwIfAborted();
-
-				const originalThinkingLevel = advisor.thinkingLevel;
-				const requestedThinkingLevel = selector.thinkingLevel ?? originalThinkingLevel;
-				const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
-				if (advisor.retryFallback) {
-					advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
-				} else {
-					advisor.retryFallback = {
-						role,
-						originalSelector: currentSelector,
-						originalThinkingLevel,
-						lastAppliedThinkingLevel: nextThinkingLevel,
-					};
-				}
-				advisor.retryFallbackPendingSuccess = true;
-				this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
-				await this.#host.emitSessionEvent({
-					type: "retry_fallback_applied",
-					from: currentSelector,
-					to: selector.raw,
-					role,
-				});
-				return true;
+				candidates.push({ role, selector });
 			}
+		}
+		if (candidates.length === 0) return declineUsageLimit();
+
+		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
+		for (const { role, selector } of candidates) {
+			if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
+			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
+			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
+			if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
+			if (!this.#canReplayAdvisorHistory(advisor, candidate)) continue;
+			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId, { signal });
+			if (!apiKey) continue;
+			signal.throwIfAborted();
+
+			const originalThinkingLevel = advisor.thinkingLevel;
+			const requestedThinkingLevel = selector.thinkingLevel ?? originalThinkingLevel;
+			const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
+			if (advisor.retryFallback) {
+				advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
+			} else {
+				advisor.retryFallback = {
+					role,
+					originalSelector: currentSelector,
+					originalThinkingLevel,
+					lastAppliedThinkingLevel: nextThinkingLevel,
+				};
+			}
+			advisor.retryFallbackPendingSuccess = true;
+			this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
+			await this.#host.emitSessionEvent({
+				type: "retry_fallback_applied",
+				from: currentSelector,
+				to: selector.raw,
+				role,
+			});
+			return true;
 		}
 		return declineUsageLimit();
 	}

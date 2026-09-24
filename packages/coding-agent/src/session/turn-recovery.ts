@@ -1668,6 +1668,31 @@ export class TurnRecovery {
 		);
 	}
 
+	/**
+	 * Candidates from `retry.usageLimitFallbackChains` for the active model,
+	 * each tagged with its chain key. Callers consult these only for a
+	 * usage-limit failure, ahead of the ordinary chains, so a reserve account is
+	 * never reached by transient errors or any other chain consumer.
+	 */
+	usageLimitFallbackCandidates(
+		currentSelector: string,
+		currentModel: Model | null | undefined = this.#host.model(),
+	): Array<{ role: string; selector: RetryFallbackSelector }> {
+		const chains = this.#host.settings.get("retry.usageLimitFallbackChains");
+		if (!chains || typeof chains !== "object" || Object.keys(chains).length === 0) return [];
+		const context: RetryFallbackResolutionContext = {
+			chains,
+			getModelRole: role => this.#host.settings.getModelRole(role),
+			modelLookup: this.#host.modelRegistry,
+		};
+		const key = resolveRetryFallbackChainKey(context, currentSelector, currentModel);
+		if (!key) return [];
+		return findRetryFallbackCandidates(context, key, currentSelector, currentModel).map(selector => ({
+			role: key,
+			selector,
+		}));
+	}
+
 	async #maybeApplyUsageAwareFallback(signal: AbortSignal, confirmer?: UsageFallbackConfirmer): Promise<boolean> {
 		if (!this.#host.settings.get("retry.usageAwareFallback")) return false;
 		const currentModel = this.#host.model();
@@ -1930,6 +1955,8 @@ export class TurnRecovery {
 			pinFallback?: boolean;
 			preserveFailedTurn?: boolean;
 			wrapAround?: boolean;
+			/** The failure is a usage limit: try `retry.usageLimitFallbackChains` first. */
+			usageLimit?: boolean;
 		},
 	): Promise<boolean> {
 		const ceiling = this.#host.thinkingLevelCeiling();
@@ -1938,44 +1965,48 @@ export class TurnRecovery {
 			: this.#host.agent.state.messages.findLast(
 					(message): message is AssistantMessage => message.role === "assistant" && message !== failedMessage,
 				);
+		const candidates = options?.usageLimit ? this.usageLimitFallbackCandidates(currentSelector) : [];
 		for (const role of this.retryFallbackChainKeys(currentSelector)) {
 			for (const selector of this.findRetryFallbackCandidates(role, currentSelector, undefined, options)) {
-				if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
-				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
-				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-				if (!candidate) continue;
-				if (options?.excludeProvider === candidate.provider) continue;
-				// Anthropic signatures and redacted blocks are model-bound, while the
-				// latest assistant response must remain byte-identical. A same-provider
-				// model switch can satisfy neither constraint, so keep retrying the
-				// source model or consider a later cross-provider candidate whose
-				// message transform can safely demote the foreign thinking.
-				if (
-					candidate.api === "anthropic-messages" &&
-					latestAssistant?.api === "anthropic-messages" &&
-					latestAssistant.provider === candidate.provider &&
-					latestAssistant.model !== candidate.id &&
-					latestAssistant.content.some(
-						block =>
-							(block.type === "thinking" && Boolean(block.thinkingSignature?.trim())) ||
-							block.type === "redactedThinking",
-					)
-				) {
-					continue;
-				}
-				// A candidate whose effort floor exceeds the per-spawn ceiling would be
-				// clamped UP past the cap by its model floor — skip it entirely.
-				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
-				// Skip a candidate whose window cannot hold the retry context. The
-				// failed assistant is excluded only when retry removes it; preserved
-				// unexecuted-tool turns remain part of the request (issue #8065).
-				if (!this.#host.contextFitsModel(candidate, options?.preserveFailedTurn ? undefined : failedMessage)) {
-					continue;
-				}
-				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
-				if (!apiKey) continue;
-				return this.applyRetryFallbackCandidate(role, selector, currentSelector, options);
+				candidates.push({ role, selector });
 			}
+		}
+		for (const { role, selector } of candidates) {
+			if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
+			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
+			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
+			if (!candidate) continue;
+			if (options?.excludeProvider === candidate.provider) continue;
+			// Anthropic signatures and redacted blocks are model-bound, while the
+			// latest assistant response must remain byte-identical. A same-provider
+			// model switch can satisfy neither constraint, so keep retrying the
+			// source model or consider a later cross-provider candidate whose
+			// message transform can safely demote the foreign thinking.
+			if (
+				candidate.api === "anthropic-messages" &&
+				latestAssistant?.api === "anthropic-messages" &&
+				latestAssistant.provider === candidate.provider &&
+				latestAssistant.model !== candidate.id &&
+				latestAssistant.content.some(
+					block =>
+						(block.type === "thinking" && Boolean(block.thinkingSignature?.trim())) ||
+						block.type === "redactedThinking",
+				)
+			) {
+				continue;
+			}
+			// A candidate whose effort floor exceeds the per-spawn ceiling would be
+			// clamped UP past the cap by its model floor — skip it entirely.
+			if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
+			// Skip a candidate whose window cannot hold the retry context. The
+			// failed assistant is excluded only when retry removes it; preserved
+			// unexecuted-tool turns remain part of the request (issue #8065).
+			if (!this.#host.contextFitsModel(candidate, options?.preserveFailedTurn ? undefined : failedMessage)) {
+				continue;
+			}
+			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
+			if (!apiKey) continue;
+			return this.applyRetryFallbackCandidate(role, selector, currentSelector, options);
 		}
 
 		return false;
@@ -2383,6 +2414,7 @@ export class TurnRecovery {
 					pinFallback: classifierRefusal,
 					preserveFailedTurn,
 					wrapAround: longUsageLimitFallback,
+					usageLimit: AIError.is(id, AIError.Flag.UsageLimit),
 				});
 			}
 			// Auto fallback from a Fireworks Fast variant to its base model. Independent

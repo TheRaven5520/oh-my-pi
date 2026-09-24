@@ -183,6 +183,7 @@ Defined in settings schema under retry group:
 - `retry.maxDelayMs`
 - `retry.modelFallback` (default `true`; gates retry model-fallback switching)
 - `retry.fallbackChains`
+- `retry.usageLimitFallbackChains` (same shape as `retry.fallbackChains`; tried first, and only, when the failure is a usage limit — e.g. a reserve personal account behind a pooled gateway)
 - `retry.fallbackRevertPolicy` (`"cooldown-expiry"` by default; `"never"` disables automatic restoration)
 - `retry.usageAwareFallback` (default `false`; runs a preflight for supported coding-plan usage reports)
 - `retry.usageReservePct` (default `10`; remaining-quota reserve threshold)

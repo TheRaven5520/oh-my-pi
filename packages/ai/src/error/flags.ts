@@ -657,6 +657,8 @@ export function classify(error: unknown, api?: Api): number {
 			const { status: codeStatus, code } = link;
 			if (
 				code === "usage_limit_reached" ||
+				// Sprilicred: no pooled account can serve this model right now.
+				code === "pool_exhausted" ||
 				(code === "insufficient_quota" && !isDashScopeTokenLimitText(link.message)) ||
 				(codeStatus === 402 &&
 					(code === "payment_required" || code === "deactivated_workspace" || is402BillingCapBody(link.message)))

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { captureOpenAIHttpError } from "@oh-my-pi/pi-ai/utils/openai-http";
 
 describe("AIError.classify — structural provider errors", () => {
 	it("classifies an Anthropic connection timeout as timeout + transient (no regex)", () => {
@@ -61,6 +62,33 @@ describe("AIError.classify — structural provider errors", () => {
 			new AIError.ProviderHttpError("Payment Required", 429, { code: "usage_limit_reached" }),
 		);
 		expect(AIError.is(id, AIError.Flag.UsageLimit)).toBe(true);
+	});
+
+	it("maps Sprilicred's pool_exhausted 429 to usageLimit on both wire formats, whatever its wording", async () => {
+		// Exact body shape from Sprilicred (src/lib.rs IntoResponse): the "resting"
+		// branch carries capacity wording that text classification treats as transient.
+		const body = JSON.stringify({
+			error: {
+				type: "pool_exhausted",
+				code: "pool_exhausted",
+				message:
+					"No Anthropic account can serve claude-opus-5-5: 3 of 3 resting after provider errors; capacity returns in 4m",
+				param: null,
+				retry_after: 240,
+				scope: "all",
+				available_models: [],
+			},
+		});
+		const response = () =>
+			new Response(body, { status: 429, headers: { "content-type": "application/json", "retry-after": "240" } });
+		for (const error of [
+			await AIError.AnthropicApiError.fromResponse(response()),
+			await captureOpenAIHttpError(response()),
+		]) {
+			const id = AIError.classify(error);
+			expect(AIError.is(id, AIError.Flag.UsageLimit)).toBe(true);
+			expect(AIError.retriable(id)).toBe(true);
+		}
 	});
 
 	it("recognizes Codex transport errors by name without importing the provider", () => {

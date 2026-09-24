@@ -3394,6 +3394,81 @@ describe("AgentSession retry fallback", () => {
 		]);
 	});
 
+	it("tries usage-limit chains only when the failure is a usage limit", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const reserveModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !reserveModel) throw new Error("Expected bundled test models to exist");
+		const primary = `${primaryModel.provider}/${primaryModel.id}`;
+		const reserve = `${reserveModel.provider}/${reserveModel.id}`;
+		/** The primary's first call fails the way a provider reports it: message plus the id classified from the real error. */
+		const run = async (firstError: Error) => {
+			const requestedModels: string[] = [];
+			let failed = false;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn: model => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					if (failed || model.id !== primaryModel.id) return recoveredTextStream(model, "ok");
+					failed = true;
+					const stream = new AssistantMessageEventStream();
+					queueMicrotask(() => {
+						const partial: AssistantMessage = {
+							role: "assistant",
+							content: [],
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+							usage: emptyUsage(),
+							stopReason: "stop",
+							timestamp: Date.now(),
+						};
+						stream.push({ type: "start", partial });
+						stream.push({
+							type: "error",
+							reason: "error",
+							error: {
+								...partial,
+								stopReason: "error",
+								errorMessage: firstError.message,
+								errorId: AIError.classify(firstError),
+								errorStatus: AIError.status(firstError),
+							},
+						});
+					});
+					return stream;
+				},
+			});
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({
+					"compaction.enabled": false,
+					"retry.maxRetries": 1,
+					"retry.baseDelayMs": 1,
+					"retry.usageLimitFallbackChains": { "anthropic/*": [reserve] },
+				}),
+				modelRegistry,
+			});
+			await session.prompt("Recover");
+			await session.waitForIdle();
+			await session.dispose();
+			session = undefined;
+			return requestedModels;
+		};
+
+		// Sprilicred's pooled accounts are all resting: a usage limit, so the reserve serves.
+		const poolExhausted = new AIError.ProviderHttpError(
+			"429 No Anthropic account can serve claude-sonnet-4-5: 3 of 3 resting after provider errors",
+			429,
+			{ code: "pool_exhausted" },
+		);
+		expect(await run(poolExhausted)).toEqual([primary, reserve]);
+
+		// A transient failure retries the primary and never touches the reserve.
+		expect(await run(new AIError.ProviderHttpError("503 Service Unavailable", 503))).toEqual([primary, primary]);
+	});
+
 	it("falls back on structured classifier refusals and pins the fallback", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");

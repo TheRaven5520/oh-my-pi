@@ -61,6 +61,14 @@ function isConcurrencyAdmissionRejection(response: Response, bodyText: string): 
 	);
 }
 
+/**
+ * Sprilicred's pooled-account gateway answers `pool_exhausted` (HTTP 429) when
+ * no account can serve the model until a reset that is often hours away. It is
+ * a usage limit, so the transport must not sleep through it: session recovery
+ * decides whether to wait or switch to a configured fallback.
+ */
+const POOL_EXHAUSTED_BODY_PATTERN = /"(?:code|type)"\s*:\s*"pool_exhausted"/;
+
 export interface OpenAIStreamRequestInit {
 	url: string;
 	headers: Record<string, string>;
@@ -102,6 +110,7 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 		// recovery owns its backoff/fallback (issue #8854).
 		shouldRetryResponse: async (response, bodyText) =>
 			!isConcurrencyAdmissionRejection(response, bodyText) &&
+			!POOL_EXHAUSTED_BODY_PATTERN.test(bodyText) &&
 			(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText))),
 		// Bun's native fetch enforces a hard ~300s pre-response timeout (issue #2422).
 		// Cold large-context streams legitimately exceed it; the caller's
