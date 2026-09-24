@@ -122,14 +122,15 @@ const OMP_STATUS_LINE_RE = /^\s*in:\s+\d+\s+out:\s+\d+(?:\s+cache\s+\S+)?\s+t:\s
 
 /**
  * Read-only slash commands that also run from a focused subagent view, keyed by name to
- * a check on their arguments; every other command (and mutating forms such as
- * `/usage reset`, which spends a saved rate-limit reset) still needs the main session.
+ * a check on their arguments; every other command still needs the main session.
+ * Bare `/usage`, `show`, and `clear` only pin or unpin the static usage snapshot; any
+ * other argument (including the removed `reset`) stays gated.
  */
 const FOCUSED_VIEW_COMMANDS: Record<string, (args: string) => boolean> = {
 	export: () => true,
 	usage: args => {
 		const { verb, rest } = parseSubcommand(args);
-		return !verb || (verb === "show" && !rest);
+		return !verb || ((verb === "show" || verb === "clear") && !rest);
 	},
 };
 const FOCUSED_VIEW_COMMAND_LIST = Object.keys(FOCUSED_VIEW_COMMANDS)

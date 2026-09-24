@@ -54,9 +54,9 @@ function createFocusedContext() {
 		showStatus: vi.fn(),
 		showError: vi.fn(),
 		updatePendingMessagesDisplay: vi.fn(),
-		handleUsageCommand: vi.fn(async () => {}),
+		toggleUsagePinned: vi.fn(),
+		setUsagePinned: vi.fn(),
 		handleExportCommand: vi.fn(async () => {}),
-		showResetUsageSelector: vi.fn(async () => {}),
 		withLocalSubmission: async <T>(_text: string, fn: () => Promise<T>) => fn(),
 	};
 	return { ctx: ctx as unknown as InteractiveModeContext, raw: ctx, editor, prompt };
@@ -76,10 +76,17 @@ describe("focused subagent view slash commands", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("runs /usage from the focused view", async () => {
-		const { raw, prompt } = await submit("/usage");
-		expect(raw.handleUsageCommand).toHaveBeenCalledTimes(1);
-		expect(prompt).not.toHaveBeenCalled();
+	it("toggles, pins, and clears the usage snapshot from the focused view", async () => {
+		const toggled = await submit("/usage");
+		expect(toggled.raw.toggleUsagePinned).toHaveBeenCalledTimes(1);
+		expect(toggled.prompt).not.toHaveBeenCalled();
+
+		const shown = await submit("/usage show");
+		expect(shown.raw.setUsagePinned).toHaveBeenCalledWith(true);
+
+		const cleared = await submit("/usage clear");
+		expect(cleared.raw.setUsagePinned).toHaveBeenCalledWith(false);
+		expect(cleared.prompt).not.toHaveBeenCalled();
 	});
 
 	it("runs /export with its arguments from the focused view", async () => {
@@ -95,11 +102,11 @@ describe("focused subagent view slash commands", () => {
 		expect(prompt).not.toHaveBeenCalled();
 	});
 
-	it("keeps the mutating /usage reset form gated to the main session", async () => {
+	it("keeps unrecognized /usage forms gated to the main session", async () => {
 		for (const text of ["/usage reset", "/usage reset anthropic/active"]) {
 			const { raw, editor } = await submit(text);
-			expect(raw.showResetUsageSelector).not.toHaveBeenCalled();
-			expect(raw.handleUsageCommand).not.toHaveBeenCalled();
+			expect(raw.toggleUsagePinned).not.toHaveBeenCalled();
+			expect(raw.setUsagePinned).not.toHaveBeenCalled();
 			expect(raw.showStatus).toHaveBeenCalledWith(expect.stringContaining("press ←← to return first"));
 			expect(editor.getText()).toBe(text);
 		}
