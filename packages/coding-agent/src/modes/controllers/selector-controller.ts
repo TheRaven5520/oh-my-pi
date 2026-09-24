@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model, PASTE_CODE_LOGIN_PROVIDERS as PasteCodeLoginProviders, UsageReport } from "@oh-my-pi/pi-ai";
@@ -123,6 +124,12 @@ import { renderUsageReports } from "./command-controller";
 import type { SessionObserverRegistry } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 
 const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
+
+/** Rewind menu choices, worded as in Claude Code's `/rewind`. */
+const REWIND_RESTORE_BOTH = "Restore code and conversation";
+const REWIND_RESTORE_CONVERSATION = "Restore conversation";
+const REWIND_RESTORE_CODE = "Restore code";
+const REWIND_NEVER_MIND = "Never mind";
 
 interface ModelOverlayModules {
 	ModelHubComponent: typeof ModelHubComponentType;
@@ -1465,26 +1472,56 @@ export class SelectorController {
 	 * current leaf; every other target lands the leaf on the entry. `done`
 	 * closes the fullscreen selector after the transcript is rebuilt so the
 	 * alternate screen never flashes a stale transcript.
+	 *
+	 * When the target prompt is a file-history checkpoint and files changed
+	 * since it, the user first picks whether to restore code, conversation, or
+	 * both (Claude Code's `/rewind` menu); "Never mind" returns to the selector.
 	 */
 	async #rewindFromTranscript(entryId: string, done: () => void): Promise<void> {
+		let closed = false;
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			done();
+		};
 		const entry = this.ctx.sessionManager.getEntry(entryId);
 		if (!entry || !isTranscriptEntry(entry)) {
-			done();
+			close();
 			return;
 		}
 
 		const isUserTarget = isUserRequestEntry(entry);
 		const realLeafId = this.ctx.sessionManager.getLeafId();
 		if (entryId === realLeafId && !isUserTarget) {
-			done();
+			close();
 			this.ctx.showStatus("Already at this point");
 			return;
+		}
+		let restoreCode = false;
+		if (isUserTarget) {
+			const changed = await this.ctx.session.fileHistory.planRestore(entryId);
+			if (changed.length > 0) {
+				close();
+				const choice = await this.ctx.showHookSelector(
+					`Rewind · ${changed.length} file${changed.length === 1 ? "" : "s"} changed since this prompt`,
+					[REWIND_RESTORE_BOTH, REWIND_RESTORE_CONVERSATION, REWIND_RESTORE_CODE, REWIND_NEVER_MIND],
+				);
+				if (choice === undefined || choice === REWIND_NEVER_MIND) {
+					this.showUserMessageSelector();
+					return;
+				}
+				if (choice === REWIND_RESTORE_CODE) {
+					await this.#restoreCode(entryId, "Restored code");
+					return;
+				}
+				restoreCode = choice === REWIND_RESTORE_BOTH;
+			}
 		}
 		const treeRewind = this.#treeRewindBoundary(entryId, realLeafId);
 		try {
 			const result = await this.ctx.session.navigateTree(entryId, { summarize: false });
 			if (result.cancelled) {
-				done();
+				close();
 				this.ctx.showStatus("Navigation cancelled");
 				return;
 			}
@@ -1499,10 +1536,36 @@ export class SelectorController {
 			if (result.editorText && (isUserTarget || !this.ctx.editor.getText().trim())) {
 				this.ctx.editor.setDraft(result.editorText, result.editorImages);
 			}
-			done();
-			this.ctx.showStatus("Rewound to selected point");
+			close();
+			if (restoreCode) {
+				await this.#restoreCode(entryId, "Rewound and restored code");
+			} else {
+				this.ctx.showStatus("Rewound to selected point");
+			}
 		} catch (error) {
-			done();
+			close();
+			this.ctx.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	/** Put files back to their state when prompt `entryId` was sent, stopping a running turn first. */
+	async #restoreCode(entryId: string, verb: string): Promise<void> {
+		try {
+			if (this.ctx.session.isStreaming) await this.ctx.session.abort();
+			const result = await this.ctx.session.fileHistory.restore(entryId);
+			const count = result.restored.length;
+			const cwd = this.ctx.sessionManager.getCwd();
+			const label = (paths: string[]) => paths.map(p => path.relative(cwd, p) || p).join(", ");
+			if (result.skipped.length > 0) {
+				this.ctx.showWarning(
+					`Restored the code, but skipped ${result.skipped.length} linked file${result.skipped.length === 1 ? "" : "s"}: ${label(result.skipped)}`,
+				);
+			}
+			if (result.failed.length > 0) {
+				this.ctx.showError(`Could not restore ${label(result.failed)}`);
+			}
+			this.ctx.showStatus(`${verb}: ${count} file${count === 1 ? "" : "s"}`);
+		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 		}
 	}

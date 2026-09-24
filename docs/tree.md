@@ -28,7 +28,18 @@ Any of the following opens the same selector:
 - `/tree`
 - configured keybinding for the `app.session.tree` action
 
-Double-escape on an empty editor opens the fullscreen transcript rewind selector instead (see `doubleEscapeAction`): it replays the transcript, outlines the block the rewind would land on, and rewinds via `branch()` for user prompts or `navigateTree()` for anything else.
+Double-escape on an empty editor (or `/branch`, alias `/rewind`) opens the fullscreen transcript rewind selector instead (see `doubleEscapeAction`): it replays the transcript, outlines the block the rewind would land on, and rewinds in place with `navigateTree()`. Rewinding to a user prompt puts that prompt back in the editor.
+
+### Restoring code
+
+Before `edit`, `write`, `ast_edit`, or an `lsp` rename/code action first changes a file during a turn, omp saves the file's prior contents (or notes that it did not exist). Each prompt that starts a run is a checkpoint; a message sent while the agent is already working joins that run and gets no checkpoint of its own. When you rewind to a checkpoint prompt and files have changed since it, a menu asks what to restore:
+
+- **Restore code and conversation** — rewind the conversation and put every changed file back as it was when that prompt was sent (files created since then are deleted).
+- **Restore conversation** — rewind the conversation only.
+- **Restore code** — restore the files and keep the conversation.
+- **Never mind** — return to the selector.
+
+Without file changes the rewind happens immediately, as before. Snapshots live in `<session artifacts>/file-history/` (in memory for `--no-session`), survive `--resume`, and keep the 100 most recent checkpoints. Not tracked: bash commands, SQLite row writes, subagents (each keeps its own history), edits a language server applies on its own through `workspace/applyEdit`, and edits made outside omp. Symlinked and hard-linked files are skipped with a warning rather than written through.
 
 ## Tree UI model
 
@@ -216,11 +227,11 @@ Label edits in tree UI call `appendLabelChange(targetId, label)`.
 | Operation | Scope                                            | Result                                                                                                                                                   |
 | --------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/tree`   | Current session file                             | Moves leaf to selected point (same file)                                                                                                                 |
-| `/branch` | Usually current session file -> new session file | Opens the transcript rewind selector; a **user** message target branches into a new session file, any other target repositions the leaf in place |
+| `/branch` | Current session file                             | Opens the transcript rewind selector (alias `/rewind`); rewinds in place, keeping the old path as a sibling branch, and can restore files (see Restoring code) |
 | `/fork`   | Whole current session                            | Duplicates session into a new persisted session file                                                                                                     |
 | `/resume` | Session list                                     | Switches to another session file                                                                                                                         |
 
-Key distinction: `/tree` is a navigation/repositioning tool inside one session file. `/branch`, `/fork`, and `/resume` all change session-file context.
+Key distinction: `/tree` and `/branch` both move within one session file; `/branch` picks from the rendered transcript and can also restore files. `/fork` and `/resume` change session-file context.
 
 ## Operator workflows
 

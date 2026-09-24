@@ -182,18 +182,23 @@ export interface RenameReferenceEdit {
  * before the error propagates. A failed move therefore leaves the source,
  * destination, and every reference file exactly as they were.
  *
+ * @param beforeMutation Called with each path before it changes (file history).
  * @throws the original `mkdir`/`rename` error, after rolling back the edits.
  */
 export async function applyEditsThenRename(
 	references: RenameReferenceEdit[],
 	source: string,
 	dest: string,
+	beforeMutation?: (filePath: string) => Promise<void>,
 ): Promise<void> {
 	const backups: Array<{ filePath: string; original: string }> = [];
 	for (const { filePath, edits } of references) {
+		await beforeMutation?.(filePath);
 		backups.push({ filePath, original: await Bun.file(filePath).text() });
 		await applyTextEdits(filePath, edits);
 	}
+	await beforeMutation?.(source);
+	await beforeMutation?.(dest);
 	try {
 		await fs.mkdir(path.dirname(dest), { recursive: true });
 		await fs.rename(source, dest);
@@ -311,12 +316,14 @@ export interface WorkspaceEditResult {
  * `onExecuted` fires after each filesystem mutation. When a later op throws,
  * the callback has already reported the executed prefix — callers that must
  * reconcile external state (e.g. LSP overlays) rely on this because the
- * returned {@link WorkspaceEditResult} is lost on failure.
+ * returned {@link WorkspaceEditResult} is lost on failure. `beforeMutation`
+ * fires with each affected path before it changes (file history).
  */
 export async function applyWorkspaceEdit(
 	edit: WorkspaceEdit,
 	cwd: string,
 	onExecuted?: (change: ExecutedWorkspaceChange) => void,
+	beforeMutation?: (filePath: string) => Promise<void>,
 ): Promise<WorkspaceEditResult> {
 	const applied: string[] = [];
 	const executed: ExecutedWorkspaceChange[] = [];
@@ -333,11 +340,13 @@ export async function applyWorkspaceEdit(
 		for (const op of ops) {
 			if (op.kind === "text") {
 				const filePath = uriToFile(op.uri);
+				await beforeMutation?.(filePath);
 				await applyTextEdits(filePath, op.edits);
 				applied.push(`Applied ${op.edits.length} edit(s) to ${formatPathRelativeToCwd(filePath, cwd)}`);
 				record({ kind: "edit", uri: op.uri });
 			} else if (op.kind === "create") {
 				const filePath = uriToFile(op.uri);
+				await beforeMutation?.(filePath);
 				await fs.mkdir(path.dirname(filePath), { recursive: true });
 				try {
 					if (op.options?.overwrite) {
@@ -357,6 +366,8 @@ export async function applyWorkspaceEdit(
 			} else if (op.kind === "rename") {
 				const oldPath = uriToFile(op.oldUri);
 				const newPath = uriToFile(op.newUri);
+				await beforeMutation?.(oldPath);
+				await beforeMutation?.(newPath);
 				await fs.mkdir(path.dirname(newPath), { recursive: true });
 				if (oldPath !== newPath) {
 					// Displace an overwritten destination into a kernel-reserved sibling
@@ -417,6 +428,7 @@ export async function applyWorkspaceEdit(
 				record({ kind: "rename", oldUri: op.oldUri, newUri: op.newUri });
 			} else {
 				const filePath = uriToFile(op.uri);
+				await beforeMutation?.(filePath);
 				try {
 					const stat = await fs.lstat(filePath);
 					if (stat.isDirectory() && !stat.isSymbolicLink() && !op.options?.recursive) {
@@ -442,6 +454,7 @@ export async function applyWorkspaceEdit(
 			const textEdits = changes[uri];
 			if (textEdits.length === 0) continue;
 			const filePath = uriToFile(uri);
+			await beforeMutation?.(filePath);
 			await applyTextEdits(filePath, textEdits);
 			applied.push(`Applied ${textEdits.length} edit(s) to ${formatPathRelativeToCwd(filePath, cwd)}`);
 			record({ kind: "edit", uri });

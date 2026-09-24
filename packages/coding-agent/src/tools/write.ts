@@ -749,6 +749,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		}
 		entries.set(resolvedArchivePath.archiveSubPath, content);
 
+		await this.session.recordFileBeforeMutation?.(finalPath);
 		try {
 			await writeArchive(tmpPath, format, entries);
 			await fs.rename(tmpPath, finalPath);
@@ -924,6 +925,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		const splice = spliceConflict(originalText, entry, expanded);
 		const newContent = splice.text;
 
+		await this.session.recordFileBeforeMutation?.(absolutePath);
 		await writethroughNoop(absolutePath, newContent, signal);
 		invalidateFsScanAfterWrite(absolutePath);
 		this.session.bumpFileMutationVersion?.(absolutePath);
@@ -1103,6 +1105,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				continue;
 			}
 
+			await this.session.recordFileBeforeMutation?.(absolutePath);
 			await writethroughNoop(absolutePath, text, signal);
 			invalidateFsScanAfterWrite(absolutePath);
 			this.session.bumpFileMutationVersion?.(absolutePath);
@@ -1374,6 +1377,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			emitWriteProgress(onUpdate, cleanContent, displayPath, absolutePath);
 
+			await this.session.recordFileBeforeMutation?.(absolutePath);
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
 			// artifacts such as local:// plans are owned by OMP, not the editor.
 			const bridgeWrite = await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent, signal);

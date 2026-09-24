@@ -613,6 +613,8 @@ export class EditTool implements AgentTool<TInput> {
 	}
 
 	async #write(request: EditWriteRequest, signal?: AbortSignal): Promise<EditWriteResponse> {
+		await this.session.recordFileBeforeMutation?.(request.path);
+		if (request.op === "move" && request.moveTo) await this.session.recordFileBeforeMutation?.(request.moveTo);
 		if (request.op === "delete") {
 			await deleteFileWithFallback(request.path, Bun.file(request.path));
 			if (this.session.enableLsp ?? true) {

@@ -6,6 +6,7 @@
 
 - Added `/usage show` (or plain `/usage`) to pin a static usage snapshot above the prompt and `/usage clear` to remove it without interrupting active work. The pinned panel shows one pool headline per provider from Sprilicred's pooled accounts — Anthropic Fable Weekly / Weekly / Five Hour and OpenAI Weekly / Five Hour ten-cell bars — plus the fetch time; running `/usage show` again refetches and replaces the snapshot.
 - Added `/fork [request]`: a copy of the current chat that lives in the agents panel. Open it with `↓`/`Enter` to talk to it directly, `Esc` to return. The fork posts updates and a final report back to the main chat with its `hand_back` tool; the final report closes it and removes it from the panel. `x` on an idle fork closes it.
+- Rewind (double-Esc, `/branch`, `/rewind`) can now restore files, like Claude Code's `/rewind`. omp snapshots each file before `edit`, `write`, `ast_edit`, or an `lsp` rename/code action first changes it during a prompt's run; rewinding to that prompt offers **Restore code and conversation**, **Restore conversation**, **Restore code**, or **Never mind** when files changed since. Snapshots persist in the session's artifacts folder across `--resume` (last 100 prompts). Bash, subagent, and outside edits are not tracked; symlinked or hard-linked files are skipped with a warning.
 
 ### Changed
 

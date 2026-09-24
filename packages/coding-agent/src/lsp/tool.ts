@@ -192,6 +192,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		this.description = prompt.render(lspDescription);
 	}
 
+	/** Snapshot a path before an LSP edit changes it, so rewind can restore it. */
+	readonly #recordBeforeMutation = async (filePath: string): Promise<void> => {
+		await this.session.recordFileBeforeMutation?.(filePath);
+	};
+
 	static createIf(session: ToolSession): LspTool | null {
 		return session.enableLsp === false ? null : new LspTool(session);
 	}
@@ -777,7 +782,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// Apply the reference edits and move as one unit: a failed move rolls
 			// the reference edits back so the source, destination, and every
 			// reference file are left unchanged.
-			await applyEditsThenRename(referenceEdits, source, dest);
+			await applyEditsThenRename(referenceEdits, source, dest, this.#recordBeforeMutation);
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
 			for (const [serverName, serverConfig] of servers) {
@@ -1417,7 +1422,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						const appliedAction = await applyCodeAction(selectedAction, {
 							resolveCodeAction: async actionItem =>
 								(await sendRequest(client, "codeAction/resolve", actionItem, signal)) as CodeAction,
-							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, this.session.cwd, signal),
+							applyWorkspaceEdit: async edit =>
+								applyWorkspaceEditWithLsp(edit, this.session.cwd, signal, this.#recordBeforeMutation),
 							executeCommand: async commandItem => {
 								await sendRequest(
 									client,
@@ -1513,7 +1519,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					} else {
 						const shouldApply = apply !== false;
 						if (shouldApply) {
-							const applied = await applyWorkspaceEditWithLsp(result, this.session.cwd, signal);
+							const applied = await applyWorkspaceEditWithLsp(
+								result,
+								this.session.cwd,
+								signal,
+								this.#recordBeforeMutation,
+							);
 							output = `Applied rename:\n${applied.map(a => `  ${a}`).join("\n")}`;
 						} else {
 							const preview = formatWorkspaceEdit(result, this.session.cwd);

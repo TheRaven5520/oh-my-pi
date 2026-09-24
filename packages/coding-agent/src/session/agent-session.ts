@@ -273,6 +273,7 @@ import type {
 	UsageFallbackConfirmer,
 } from "./agent-session-types";
 import { writeArtifact } from "./artifacts";
+import { FileHistory } from "./file-history";
 import { formatArtifactErrorNotice, type OutputMeta, stripOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import {
 	ASYNC_INLINE_RESULT_MAX_CHARS,
@@ -568,6 +569,10 @@ export function powerAssertionOptions(mode: "off" | "idle" | "display" | "system
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
+	/** Pre-edit file snapshots per prompt, restored by code-restoring rewind. */
+	readonly fileHistory: FileHistory;
+	/** Set at `agent_start`; the run's first persisted prompt becomes a file-history checkpoint. */
+	#fileCheckpointPending = false;
 	readonly settings: Settings;
 	/** Session-start policy, independent of the selected project memory backend. */
 	readonly memoryEnabled: boolean;
@@ -1313,6 +1318,7 @@ export class AgentSession {
 		this.#reseedTokenRate();
 		this.#codeModeState = config.codeModeState ?? {};
 		this.sessionManager = config.sessionManager;
+		this.fileHistory = new FileHistory(this.sessionManager);
 		this.settings = config.settings;
 		this.memoryEnabled = config.memoryEnabled ?? true;
 		this.#modelRegistry = config.modelRegistry;
@@ -2915,6 +2921,8 @@ export class AgentSession {
 		}
 		if (this.#sessionMessageAlreadyPersisted(message)) return;
 		if (message.role === "assistant") {
+			// The run is already answering; a later user message joined mid-run.
+			this.#fileCheckpointPending = false;
 			const assistantMsg = message as AssistantMessage;
 			if (this.#recovery.isClassifierRefusal(assistantMsg)) return;
 			if (isEmptyErrorTurn(assistantMsg)) return;
@@ -2933,7 +2941,11 @@ export class AgentSession {
 			semanticToolResult(message.toolName, message)?.toolName === "rewind" &&
 			this.#rewoundToolResultIds.delete(message.toolCallId);
 		if (!skipPersistedRewindResult) {
-			this.#appendSessionMessage(message);
+			const entryId = this.#appendSessionMessage(message);
+			if (message.role === "user" && this.#fileCheckpointPending) {
+				this.#fileCheckpointPending = false;
+				void this.fileHistory.beginCheckpoint(entryId);
+			}
 		}
 	}
 
@@ -3103,6 +3115,7 @@ export class AgentSession {
 			this.#advisors.onPrimaryAgentStart();
 			this.#emitRunState("running");
 			this.#maintenance.noteTurnStarted();
+			this.#fileCheckpointPending = true;
 		}
 		// This must happen before event fan-out awaits: streamed tool-call deltas
 		// can otherwise queue validation that a delayed turn-start reset erases.
