@@ -260,6 +260,7 @@ import type {
 	FreshSessionResult,
 	HandoffResult,
 	ModelCycleResult,
+	ModelPatternCycleResult,
 	Prewalk,
 	PromptOptions,
 	ResetSessionContextResult,
@@ -8705,6 +8706,14 @@ export class AgentSession {
 		direction: "forward" | "backward" = "forward",
 	): Promise<RoleModelCycleResult | undefined> {
 		return this.#models.cycleRoleModels(roleOrder, direction);
+	}
+
+	/** Cycles every available model matching `patterns` (the `cycleModels` setting). */
+	cycleModelPatterns(
+		patterns: readonly string[],
+		direction: "forward" | "backward" = "forward",
+	): Promise<ModelPatternCycleResult | undefined> {
+		return this.#models.cycleModelPatterns(patterns, direction);
 	}
 
 	/** Lists available models after applying the configured enabled-model filter. */

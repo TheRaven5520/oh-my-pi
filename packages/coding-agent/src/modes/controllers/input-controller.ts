@@ -2420,6 +2420,25 @@ export class InputController {
 
 	async cycleRoleModel(direction: "forward" | "backward" = "forward"): Promise<void> {
 		try {
+			// `cycleModels` patterns replace the role cycle with the models they
+			// match right now (e.g. everything a gateway's discovery lists).
+			const cycleModels = settings.get("cycleModels");
+			if (cycleModels.length > 0) {
+				const result = await this.ctx.viewSession.cycleModelPatterns(cycleModels, direction);
+				if (!result) {
+					this.ctx.showStatus(`Only one model matches cycleModels (${cycleModels.join(", ")})`);
+					return;
+				}
+				this.ctx.statusLine.invalidate();
+				this.ctx.updateEditorBorderColor();
+				this.ctx.showModelCycleTrack(
+					renderSegmentTrack(
+						result.models.map(model => ({ label: model.id })),
+						result.index,
+					),
+				);
+				return;
+			}
 			const cycleOrder = settings.get("cycleOrder");
 			const result = await this.ctx.viewSession.cycleRoleModels(cycleOrder, direction);
 			if (!result) {

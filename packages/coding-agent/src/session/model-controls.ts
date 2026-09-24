@@ -17,6 +17,7 @@ import {
 	getModelMatchPreferences,
 	type ResolvedModelRoleValue,
 	resolveModelRoleValue,
+	resolveModelScope,
 } from "../config/model-resolver";
 import { getKnownRoleIds } from "../config/model-roles";
 import type { Settings } from "../config/settings";
@@ -34,10 +35,19 @@ import {
 } from "@oh-my-pi/pi-tui/thinking";
 import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import type { AgentSessionEvent } from "./agent-session-events";
-import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycleResult } from "./agent-session-types";
+import type {
+	ModelCycleResult,
+	ModelPatternCycleResult,
+	ResolvedRoleModel,
+	RoleModelCycle,
+	RoleModelCycleResult,
+} from "./agent-session-types";
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import type { SessionManager } from "./session-manager";
+
+/** How often a `cycleModels` press may ask a discovery provider for its list again. */
+const CYCLE_DISCOVERY_REFRESH_MS = 5 * 60_000;
 
 /** Capabilities borrowed from the owning AgentSession. */
 export interface ModelControlsHost {
@@ -70,6 +80,8 @@ export class ModelControls {
 	#autoThinking = false;
 	#autoResolvedLevel: Effort | undefined;
 	#serviceTierByFamily: ServiceTierByFamily;
+	/** When each discovery provider was last asked for its list on a `cycleModels` press. */
+	readonly #cycleDiscoveryAskedAt = new Map<string, number>();
 
 	constructor(
 		host: ModelControlsHost,
@@ -393,6 +405,65 @@ export class ModelControls {
 		await this.applyRoleModel(next);
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, role: next.role };
+	}
+
+	/**
+	 * Cycle through every available model matching `patterns` (the `cycleModels`
+	 * setting, enabledModels syntax). The patterns are resolved against the
+	 * registry on each call. Each press also asks the discovery providers the
+	 * cycle draws from for their current list, in the background and at most
+	 * once per {@link CYCLE_DISCOVERY_REFRESH_MS} each (the first press of a
+	 * session always asks), so a model a provider starts offering or withdraws
+	 * joins or leaves the cycle from a later press instead of after the day-long
+	 * discovery cache. A pattern's explicit `:level` applies on arrival;
+	 * otherwise the current thinking level carries over, as for roles. From a
+	 * model outside the cycle, forward enters at the first match and backward at
+	 * the last.
+	 */
+	async cycleModelPatterns(
+		patterns: readonly string[],
+		direction: "forward" | "backward" = "forward",
+	): Promise<ModelPatternCycleResult | undefined> {
+		const scope = await resolveModelScope(
+			[...patterns],
+			this.#host.modelRegistry,
+			getModelMatchPreferences(this.#host.settings),
+			this.#host.settings,
+		);
+		this.#askCycleProvidersForTheirLists(patterns, scope);
+		const currentIndex = scope.findIndex(entry => modelsAreEqual(entry.model, this.#model));
+		if (scope.length === 0 || (scope.length === 1 && currentIndex === 0)) return undefined;
+
+		const step = direction === "backward" ? -1 : 1;
+		const index =
+			currentIndex === -1
+				? step === 1
+					? 0
+					: scope.length - 1
+				: (currentIndex + step + scope.length) % scope.length;
+		const next = scope[index];
+		await this.setModel(next.model);
+		if (next.explicitThinkingLevel && next.thinkingLevel !== undefined) {
+			this.setThinkingLevel(next.thinkingLevel);
+		}
+		return { model: next.model, thinkingLevel: this.thinkingLevel, models: scope.map(entry => entry.model), index };
+	}
+
+	#askCycleProvidersForTheirLists(patterns: readonly string[], scope: readonly { model: Model }[]): void {
+		const registry = this.#host.modelRegistry;
+		const now = Date.now();
+		const due = registry.getDiscoverableProviders().filter(provider => {
+			const drawnFrom =
+				patterns.some(pattern => pattern.startsWith(`${provider}/`)) ||
+				scope.some(entry => entry.model.provider === provider);
+			const askedAt = this.#cycleDiscoveryAskedAt.get(provider);
+			return drawnFrom && (askedAt === undefined || now - askedAt >= CYCLE_DISCOVERY_REFRESH_MS);
+		});
+		if (due.length === 0) return;
+		for (const provider of due) this.#cycleDiscoveryAskedAt.set(provider, now);
+		void registry.refreshDiscoverableProviders(due, "online").catch(error => {
+			logger.warn("cycleModels discovery refresh failed", { providers: due, error: String(error) });
+		});
 	}
 
 	async #getScopedModelsWithApiKey(): Promise<Array<{ model: Model; thinkingLevel?: ThinkingLevel }>> {

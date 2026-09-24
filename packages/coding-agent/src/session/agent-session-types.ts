@@ -417,6 +417,16 @@ export interface RoleModelCycleResult {
 	role: string;
 }
 
+/** Result from cycleModelPatterns(). */
+export interface ModelPatternCycleResult {
+	model: Model;
+	thinkingLevel: ThinkingLevel | undefined;
+	/** Every available model the patterns resolved to, in cycle order. */
+	models: Model[];
+	/** Index of `model` in `models`. */
+	index: number;
+}
+
 import type { ResolvedRoleModel } from "@oh-my-pi/pi-tui/overlays/model-picker";
 export type { ResolvedRoleModel } from "@oh-my-pi/pi-tui/overlays/model-picker";
 

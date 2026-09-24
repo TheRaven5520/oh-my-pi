@@ -9,6 +9,8 @@
 - Rewind (double-Esc, `/branch`, `/rewind`) can now restore files, like Claude Code's `/rewind`. omp snapshots each file before `edit`, `write`, `ast_edit`, or an `lsp` rename/code action first changes it during a prompt's run; rewinding to that prompt offers **Restore code and conversation**, **Restore conversation**, **Restore code**, or **Never mind** when files changed since. `/rewind undo` puts back what the last code restore overwrote, until the next message is sent. Snapshots persist in the session's artifacts folder across `--resume` (last 100 prompts). Bash, subagent, and outside edits are not tracked; symlinked or hard-linked files are skipped with a warning.
 - Added `title.style: tag` for session names as short ALL-CAPS tags (`SPRILICRED`, `PI05 EVALS`, `MODIFY OMP`). The tag is re-checked every 10 user messages or 30 minutes and changes only when two checks in a row agree the work has moved on; manual names are never changed. The default `sentence` style is unchanged.
 - Added `retry.usageLimitFallbackChains`: fallback chains consulted only when a turn (or advisor call) fails on a usage limit, ahead of `retry.fallbackChains`. Use it for a reserve account, e.g. `{"sprilicred-anthropic/*": ["personal-anthropic/*"]}`, that must never be used for transient errors, role resolution, subagents, or titles.
+- Added `cycleModels`: model patterns (enabledModels syntax, e.g. `["sprilicred-anthropic/*", "sprilicred-openai/*"]`) that Ctrl+P / Shift+Ctrl+P cycle instead of the `cycleOrder` roles. The patterns are matched against the available models on every press, so a model a provider's discovery adds or withdraws joins or leaves the cycle without editing config. Empty (the default) keeps the role cycle.
+- `openai-models-list` discovery now takes `supports_reasoning` and `max_output_tokens` from a listing row when the gateway sends them, so a model newer than the bundled catalog can think and write its full output.
 
 ### Changed
 
@@ -27,6 +29,7 @@
 
 - Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
 - Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.
+- Fixed models of an `auth: oauth` provider with `discovery` losing the OAuth (Claude Code) request shape: discovered models were sent without it, and so were listed ones once discovery found them too (including from the model cache).
 
 ## [17.3.1] - 2026-08-13
 
