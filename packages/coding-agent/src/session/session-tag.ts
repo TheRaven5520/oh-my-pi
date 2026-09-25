@@ -49,15 +49,22 @@ export class SessionTagTracker {
 	#promptsSinceCheck = 0;
 	#lastCheckAt: number;
 	#changeProposed = false;
+	#overCapCheckRan = false;
 
 	constructor(now: number) {
 		this.#lastCheckAt = now;
 	}
 
-	/** Count one user prompt; true when a tag check is due now. */
-	notePrompt(now: number): boolean {
+	/**
+	 * Count one user prompt; true when a tag check is due now. `currentOverCap`
+	 * (the current automatic name is not a valid tag, e.g. a leftover sentence
+	 * title) makes prompts due until one check has started ({@link checkStarted});
+	 * later checks keep the cadence.
+	 */
+	notePrompt(now: number, currentOverCap = false): boolean {
 		this.#promptsSinceCheck++;
 		const due =
+			(currentOverCap && !this.#overCapCheckRan) ||
 			this.#promptsSinceCheck >= TAG_CHECK_EVERY_PROMPTS ||
 			(this.#promptsSinceCheck >= TAG_CHECK_MIN_PROMPTS && now - this.#lastCheckAt >= TAG_CHECK_EVERY_MS);
 		if (due) {
@@ -67,12 +74,17 @@ export class SessionTagTracker {
 		return due;
 	}
 
+	/** Record that a due check actually started; an over-cap name's early check is then spent. */
+	checkStarted(currentOverCap: boolean): void {
+		if (currentOverCap) this.#overCapCheckRan = true;
+	}
+
 	/**
 	 * Fold one check's answer into the decision. `proposed` is the normalized
-	 * tag the model suggested, or null when it kept the current one. An unnamed
-	 * session takes the first tag at once; any existing name, tag or sentence
-	 * title, changes only after two consecutive checks propose a change, so a
-	 * brief tangent or a run of status questions never renames the session.
+	 * tag the model suggested, or null when it kept the current name. An
+	 * unnamed session, or one whose automatic name is over the tag cap, takes
+	 * the first tag at once; an existing tag changes only after two consecutive
+	 * checks propose a change, so a brief tangent never renames the session.
 	 * Returns the tag to apply, if any.
 	 */
 	resolve(current: string | undefined, proposed: string | null): string | undefined {
@@ -80,7 +92,7 @@ export class SessionTagTracker {
 			this.#changeProposed = false;
 			return undefined;
 		}
-		if (!current || this.#changeProposed) {
+		if (!isSessionTag(current) || this.#changeProposed) {
 			this.#changeProposed = false;
 			return proposed;
 		}

@@ -1343,6 +1343,9 @@ export class AgentSession {
 		this.#reseedTokenRate();
 		this.#codeModeState = config.codeModeState ?? {};
 		this.sessionManager = config.sessionManager;
+		// Tag style: no automatic name, from any source (first tag, re-check, replan,
+		// plan approval, rewind), may exceed the two-word tag cap. User names bypass it.
+		this.sessionManager.setAutoTitlePolicy(title => (this.#usesTagTitles() ? normalizeSessionTag(title) : title));
 		this.fileHistory = new FileHistory(this.sessionManager);
 		this.settings = config.settings;
 		this.#skillDescriptions = config.skillDescriptions ?? new SkillDescriptionCatalog();
@@ -8250,10 +8253,15 @@ export class AgentSession {
 			this.#tagTracker = { sessionId, tracker: new SessionTagTracker(now) };
 		}
 		const { tracker } = this.#tagTracker;
-		if (!tracker.notePrompt(now) || this.#tagCheckInFlight) return;
+		// An automatic name over the tag cap (a leftover sentence title) is checked
+		// on the first prompt rather than after the usual cadence.
+		const name = this.sessionName;
+		const overCap = name !== undefined && !isSessionTag(name);
+		if (!tracker.notePrompt(now, overCap) || this.#tagCheckInFlight) return;
 		const context = buildRecentUserTitleContext(this.agent.state.messages, TAG_CHECK_CONTEXT_MESSAGES);
 		if (!context) return;
 		this.#tagCheckInFlight = true;
+		tracker.checkStarted(overCap);
 		void this.#checkSessionTag(context, sessionId, tracker)
 			.catch(err => {
 				logger.warn("title-generator: tag check failed", {
