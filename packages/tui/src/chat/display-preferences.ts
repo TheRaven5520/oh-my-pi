@@ -6,6 +6,8 @@ export interface ChatTranscriptDisplayPreferences {
 	cacheMissMarker: boolean;
 	showTokenUsage: boolean;
 	showTurnTime: boolean;
+	/** Right-aligned clock times (and step durations) on transcript blocks (`/time`). */
+	showTimestamps: boolean;
 }
 
 /** Current transcript display preferences. */
@@ -16,6 +18,7 @@ export const chatTranscriptDisplayPreferences: ChatTranscriptDisplayPreferences 
 	cacheMissMarker: false,
 	showTokenUsage: false,
 	showTurnTime: false,
+	showTimestamps: false,
 };
 
 /** Apply host display preferences without pulling settings into the renderer. */

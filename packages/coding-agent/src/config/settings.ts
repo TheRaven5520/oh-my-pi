@@ -33,6 +33,7 @@ import {
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { setShimmerMode } from "@oh-my-pi/pi-tui/theme/shimmer";
 import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
+import { setClockTimeZone } from "@oh-my-pi/pi-tui/render/clock";
 import { setEditorGapComposerShape } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
 import { setEmojiAutocompleteEnabled } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
 import { setMcpRenderMarkdownResults } from "@oh-my-pi/pi-tui/tools/mcp";
@@ -3453,6 +3454,14 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	},
 	"display.showTurnTime": value => {
 		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ showTurnTime: value });
+	},
+	"display.timestamps": value => {
+		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ showTimestamps: value });
+	},
+	"display.timeZone": value => {
+		if (typeof value === "string" && !setClockTimeZone(value)) {
+			logger.warn("Ignoring invalid display.timeZone; using the previous time zone", { value });
+		}
 	},
 	"tui.maxInlineImageColumns": value => {
 		if (typeof value === "number") setInlineImageMaxColumns(value);

@@ -1615,6 +1615,7 @@ export class CommandController {
 		shouldPersistCwd: boolean,
 	): Promise<boolean> {
 		this.ctx.bashComponent = new BashExecutionComponent(command, this.ctx.ui, excludeFromContext);
+		this.ctx.chatContainer.stampBlockTime(this.ctx.bashComponent, Date.now(), { running: true });
 
 		if (isDeferred) {
 			this.ctx.pendingMessagesContainer.addChild(this.ctx.bashComponent);
@@ -1644,6 +1645,7 @@ export class CommandController {
 				},
 			);
 			if (this.ctx.bashComponent) {
+				this.ctx.chatContainer.stampBlockEnd(this.ctx.bashComponent, Date.now());
 				const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
 				this.ctx.bashComponent.setComplete(result.exitCode, result.cancelled, {
 					output: result.output,
@@ -1664,6 +1666,7 @@ export class CommandController {
 			}
 		} catch (error) {
 			if (this.ctx.bashComponent) {
+				this.ctx.chatContainer.stampBlockEnd(this.ctx.bashComponent, Date.now());
 				this.ctx.bashComponent.setComplete(undefined, false);
 			}
 			this.ctx.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -1695,6 +1698,7 @@ export class CommandController {
 	async handlePythonCommand(code: string, excludeFromContext = false): Promise<void> {
 		const isDeferred = this.ctx.session.isStreaming;
 		this.ctx.pythonComponent = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
+		this.ctx.chatContainer.stampBlockTime(this.ctx.pythonComponent, Date.now(), { running: true });
 
 		if (isDeferred) {
 			this.ctx.pendingMessagesContainer.addChild(this.ctx.pythonComponent);
@@ -1716,6 +1720,7 @@ export class CommandController {
 			);
 
 			if (this.ctx.pythonComponent) {
+				this.ctx.chatContainer.stampBlockEnd(this.ctx.pythonComponent, Date.now());
 				const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
 				this.ctx.pythonComponent.setComplete(result.exitCode, result.cancelled, {
 					output: result.output,
@@ -1725,6 +1730,7 @@ export class CommandController {
 			}
 		} catch (error) {
 			if (this.ctx.pythonComponent) {
+				this.ctx.chatContainer.stampBlockEnd(this.ctx.pythonComponent, Date.now());
 				this.ctx.pythonComponent.setComplete(undefined, false);
 			}
 			this.ctx.showError(`Python execution failed: ${error instanceof Error ? error.message : "Unknown error"}`);

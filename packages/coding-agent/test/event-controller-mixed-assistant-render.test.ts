@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolCall, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
@@ -11,6 +11,8 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { type Component, TERMINAL } from "@oh-my-pi/pi-tui";
+import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
+import { formatClockTime } from "@oh-my-pi/pi-tui/render/clock";
 import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
 
 const TOOL_CALL_A_ID = "toolu_mixed_text_order_a";
@@ -224,6 +226,139 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		expect(lines.filter(line => line.includes(MIDDLE_MARKER))).toHaveLength(1);
 		expect(middleLine).toBeLessThan(toolResultBLine);
 		expect(toolResultBLine).toBeLessThan(finalLine);
+	});
+
+	describe("with /time labels", () => {
+		const T0 = Date.UTC(2026, 8, 25, 14, 0, 0);
+		const toolCallA: ToolCall = { type: "toolCall", id: TOOL_CALL_A_ID, name: "contract_probe_a", arguments: {} };
+		const toolCallB: ToolCall = { type: "toolCall", id: TOOL_CALL_B_ID, name: "contract_probe_b", arguments: {} };
+		const mixed = (completedAt?: number): AssistantMessage => ({
+			...assistantMessage([
+				{ type: "text", text: INTRO_MARKER },
+				toolCallA,
+				{ type: "text", text: MIDDLE_MARKER },
+				toolCallB,
+				{ type: "text", text: FINAL_MARKER },
+			]),
+			timestamp: T0,
+			completedAt,
+		});
+		const toolResult = (toolCall: ToolCall, timestamp: number): ToolResultMessage => ({
+			role: "toolResult",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			content: [{ type: "text", text: "ok" }],
+			isError: false,
+			timestamp,
+		});
+		const lineWith = (lines: string[], marker: string) => lines[lineContaining(lines, marker)]!.trimEnd();
+
+		beforeEach(() => {
+			setSystemTime(new Date(T0));
+			setChatTranscriptDisplayPreferences({ showTimestamps: true });
+		});
+		afterEach(() => {
+			setSystemTime();
+			setChatTranscriptDisplayPreferences({ showTimestamps: false });
+		});
+
+		it("ends a live reply's text where its first tool call begins, not at the end of the message", async () => {
+			const { controller, chatContainer } = createFixture();
+			await controller.handleEvent({
+				type: "message_start",
+				message: { ...assistantMessage([]), timestamp: T0 },
+			} as Extract<AgentSessionEvent, { type: "message_start" }>);
+			setSystemTime(new Date(T0 + 4_000));
+			const withFirstToolCall = {
+				...assistantMessage([{ type: "text", text: INTRO_MARKER }, toolCallA]),
+				timestamp: T0,
+			};
+			await controller.handleEvent({
+				type: "message_update",
+				message: withFirstToolCall,
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					contentIndex: 1,
+					toolCall: toolCallA,
+					partial: withFirstToolCall,
+				},
+			} as Extract<AgentSessionEvent, { type: "message_update" }>);
+			setSystemTime(new Date(T0 + 30_000));
+			await controller.handleEvent({ type: "message_end", message: mixed(T0 + 30_000) } as Extract<
+				AgentSessionEvent,
+				{ type: "message_end" }
+			>);
+
+			const lines = chatContainer.render(120).map(line => Bun.stripANSI(line));
+			expect(lineWith(lines, INTRO_MARKER)).toEndWith(`${formatClockTime(T0)} · 4.0s`);
+		});
+
+		it("ends a live middle segment where the next tool call begins, and keeps that end", async () => {
+			const { controller, chatContainer } = createFixture();
+			const update = async (content: AssistantMessage["content"], assistantMessageEvent: object) => {
+				const message = { ...assistantMessage(content), timestamp: T0 };
+				await controller.handleEvent({
+					type: "message_update",
+					message,
+					assistantMessageEvent: { ...assistantMessageEvent, partial: message },
+				} as Extract<AgentSessionEvent, { type: "message_update" }>);
+			};
+			await controller.handleEvent({
+				type: "message_start",
+				message: { ...assistantMessage([]), timestamp: T0 },
+			} as Extract<AgentSessionEvent, { type: "message_start" }>);
+			setSystemTime(new Date(T0 + 4_000));
+			await update([{ type: "text", text: INTRO_MARKER }, toolCallA], {
+				type: "toolcall_end",
+				contentIndex: 1,
+				toolCall: toolCallA,
+			});
+			setSystemTime(new Date(T0 + 6_000));
+			await update([{ type: "text", text: INTRO_MARKER }, toolCallA, { type: "text", text: MIDDLE_MARKER }], {
+				type: "text_delta",
+				contentIndex: 2,
+				delta: MIDDLE_MARKER,
+			});
+			setSystemTime(new Date(T0 + 9_000));
+			await update(
+				[{ type: "text", text: INTRO_MARKER }, toolCallA, { type: "text", text: MIDDLE_MARKER }, toolCallB],
+				{
+					type: "toolcall_end",
+					contentIndex: 3,
+					toolCall: toolCallB,
+				},
+			);
+			// Render between the close and the reply's end, as the live TUI does.
+			chatContainer.render(120);
+			setSystemTime(new Date(T0 + 30_000));
+			await controller.handleEvent({ type: "message_end", message: mixed(T0 + 30_000) } as Extract<
+				AgentSessionEvent,
+				{ type: "message_end" }
+			>);
+
+			const lines = chatContainer.render(120).map(line => Bun.stripANSI(line));
+			expect(lineWith(lines, MIDDLE_MARKER)).toEndWith(`${formatClockTime(T0 + 6_000)} · 3.0s`);
+		});
+
+		it("rebuilds a mixed reply with a duration only where history records the end", () => {
+			const { ctx, chatContainer } = createFixture();
+			const helpers = new UiHelpers(ctx);
+			ctx.addMessageToChat = (message, options) => helpers.addMessageToChat(message, options);
+			helpers.renderSessionContext({
+				messages: [mixed(T0 + 30_000), toolResult(toolCallA, T0 + 10_000), toolResult(toolCallB, T0 + 20_000)],
+				models: {},
+				injectedTtsrRules: [],
+				mode: "none",
+			});
+
+			const lines = chatContainer.render(120).map(line => Bun.stripANSI(line));
+			// The head text and the middle segment ended when the next call began,
+			// which history does not record: start times only.
+			expect(lineWith(lines, INTRO_MARKER)).toEndWith(formatClockTime(T0));
+			expect(lineWith(lines, MIDDLE_MARKER)).toEndWith(formatClockTime(T0 + 10_000));
+			// The last segment began with the last result and ended with the reply.
+			expect(lineWith(lines, FINAL_MARKER)).toEndWith(`${formatClockTime(T0 + 20_000)} · 10.0s`);
+		});
 	});
 
 	it("uses the canonical mounted-tool renderer for prefixed calls live and after transcript rebuild", async () => {

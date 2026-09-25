@@ -3,17 +3,14 @@ import { Container, Spacer } from "../index";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import { theme } from "../theme/theme";
 import { formatMetricRow, MetricRow, type MetricSpec } from "../components/metric";
+import { formatClockDateTime } from "../render/clock";
 
 /** Below this the rate is nonsense (cached/instant responses yield absurd tok/s). */
 const MIN_DURATION_MS = 100;
 
-/** Local `YYYY-MM-DD HH:mm:ss` stamp for the per-turn usage row. */
+/** `YYYY-MM-DD HH:mm:ss` stamp for the per-turn usage row, in the `display.timeZone` zone. */
 function formatUsageTimestamp(ms: number): string {
-	const d = new Date(ms);
-	const pad = (n: number): string => String(n).padStart(2, "0");
-	const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-	const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-	return `${date} ${time}`;
+	return formatClockDateTime(ms);
 }
 
 /**

@@ -152,6 +152,24 @@ export class UiHelpers {
 	}
 
 	addMessageToChat(message: AgentMessage, options?: AddMessageOptions): Component[] {
+		const chat = this.ctx.chatContainer;
+		const before = chat.children.length;
+		const added = this.#appendMessageComponents(message, options);
+		// Every block the message produced carries its time for the `/time` labels,
+		// on the live path and on a rebuild from saved history alike. A reply also
+		// carries when it finished, unless it made tool calls: its text then ended
+		// where the first call began, which history does not record.
+		const end =
+			message.role === "assistant" && !message.content.some(content => content.type === "toolCall")
+				? message.completedAt
+				: undefined;
+		for (let index = before; index < chat.children.length; index++) {
+			chat.stampBlockTime(chat.children[index]!, message.timestamp, { end });
+		}
+		return added;
+	}
+
+	#appendMessageComponents(message: AgentMessage, options?: AddMessageOptions): Component[] {
 		switch (message.role) {
 			case "bashExecution": {
 				const component = new BashExecutionComponent(message.command, this.ctx.ui, message.excludeFromContext);
@@ -471,6 +489,17 @@ export class UiHelpers {
 		const backgroundTaskCallIds = new Set<string>();
 		const messages = sessionContext.messages;
 		const count = messages.length;
+		/**
+		 * Start time for the tool calls of the latest assistant message (`/time`
+		 * labels) when the session holds no recorded start for a call.
+		 */
+		let toolsStartedAt: number | undefined;
+		const toolStart = (toolCallId: string) => sessionContext.toolStartedAt?.get(toolCallId) ?? toolsStartedAt;
+		/** When each tool call's result landed, for the reply text that follows it (`/time` labels). */
+		const toolResultTimes = new Map<string, number>();
+		for (const message of messages) {
+			if (message.role === "toolResult") toolResultTimes.set(message.toolCallId, message.timestamp);
+		}
 		for (let i = 0; i < count; i++) {
 			// Yield BEFORE each message (except the first) rather than after: the
 			// per-message body has several early `continue` paths (preserved live
@@ -485,6 +514,8 @@ export class UiHelpers {
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				const timeline = splitAssistantMessageToolTimeline(message);
+				// Tool calls run once the reply that made them has finished streaming.
+				toolsStartedAt = message.completedAt ?? message.timestamp;
 				this.ctx.addMessageToChat(message, { reuseSettledComponent: options.reuseSettledComponents });
 				const lastChild = this.ctx.chatContainer.children[this.ctx.chatContainer.children.length - 1];
 				const assistantComponent = lastChild instanceof AssistantMessageComponent ? lastChild : undefined;
@@ -510,7 +541,7 @@ export class UiHelpers {
 				const errorPresentation = resolveAssistantErrorPresentation(message, this.ctx.viewSession.retryAttempt);
 				const hasErrorStop = errorPresentation.kind === "full";
 				const errorMessage = hasErrorStop ? errorPresentation.text : null;
-				const appendAssistantSegment = (segment: AssistantMessage | undefined) => {
+				const appendAssistantSegment = (segment: AssistantMessage | undefined, toolCallId: string) => {
 					if (!segment || !assistantHasVisibleContent(segment)) return;
 					const component = createAssistantMessageComponent(
 						this.ctx,
@@ -518,6 +549,18 @@ export class UiHelpers {
 						getAssistantMessageLinkTargets(this.ctx),
 					);
 					this.ctx.chatContainer.addChild(component);
+					// Text after a tool call streams once that call's result is in, and
+					// never after the reply finished; the reply's end bounds it. Only the
+					// last segment ends with the reply: an earlier one closed when the next
+					// call began, which history does not record, so it keeps its start alone.
+					const end = message.completedAt;
+					const resultAt = toolResultTimes.get(toolCallId);
+					const startedAt =
+						resultAt === undefined ? (end ?? message.timestamp) : Math.min(resultAt, end ?? resultAt);
+					const endsWithReply = toolCallId === timeline.lastToolCallId;
+					this.ctx.chatContainer.stampBlockTime(component, startedAt, {
+						end: endsWithReply && end !== undefined && end > startedAt ? end : undefined,
+					});
 				};
 
 				// Render tool call components
@@ -527,7 +570,7 @@ export class UiHelpers {
 					}
 					const afterToolSegment = timeline.afterToolCalls.get(content.id);
 					if (options.preservedLiveToolCallIds?.has(content.id)) {
-						appendAssistantSegment(afterToolSegment);
+						appendAssistantSegment(afterToolSegment, content.id);
 						continue;
 					}
 					const tool = this.ctx.viewSession.getToolByName(content.name);
@@ -542,6 +585,7 @@ export class UiHelpers {
 								});
 								readGroup.setExpanded(this.ctx.toolOutputExpanded);
 								this.ctx.chatContainer.addChild(readGroup);
+								this.ctx.chatContainer.stampBlockTime(readGroup, toolStart(content.id));
 							}
 							readGroup.updateArgs(content.arguments, content.id);
 							readGroup.updateResult(
@@ -556,6 +600,7 @@ export class UiHelpers {
 								});
 								readGroup.setExpanded(this.ctx.toolOutputExpanded);
 								this.ctx.chatContainer.addChild(readGroup);
+								this.ctx.chatContainer.stampBlockTime(readGroup, toolStart(content.id));
 							}
 							readGroup.updateArgs(content.arguments, content.id);
 							this.ctx.pendingTools.set(content.id, readGroup);
@@ -572,7 +617,7 @@ export class UiHelpers {
 								readToolCallAssistantComponents.set(content.id, assistantComponent);
 							}
 						}
-						appendAssistantSegment(afterToolSegment);
+						appendAssistantSegment(afterToolSegment, content.id);
 						continue;
 					}
 
@@ -606,6 +651,7 @@ export class UiHelpers {
 					);
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.chatContainer.addChild(component);
+					this.ctx.chatContainer.stampBlockTime(component, toolStart(content.id));
 
 					if (hasErrorStop && errorMessage) {
 						component.updateResult(
@@ -616,7 +662,7 @@ export class UiHelpers {
 					} else {
 						this.ctx.pendingTools.set(content.id, component);
 					}
-					appendAssistantSegment(afterToolSegment);
+					appendAssistantSegment(afterToolSegment, content.id);
 				}
 				// Dangling toolCalls (no result on the resolved path — failed or
 				// retried turns, results on sibling branches) were stripped by the
@@ -659,6 +705,7 @@ export class UiHelpers {
 						const hasText = message.content.some(c => c.type === "text");
 						if (!hasText && settings.get("terminal.showImages")) {
 							if (pendingReadComponent) {
+								this.ctx.chatContainer.stampBlockEnd(pendingReadComponent, message.timestamp);
 								pendingReadComponent.updateResult(message, false, message.toolCallId);
 								this.ctx.pendingTools.delete(message.toolCallId);
 							}
@@ -675,6 +722,7 @@ export class UiHelpers {
 							});
 							readGroup.setExpanded(this.ctx.toolOutputExpanded);
 							this.ctx.chatContainer.addChild(readGroup);
+							this.ctx.chatContainer.stampBlockTime(readGroup, toolStart(message.toolCallId));
 						}
 						const args = readToolCallArgs.get(message.toolCallId);
 						if (args) {
@@ -683,6 +731,7 @@ export class UiHelpers {
 						component = readGroup;
 						this.ctx.pendingTools.set(message.toolCallId, readGroup);
 					}
+					this.ctx.chatContainer.stampBlockEnd(component, message.timestamp);
 					component.updateResult(message, false, message.toolCallId);
 					this.ctx.pendingTools.delete(message.toolCallId);
 					readToolCallArgs.delete(message.toolCallId);
@@ -704,6 +753,7 @@ export class UiHelpers {
 					// snapshot. Keep the card partial, parked, and in `pendingTools` so
 					// the snapshot replay and later live progress frames land on it
 					// instead of hitting the no-pending-component early return (#10447).
+					if (!isBackgroundTask) this.ctx.chatContainer.stampBlockEnd(component, message.timestamp);
 					component.updateResult(message, isBackgroundTask, message.toolCallId);
 					if (isBackgroundTask) {
 						component.parkAsBackground();

@@ -1270,6 +1270,28 @@ export const SETTINGS_SCHEMA = {
 			description: "Show the total prompt-to-yield time (including tool calls) on assistant message usage rows",
 		},
 	},
+	"display.timestamps": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Show Timestamps",
+			description:
+				"Show a right-aligned clock time on each message, reply, and tool call, plus how long each reply and tool call took (toggle with /time). Display only; nothing is sent to the model.",
+		},
+	},
+	"display.timeZone": {
+		type: "string",
+		default: "",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Time Zone",
+			description:
+				"IANA time zone for timestamps and usage-row times, e.g. America/New_York. Empty uses the system time zone.",
+		},
+	},
 	"display.cacheMissMarker": {
 		type: "boolean",
 		default: false,

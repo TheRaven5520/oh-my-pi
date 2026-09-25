@@ -467,6 +467,7 @@ export class EventController {
 			});
 			group.setExpanded(this.ctx.toolOutputExpanded);
 			this.ctx.chatContainer.addChild(group);
+			this.ctx.chatContainer.stampBlockTime(group, Date.now());
 			this.#lastReadGroup = group;
 		}
 		return this.#lastReadGroup;
@@ -604,6 +605,8 @@ export class EventController {
 		if (!this.#insertAfterTranscriptComponent(this.#toolTimelineComponents.get(toolCallId), component)) {
 			this.ctx.chatContainer.addChild(component);
 		}
+		// Text after a tool call starts when its first chunk arrives, not with the reply.
+		this.ctx.chatContainer.stampBlockTime(component, Date.now());
 		return component;
 	}
 
@@ -1075,6 +1078,7 @@ export class EventController {
 			this.ctx.streamingMessage = event.message;
 			this.ctx.streamingComponent.pickReactionTarget(this.ctx.chatContainer.children);
 			this.ctx.chatContainer.addChild(this.ctx.streamingComponent);
+			this.ctx.chatContainer.stampBlockTime(this.ctx.streamingComponent, event.message.timestamp);
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.begin(this.ctx.streamingComponent, timeline.beforeTools, timeline.hasToolCalls);
 			this.ctx.ui.requestRender();
@@ -1333,6 +1337,8 @@ export class EventController {
 			) {
 				const linkTargets = await refreshAssistantMessageLinkTargets(this.ctx, [timeline.beforeTools]);
 				this.ctx.streamingComponent.setLinkTargets(assistantMessageLinkTargets(timeline.beforeTools, linkTargets));
+				// The reply text ends where its first tool call begins streaming.
+				this.ctx.chatContainer.stampBlockEnd(this.ctx.streamingComponent, Date.now());
 				this.ctx.streamingComponent.markTranscriptBlockFinalized();
 			}
 			for (let contentIndex = 0; contentIndex < this.ctx.streamingMessage.content.length; contentIndex++) {
@@ -1423,6 +1429,7 @@ export class EventController {
 					}
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.chatContainer.addChild(component);
+					this.ctx.chatContainer.stampBlockTime(component, Date.now());
 					this.ctx.pendingTools.set(content.id, component);
 					this.#toolTimelineComponents.set(content.id, component);
 					this.#toolArgsReveal.bind(content.id, component);
@@ -1447,7 +1454,11 @@ export class EventController {
 					linkTargets ? assistantMessageLinkTargets(segment, linkTargets) : undefined,
 					closed ? undefined : { transient: true },
 				);
-				if (closed) component?.markTranscriptBlockFinalized();
+				if (closed && component) {
+					// Closed mid-stream: its own duration ends now, before the reply does.
+					this.ctx.chatContainer.stampBlockEnd(component, Date.now());
+					component.markTranscriptBlockFinalized();
+				}
 			}
 
 			// Update working message with intent from streamed tool arguments
@@ -1602,7 +1613,12 @@ export class EventController {
 				this.ctx.lastAssistantUsage = usage;
 			}
 			this.ctx.streamingComponent.setServedModelMismatch(this.ctx.servedModelTracker.check(event.message));
-			this.ctx.streamingComponent.markTranscriptBlockFinalized();
+			// The reply's duration label needs its end before the block finalizes;
+			// a reply closed early by a tool call already carries its own.
+			if (!this.ctx.streamingComponent.isTranscriptBlockFinalized()) {
+				this.ctx.chatContainer.stampBlockEnd(this.ctx.streamingComponent, event.message.completedAt ?? Date.now());
+				this.ctx.streamingComponent.markTranscriptBlockFinalized();
+			}
 			let lastPostToolAssistantComponent: AssistantMessageComponent | undefined;
 			for (const [toolCallId, segment] of displayTimeline.afterToolCalls) {
 				const component = this.#upsertPostToolAssistantSegment(
@@ -1610,8 +1626,14 @@ export class EventController {
 					segment,
 					assistantMessageLinkTargets(segment, linkTargets),
 				);
-				component?.markTranscriptBlockFinalized();
-				if (component) lastPostToolAssistantComponent = component;
+				if (component) {
+					// Segments closed mid-stream already carry their own end.
+					if (!component.isTranscriptBlockFinalized()) {
+						this.ctx.chatContainer.stampBlockEnd(component, event.message.completedAt ?? Date.now());
+						component.markTranscriptBlockFinalized();
+					}
+					lastPostToolAssistantComponent = component;
+				}
 			}
 			this.#lastAssistantComponent = lastPostToolAssistantComponent ?? this.ctx.streamingComponent;
 			if (settings.get("display.showTokenUsage") && assistantUsageIsBilled(event.message.usage)) {
@@ -1726,6 +1748,7 @@ export class EventController {
 			this.#executionStartedCallIds.add(event.toolCallId);
 			component.setExpanded(this.ctx.toolOutputExpanded);
 			this.ctx.chatContainer.addChild(component);
+			this.ctx.chatContainer.stampBlockTime(component, Date.now(), { running: true });
 			this.ctx.pendingTools.set(event.toolCallId, component);
 			this.#toolTimelineComponents.set(event.toolCallId, component);
 			this.#settleHeldCompletionIfPresent(event.toolCallId, component);
@@ -1743,6 +1766,9 @@ export class EventController {
 			// execution path emits with the full args immediately before the result.
 			this.#toolArgsReveal.finish(event.toolCallId);
 			const component = this.ctx.pendingTools.get(event.toolCallId);
+			if (component instanceof ToolExecutionComponent) {
+				this.ctx.chatContainer.stampBlockTime(component, Date.now(), { running: true });
+			}
 			if (component && typeof component.updateArgs === "function") {
 				component.updateArgs(event.args, event.toolCallId);
 				if (typeof component.setArgsComplete === "function") {
@@ -1789,6 +1815,7 @@ export class EventController {
 			// call whose jobs settle before its blocking subset — treat it as a
 			// partial frame: `tool_execution_end` still owns the terminal result.
 			const isTerminal = isFinalAsyncState && this.#backgroundTaskCallIds.has(event.toolCallId);
+			if (isTerminal) this.ctx.chatContainer.stampBlockEnd(component, Date.now());
 			component.updateResult(
 				{ ...event.partialResult, isError: asyncState === "failed" },
 				!isTerminal,
@@ -1870,6 +1897,9 @@ export class EventController {
 		// message_end; consume the completion instead of recreating/updating UI.
 		if (this.#retractedToolCallIds.delete(event.toolCallId)) return;
 		this.#executionStartedCallIds.delete(event.toolCallId);
+		// Before any result update finalizes the block, so it settles with its duration.
+		const endedComponent = this.ctx.pendingTools.get(event.toolCallId);
+		if (endedComponent) this.ctx.chatContainer.stampBlockEnd(endedComponent, Date.now());
 		// A synthetic aborted/error completion (agent-loop's placeholder for a
 		// never-run call on a terminal error/abort) settles the card in place so a
 		// terminal failure stays visible. Remember it so `#handleAutoRetryStart`

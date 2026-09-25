@@ -4,6 +4,7 @@
 
 ### Added
 
+- `TranscriptContainer.stampBlockTime`/`stampBlockEnd` label transcript blocks with right-aligned times (`chatTranscriptDisplayPreferences.showTimestamps`). Labels only replace trailing padding (or the padding inside a full-width card's right border). Append-only blocks keep published rows byte-identical: a reply's duration lands on its last row only when that row was never emitted. `render/clock` formats times in a configurable IANA zone.
 - Support graphical display equations, opt-in tmux scrollback frame coalescing, and following the latest line after transcript replacement.
 
 ### Changed

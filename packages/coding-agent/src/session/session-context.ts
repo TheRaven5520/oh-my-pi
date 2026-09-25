@@ -18,6 +18,7 @@ import {
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
 import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes, renderContextNotes } from "./context-notes";
+import { readToolExecutionStart } from "./exit-diagnostics";
 import {
 	type CompactionEntry,
 	type CustomMessageEntry,
@@ -115,6 +116,11 @@ export interface SessionContext {
 	 * Only populated in transcript mode.
 	 */
 	cacheMissExplainedAt?: boolean[];
+	/**
+	 * When each tool call on the path began executing (epoch ms, by call id),
+	 * as the session recorded it. Only populated in transcript mode.
+	 */
+	toolStartedAt?: ReadonlyMap<string, number>;
 }
 
 /** Lists session model strings to try when restoring, in fallback order. */
@@ -290,6 +296,7 @@ export function buildSessionContext(
 	// with the wrong model id, which previously clobbered the user's pick on
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
+	const toolStartedAt = new Map<string, number>();
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
@@ -325,6 +332,12 @@ export function buildSessionContext(
 		} else if (entry.type === "mode_change") {
 			mode = entry.mode;
 			modeData = entry.data;
+		} else if (entry.type === "custom" && options?.transcript) {
+			const start = readToolExecutionStart(entry);
+			if (start !== undefined) {
+				const startedAt = Date.parse(start.startedAt);
+				if (Number.isFinite(startedAt)) toolStartedAt.set(start.toolCallId, startedAt);
+			}
 		}
 	}
 
@@ -725,6 +738,7 @@ export function buildSessionContext(
 	return {
 		messages,
 		cacheMissExplainedAt: options?.transcript ? cacheMissExplainedAt : undefined,
+		toolStartedAt: options?.transcript ? toolStartedAt : undefined,
 		thinkingLevel,
 		configuredThinkingLevel,
 		serviceTier,

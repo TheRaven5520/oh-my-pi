@@ -7,6 +7,7 @@ import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 
 function createContainer() {
 	return {
@@ -62,7 +63,7 @@ function createCwdContext(sourceDir: string, isStreaming = false, showImages = t
 				state.artifactCwd = snapshot.cwd;
 			}),
 		},
-		chatContainer: createContainer(),
+		chatContainer: new TranscriptContainer(),
 		pendingMessagesContainer,
 		pendingBashComponents: [],
 		settings: { get: () => showImages, flush: vi.fn(async () => {}) },
@@ -119,7 +120,7 @@ describe("bash shortcut command", () => {
 			sessionManager: {
 				getCwd: () => "/tmp",
 			},
-			chatContainer: createContainer(),
+			chatContainer: new TranscriptContainer(),
 			pendingMessagesContainer: createContainer(),
 			pendingBashComponents: [],
 			settings: { get: () => true },
