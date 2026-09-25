@@ -33,6 +33,7 @@ import {
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { setShimmerMode } from "@oh-my-pi/pi-tui/theme/shimmer";
 import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
+import { setClockTimeZone } from "@oh-my-pi/pi-tui/render/clock";
 import { setEditorGapComposerShape } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
 import { setEmojiAutocompleteEnabled } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
 import { setMcpRenderMarkdownResults } from "@oh-my-pi/pi-tui/tools/mcp";
@@ -685,6 +686,11 @@ export class Settings {
 			throw new Error("Settings not initialized. Call Settings.init() first.");
 		}
 		return globalInstance;
+	}
+
+	/** Return the initialized or in-flight global settings without starting a writable load. */
+	static get current(): Promise<Settings> | null {
+		return globalInstancePromise;
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -2329,6 +2335,17 @@ export class Settings {
 			raw.inlineToolDescriptors = raw.inlineToolDescriptors ? "on" : "off";
 		}
 
+		// find.enabled: boolean -> enum (auto | on | off). Preserve an explicit
+		// choice; unset installs get `auto`, which enables `find` only when the
+		// judge role resolves to a native System One model.
+		const findObj = isRecord(raw.find) ? raw.find : undefined;
+		if (findObj && typeof findObj.enabled === "boolean") {
+			findObj.enabled = findObj.enabled ? "on" : "off";
+		}
+		if (typeof raw["find.enabled"] === "boolean") {
+			raw["find.enabled"] = raw["find.enabled"] ? "on" : "off";
+		}
+
 		// statusLine: rename "plan_mode" segment to "mode"
 		const statusLineObj = raw.statusLine as Record<string, unknown> | undefined;
 		if (statusLineObj) {
@@ -3437,6 +3454,14 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	},
 	"display.showTurnTime": value => {
 		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ showTurnTime: value });
+	},
+	"display.timestamps": value => {
+		if (typeof value === "boolean") setChatTranscriptDisplayPreferences({ showTimestamps: value });
+	},
+	"display.timeZone": value => {
+		if (typeof value === "string" && !setClockTimeZone(value)) {
+			logger.warn("Ignoring invalid display.timeZone; using the previous time zone", { value });
+		}
 	},
 	"tui.maxInlineImageColumns": value => {
 		if (typeof value === "number") setInlineImageMaxColumns(value);

@@ -10,7 +10,8 @@ import { parseJsonlLenient } from "@oh-my-pi/pi-utils/stream";
 import { toError } from "@oh-my-pi/pi-utils/type-guards";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
-import { lookupSessionTitle, recordSessionTitle } from "./title-index";
+import { lookupSessionTitle, recordSessionTitle } from "./session-index";
+import { clockDateTimeFormat } from "@oh-my-pi/pi-tui/render/clock";
 
 /**
  * Coarse lifecycle status of a session, derived from its last persisted message.
@@ -132,7 +133,7 @@ function formatTimeAgo(date: Date): string {
 	if (diffMins < 60) return `${diffMins}m ago`;
 	if (diffHours < 24) return `${diffHours}h ago`;
 	if (diffDays < 7) return `${diffDays}d ago`;
-	return date.toLocaleDateString();
+	return clockDateTimeFormat({ year: "numeric", month: "numeric", day: "numeric" }).format(date);
 }
 
 /**
@@ -149,7 +150,7 @@ function sessionDisplayName(info: SessionInfo): string {
 	const created = info.created.getTime();
 	const ts = Number.isFinite(created) ? created : info.modified.getTime();
 	const date = new Date(ts);
-	const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+	const time = clockDateTimeFormat({ hour: "2-digit", minute: "2-digit" }).format(date);
 	return `Untitled · ${time}`;
 }
 

@@ -14,6 +14,7 @@ import {
 import { type SymbolKey, type Theme, type ThemeColor, theme } from "../theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../render/render-utils";
 import { fileHyperlink } from "../render/hyperlink";
+import { clockParts } from "../render/clock";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../theme/session-color";
 import { summarizeLoopCondition } from "./loop";
 import { formatMetric } from "../components/metric";
@@ -78,6 +79,7 @@ const CLAUDE_COLORS = {
 	fiveHour: 176,
 	week: 211,
 	fable: 217,
+	session: 223,
 } as const;
 
 /** Claude's `\e[90m` separator/dash color (bright black). */
@@ -118,6 +120,16 @@ function claudeShortDir(dir: string): string {
 	const fieldCount = normalized.startsWith("/") ? parts.length + 1 : parts.length;
 	const tail = parts.slice(-3).join("/");
 	return fieldCount > 3 ? `…/${tail}` : tail;
+}
+
+/**
+ * Claude's `[branch]` label: the branch name, or on a detached HEAD the short
+ * commit id (`git rev-parse --short HEAD`) — never the word "detached".
+ */
+function claudeBranchLabel(ctx: SegmentContext): string | null {
+	const { branch, detachedCommit } = ctx.git;
+	if (branch !== "detached") return branch;
+	return detachedCommit ? detachedCommit.slice(0, 7) : branch;
 }
 
 /** Left-truncate a path/label to `maxLen`, prefixing an ellipsis when clipped. */
@@ -496,13 +508,18 @@ const pathSegment: StatusLineSegment = {
 			// (no separator between them) in one fixed color, with no dirty state.
 			const projectDir = ctx.activeRepo?.cwd ?? getProjectDir();
 			const shortDir = claudeShortDir(projectDir);
-			if (!ctx.startupPlaceholder && shortDir === "tmp") {
-				if (!ctx.git.branch) return { content: "", visible: false };
-				return { content: claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, ctx.git.branch)}]`), visible: true };
+			// A bare temp dir is omp's fallback for launches from $HOME, not a
+			// project: hide the whole section, including any stray repo's branch.
+			// Match every scratch root (macOS reports /tmp as /private/tmp), not
+			// only the literal `tmp` label; a project inside one still shows.
+			const scratch = classifyProjectDir(projectDir);
+			if (!ctx.startupPlaceholder && scratch.scratch && scratch.relative === null) {
+				return { content: "", visible: false };
 			}
 			const dir = ctx.startupPlaceholder ? STARTUP_PLACEHOLDER : fileHyperlink(projectDir, shortDir);
 			let content = claudeFg(CLAUDE_COLORS.path, dir);
-			if (ctx.git.branch) content += ` ${claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, ctx.git.branch)}]`)}`;
+			const branch = claudeBranchLabel(ctx);
+			if (branch) content += ` ${claudeFg(CLAUDE_COLORS.branch, `[${statusValue(ctx, branch)}]`)}`;
 			return { content, visible: true };
 		}
 
@@ -761,17 +778,18 @@ const timeSegment: StatusLineSegment = {
 		const opts = ctx.options.time ?? {};
 		const now = ctx.now ?? new Date();
 
-		let hours = now.getHours();
+		// In the display time zone (`display.timeZone`), like every clock omp shows.
+		const clock = clockParts(now.getTime());
+		let hours = Number(clock.hour);
 		let suffix = "";
 		if (opts.format === "12h") {
 			suffix = hours >= 12 ? "pm" : "am";
 			hours = hours % 12 || 12;
 		}
 
-		const mins = now.getMinutes().toString().padStart(2, "0");
-		let timeStr = `${hours}:${mins}`;
+		let timeStr = `${hours}:${clock.minute}`;
 		if (opts.showSeconds) {
-			timeStr += `:${now.getSeconds().toString().padStart(2, "0")}`;
+			timeStr += `:${clock.second}`;
 		}
 		timeStr += suffix;
 
@@ -839,6 +857,7 @@ const sessionNameSegment: StatusLineSegment = {
 		if (!name) return { content: "", visible: false };
 
 		const content = ctx.startupPlaceholder ? STARTUP_PLACEHOLDER : sanitizeStatusText(name);
+		if (ctx.claudeStyle) return { content: claudeFg(CLAUDE_COLORS.session, content), visible: true };
 		return { content: accentFg(ctx, "accent", content), visible: true };
 	},
 };
@@ -856,9 +875,11 @@ const collabSegment: StatusLineSegment = {
 const streamSegment: StatusLineSegment = {
 	id: "stream",
 	render(ctx) {
-		if (!ctx.stream) return { content: "", visible: false };
-		const viewers = statusValue(ctx, `${ctx.stream.viewers}`);
-		return { content: theme.fg("thinkingHigh", `● LIVE ${viewers}`), visible: true };
+		const badges: string[] = [];
+		if (ctx.stream) badges.push(`● LIVE ${statusValue(ctx, `${ctx.stream.viewers}`)}`);
+		if (ctx.recording) badges.push("● REC");
+		if (badges.length === 0) return { content: "", visible: false };
+		return { content: theme.fg("thinkingHigh", badges.join(" ")), visible: true };
 	},
 };
 
@@ -992,9 +1013,9 @@ const usageSegment: StatusLineSegment = {
 			parts.push(formatQuotaWindow(ctx, "7d", u.sevenDay.percent, u.sevenDay.resetHours, "h", "round"));
 		}
 		if (u.monthly) {
-			// Cursor and OpenCode Go (normalize gates monthly to those providers).
-			// Both floor used percents upstream (Cursor's dashboard shows 1.88 →
-			// "1% used"; OpenCode's endpoint already emits floored integers).
+			// Monthly-subscription providers only (the normalizer gates the class).
+			// Cursor and QwenCloud floor used percents upstream (Cursor's dashboard
+			// shows 1.88 → "1% used"; OpenCode's endpoint emits floored integers).
 			parts.push(formatQuotaWindow(ctx, "mo", u.monthly.percent, u.monthly.resetHours, "h", "floor"));
 		}
 		if (u.resetCredits) {

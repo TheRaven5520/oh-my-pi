@@ -1,6 +1,38 @@
 import { type Component, Container, type HistoryBatch } from "../tui";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { formatDuration } from "@oh-my-pi/pi-utils";
+import { chatTranscriptDisplayPreferences } from "../chat/display-preferences";
+import { formatClockTime, isSameClockDay } from "../render/clock";
+import { theme } from "../theme/theme";
+import { visibleWidth } from "../utils";
 import { isToolActivityComponent } from "./tool-activity";
+import { findLabelRow, hasLabelRoom, stampRow } from "./transcript-stamp";
+
+/** When a block's step began and, once known, ended (epoch ms), for `/time` labels. */
+interface BlockTime {
+	at: number;
+	end?: number;
+	/** A live step still running: a mutable block's label counts up until the end stamp. */
+	running: boolean;
+	/** Clock text for `at`, fixed at first use so an emitted row never changes. */
+	base?: string;
+	/**
+	 * Append-only blocks: stable rows the container had published when it first
+	 * saw the block finalized with a known end. Those rows may already be in
+	 * native scrollback, so the duration may only land on a row past them.
+	 */
+	endGuard?: number;
+}
+
+/** Rows searched (from the top) for room for a block's start label. */
+const STAMP_ROW_CANDIDATES = 3;
+
+/**
+ * Step times for the `/time` labels, keyed by block. A time belongs to the
+ * block, not to one container: a transcript rebuild stages blocks in a
+ * detached container and then moves them into the visible one.
+ */
+const blockTimes = new WeakMap<Component, BlockTime>();
 
 /** Shared animation time supplied by the constrained transcript root. */
 export interface AnimationFrame {
@@ -113,6 +145,26 @@ function isPlainBlank(line: string): boolean {
 	return !/\S/.test(line);
 }
 
+/** `rows` with a dim `label` written into row `index`, or `rows` itself when there is no such row or no room. */
+function withLabel(
+	rows: readonly string[],
+	index: number | undefined,
+	width: number,
+	label: string,
+): readonly string[] {
+	if (index === undefined || index >= rows.length) return rows;
+	const stamped = stampRow(rows[index]!, width, theme.fg("dim", label), visibleWidth(label));
+	if (stamped === undefined) return rows;
+	const next = rows.slice();
+	next[index] = stamped;
+	return next;
+}
+
+/** A running step's elapsed time in whole seconds, so its label changes once a second. */
+function formatRunning(ms: number): string {
+	return ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : formatDuration(ms - (ms % 1000));
+}
+
 /** Whether `prefix` matches `rows` byte-for-byte from the top. */
 export function isRowPrefix(prefix: readonly string[], rows: readonly string[]): boolean {
 	if (prefix.length > rows.length) return false;
@@ -166,6 +218,9 @@ export class TranscriptContainer extends Container {
 	#lastViewportSpans: TranscriptViewportSpan[] = [];
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
+		// Rows this block published in another container are not this one's history.
+		const time = blockTimes.get(component);
+		if (time !== undefined) time.endGuard = undefined;
 		super.addChild(component);
 		this.#entries.push({
 			component,
@@ -209,6 +264,111 @@ export class TranscriptContainer extends Container {
 	}
 
 	/**
+	 * Record when `component`'s step began for the `/time` labels, and when it
+	 * ended if already known. A `running` step's label counts up until
+	 * {@link stampBlockEnd}. Stamping again replaces the record; an invalid
+	 * `at` is ignored.
+	 */
+	stampBlockTime(
+		component: Component,
+		at: number | undefined,
+		options: { end?: number; running?: boolean } = {},
+	): void {
+		if (at === undefined || !Number.isFinite(at) || at <= 0) return;
+		const { end, running = false } = options;
+		blockTimes.set(component, {
+			at,
+			end: end !== undefined && Number.isFinite(end) && end >= at ? end : undefined,
+			running,
+		});
+	}
+
+	/** Record when a stamped block's step finished; its label then shows the duration. */
+	stampBlockEnd(component: Component, end: number | undefined): void {
+		const time = blockTimes.get(component);
+		if (time === undefined || end === undefined || !Number.isFinite(end) || end < time.at) return;
+		time.end = end;
+		time.running = false;
+	}
+
+	/**
+	 * Label a block's rows with its start time and, once known, its duration,
+	 * when timestamps are on. `rows` is the block's full render (also passed as
+	 * `full`) or a stable prefix of it; rows the two share stamp identically.
+	 */
+	#stampRows(
+		entry: TranscriptEntry,
+		rows: readonly string[],
+		width: number,
+		full?: readonly string[],
+	): readonly string[] {
+		const time = blockTimes.get(entry.component);
+		if (time === undefined) return rows;
+		if (
+			entry.mode === "appendOnly" &&
+			time.end !== undefined &&
+			time.endGuard === undefined &&
+			isFinalized(entry.component)
+		) {
+			// Captured before this render can publish more rows, and whether or
+			// not labels are showing, so the guard never covers the duration row.
+			time.endGuard = entry.stableRows.length;
+		}
+		if (!chatTranscriptDisplayPreferences.showTimestamps || rows.length === 0) return rows;
+		time.base ??= formatClockTime(time.at, { withDate: !isSameClockDay(time.at, Date.now()) });
+		if (entry.mode === "mutable") {
+			// Mutable blocks commit only once settled, so their label may change freely.
+			let label = time.base;
+			if (time.end !== undefined) label += ` · ${formatDuration(time.end - time.at)}`;
+			else if (time.running && !isFinalized(entry.component)) label += ` · ${formatRunning(Date.now() - time.at)}`;
+			return withLabel(rows, findLabelRow(rows, width, visibleWidth(label), STAMP_ROW_CANDIDATES), width, label);
+		}
+		// Append-only rows never change once published. The start label's row
+		// depends only on the rows above it, so a published prefix stamps exactly
+		// as the full render; the duration waits for a never-published last row.
+		const start = findLabelRow(rows, width, visibleWidth(time.base), STAMP_ROW_CANDIDATES);
+		const durationRow = this.#durationRow(entry, time, width, full);
+		if (durationRow === undefined) return withLabel(rows, start, width, time.base);
+		const duration = formatDuration(time.end! - time.at);
+		if (durationRow === start) {
+			const combined = `${time.base} · ${duration}`;
+			const fits = hasLabelRoom(rows[start]!, width, visibleWidth(combined));
+			return withLabel(rows, start, width, fits ? combined : time.base);
+		}
+		return withLabel(withLabel(rows, start, width, time.base), durationRow, width, duration);
+	}
+
+	/**
+	 * Row of a finished append-only block that carries its duration: the last
+	 * row of the full render, when it lies past every row published before the
+	 * end was known. Found from the full render, so every path agrees.
+	 */
+	#durationRow(
+		entry: TranscriptEntry,
+		time: BlockTime,
+		width: number,
+		full: readonly string[] | undefined,
+	): number | undefined {
+		if (time.end === undefined || time.endGuard === undefined) return undefined;
+		const last = (full ?? trimBlankEdges(entry.component.render(width))).length - 1;
+		if (last < 0) return undefined;
+		const guardRows =
+			time.endGuard === 0
+				? 0
+				: (entry.component as Component & AppendOnlyTranscriptBlock).renderTranscriptStableRows(
+						time.endGuard,
+						width,
+					).length;
+		return last >= guardRows ? last : undefined;
+	}
+
+	/** A child's trimmed render with its time labels; every render path uses this. */
+	#renderBlock(entry: TranscriptEntry, width: number): readonly string[] {
+		const rows = trimBlankEdges(entry.component.render(width));
+		return this.#stampRows(entry, rows, width, rows);
+	}
+
+	/**
 	 * Forget the append-only emission ledger — emitted counts, published stable
 	 * rows, per-width render cache, and freeze state — for every block, and ask
 	 * each append-only block to drop its own published rows. The next replay then
@@ -229,6 +389,10 @@ export class TranscriptContainer extends Container {
 			entry.renderedStableByWidth = new Map();
 			entry.stableRowCountByWidth = new Map();
 			entry.stableFrozen = false;
+			// The display reset clears every published row, so a finished block's
+			// duration may take its last row again.
+			const time = blockTimes.get(entry.component);
+			if (time !== undefined) time.endGuard = undefined;
 			if (entry.mode === "appendOnly") {
 				(entry.component as Component & AppendOnlyTranscriptBlock).resetTranscriptStableRows?.();
 			}
@@ -600,7 +764,7 @@ export class TranscriptContainer extends Container {
 		for (let index = this.#entries.length - 1; index >= 0; index--) {
 			const entry = this.#entries[index]!;
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-			const block = trimBlankEdges(entry.component.render(width));
+			const block = this.#renderBlock(entry, width);
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.unshift("");
 			rows.unshift(...block);
@@ -631,7 +795,7 @@ export class TranscriptContainer extends Container {
 	}
 
 	#renderEntry(entry: TranscriptEntry, width: number): readonly string[] {
-		const rendered = trimBlankEdges(entry.component.render(width));
+		const rendered = this.#renderBlock(entry, width);
 		if (entry.mode === "mutable" || entry.stableFrozen) return rendered;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
 		const stable = appendOnly.getTranscriptStableRows();
@@ -645,7 +809,11 @@ export class TranscriptContainer extends Container {
 			stable.length > entry.stableRows.length
 				? [...entry.stableRows, ...stable.slice(entry.stableRows.length)]
 				: entry.stableRows;
-		const stableRendered = appendOnly.renderTranscriptStableRows(published.length, width);
+		const stableRendered = this.#stampRows(
+			entry,
+			appendOnly.renderTranscriptStableRows(published.length, width),
+			width,
+		);
 		if (!isRowPrefix(stableRendered, rendered)) {
 			return this.#freezeStableRows(entry, rendered, "stable rows no longer render as a prefix of the block");
 		}
@@ -690,7 +858,11 @@ export class TranscriptContainer extends Container {
 	#renderStablePrefix(entry: TranscriptEntry, count: number, width: number): readonly string[] {
 		if (count === 0) return EMPTY_ROWS;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
-		return appendOnly.renderTranscriptStableRows(Math.min(count, entry.stableRows.length), width);
+		return this.#stampRows(
+			entry,
+			appendOnly.renderTranscriptStableRows(Math.min(count, entry.stableRows.length), width),
+			width,
+		);
 	}
 
 	/**
@@ -742,8 +914,7 @@ export class TranscriptContainer extends Container {
 			// entry renders whole, so the append-only verification pass (a second
 			// full render of the block's stable prefix) is skipped for them. This
 			// keeps a complete-ledger replay at one render per block.
-			const rendered =
-				index === start ? this.#renderEntry(entry, width) : trimBlankEdges(entry.component.render(width));
+			const rendered = index === start ? this.#renderEntry(entry, width) : this.#renderBlock(entry, width);
 			const emittedRows = index === start ? this.#renderStablePrefix(entry, entry.emitted, width).length : 0;
 			const block = rendered.slice(emittedRows);
 			if (block.length === 0) continue;

@@ -58,7 +58,7 @@ describe("InteractiveMode prompt-template autocomplete (#2462)", () => {
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
 		Settings.instance.set("startup.quiet", true);
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		// ModelRegistry (bundled-model load) and the resolved model are immutable across
 		// these tests, so build them once rather than per test.
 		registry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
@@ -158,9 +158,9 @@ describe("InteractiveMode prompt-template autocomplete (#2462)", () => {
 		const provider = slot.current;
 		expect(provider).toBeDefined();
 
-		// Empty `/` shows the full menu.
-		const all = await fetchSlashSuggestions(provider!, "/");
-		expect(all).toContain("review");
+		// A bare `/` stays quiet (often the start of a path); the first letter opens the menu.
+		expect(await fetchSlashSuggestions(provider!, "/")).toEqual([]);
+		expect(await fetchSlashSuggestions(provider!, "/r")).toContain("review");
 
 		// Fuzzy prefix `/rev` also surfaces the template.
 		const prefixMatches = await fetchSlashSuggestions(provider!, "/rev");

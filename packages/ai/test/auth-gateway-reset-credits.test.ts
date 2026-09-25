@@ -8,7 +8,7 @@ import { AuthStorage } from "@oh-my-pi/pi-ai/auth-storage";
 const TOKEN = "reset-credit-test-token";
 const authorized = { Authorization: `Bearer ${TOKEN}` };
 
-type RedeemResetCredit = AuthStorage["redeemResetCredit"];
+type RedeemResetCredit = AuthStorage["resets"]["redeem"];
 
 /** Narrow a response body once, at the boundary, so field reads are checked. */
 async function readJsonObject(response: Response): Promise<Record<string, unknown>> {
@@ -86,7 +86,7 @@ test("redeem rejects malformed bodies before reaching storage", async () => {
 			calls += 1;
 			return { ok: true, code: "reset" };
 		};
-		storage.redeemResetCredit = counting;
+		storage.resets.redeem = counting;
 		const cases: Array<{ body: string; error: string }> = [
 			{ body: "not json", error: "invalid JSON body" },
 			{ body: JSON.stringify([1]), error: "credentialId must be a positive integer" },
@@ -129,7 +129,7 @@ test("redeem targets only credentialId and forwards the client idempotency key",
 			keys.push(options.redeemRequestId);
 			return { ok: true, code: "reset", creditId: options.target.creditId ?? "RateLimitResetCredit_auto" };
 		};
-		storage.redeemResetCredit = capturing;
+		storage.resets.redeem = capturing;
 		const redeemRequestId = crypto.randomUUID();
 		const response = await redeem(
 			url,
@@ -166,7 +166,7 @@ test("redeem maps spent, missing, and upstream outcomes to distinct statuses", a
 		];
 		for (const [code, status] of outcomes) {
 			const fixed: RedeemResetCredit = async () => ({ ok: false, code });
-			storage.redeemResetCredit = fixed;
+			storage.resets.redeem = fixed;
 			const response = await redeem(url, JSON.stringify({ credentialId: 7 }));
 			expect(response.status).toBe(status);
 			expect((await readJsonObject(response)).code).toBe(code);
@@ -179,7 +179,7 @@ test("redeem answers a transport rejection with 502 rather than 500", async () =
 		const throwing: RedeemResetCredit = async () => {
 			throw new Error("socket hang up");
 		};
-		storage.redeemResetCredit = throwing;
+		storage.resets.redeem = throwing;
 		const response = await redeem(url, JSON.stringify({ credentialId: 7 }));
 		expect(response.status).toBe(502);
 		expect(await readJsonObject(response)).toEqual({ ok: false, code: "redeem_failed" });

@@ -128,7 +128,7 @@ async function createSessionHarness(options: SessionHarnessOptions = {}): Promis
 	});
 	const tempDir = TempDir.createSync("@pi-responses-body-read-");
 	const authStorage = await AuthStorage.create(tempDir.join("auth.db"));
-	authStorage.setRuntimeApiKey("openai", "local-test-key");
+	authStorage.keys.setRuntime("openai", "local-test-key");
 	const sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
 	const activeModel = model(server.url.toString().replace(/\/$/, ""));
 	const messages = options.messages ?? defaultMessages();
@@ -430,7 +430,9 @@ describe("AgentSession Responses request-body timeout recovery", () => {
 			harness.session.agent.replaceMessages(harness.sessionManager.buildSessionContext().messages);
 			await runPrompt(harness);
 			expect(harness.requests).toHaveLength(1);
-			expect(await fs.readdir(artifactsDir).catch(() => [])).toEqual([]);
+			// No request-body spill; `file-history/` is rewind's per-prompt checkpoint index.
+			const artifacts = await fs.readdir(artifactsDir).catch(() => []);
+			expect(artifacts.filter(name => name !== "file-history")).toEqual([]);
 			assertTerminalErrorState(harness);
 		} finally {
 			allocateArtifactPath.mockRestore();

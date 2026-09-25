@@ -4,11 +4,9 @@ import type { AgentDefinition } from "./types";
 // An agent is read-only iff its declared tools are a non-empty subset of this set.
 // Fail-safe: any unknown tool makes the agent not read-only.
 //
-// `hub` is deliberately absent: it declares `approval = hubApproval`, a
-// parameter-dependent function that returns "exec" for start/stop/restart,
-// process-stdin `send`, unrecognized ops and malformed params. Do not re-add it.
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"read",
+	"wait",
 	"grep",
 	"glob",
 	"find",
@@ -23,6 +21,21 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"memory_edit",
 	"checkpoint",
 	"rewind",
+]);
+
+// Pure lookups a side question (`/btw`) may run. A strict subset of
+// READ_ONLY_TOOL_NAMES: "read" approval tier alone is not enough, because
+// todo, memory_edit, retain, checkpoint and rewind change session or memory
+// state, and ask/wait/yield steer the main agent. Allowlist, not denylist, so a
+// new tool is refused until it is classified here.
+export const SIDE_QUESTION_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"read",
+	"grep",
+	"glob",
+	"find",
+	"ast_grep",
+	"web_search",
+	"recall",
 ]);
 
 export function isReadOnlyAgent(agent: AgentDefinition): boolean {

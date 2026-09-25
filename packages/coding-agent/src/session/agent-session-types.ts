@@ -7,6 +7,7 @@ import type {
 	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import type {
+	AssistantMessage,
 	Context,
 	Effort,
 	ImageContent,
@@ -33,6 +34,7 @@ import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { ExtensionRunner, PreparedExtension } from "../extensibility/extensions";
 import type { ContextUsage } from "../extensibility/extensions/types";
+import type { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { SecretObfuscator } from "../secrets/obfuscator";
@@ -66,7 +68,10 @@ export interface AgentSessionDisposeOptions {
 /** Listener notified when command metadata changes. */
 export type CommandMetadataChangedListener = () => void | Promise<void>;
 /** Public summary of an asynchronous job. */
-export type AsyncJobSnapshotItem = Pick<AsyncJob, "id" | "type" | "status" | "label" | "startTime" | "agentId">;
+export type AsyncJobSnapshotItem = Pick<
+	AsyncJob,
+	"id" | "type" | "status" | "label" | "startTime" | "endTime" | "agentId"
+>;
 
 /** Snapshot of running, recent, and pending-delivery asynchronous jobs. */
 export interface AsyncJobSnapshot {
@@ -183,6 +188,8 @@ export interface AgentSessionConfig {
 	evalToolSession?: ToolSession;
 	/** Loaded skills already discovered by the SDK. */
 	skills?: Skill[];
+	/** Frozen routing hints shared with the system prompt and later skillful notices. */
+	skillDescriptions?: SkillDescriptionCatalog;
 	/** Skill loading warnings already captured by the SDK. */
 	skillWarnings?: SkillWarning[];
 	/** Whether runtime reloads may rediscover disk-backed skills. */
@@ -504,3 +511,48 @@ export interface ResetSessionContextResult {
 
 /** Queued user content restored to the editor. */
 export type RestoredQueuedMessage = { text: string; images?: ImageContent[] };
+
+/** Options for the same ephemeral side turn used by /btw. */
+export interface EphemeralTurnOptions {
+	promptText: string;
+	/** Detached prior side-turn messages to prepend to this request. They are copied and never appended to the session history. */
+	history?: readonly Message[];
+	/** Opaque provider-lineage key for a series of related side turns. Rotate it after cancellation or failure before retrying. */
+	conversationKey?: string;
+	/** Omit tool definitions and request no tool calls. Rejects before inference on transports with mandatory native tools (Cursor). */
+	tools?: false;
+	/**
+	 * `"none"` (default): tool calls are discarded without execution.
+	 * `"read-only"`: calls to the pure-lookup tools in `SIDE_QUESTION_TOOL_NAMES`
+	 * that the main agent currently has run on side-owned tool instances, whose
+	 * caches are separate from the main agent's; every other call gets an error
+	 * result. Bounded rounds, never appended to session history. Ignored with
+	 * `tools: false` and on transports that require native tools (Cursor).
+	 */
+	toolPolicy?: "none" | "read-only";
+	/** Called before each tool call a `"read-only"` side turn runs or refuses. */
+	onToolCall?: (call: EphemeralToolCallInfo) => void;
+	/** Optional positive safe-integer output-token cap. Transports that omit or overwrite caller output limits reject this option before inference. On budget-thinking models a cap disables optional thinking (models that require it reject the cap). */
+	maxTokens?: number;
+	/** Positive safe-integer UTF-8 byte cap. Reject before inference when the serialized post-transform, secret-obfuscated provider context exceeds it. Measured before `before_provider_request` hooks; payload replacements are not re-measured. */
+	maxContextBytes?: number;
+	/** Awaited in order; a delivery failure rejects the side turn and aborts the request. */
+	onTextDelta?: (delta: string) => void | Promise<void>;
+	signal?: AbortSignal;
+	/** Default true: collapse runs of 4+ identical lines and cap the reply at 4 KiB. Pass false when the reply is shown or saved in full. */
+	dedupeReply?: boolean;
+}
+
+/** A tool call made during a `toolPolicy: "read-only"` side turn. */
+export interface EphemeralToolCallInfo {
+	name: string;
+	arguments: Record<string, unknown>;
+	/** False when the call was refused (not a permitted lookup, or the round limit was reached). */
+	allowed: boolean;
+}
+
+/** A side-turn response that is not appended to session history. */
+export interface EphemeralTurnResult {
+	replyText: string;
+	assistantMessage: AssistantMessage;
+}

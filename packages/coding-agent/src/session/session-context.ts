@@ -18,6 +18,7 @@ import {
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
 import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes, renderContextNotes } from "./context-notes";
+import { readToolExecutionStart } from "./exit-diagnostics";
 import {
 	type CompactionEntry,
 	type CustomMessageEntry,
@@ -115,6 +116,11 @@ export interface SessionContext {
 	 * Only populated in transcript mode.
 	 */
 	cacheMissExplainedAt?: boolean[];
+	/**
+	 * When each tool call on the path began executing (epoch ms, by call id),
+	 * as the session recorded it. Only populated in transcript mode.
+	 */
+	toolStartedAt?: ReadonlyMap<string, number>;
 }
 
 /** Lists session model strings to try when restoring, in fallback order. */
@@ -290,6 +296,7 @@ export function buildSessionContext(
 	// with the wrong model id, which previously clobbered the user's pick on
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
+	const toolStartedAt = new Map<string, number>();
 
 	for (const entry of path) {
 		if (entry.type === "thinking_level_change") {
@@ -325,6 +332,12 @@ export function buildSessionContext(
 		} else if (entry.type === "mode_change") {
 			mode = entry.mode;
 			modeData = entry.data;
+		} else if (entry.type === "custom" && options?.transcript) {
+			const start = readToolExecutionStart(entry);
+			if (start !== undefined) {
+				const startedAt = Date.parse(start.startedAt);
+				if (Number.isFinite(startedAt)) toolStartedAt.set(start.toolCallId, startedAt);
+			}
 		}
 	}
 
@@ -482,8 +495,13 @@ export function buildSessionContext(
 		let summaryTimestamp = compaction.timestamp;
 		if (anthropicPayload !== undefined) {
 			const firstKeptIdx = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
+			const snapshotIdx =
+				compaction.firstKeptEntryId === "" && compaction.providerReplayThroughEntryId
+					? path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
+					: -1;
 			const firstRetained =
 				(firstKeptIdx >= 0 && firstKeptIdx < compactionIdx ? path[firstKeptIdx] : undefined) ??
+				(snapshotIdx >= 0 && snapshotIdx < compactionIdx - 1 ? path[snapshotIdx + 1] : undefined) ??
 				path[compactionIdx + 1];
 			const retainedAt = firstRetained ? new Date(firstRetained.timestamp).getTime() : NaN;
 			if (Number.isFinite(retainedAt)) {
@@ -544,21 +562,26 @@ export function buildSessionContext(
 			const firstKeptIdx = path.findIndex(
 				(entry, index) => index < compactionIdx && entry.id === compaction.firstKeptEntryId,
 			);
-			if (firstKeptIdx >= 0) {
-				let displayStartIdx = firstKeptIdx;
+			const snapshotIdx =
+				anthropicPayload && compaction.firstKeptEntryId === "" && compaction.providerReplayThroughEntryId
+					? path.findIndex(entry => entry.id === compaction.providerReplayThroughEntryId)
+					: -1;
+			const retainedStart = firstKeptIdx >= 0 ? firstKeptIdx : snapshotIdx >= 0 ? snapshotIdx + 1 : -1;
+			if (retainedStart >= 0 && retainedStart < compactionIdx) {
+				let displayStartIdx = retainedStart;
 				if (options?.transcript) {
 					// `findCutPoint` may leave the collapsed display's kept region
 					// mid-turn. Prefer the next turn boundary, but retain the original
 					// suffix when there is no later boundary: the compaction summary
 					// does not include that kept content.
-					for (let i = firstKeptIdx; i < compactionIdx; i++) {
+					for (let i = retainedStart; i < compactionIdx; i++) {
 						if (isTurnStartEntry(path[i])) {
 							displayStartIdx = i;
 							break;
 						}
 					}
 				}
-				for (let i = firstKeptIdx; i < compactionIdx; i++) {
+				for (let i = retainedStart; i < compactionIdx; i++) {
 					const entry = path[i];
 					if (i < displayStartIdx) {
 						// Hidden assistants still consume pending resets and update the
@@ -715,6 +738,7 @@ export function buildSessionContext(
 	return {
 		messages,
 		cacheMissExplainedAt: options?.transcript ? cacheMissExplainedAt : undefined,
+		toolStartedAt: options?.transcript ? toolStartedAt : undefined,
 		thinkingLevel,
 		configuredThinkingLevel,
 		serviceTier,

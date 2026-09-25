@@ -7,6 +7,9 @@ import { StreamingPanelContent } from "../chrome/streaming-panel";
 
 type BtwPanelState = "running" | "complete" | "branching" | "aborted" | "error";
 
+/** Most recent lookup lines shown above a /btw answer. */
+const MAX_LOOKUP_LINES = 6;
+
 interface BtwPanelComponentOptions {
 	question: string;
 	tui: TUI;
@@ -24,8 +27,12 @@ export class BtwPanelComponent extends OverlayPanel {
 	#visibleAnswer = "";
 	#closed = false;
 	#copied = false;
+	/** The model stopped at its output-token limit, so the answer is incomplete. */
+	#cutOff = false;
 	#baseTitle: string;
 	readonly #content: StreamingPanelContent;
+	/** Lookups this answer ran (or was refused), shown dim above the answer; never part of copied text. */
+	#lookups: string[] = [];
 
 	constructor(options: BtwPanelComponentOptions) {
 		const baseTitle = `/btw ${replaceTabs(options.question)}`;
@@ -35,7 +42,7 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#canBranch = options.canBranch;
 		this.#canFollowUp = options.canFollowUp;
 		this.#content = new StreamingPanelContent(() => ({
-			sections: [this.#contentComponent()],
+			sections: [this.#lookupSection(), this.#contentComponent()],
 			footer: () => this.#footerLine(),
 		}));
 		this.addChild(this.#content);
@@ -50,6 +57,14 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#rebuild();
 	}
 
+	/** Record one read-only lookup (`read src/app.ts`) or a refused call. */
+	noteLookup(label: string, allowed: boolean): void {
+		if (this.#closed) return;
+		const line = replaceTabs(label);
+		this.#lookups.push(allowed ? `· ${line}` : `${theme.status.warning} ${line} (not allowed)`);
+		this.#rebuild();
+	}
+
 	setAnswer(text: string): void {
 		if (this.#closed) return;
 		this.#answer = text;
@@ -58,9 +73,10 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#rebuild();
 	}
 
-	markComplete(): void {
+	markComplete(options: { cutOff?: boolean } = {}): void {
 		if (this.#closed) return;
 		this.#state = "complete";
+		this.#cutOff = options.cutOff === true;
 		this.#errorMessage = undefined;
 		this.#setCopied(false);
 		this.#rebuild();
@@ -112,7 +128,9 @@ export class BtwPanelComponent extends OverlayPanel {
 
 	getCopyText(): string | undefined {
 		if (!this.isCopyable()) return undefined;
-		return this.#visibleAnswer;
+		// The answer as written: tabs are widened only for display, so copied
+		// tab-indented code (Makefiles, Go) keeps its tabs.
+		return this.#answer.trim();
 	}
 
 	close(): void {
@@ -128,6 +146,14 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#tui.requestComponentRender(this);
 	}
 
+	#lookupSection(): Component | undefined {
+		if (this.#lookups.length === 0) return undefined;
+		const shown = this.#lookups.slice(-MAX_LOOKUP_LINES);
+		const hidden = this.#lookups.length - shown.length;
+		const lines = hidden > 0 ? [`… ${hidden} earlier`, ...shown] : shown;
+		return new Text(theme.fg("dim", lines.join("\n")), 0, 0);
+	}
+
 	#footerLine(): string {
 		switch (this.#state) {
 			case "running":
@@ -138,10 +164,13 @@ export class BtwPanelComponent extends OverlayPanel {
 				if (this.#canFollowUp?.()) actions.push("f to follow up");
 				if (this.#canBranch?.() ?? this.isBranchable()) actions.push("b to branch");
 				actions.push("Esc to close");
+				const cutOff = this.#cutOff
+					? `${theme.fg("warning", `${theme.status.warning} Cut off at the model's output limit`)}${theme.fg("muted", " · ")}`
+					: "";
 				if (this.#copied) {
-					return `${theme.fg("success", "✓ Copied to clipboard")}${theme.fg("muted", actions.length > 0 ? ` · ${actions.join(" · ")}` : "")}`;
+					return `${cutOff}${theme.fg("success", "✓ Copied to clipboard")}${theme.fg("muted", actions.length > 0 ? ` · ${actions.join(" · ")}` : "")}`;
 				}
-				return theme.fg("muted", actions.join(" · "));
+				return `${cutOff}${theme.fg("muted", actions.join(" · "))}`;
 			}
 			case "branching":
 				return theme.fg("muted", `${theme.status.pending} Branching to chat…`);

@@ -89,7 +89,7 @@ describe("extension autocomplete provider API (#4919)", () => {
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
 		Settings.instance.set("startup.quiet", true);
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		registry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 		const resolved = registry.find("anthropic", "claude-sonnet-4-5");
 		if (!resolved) throw new Error("Expected anthropic model claude-sonnet-4-5 to exist");
@@ -213,7 +213,7 @@ export default function (pi) {
 		expect(extension?.items.map(item => item.value)).toContain("##fff-first");
 
 		// ...while built-in slash completion still flows through the wrapper.
-		const slash = await provider!.getSuggestions(["/"], 0, 1);
+		const slash = await provider!.getSuggestions(["/mo"], 0, 3);
 		expect(slash?.items.map(item => item.value)).toContain("model");
 
 		// Registration after the refresh re-applies immediately, preserving the chain.
@@ -243,7 +243,7 @@ export default function (pi) {
 		const provider = slot.current;
 		expect(provider).toBeDefined();
 
-		const slash = await provider!.getSuggestions(["/"], 0, 1);
+		const slash = await provider!.getSuggestions(["/mo"], 0, 3);
 		expect(slash?.items.map(item => item.value)).toContain("model");
 
 		const extension = await provider!.getSuggestions(["##"], 0, 2);

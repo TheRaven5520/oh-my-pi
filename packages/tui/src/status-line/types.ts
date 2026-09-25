@@ -132,6 +132,8 @@ export interface SegmentContext {
 	} | null;
 	collab: CollabStatus | null;
 	stream: { viewers: number } | null;
+	/** A `/record` capture of this screen is running. */
+	recording: boolean;
 	// Cached values for performance (computed once per render)
 	usageStats: {
 		input: number;
@@ -179,6 +181,8 @@ export interface SegmentContext {
 	brandFgAnsi?: string;
 	git: {
 		branch: string | null;
+		/** HEAD's commit id when `branch` is the `"detached"` sentinel; null otherwise or when unknown. */
+		detachedCommit?: string | null;
 		status: { staged: number; unstaged: number; untracked: number } | null;
 		pr: { number: number; url: string } | null;
 	};

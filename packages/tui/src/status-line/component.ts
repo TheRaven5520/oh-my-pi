@@ -56,6 +56,18 @@ const BRAND_FADE_MS = 450;
 /** Repaint cadence while the brand fade is in flight (rust omp's `FADE_FRAME`). */
 const BRAND_FADE_FRAME_MS = 40;
 
+/**
+ * Providers whose subscription quota is a single monthly bucket, so their
+ * `monthly`/`30d` window is the one the usage segment must show. Providers that
+ * merely report a monthly side-counter (GitHub Copilot's premium requests) stay
+ * out: their monthly row is not the session quota.
+ */
+const MONTHLY_SUBSCRIPTION_PROVIDERS: Record<string, true> = {
+	"alibaba-token-plan": true,
+	cursor: true,
+	"opencode-go": true,
+};
+
 /** A displayable limit after provider, account, model, and window filtering. */
 interface UsageWindowCandidate {
 	id?: string;
@@ -452,6 +464,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#settings: StatusLineSettings = {};
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
 	#cachedBranch: string | null | undefined = undefined;
+	/** HEAD's commit when {@link #cachedBranch} is the `"detached"` sentinel; the claude preset shows it instead. */
+	#cachedDetachedCommit: string | null = null;
 	#cachedBranchRepoId: string | null | undefined = undefined;
 	#cachedBranchCwd: string | undefined = undefined;
 	// In-flight reftable resolve slot. Ownership is the launch id, not the cwd:
@@ -530,6 +544,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#vibeWorkerTokenRate: (() => number | null) | null = null;
 	#collabStatus: CollabStatus | null = null;
 	#streamStatus: { viewers: number } | null = null;
+	#recording = false;
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
@@ -931,6 +946,13 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		this.#invalidateStatusLineRenderCache();
 	}
 
+	/** Toggle the `● REC` badge shown while `/record` captures the screen. */
+	setRecording(recording: boolean): void {
+		if (this.#recording === recording) return;
+		this.#recording = recording;
+		this.#invalidateStatusLineRenderCache();
+	}
+
 	/** Set the callback that presents detected Codex reset celebrations, or clear it with `undefined`. */
 	setCodexResetFireworksHandler(handler: ((event: CodexResetFireworksEvent) => void) | undefined): void {
 		this.#onCodexResetFireworks = handler;
@@ -1190,6 +1212,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	invalidateGitCaches(): void {
 		this.#invalidateStatusLineRenderCache();
 		this.#cachedBranch = undefined;
+		this.#cachedDetachedCommit = null;
 		this.#cachedBranchRepoId = undefined;
 		this.#cachedBranchCwd = undefined;
 		// Abort before releasing the in-flight slot. Releasing alone would allow
@@ -1315,11 +1338,13 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			const generation = this.#branchCacheGeneration;
 			(async () => {
 				let next: string | null = null;
+				let detachedCommit: string | null = null;
 				let repoId: string | null = null;
 				try {
 					const headState = await gitRepository.head(request.controller.signal);
 					repoId = repoInfo.headPath;
 					next = headState.kind === "ref" ? (headState.branch ?? headState.refName ?? "HEAD") : "detached";
+					if (next === "detached") detachedCommit = headState.commit ?? null;
 				} catch {
 					next = null;
 				} finally {
@@ -1333,11 +1358,13 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 				// newer resolve superseded this one (or the component disposed).
 				if (this.#branchCacheGeneration !== generation || this.#disposed) return;
 				const prev = this.#cachedBranchCwd === gitCwd ? this.#cachedBranch : undefined;
+				const prevCommit = this.#cachedDetachedCommit;
 				this.#cachedBranchCwd = gitCwd;
 				this.#cachedBranchRepoId = repoId;
 				this.#cachedBranch = next;
+				this.#cachedDetachedCommit = detachedCommit;
 				this.#branchLastFetch = Date.now();
-				if (prev !== next) {
+				if (prev !== next || prevCommit !== detachedCommit) {
 					this.#invalidateStatusLineRenderCache();
 					this.#onBranchChange?.();
 				}
@@ -1359,9 +1386,11 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		this.#branchLastFetch = Date.now();
 		if (!head) {
 			this.#cachedBranch = null;
+			this.#cachedDetachedCommit = null;
 			return null;
 		}
 		this.#cachedBranch = head.kind === "ref" ? (head.branch ?? head.refName ?? "HEAD") : "detached";
+		this.#cachedDetachedCommit = this.#cachedBranch === "detached" ? (head.commit ?? null) : null;
 		return this.#cachedBranch ?? null;
 	}
 
@@ -1836,6 +1865,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const activeModelId = normalizeUsageScopeValue(context.modelId);
 		const activeAntigravityCounter =
 			context.provider === "google-antigravity" ? getAntigravityCounterKeyForModel(context.modelId) : undefined;
+		const monthlySubscriptionProvider =
+			context.provider !== undefined && MONTHLY_SUBSCRIPTION_PROVIDERS[context.provider] === true;
 		const scopeGroups = new Map<string, UsageScopeGroup>();
 		for (const report of reports) {
 			if (!report || typeof report !== "object") continue;
@@ -1898,10 +1929,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 										: undefined;
 				const windowClass =
 					subscriptionWindow ??
-					((context.provider === "cursor" || context.provider === "opencode-go") &&
-					(windowId === "monthly" || windowId === "30d")
-						? "monthly"
-						: undefined);
+					(monthlySubscriptionProvider && (windowId === "monthly" || windowId === "30d") ? "monthly" : undefined);
 				if (!windowClass) continue;
 
 				const modelId = normalizeUsageScopeValue("modelId" in scope ? scope.modelId : undefined);
@@ -2224,6 +2252,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			vim: this.#vimStatus,
 			collab: this.#collabStatus,
 			stream: this.#streamStatus,
+			recording: this.#recording,
 			usageStats,
 			contextPercent,
 			contextTokens,
@@ -2238,6 +2267,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			brandFgAnsi: this.#brandFgAnsi(turnElapsedMs !== null, sessionAccentEnabled),
 			git: {
 				branch: gitBranch,
+				detachedCommit: gitBranch === "detached" ? this.#cachedDetachedCommit : null,
 				status: gitStatus,
 				pr: gitPr,
 			},

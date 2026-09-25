@@ -35,6 +35,8 @@ const NEW_COMPAT_FIELDS = new Set([
 	"claudeThinkingBetaHeader",
 	"antigravityClaudeToolMode",
 	"antigravityUsageLabel",
+	// Fork: gateway fast mode (resolved `false` by default; baked rows predate it).
+	"supportsFastMode",
 ]);
 
 /** APIs whose compat record is new with the engine (no baked baseline). */

@@ -251,9 +251,9 @@ describe("inline click-to-focus geometry", () => {
 			term.sendInput(`\x1b[<0;5;${screenRow + 1}M`);
 		};
 
-		// Collapsed by default: three rows plus the expander.
+		// Collapsed by default: main plus the first four agents, then the expander.
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
+		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent4"))).toBe(false);
 
 		// Clicking the expander paints the slotted window with a collapse row.
 		await clickRow("more — expand");
@@ -262,6 +262,6 @@ describe("inline click-to-focus geometry", () => {
 		// Clicking it again collapses back to a few rows.
 		await clickRow("show less");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
+		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent4"))).toBe(false);
 	});
 });

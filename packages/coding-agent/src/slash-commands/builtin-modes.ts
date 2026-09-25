@@ -6,6 +6,7 @@ import {
 	type ResolveCliModelResult,
 } from "../config/model-resolver";
 import type { SettingPath, Settings } from "../config/settings";
+import { clockZoneLabel } from "@oh-my-pi/pi-tui/render/clock";
 import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
@@ -482,6 +483,44 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			runtime.ctx.showStatus("Usage: /fast [on|off|status]");
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "time",
+		icon: "history",
+		description: "Toggle right-aligned timestamps on messages, replies, and tool calls",
+		subcommands: [
+			{ name: "on", description: "Show timestamps" },
+			{ name: "off", description: "Hide timestamps" },
+			{ name: "status", description: "Show whether timestamps are on" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime =>
+			`Timestamps: ${runtime.ctx.settings.get("display.timestamps") ? "on" : "off"}`,
+		handleTui: (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			const current = runtime.ctx.settings.get("display.timestamps") === true;
+			const zone = clockZoneLabel();
+			if (arg === "status") {
+				runtime.ctx.showStatus(`Timestamps are ${current ? "on" : "off"} (${zone}).`);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (arg !== "" && arg !== "toggle" && arg !== "on" && arg !== "off") {
+				runtime.ctx.showStatus("Usage: /time [on|off|status]");
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			const next = arg === "on" ? true : arg === "off" ? false : !current;
+			runtime.ctx.editor.setText("");
+			if (next !== current) {
+				runtime.ctx.settings.set("display.timestamps", next);
+				// Labels live in rows that may already be in native scrollback:
+				// rebuild the transcript and retire those rows (same as /settings).
+				runtime.ctx.rebuildChatFromMessages();
+				runtime.ctx.ui.resetDisplay();
+			}
+			runtime.ctx.showStatus(next ? `Timestamps on · ${zone}` : "Timestamps off");
 		},
 	},
 	{

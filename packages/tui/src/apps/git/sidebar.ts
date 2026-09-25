@@ -20,6 +20,7 @@ import { matchesKey } from "../../keys";
 import { TERMINAL } from "../../terminal-capabilities";
 import { truncateToWidth, visibleWidth } from "../../utils";
 import { getEditorTheme, theme } from "../../theme/theme";
+import { clockDateTimeFormat } from "../../render/clock";
 import { type AvatarSource, identiconLines } from "./avatar";
 import { pill, selectionBgAnsi, softPill, tintChip, withBg } from "./colors";
 import type { ChangedFile, GitViewState } from "./state";
@@ -306,6 +307,15 @@ function sectionHeaderRow(
 		hits,
 	};
 }
+
+const AUTHORED_FORMAT: Intl.DateTimeFormatOptions = {
+	year: "numeric",
+	month: "numeric",
+	day: "numeric",
+	hour: "numeric",
+	minute: "2-digit",
+	second: "2-digit",
+};
 
 /** Sidebar state machine + renderer. */
 export class Sidebar {
@@ -1156,7 +1166,7 @@ export class Sidebar {
 		rows.push({ text: ` ${theme.bold(head.authorName)} ${theme.fg("dim", `<${head.authorEmail}>`)}` });
 		const when = head.authorDate ? new Date(head.authorDate) : null;
 		if (when && !Number.isNaN(when.getTime())) {
-			rows.push({ text: theme.fg("dim", ` authored ${when.toLocaleString()}`) });
+			rows.push({ text: theme.fg("dim", ` authored ${clockDateTimeFormat(AUTHORED_FORMAT).format(when)}`) });
 		}
 		if (head.parents.length > 0) {
 			rows.push({

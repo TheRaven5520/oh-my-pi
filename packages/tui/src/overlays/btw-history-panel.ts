@@ -30,8 +30,10 @@ import { sanitizeDisplayLine, sanitizeDisplayText } from "./extensions/display-t
 import { editorKey, rawKeyHint } from "../chrome/keybinding-hints";
 import { bottomBorder, row, topBorder } from "../chrome/overlay-box";
 import { padToWidth } from "../render/utils";
+import { routeSgrMouseInput, type SgrMouseEvent } from "../mouse";
 import { SplitPane } from "../components/layout/split-pane";
 import { clampSelection, contentRowWidth, padLinesToHeight, renderScrollableList } from "../chrome/selector-helpers";
+import { clockDateTimeFormat } from "../render/clock";
 
 interface BtwHistoryPanelOptions {
 	records: readonly BtwHistoryRecord[];
@@ -68,6 +70,19 @@ const STATUS: Record<BtwHistoryRecord["status"], { label: string; color: ThemeCo
 };
 
 /** Session-local side questions. Selecting or copying never promotes them into chat. */
+/** Answer lines one wheel notch scrolls, matching the agent transcript viewer. */
+const WHEEL_SCROLL_LINES = 3;
+
+const BTW_TIME_FORMAT: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+const BTW_DATE_FORMAT: Intl.DateTimeFormatOptions = {
+	month: "short",
+	day: "numeric",
+	year: "numeric",
+	hour: "2-digit",
+	minute: "2-digit",
+	hourCycle: "h23",
+};
+
 export class BtwHistoryPanel implements Component, Focusable {
 	readonly #options: BtwHistoryPanelOptions;
 	#records: readonly BtwHistoryRecord[] = [];
@@ -96,6 +111,8 @@ export class BtwHistoryPanel implements Component, Focusable {
 	#listCache: readonly string[] = [];
 	#detailCache: readonly string[] = [];
 	#bodyHeightLast = 1;
+	/** Screen row where the split body starts in the last framed render; undefined when unframed. */
+	#splitTopRow: number | undefined;
 	readonly #framePrefix = () => `${theme.fg("border", theme.boxRound.vertical)} `;
 	readonly #frameDivider = () => ` ${theme.fg("border", theme.boxRound.vertical)} `;
 	readonly #frameSuffix = () => ` ${theme.fg("border", theme.boxRound.vertical)}`;
@@ -121,15 +138,6 @@ export class BtwHistoryPanel implements Component, Focusable {
 		splitAt: 96,
 		narrowPane: "left",
 		height: 1,
-	});
-	readonly #timeFormat = new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-	readonly #dateFormat = new Intl.DateTimeFormat("en", {
-		month: "short",
-		day: "numeric",
-		year: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-		hourCycle: "h23",
 	});
 
 	constructor(options: BtwHistoryPanelOptions) {
@@ -282,6 +290,16 @@ export class BtwHistoryPanel implements Component, Focusable {
 		this.#options.requestRender();
 	}
 	handleInput(data: string): void {
+		// This fullscreen pane holds terminal mouse tracking, so wheel and click
+		// reports arrive here as SGR sequences. Consume every one before the
+		// composer, which would otherwise take the raw bytes as typed text.
+		if (data.startsWith("\x1b[<")) {
+			routeSgrMouseInput(data, event => {
+				if (event.wheel !== null) this.#handleWheel(event, event.wheel);
+				return true;
+			});
+			return;
+		}
 		if (this.#composer) {
 			// The input owns every key, including panel shortcuts and pasted text.
 			this.#composer.input.handleInput(data);
@@ -335,6 +353,21 @@ export class BtwHistoryPanel implements Component, Focusable {
 		this.#options.requestRender();
 	}
 
+	/** Wheel scrolls the pane under the pointer: the answer scrolls, the topic list moves its selection. */
+	#handleWheel(event: SgrMouseEvent, direction: -1 | 1): void {
+		const hit =
+			this.#splitTopRow === undefined ? undefined : this.#split.locate(event.row - this.#splitTopRow, event.col);
+		const pane = hit ? (hit.pane === "left" ? "list" : "answer") : this.#focus;
+		// While composing a follow-up the topic is fixed; only its answer scrolls.
+		if (pane === "list" && !this.#composer) {
+			this.#select(this.#selectedIndex() + direction);
+		} else {
+			this.#detail.scroll(direction * WHEEL_SCROLL_LINES);
+			this.#followLatest = false;
+		}
+		this.#options.requestRender();
+	}
+
 	#renderList(width: number, height: number): readonly string[] {
 		const rowSpan = width < 36 && height >= 2 ? 2 : 1;
 		this.#listHeight = Math.max(1, Math.floor(height / rowSpan));
@@ -357,7 +390,7 @@ export class BtwHistoryPanel implements Component, Focusable {
 			const selected = index === selectedIndex;
 			const status = STATUS[getBtwLatestTurn(record).status];
 			const cursor = selected ? theme.fg(this.#focus === "list" ? "accent" : "muted", theme.nav.cursor) : " ";
-			const time = theme.fg("dim", this.#timeFormat.format(record.createdAt));
+			const time = theme.fg("dim", clockDateTimeFormat(BTW_TIME_FORMAT).format(record.createdAt));
 			const badge = theme.fg(status.color, status.label);
 			const prefix = `${cursor} ${time} ${badge} `;
 			const question = sanitizeDisplayLine(record.question);
@@ -407,7 +440,7 @@ export class BtwHistoryPanel implements Component, Focusable {
 		const status = STATUS[turn.status];
 		const lines = [
 			...wrapTextWithAnsi(
-				theme.fg(status.color, `${status.label} · ${this.#dateFormat.format(turn.createdAt)}`),
+				theme.fg(status.color, `${status.label} · ${clockDateTimeFormat(BTW_DATE_FORMAT).format(turn.createdAt)}`),
 				width,
 			),
 			"",
@@ -563,8 +596,10 @@ export class BtwHistoryPanel implements Component, Focusable {
 			this.#detailCache = detail ?? [];
 			this.#listCache = wide || this.#focus === "list" ? this.#renderList(listWidth, bodyHeight) : [];
 			this.#split.setHeight(bodyHeight);
+			this.#splitTopRow = lines.length;
 			lines.push(...this.#split.render(width));
 		} else {
+			this.#splitTopRow = undefined;
 			const body = this.#focus === "list" ? this.#renderList(inner, bodyHeight) : (detail ?? []);
 			for (const line of padLinesToHeight(body, bodyHeight)) lines.push(framed ? row(line, width) : line);
 		}

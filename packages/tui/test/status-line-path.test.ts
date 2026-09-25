@@ -46,6 +46,7 @@ function createPathContext(): SegmentContext {
 		vim: null,
 		collab: null,
 		stream: null,
+		recording: false,
 		usageStats: {
 			input: 0,
 			output: 0,
@@ -284,18 +285,31 @@ describe("status line path segment", () => {
 	});
 
 	it("claude style mirrors Claude Code's three-component path rule", () => {
-		const render = (cwd: string, branch: string | null = null) => {
+		const render = (cwd: string, branch: string | null = null, detachedCommit: string | null = null) => {
 			const ctx: SegmentContext = {
 				...createPathContext(),
 				claudeStyle: true,
 				activeRepo: { cwd, relativeRepoRoot: "." } as unknown as SegmentContext["activeRepo"],
-				git: { branch, status: null, pr: null },
+				git: { branch, detachedCommit, status: null, pr: null },
 			};
 			return stripVTControlCharacters(renderSegment("path", ctx).content);
 		};
 		expect(render("/home/ubuntu/code", null)).toBe("…/home/ubuntu/code");
 		expect(render("/home/ubuntu/code/oh-my-pi", "main")).toBe("…/ubuntu/code/oh-my-pi [main]");
 		expect(render("/tmp")).toBe("");
+		// A stray repo around the $HOME fallback dir must not leak a lone `[branch]`.
+		expect(render("/tmp", "detached", "0123456789abcdef")).toBe("");
+		// Every omp $HOME-fallback root hides the same way; macOS reports /tmp as /private/tmp.
+		const fallbackRoots = ["/var/tmp", path.join(os.homedir(), "tmp")];
+		if (process.platform === "darwin") fallbackRoots.push("/private/tmp", "/private/var/tmp");
+		for (const root of fallbackRoots) {
+			expect(render(root, "detached", "0123456789abcdef")).toBe("");
+		}
+		// A project inside a scratch root is a real folder and keeps its path and branch.
+		expect(render("/var/tmp/work", "main")).toBe("…/var/tmp/work [main]");
+		// Detached HEAD shows the short commit id, as `git rev-parse --short HEAD` does.
+		expect(render("/a/b", "detached", "0123456789abcdef")).toBe("a/b [0123456]");
+		expect(render("/a/b", "detached", null)).toBe("a/b [detached]");
 		expect(render("/a/b")).toBe("a/b");
 	});
 	it("hides /tmp when TMPDIR points elsewhere", () => {

@@ -32,6 +32,7 @@ import { type AgentRecordLike, type AgentHubRegistry, type AgentStatus, MAIN_AGE
 import { USER_INTERRUPT_LABEL } from "../chat/messages";
 import { shortenPath, truncateToWidth } from "../render/render-utils";
 import { formatLocalDateTimeWithOffset } from "../chrome/local-date";
+import { formatClockTime } from "../render/clock";
 import type { ObservableSession, SessionObserverRegistry } from "./session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../keybinding-matchers";
@@ -103,12 +104,7 @@ function activityGlyph(row: AgentActivityRow): string {
 }
 
 function activityClock(timestamp: number): string {
-	return new Date(timestamp).toLocaleTimeString(undefined, {
-		hour: "2-digit",
-		minute: "2-digit",
-		second: "2-digit",
-		hour12: false,
-	});
+	return formatClockTime(timestamp);
 }
 /** Result of one host-backed transcript read for the Agent Hub viewer. */
 export interface AgentHubRemoteTranscript {

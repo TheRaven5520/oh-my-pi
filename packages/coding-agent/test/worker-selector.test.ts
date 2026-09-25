@@ -28,6 +28,8 @@ describe("worker selector dispatch", () => {
 	});
 	it("declares workerHostEntry in process entry before dispatching worker selector", async () => {
 		const repoRoot = path.resolve(__dirname, "../../..");
+		// Simulate a direct compiled entry: a launcher-owned env (inherited when tests run under omp) skips it.
+		const { OMP_LAUNCHER_OWNS_CLI: _launcherOwnsCli, ...env } = process.env;
 		const proc = Bun.spawn({
 			cmd: [
 				process.execPath,
@@ -41,7 +43,7 @@ describe("worker selector dispatch", () => {
 				"__omp_worker_does_not_exist",
 			],
 			cwd: repoRoot,
-			env: { ...process.env, PI_COMPILED: "true" },
+			env: { ...env, PI_COMPILED: "true" },
 			stdout: "pipe",
 			stderr: "ignore",
 		});

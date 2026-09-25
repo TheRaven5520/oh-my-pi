@@ -434,7 +434,7 @@ export interface InteractiveModeContext {
 	setUsagePinned(pinned: boolean): void;
 	/** Toggle the static usage snapshot without refetching when hiding it. */
 	toggleUsagePinned(): void;
-	handleChangelogCommand(showFull?: boolean): Promise<void>;
+	handleChangelogCommand(args?: string): Promise<void>;
 	handleHotkeysCommand(): void;
 	handleToolsCommand(): void;
 	handleContextCommand(): void;
@@ -466,6 +466,8 @@ export interface InteractiveModeContext {
 	handleSTTToggle(): Promise<void>;
 	/** Start or stop the Codex-backed realtime voice session. */
 	handleLiveCommand(): Promise<void>;
+	/** Start a `/record` screen capture, or stop the running one. */
+	toggleRecording(): Promise<void>;
 	executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto?: boolean,

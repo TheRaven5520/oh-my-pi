@@ -4,17 +4,22 @@
 
 ### Added
 
+- Added `/time [on|off|status]` and the `display.timestamps` setting: a dim, right-aligned start time on each message, reply, tool call and note, plus how long each reply and tool call took (`14:23:12 · 8.0s`); running tools count up. Works on resumed sessions too (tool calls use their recorded start; reply text that ran into a tool call shows its start only). `display.timeZone` (IANA, e.g. `America/New_York`) sets the zone for these labels and the usage row; toggling reprints the transcript. Display only; nothing is sent to the model.
+- `/btw` side questions can now run read-only lookups (`read`, `grep`, `glob`, `find`, `ast_grep`, `web_search`, `recall`) to check files before answering; the pane lists each lookup. Anything that would modify files or session state is refused, lookups stop after 8 rounds, and they run on separate tool instances so the main agent's read state is untouched. Extensions get the same through `runEphemeralTurn({ toolPolicy: "read-only" })`.
 - Added `/usage show` to pin a static usage snapshot above the prompt and `/usage clear` to remove it without interrupting active work; plain `/usage` toggles between the two. The pinned panel shows one pool headline per provider from Sprilicred's pooled accounts — Anthropic Fable Weekly / Weekly / Five Hour and OpenAI Weekly (OpenAI has no five-hour limit) ten-cell bars — plus the fetch time; running `/usage show` again refetches and replaces the snapshot.
 - Added `/fork [request]`: a copy of the current chat that lives in the agents panel. Open it with `↓`/`Enter` to talk to it directly, `Esc` to return. The fork posts updates and a final report back to the main chat with its `hand_back` tool; the final report closes it and removes it from the panel. `x` on an idle fork closes it.
 - Rewind (double-Esc, `/branch`, `/rewind`) can now restore files, like Claude Code's `/rewind`. omp snapshots each file before `edit`, `write`, `ast_edit`, or an `lsp` rename/code action first changes it during a prompt's run; rewinding to that prompt offers **Restore code and conversation**, **Restore conversation**, **Restore code**, or **Never mind** when files changed since. `/rewind undo` puts back what the last code restore overwrote, until the next message is sent. Snapshots persist in the session's artifacts folder across `--resume` (last 100 prompts). Bash, subagent, and outside edits are not tracked; symlinked or hard-linked files are skipped with a warning.
 - Added `title.style: tag` for session names as short ALL-CAPS tags (`SPRILICRED`, `PI05 EVALS`, `MODIFY OMP`). The tag is re-checked every 10 user messages or 30 minutes and changes only when two checks in a row agree the work has moved on; manual names are never changed. The default `sentence` style is unchanged.
+- In `title.style: tag`, no automatic session name can exceed two words, whatever sets it (first tag, re-check, replan, plan approval, rewind); longer automatic names are rejected, not truncated. An automatic name left over from sentence style is re-checked on the next message and replaced by the first valid tag. Names you set with `/rename` keep any length.
 - Added `retry.usageLimitFallbackChains`: fallback chains consulted only when a turn (or advisor call) fails on a usage limit, ahead of `retry.fallbackChains`. Use it for a reserve account, e.g. `{"sprilicred-anthropic/*": ["personal-anthropic/*"]}`, that must never be used for transient errors, role resolution, subagents, or titles.
+- The `claude` statusline preset now ends with the session name (for example a `title.style: tag` tag such as `MODIFY OMP`) as a final `| NAME` section, shows the short commit id on a detached HEAD as Claude Code does instead of `[detached]`, and hides a bare temp directory's `[branch]` together with the path, for every fallback root (`/tmp`, `/var/tmp`, `~/tmp`, and macOS's `/private/tmp`); a lone repo clone in `/tmp` previously showed as `[detached]` on macOS.
 - Added `cycleModels`: model patterns (enabledModels syntax, e.g. `["sprilicred-anthropic/*", "sprilicred-openai/*"]`) that Ctrl+P / Shift+Ctrl+P cycle instead of the `cycleOrder` roles, matched against the available models on every press. For a models.yml `discovery` provider that has answered, only the models its listing names are cycled, so a configured row it withdrew stays out. Each press also re-asks those providers in the background (at most every 5 minutes per provider; the first press of a session always asks), so an added or withdrawn model shows from a later press instead of after the day-long discovery cache. Empty (the default) keeps the role cycle.
 - `openai-models-list` discovery now takes `supports_reasoning` and `max_output_tokens` from a listing row when the gateway sends them, so a model newer than the bundled catalog can think and write its full output.
 - The thinking level you choose is remembered: Shift+Tab now also saves it as `defaultThinkingLevel` for new sessions (off is not saved), and model switches (Ctrl+P, `/model`, resume) re-clamp from the level you asked for instead of the last clamped one, so passing through a model with a shorter effort ladder no longer lowers later models' thinking. A role's or pattern's own `:level`, and fallback models, apply only to that model.
 
 ### Changed
 
+- `display.timeZone` now applies to every clock omp shows — the status line's `time` segment, Agent Hub, `/btw` history, session lists, the git sidebar, the pinned `/usage` fetch time, stream chat and the debug report — and to the date in the date/cwd reminder sent to the model (so after 8 PM EDT a UTC host no longer tells the model it is tomorrow). Worktree names, upload paths and scraped page dates are unchanged.
 - The startup update check and its "Update Available" banner are now off by default in this fork; set `startup.checkUpdate` to `true` to bring them back. `omp update` is unchanged.
 - Interactive `/usage` no longer opens the one-shot dashboard overlay or lists per-account rows; it pins the pooled snapshot instead.
 - Removed `/usage on`, `/usage off`, and `/usage reset` together with the saved-reset account picker; saved rate-limit resets are still spent automatically via `codexResets.autoRedeem` / `claudeResets.autoRedeem` and through the auth-gateway `/v1/usage/reset-credits` endpoints.
@@ -28,33 +33,93 @@
 
 ### Fixed
 
+- Fixed `/btw` cutting answers at 4 KiB (ending in `[…truncated]`) and collapsing repeated lines such as closing braces in code; answers are now kept in full, `c` copies them with their original tabs, and an answer that stopped at the model's output limit is flagged in the pane footer.
+- Fixed the mouse wheel doing nothing in the full-screen `/btw` history pane; it now scrolls the answer, or moves the selection over the topic list.
+- Fixed tag-style session names being replaced by a meaningless tag such as `PROJECT STATUS`: when the title model deliberately answers `none` (keep the current tag, or no title yet), omp no longer asks the next fallback model, which could invent one.
 - Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
 - Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.
 - Fixed models of an `auth: oauth` provider with `discovery` losing the OAuth (Claude Code) request shape: discovered models were sent without it, and so were listed ones once discovery found them too (including from the model cache).
 
-## [17.3.1] - 2026-08-13
-
-### Fixed
-
-- Fixed Claude Code user discovery ignoring CLAUDE_CONFIG_DIR for configuration, plugins, MCP servers, and imported sessions.
-- Fixed the status-line git branch display freezing after switching branches.
-- Fixed Pi extension contexts omitting the runtime mode, which caused TUI guards to silently disable extension UI.
-- Fixed extension-registered tool names being rejected by the --tools flag before extension discovery, which prevented least-privilege sessions from allowlisting plugin tools.
-- Fixed omp plugin install failing with cloning errors for legacy Pi extensions whose tool schemas use legacy-typebox builders.
-- Fixed omp update aborting with chmod ENOENT when concurrent update runs overlapped by using unique download temporary paths.
-- Fixed the browser tool executable probe launching the user's installed GUI Chromium on Windows: the `--version` version probe from ecb22957 was Linux-scoped but ran for every platform candidate, so on Windows it could hand off to a running `chrome.exe`, open a normal browser window, then reject the candidate and fall back to cached Chrome for Testing. The probe is now confined to Linux ([#8445](https://github.com/can1357/oh-my-pi/issues/8445)).
-
-## [17.3.0] - 2026-08-13
+## [18.3.0] - 2026-09-24
 
 ### Breaking Changes
 
-- Removed the global `advisor.subagents` setting. Subagent advisors are now configured per agent via frontmatter or `task.agentAdvisor`. Existing configurations of `advisor.subagents: true` will automatically migrate to `task.agentAdvisor: { task: "on" }`.
+- The `hub` tool is deprecated; use `wait`, `write`, and the `proc://` protocols instead.
+- The `irc.timeoutMs` configuration setting has been removed.
+- The edit mode syntax now uses `*** Edit File:`, `*** Find`, and `*** Replace` headers instead of `SM:` headers.
+- Cancelling a process through `write` now requires an explicit `proc://<id>/kill` target; other write targets validate content normally.
+
+### Added
+
+- Added `omp://` documentation scopes for `find` and `omp find`. Search all embedded harness documentation with `omp://` or a specific document with `omp://<file>.md`; results are returned as canonical URLs that `read` can open, including range selectors.
+- Added extension support for ephemeral, `/btw`-style side turns through `ctx.runEphemeralTurn()`, with optional tool suppression and output/context limits without adding the turn to session history.
+- Added background job and service management through the `wait` tool and `proc://` URLs, including supervised services in `bash` and direct agent messaging through `agent://` write targets.
+- Added `*** Insert Before` and `*** Insert After` edit operations for adding lines without replacing existing code.
+- Added the `toks` command for offline token counting, including support for Jev (TypeSafe Jev 1.13) encodings.
+- Added automatic discovery of Apple Foundation Models on supported Apple silicon devices.
+- Added `/changelog last [N]` for viewing the latest release or a selected number of recent releases.
+- Added terminal-based OAuth authentication with `omp login`, including browser-assisted login, account and organization details, and automatic model discovery refresh. Added provider support for `org-scoped-identity`, `oauth-token-env`, and per-account OAuth priority/reserve policies through `auth.accountPolicies`, with policy state shown by `omp usage`.
+- Added the `daybreak` badge to `omp usage` for enabled accounts.
+- Added `/export` and `/usage` to focused subagent views for exporting a focused transcript and viewing account usage without returning to the main session.
+- Pasted clipboard images are now saved in the session artifact directory, allowing agents to read, copy, or upload them by file path.
+- Added `/annotate` for attaching notes to diffs, replies, session messages, files, or quoted text and inserting or sending those notes in prompts and reviews.
+- Added configurable MCP startup behavior through `MCP_STARTUP_TIMEOUT_MS`/`mcp.startupTimeoutMs` and `OMP_MCP_REQUIRE_READY=1`, allowing headless runs to require MCP servers to become ready before the first turn.
+- Added native judgment usage reporting, including error stop reasons and messages, and added `openrouter/~typesafe/jev-latest` as a native judge candidate.
+
+### Changed
+
+- Session compaction now supports native Anthropic snapshot branches and rewinds.
+- The default `bash.autoBackground.strategy` is now `catalog`.
+- The `Launch` configuration group has been renamed to `Services`.
+- Terminal OAuth behavior is now consistent between `omp login` and `omp auth-broker login`.
+- Judgment fallback now uses only native candidates, preventing prompted models from replacing failed native judges.
+- Browser screenshot comparisons now tolerate minor rasterizer differences.
+
+### Fixed
+
+- Fixed credential-aware API key resolution during authentication rotation.
+- Fixed comma-separated line selectors in `read`, `grep` paths, and `fetch`; selectors now read the requested range, while a bare number selects only that line.
+- Fixed `write` reporting JavaScript character counts instead of UTF-8 byte counts.
+- Fixed background job and service status reporting, including incorrect durations, reused job IDs, stale logs after named-service restarts, and foreground calls incorrectly appearing as background jobs.
+- Fixed `wait` and agent messaging so completed subagent results and peer messages are delivered reliably, including when a wait is interrupted by an incoming message.
+- Fixed headless print mode dropping or silently ignoring MCP servers that start slowly; it now waits within the configured timeout and warns when a server is not ready.
+- Fixed reader-mode `fetch` sending inline SVG icons and base64 images as unreadable model input; alt text is retained instead.
+- Fixed long non-Latin judged TTSR output exceeding token limits by applying token-aware truncation.
+
+## [18.2.11] - 2026-09-23
+
+### Fixed
+
+- Fixed nested `eval` Todo updates not being reflected by the Todo tracker, including cases where a cell fails after committing an update.
+- Fixed strict-mode structured-output validation for JSON Schemas without a root `type`, preserving their `items` and `required` keywords.
+- Improved streamed TTSR whole-buffer matching to avoid repeated scans from the beginning of the buffer.
+- Fixed plural browser queries when compiled binaries provide shallow stack traces.
+- Fixed browser `tab.fill` timing out on pages whose animation frames stall.
+- Fixed the first LSP diagnostics request returning no results while a newly started language server is still analyzing.
+- `/shake thinking` now reports the number of tokens freed.
+
+## [18.2.10] - 2026-09-22
+
+### Added
+
+- Added live benchmark results table with real-time model ranking and per-kind performance metrics
+- Added dedicated prefill throughput reporting for prefill-focused benchmarks
+- Added `/record` slash command to capture terminal sessions as replayable `.ompcast` files
+- Added `omp play` CLI for terminal-based playback of session recordings
+- Added intent descriptions to judgment batching
+- Added live progress tracking for judgment batches in the TUI
+
+### Changed
+
+- Refined AI-assisted git staging verification to reduce false positives
+- Updated `omp bench` default profile to `chat` and improved CLI flag documentation
+- Coalesced judgment batch drain operations for better performance under high load
+
 ## [18.2.9] - 2026-09-22
 
 ### Added
 
 - Added Claude saved resets to usage views and `/usage reset`, with automatic blocked-limit recovery and expiring-reset redemption controlled by `claudeResets`.
-
 - Added support for searching embedded harness documentation with `find` and `omp find` using `omp://` scopes, including file-specific searches and `:start-end` selectors; results open directly through canonical `omp://` URLs.
 
 ### Changed
@@ -1758,59 +1823,22 @@
 - Fixed MCP request timeouts surfacing as `Unexpected end of JSON input` instead of `Request timeout after Nms` when the abort lands mid-JSON-body read.
 - Fixed CJS modules being misclassified as ESM when imported from an ESM parent module. The extension loader now identifies unshadowed CommonJS syntax from Babel's parsed AST before deferring to the importer's module kind. This resolves `SyntaxError: Missing 'default' export` for packages with conditional exports (e.g. playwright-core) where an ESM wrapper re-exports from a CJS entry, while ambiguous files continue to inherit their importer's classification.
 
-## [18.0.0] - 2026-08-22
-
-### Added
-
-- Added the `omp render` command to replay session threads and benchmark transcript pipeline performance.
-- Added configurable typo detection (`Ctrl+.` suggestions), Tab word completion, and opt-in autocorrect to the macOS prompt editor.
-- Added a live benchmark dashboard to `omp bench` with real-time performance estimates, p50/p95 statistics, distinct input/output throughput metrics, cost tracking, mixed challenge suites by default, and a `--prefill-bytes` option for synthetic prefill benchmarks.
-- Added the `/shake thinking` command to strip model reasoning blocks from session history.
-- Added icon support and usage-frequency ranking to slash-command autocomplete suggestions.
-- Enhanced the edit tool to support `＋`-prefixed line insertions, unified diff formats, bare selection replacements, and robust recovery for common syntax variations and ambiguous match spans.
-- Startup composer now renders immediately using cached session and theme data, allowing typing before session initialization finishes without dropping keystrokes.
-
-### Changed
-
-- Session history rewinds (via `Esc-Esc` or `/tree`) now truncate transcript tails in place instead of clearing and replaying the entire terminal scrollback.
-- Switched the fallback edit mode to `sloppy` for models lacking hashline support.
-- macOS spelling checks now run in the background to avoid blocking editor rendering and keystroke responsiveness.
-- Word completions accepted via Tab now insert a trailing space when not immediately followed by whitespace or punctuation.
-- Increased default visible autocomplete dropdown rows to 10 and added the `autocompleteMaxVisible` configuration setting.
-- Slash-command descriptions in the autocomplete popup now truncate to two lines instead of wrapping indefinitely.
+## [17.3.1] - 2026-08-13
 
 ### Fixed
 
-- Fixed streaming code blocks not rendering syntax highlighting live until completion.
-- Fixed an issue where interrupting Claude during reasoning would replay partial thinking blocks on subsequent turns and cause API rejection errors.
-- Fixed session resume performance by avoiding redundant edit-matching execution across historical transcripts.
-- Fixed image requests to Kimi Code / Moonshot failing with 400 errors by sending inline base64 images directly.
-- Fixed reading WAL-mode SQLite databases that do not have active `-wal` or `-shm` files.
-- Fixed terminal transcript layout corruption on Windows caused by collapsed edit results with long wrapped diff lines ([#9302](https://github.com/can1357/oh-my-pi/issues/9302)).
-- Fixed disappearing terminal scrollback history below updating cards such as background jobs or hub status cards.
-- Fixed pasted image attachment thumbnails rendering as blank boxes in Kitty terminal graphics mode.
-- Fixed context gauge display issues in the status line for unnamed sessions.
-- Fixed accurate benchmark input token counts on providers with automatic prompt caching.
-- Fixed C# files incorrectly displaying D3.js icons in edit results ([#9323](https://github.com/can1357/oh-my-pi/issues/9323)).
-- Fixed incorrect token delta reporting in expanded context compaction summaries when pre-compaction usage was omitted by the provider ([#9293](https://github.com/can1357/oh-my-pi/issues/9293)).
+- Fixed Claude Code user discovery ignoring CLAUDE_CONFIG_DIR for configuration, plugins, MCP servers, and imported sessions.
+- Fixed the status-line git branch display freezing after switching branches.
+- Fixed Pi extension contexts omitting the runtime mode, which caused TUI guards to silently disable extension UI.
+- Fixed extension-registered tool names being rejected by the --tools flag before extension discovery, which prevented least-privilege sessions from allowlisting plugin tools.
+- Fixed omp plugin install failing with cloning errors for legacy Pi extensions whose tool schemas use legacy-typebox builders.
+- Fixed omp update aborting with chmod ENOENT when concurrent update runs overlapped by using unique download temporary paths.
+- Fixed the browser tool executable probe launching the user's installed GUI Chromium on Windows: the `--version` version probe from ecb22957 was Linux-scoped but ran for every platform candidate, so on Windows it could hand off to a running `chrome.exe`, open a normal browser window, then reject the candidate and fall back to cached Chrome for Testing. The probe is now confined to Linux ([#8445](https://github.com/can1357/oh-my-pi/issues/8445)).
 
-## [17.4.4] - 2026-08-22
+## [17.3.0] - 2026-08-13
 
-### Added
+### Breaking Changes
 
-- Added the `tui.resizeScrollback` setting (default `append`) controlling how a settled width resize refreshes pane scrollback when the terminal repaints in place (tmux/screen/Zellij panes, in-place direct terminals). Multiplexers rewrap old output naively on width changes, leaving history hard-broken at the old width; `append` re-emits the transcript at the new width below it (one fresh copy per settled resize), `rebuild` clears pane history first so it holds exactly one current-width copy (needs a host that honors ED3, like tmux; erases pre-session scrollback), and `preserve` keeps the old-width history untouched with zero growth ([#8193](https://github.com/can1357/oh-my-pi/issues/8193)).
+- Removed the global `advisor.subagents` setting. Subagent advisors are now configured per agent via frontmatter or `task.agentAdvisor`. Existing configurations of `advisor.subagents: true` will automatically migrate to `task.agentAdvisor: { task: "on" }`.
 
-### Fixed
-
-- Fixed the composer image chip painting its right border inside the card and mangling the thumbnail's first row: the Kitty placement prefix was counted as visible width, breaking the thumbnail centering.
-- Fixed edit-tool whole-line inserts (an insert selection alone on its own line) splicing into the anchor line instead of landing on a new line when the anchor was the last matched line, preceded a blank line, or sat at EOF.
-- Edit tool prompt now documents whole-line insert selections and that a REWRITE `…` with no captured MATCH gap is written to the file literally.
-- Fixed multiplexer width resizes (tmux/screen/Zellij/cmux/Herdr panes) replaying the entire transcript into pane history — one duplicated transcript copy and seconds of visible scrolling per width change. The width-epoch boundary now resolves for real transcripts: finalized blocks without `getTranscriptBlockVersion` are treated as immutable per the documented contract, Container-derived blocks without a nested epoch source fall back to whole-segment stability instead of failing, and bash/eval/tool/read-group blocks report a block version for their genuine post-finalize mutations. The interactive resize listener no longer marks every SIGWINCH as "render pending", which forced the conservative replay-from-row-zero fallback on every settled resize ([#8193](https://github.com/can1357/oh-my-pi/issues/8193), [#7026](https://github.com/can1357/oh-my-pi/issues/7026)).
-
-## [17.4.3] - 2026-08-21
-
-### Fixed
-
-- Fixed the edit tool rejecting payloads containing a glued `«»` line: after MATCH it now reads as the mistyped `»` separator, elsewhere as a stray terminator to drop.
-
-Older entries are archived in [packages/coding-agent/CHANGELOG.md@da359efe2858](https://github.com/can1357/oh-my-pi/blob/da359efe2858f68baa4ae290574c7c4c9c8da3c3/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@3642216898e4](https://github.com/can1357/oh-my-pi/blob/3642216898e473f6a4472e78f792e641891c6d62/packages/coding-agent/CHANGELOG.md).

@@ -16,7 +16,9 @@ import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { formatClockTime } from "@oh-my-pi/pi-tui/render/clock";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext, RenderSessionContextOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
@@ -358,6 +360,45 @@ describe("UiHelpers.renderInitialMessages — responsiveness", () => {
 			});
 		}
 		expect(await countRebuildChunks(messages)).toBeGreaterThan(0);
+	});
+});
+
+describe("UiHelpers.renderInitialMessages — /time labels", () => {
+	afterEach(() => {
+		setChatTranscriptDisplayPreferences({ showTimestamps: false });
+	});
+
+	it("keeps labels through the staged rebuild, timing tools from their recorded start", async () => {
+		setChatTranscriptDisplayPreferences({ showTimestamps: true });
+		const t0 = Date.UTC(2026, 8, 25, 14, 0, 0);
+		const call = {
+			...assistantToolCall("toolu_sleep", "probe", { seconds: 6 }),
+			timestamp: t0 + 1_000,
+			completedAt: t0 + 2_000,
+		};
+		const transcript: SessionContext = {
+			...transcriptWith([
+				{ role: "user", content: "run the probe", timestamp: t0 },
+				call,
+				{
+					role: "toolResult",
+					toolCallId: "toolu_sleep",
+					toolName: "probe",
+					content: [{ type: "text", text: "done" }],
+					isError: false,
+					timestamp: t0 + 9_000,
+				},
+			]),
+			toolStartedAt: new Map([["toolu_sleep", t0 + 3_000]]),
+		};
+		const { ctx, chatContainer } = makeRenderCtx(transcript);
+
+		await new UiHelpers(ctx).renderInitialMessages();
+
+		const text = Bun.stripANSI(chatContainer.render(120).join("\n"));
+		expect(text).toContain(formatClockTime(t0));
+		// Recorded start (not the reply's end), and its result six seconds later.
+		expect(text).toContain(`${formatClockTime(t0 + 3_000)} · 6.0s`);
 	});
 });
 

@@ -12,7 +12,7 @@ import { setMagicKeywords } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
-import { Container } from "@oh-my-pi/pi-tui";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -143,7 +143,7 @@ describe("UserMessageComponent magic-keyword highlighting", () => {
 	it("rebuilds user messages with image hyperlinks when image links are not precomputed", () => {
 		const displayPath = path.resolve("/tmp/abc123.png");
 		const displayUri = url.pathToFileURL(path.resolve(displayPath)).href;
-		const chatContainer = new Container();
+		const chatContainer = new TranscriptContainer();
 		const sessionManagerMock = {
 			putBlobSync: () => ({
 				hash: "abc123",

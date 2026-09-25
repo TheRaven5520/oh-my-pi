@@ -140,6 +140,7 @@ function createContext(): {
 				return () => {};
 			}),
 			addStartListener: vi.fn(),
+			getFocused: () => editor,
 		} as unknown as InteractiveModeContext["ui"],
 		loadingAnimation: undefined,
 		autoCompactionLoader: undefined,
@@ -659,15 +660,26 @@ describe("InputController escape behavior", () => {
 	it("routes a focused double-← through the global input listener like Esc", () => {
 		const now = vi.spyOn(Date, "now");
 		const { ctx, inputListeners } = createContext();
+		// Mirror TUI input dispatch: listeners run in registration order and the
+		// first consume wins, so earlier listeners (e.g. the subagent dock) see it too.
+		const dispatch = (data: string) => {
+			let current = data;
+			for (const listener of inputListeners) {
+				const result = listener(current);
+				if (result?.consume) return result;
+				if (result?.data !== undefined) current = result.data;
+			}
+			return undefined;
+		};
 		Object.defineProperty(ctx, "focusedAgentId", { value: "Worker", configurable: true });
 		ctx.lastLeftTapTime = 0;
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
 		now.mockReturnValue(2_000);
-		const first = inputListeners[0]("\x1b[D");
+		const first = dispatch("\x1b[D");
 		now.mockReturnValue(2_200); // 200ms later — a deliberate second tap
-		const second = inputListeners[0]("\x1b[D");
+		const second = dispatch("\x1b[D");
 
 		// Both taps are consumed; only the second completes the gesture.
 		expect(first).toEqual({ consume: true });

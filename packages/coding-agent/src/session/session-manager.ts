@@ -106,7 +106,7 @@ import {
 	normalizeSessionWorkspace,
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
-import { recordSessionTitle } from "./title-index";
+import { recordSessionRecap, recordSessionTitle } from "./session-index";
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
@@ -757,6 +757,8 @@ export class SessionManager {
 	#sessionId = "";
 	#sessionName: string | undefined;
 	#titleSource: SessionTitleSource | undefined;
+	/** Rewrites or rejects (null) every automatic title before it is applied; user names bypass it. */
+	#autoTitlePolicy: ((title: string) => string | null) | undefined;
 	#titleRevision = 0;
 	#sessionFile: string | undefined;
 	#header!: SessionHeader;
@@ -2728,15 +2730,25 @@ export class SessionManager {
 	}
 
 	/**
+	 * Install the rule every automatic title must pass (e.g. the tag style's
+	 * two-word cap). Explicit user names are never affected.
+	 */
+	setAutoTitlePolicy(policy: ((title: string) => string | null) | undefined): void {
+		this.#autoTitlePolicy = policy;
+	}
+
+	/**
 	 * Set the session display name.
 	 * @param source "user" for explicit renames; "auto" for generated titles.
-	 *   Auto titles are ignored once the user has set a name.
+	 *   Auto titles are ignored once the user has set a name, and must pass the
+	 *   {@link setAutoTitlePolicy} rule.
 	 */
 	async setSessionName(name: string, source: SessionTitleSource = "auto", trigger?: string): Promise<boolean> {
 		if (this.#released) return false;
 		if (this.#titleSource === "user" && source === "auto") return false;
 
-		const title = SessionManager.#cleanTitle(name);
+		let title = SessionManager.#cleanTitle(name);
+		if (title && source === "auto" && this.#autoTitlePolicy) title = this.#autoTitlePolicy(title) ?? "";
 		if (!title) return false;
 
 		const previousTitle = this.#sessionName;
@@ -2769,6 +2781,16 @@ export class SessionManager {
 
 		this.#notifySessionNameListeners();
 		return true;
+	}
+
+	/**
+	 * Journal an idle recap for this session in history.db. Recaps never enter
+	 * the session file or LLM context; in-memory sessions are not journaled.
+	 */
+	recordRecap(recap: string): void {
+		if (this.#persist && this.#storage instanceof FileSessionStorage) {
+			recordSessionRecap(this.#sessionId, this.#cwd, recap);
+		}
 	}
 
 	/**

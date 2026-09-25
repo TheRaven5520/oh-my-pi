@@ -143,6 +143,20 @@ export function isLowSignalTitleInput(message: string): boolean {
 export const NO_TITLE_SENTINEL = "none";
 
 /**
+ * True when a model's extracted title answer is the deliberate
+ * {@link NO_TITLE_SENTINEL} (a tag check's "keep the current tag"), as opposed
+ * to an empty or unusable reply. A deliberate answer is final.
+ */
+export function isNoTitleAnswer(value: string): boolean {
+	const answer = value
+		.trim()
+		.replace(/^["']|["']$/g, "")
+		.replace(/[.!?]$/, "")
+		.trim();
+	return answer.toLowerCase() === NO_TITLE_SENTINEL;
+}
+
+/**
  * Upper bounds on an accepted title. Titling is a 3-7 word task, so any output
  * past these limits is a model that ignored the task and answered the user's
  * message instead — its whole reply must not become the session title (issue
