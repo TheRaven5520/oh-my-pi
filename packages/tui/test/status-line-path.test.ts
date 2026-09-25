@@ -299,6 +299,14 @@ describe("status line path segment", () => {
 		expect(render("/tmp")).toBe("");
 		// A stray repo around the $HOME fallback dir must not leak a lone `[branch]`.
 		expect(render("/tmp", "detached", "0123456789abcdef")).toBe("");
+		// Every omp $HOME-fallback root hides the same way; macOS reports /tmp as /private/tmp.
+		const fallbackRoots = ["/var/tmp", path.join(os.homedir(), "tmp")];
+		if (process.platform === "darwin") fallbackRoots.push("/private/tmp", "/private/var/tmp");
+		for (const root of fallbackRoots) {
+			expect(render(root, "detached", "0123456789abcdef")).toBe("");
+		}
+		// A project inside a scratch root is a real folder and keeps its path and branch.
+		expect(render("/var/tmp/work", "main")).toBe("…/var/tmp/work [main]");
 		// Detached HEAD shows the short commit id, as `git rev-parse --short HEAD` does.
 		expect(render("/a/b", "detached", "0123456789abcdef")).toBe("a/b [0123456]");
 		expect(render("/a/b", "detached", null)).toBe("a/b [detached]");

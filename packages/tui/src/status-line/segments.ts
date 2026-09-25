@@ -509,7 +509,12 @@ const pathSegment: StatusLineSegment = {
 			const shortDir = claudeShortDir(projectDir);
 			// A bare temp dir is omp's fallback for launches from $HOME, not a
 			// project: hide the whole section, including any stray repo's branch.
-			if (!ctx.startupPlaceholder && shortDir === "tmp") return { content: "", visible: false };
+			// Match every scratch root (macOS reports /tmp as /private/tmp), not
+			// only the literal `tmp` label; a project inside one still shows.
+			const scratch = classifyProjectDir(projectDir);
+			if (!ctx.startupPlaceholder && scratch.scratch && scratch.relative === null) {
+				return { content: "", visible: false };
+			}
 			const dir = ctx.startupPlaceholder ? STARTUP_PLACEHOLDER : fileHyperlink(projectDir, shortDir);
 			let content = claudeFg(CLAUDE_COLORS.path, dir);
 			const branch = claudeBranchLabel(ctx);
