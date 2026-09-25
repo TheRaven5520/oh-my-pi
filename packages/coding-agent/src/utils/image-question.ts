@@ -10,6 +10,7 @@ import {
 	resolveModelFromString,
 } from "../config/model-resolver";
 import imageQuestionSystemPromptTemplate from "../prompts/tools/image-question-system.md" with { type: "text" };
+import { buildSideAgentHeaders } from "../session/side-agent-headers";
 import { concreteThinkingLevel, resolveThinkingLevelForModel, toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
 import type { ToolSession } from "../tools";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
@@ -147,6 +148,11 @@ export async function askImageQuestion(
 				apiKey: modelRegistry.resolver(model, session.getSessionId?.() ?? undefined),
 				signal: effectiveSignal,
 				reasoning,
+				// The question runs with no provider session id; link it to the chat.
+				headers: buildSideAgentHeaders(
+					session.getProviderSessionId?.() ?? session.getSessionId?.() ?? undefined,
+					"helper",
+				),
 			},
 			{ telemetry, oneshotKind: "image_question", completeImpl },
 		);

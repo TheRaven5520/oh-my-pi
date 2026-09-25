@@ -3,6 +3,7 @@ import type { Api, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AGENT_ROLE_HEADER, PARENT_SESSION_ID_HEADER } from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
 import { generateTaskLabel, labelEchoesHandle } from "@oh-my-pi/pi-coding-agent/task/label";
 
 function getModelOrThrow(id: string): Model<Api> {
@@ -87,6 +88,31 @@ describe("task label generation", () => {
 			"AuthLoader",
 		);
 		expect(labeled).toBe("Sleep then reply done");
+	});
+
+	it("links the label request to the session that spawned the subagent", async () => {
+		// The label request is keyed by the spawn handle, which no proxy can map
+		// to a conversation; the parent header carries the spawning chat's id.
+		const model = getModelOrThrow("claude-sonnet-4-5");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [{ type: "text", text: "<title>Inspect the resolver</title>" }],
+		} as never);
+
+		const label = await generateTaskLabel(
+			"Inspect the resolver for stale entries",
+			createRegistry(model),
+			createSettings(model),
+			"Inspector",
+			undefined,
+			"parent-provider-session",
+		);
+
+		expect(label).toBe("Inspect the resolver");
+		expect(completeSimpleMock.mock.calls[0]?.[2]?.headers).toEqual({
+			[PARENT_SESSION_ID_HEADER]: "parent-provider-session",
+			[AGENT_ROLE_HEADER]: "label",
+		});
 	});
 
 	it("treats a case-insensitive Name-N collision as an echoed handle", () => {

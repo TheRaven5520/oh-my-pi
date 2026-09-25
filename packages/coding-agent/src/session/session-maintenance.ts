@@ -4715,6 +4715,17 @@ export class SessionMaintenance {
 									// retry too — the budgets would multiply and each outer
 									// wait would stack on top of an inner backoff.
 									oneshotRetry: false,
+									// Same side-stream transport as manual `/compact`: it
+									// carries the provider concurrency cap and, for a
+									// subagent, the `x-omp-parent-session-id` link.
+									completeImpl: async (requestModel, requestContext, requestOptions) => {
+										const stream = await this.#host.sideStreamFn(
+											requestModel,
+											requestContext,
+											requestOptions,
+										);
+										return stream.result();
+									},
 								},
 							);
 							break;

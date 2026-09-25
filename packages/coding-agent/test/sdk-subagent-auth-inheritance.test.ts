@@ -272,4 +272,114 @@ describe("task subagent OAuth pin inheritance", () => {
 			tempDir.removeSync();
 		}
 	});
+
+	it("links a top-level session's main requests to its chat only while a /fresh id is active", async () => {
+		// /fresh swaps in a bare UUIDv7 provider id (a proxy files chats by
+		// UUID); the `fresh` link names the session file id the chat is filed under.
+		const tempDir = TempDir.createSync("@pi-fresh-link-headers-");
+		const authStorage = createInMemoryAuthStorage();
+		const sessions: AgentSession[] = [];
+		try {
+			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+			if (!model) throw new Error("Expected bundled test model");
+			authStorage.setRuntimeApiKey("anthropic", "test-key");
+			const captured: Array<SimpleStreamOptions | undefined> = [];
+			const captureStreamFn: StreamFn = (_m, _ctx, opts) => {
+				captured.push(opts);
+				throw new Error("capture-stop");
+			};
+			vi.spyOn(settingsStreamFnModule, "createSettingsAwareStreamFn").mockReturnValue(captureStreamFn);
+			const sessionManager = SessionManager.inMemory(tempDir.path());
+			const { session } = await createAgentSession({
+				cwd: tempDir.path(),
+				agentDir: tempDir.path(),
+				sessionManager,
+				authStorage,
+				modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
+				settings: Settings.isolated({ "async.enabled": false, "compaction.enabled": false }),
+				model,
+				toolNames: [],
+				disableExtensionDiscovery: true,
+			});
+			sessions.push(session);
+			const fileSessionId = sessionManager.getSessionId();
+			const context = { systemPrompt: ["Test"], messages: [] };
+
+			expect(() => session.agent.streamFn(model, context, {})).toThrow("capture-stop");
+			const fresh = session.freshSession();
+			expect(() => session.agent.streamFn(model, context, {})).toThrow("capture-stop");
+			await session.newSession();
+			expect(() => session.agent.streamFn(model, context, {})).toThrow("capture-stop");
+
+			expect(fresh?.sessionId).not.toBe(fileSessionId);
+			expect(captured).toHaveLength(3);
+			expect(captured[0]?.headers?.[PARENT_SESSION_ID_HEADER]).toBeUndefined();
+			expect(captured[1]?.headers).toEqual({
+				[PARENT_SESSION_ID_HEADER]: fileSessionId,
+				[AGENT_ROLE_HEADER]: "fresh",
+			});
+			expect(captured[2]?.headers?.[PARENT_SESSION_ID_HEADER]).toBeUndefined();
+		} finally {
+			for (const session of sessions.reverse()) await session.dispose();
+			authStorage.close();
+			tempDir.removeSync();
+		}
+	});
+
+	it("links side requests to the parent on subagents and to the chat on the main session", async () => {
+		// Side turns (recap, `/btw`) run under a derived `:side:` lineage id. The
+		// header keeps them linked when that id alone cannot be (a subagent id the
+		// proxy may not know yet, or an id hashed past OpenAI's key limit).
+		const tempDir = TempDir.createSync("@pi-subagent-side-link-headers-");
+		const authStorage = createInMemoryAuthStorage();
+		const sessions: AgentSession[] = [];
+		try {
+			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+			if (!model) throw new Error("Expected bundled test model");
+			authStorage.setRuntimeApiKey("anthropic", "test-key");
+			const captured: Array<SimpleStreamOptions | undefined> = [];
+			const captureStreamFn: StreamFn = (_m, _ctx, opts) => {
+				captured.push(opts);
+				throw new Error("capture-stop");
+			};
+			vi.spyOn(settingsStreamFnModule, "createSettingsAwareStreamFn").mockReturnValue(captureStreamFn);
+			const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
+			const settings = Settings.isolated({ "async.enabled": false, "compaction.enabled": false });
+			const create = (providerSessionId: string, parentProviderSessionId?: string) =>
+				createAgentSession({
+					cwd: tempDir.path(),
+					agentDir: tempDir.path(),
+					sessionManager: SessionManager.inMemory(tempDir.path()),
+					authStorage,
+					modelRegistry,
+					settings,
+					model,
+					providerSessionId,
+					parentProviderSessionId,
+					toolNames: [],
+					disableExtensionDiscovery: true,
+				});
+			const { session: parent } = await create("parent-provider-session");
+			sessions.push(parent);
+			const { session: child } = await create("child-provider-session", "parent-provider-session");
+			sessions.push(child);
+
+			await expect(parent.runEphemeralTurn({ promptText: "Recap the session." })).rejects.toThrow("capture-stop");
+			await expect(child.runEphemeralTurn({ promptText: "Recap the session." })).rejects.toThrow("capture-stop");
+
+			expect(captured).toHaveLength(2);
+			expect(captured[0]?.headers).toMatchObject({
+				[PARENT_SESSION_ID_HEADER]: "parent-provider-session",
+				[AGENT_ROLE_HEADER]: "helper",
+			});
+			expect(captured[1]?.headers).toMatchObject({
+				[PARENT_SESSION_ID_HEADER]: "parent-provider-session",
+				[AGENT_ROLE_HEADER]: "subagent",
+			});
+		} finally {
+			for (const session of sessions.reverse()) await session.dispose();
+			authStorage.close();
+			tempDir.removeSync();
+		}
+	});
 });

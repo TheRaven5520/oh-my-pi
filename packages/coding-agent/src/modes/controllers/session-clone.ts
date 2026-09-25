@@ -116,6 +116,9 @@ export function captureSessionCloneParent(
 				toolNames,
 				providerSessionId: identity.providerSessionId,
 				providerPromptCacheKey: parentPromptCacheKey,
+				// Every clone request carries `x-omp-parent-session-id` so a proxy
+				// links it to the conversation it was cloned from.
+				parentProviderSessionId: parentSessionId,
 				modelRegistry,
 				authStorage: modelRegistry.authStorage,
 				settings,

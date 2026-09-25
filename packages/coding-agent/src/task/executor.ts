@@ -1035,6 +1035,8 @@ interface RunMonitorArgs {
 	modelRegistry?: ModelRegistry;
 	/** Parent settings for tiny-model label generation. */
 	settings?: Settings;
+	/** Spawning session's provider session id; links the label request to it. */
+	parentProviderSessionId?: string;
 	modelOverride?: string | string[];
 	/** Explicit pre-expansion model role alias selected for this run. */
 	modelRole?: string;
@@ -1464,7 +1466,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	// failures just leave the label unset.
 	const labelSource = assignment?.trim();
 	if (!args.description && args.modelRegistry && args.settings && labelSource) {
-		generateTaskLabel(labelSource, args.modelRegistry, args.settings, id, abortSignal)
+		generateTaskLabel(labelSource, args.modelRegistry, args.settings, id, abortSignal, args.parentProviderSessionId)
 			.then(label => {
 				if (!label || abortSignal.aborted || progress.description) return;
 				progress.description = label;
@@ -3459,6 +3461,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		description: options.description,
 		modelRegistry: options.modelRegistry,
 		settings,
+		parentProviderSessionId: options.parentProviderSessionId,
 		modelOverride,
 		modelRole,
 		modelRoute: options.modelRoute,

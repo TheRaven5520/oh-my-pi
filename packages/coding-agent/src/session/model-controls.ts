@@ -48,6 +48,8 @@ export interface ModelControlsHost {
 	providerSessionState: Map<string, ProviderSessionState>;
 	model(): Model | undefined;
 	sessionId(): string;
+	/** Link headers the session's own main-agent requests carry right now (see `buildMainAgentLinkHeaders`). */
+	mainAgentLinkHeaders?(): Record<string, string> | undefined;
 	promptGeneration(): number;
 	resolveActiveEditMode(): EditMode;
 	syncAfterModelChange(previousEditMode: EditMode): Promise<void>;
@@ -620,6 +622,10 @@ export class ModelControls {
 					registry: this.#host.modelRegistry,
 					model,
 					sessionId: this.#host.sessionId(),
+					// The judge can be a session's very first request, so it carries the
+					// same link as the main requests: a subagent names its spawner, a
+					// top-level session nothing (or its chat after `/fresh`).
+					headers: this.#host.mainAgentLinkHeaders?.(),
 					signal: controller.signal,
 					metadataResolver: provider => this.#host.agent.metadataForProvider(provider),
 					onUsage: usage => {

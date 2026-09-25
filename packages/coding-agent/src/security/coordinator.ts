@@ -79,6 +79,12 @@ export interface SecurityCoordinatorHost {
 	modelRegistry: ModelRegistry;
 	activeModel?: Model;
 	sessionId?: string;
+	/**
+	 * Live provider session id of the conversation that started the scan. The
+	 * scan session's requests carry it as `x-omp-parent-session-id` so a proxy
+	 * can link them to that conversation; falls back to {@link sessionId}.
+	 */
+	getProviderSessionId?: () => string | undefined;
 	agentId?: string;
 	asyncJobManager?: AsyncJobManager;
 }
@@ -251,6 +257,7 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 			providerResolver: model => input.host.modelRegistry.resolver(model, providerSessionId),
 		}),
 		providerSessionId,
+		parentProviderSessionId: input.host.getProviderSessionId?.() ?? input.host.sessionId,
 		sessionManager: input.sessionManager,
 		customTools: [input.publicationTool],
 		toolNames: SECURITY_SESSION_TOOLS,

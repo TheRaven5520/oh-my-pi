@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Api, AssistantMessage, completeSimple, Model } from "@oh-my-pi/pi-ai";
+import type { Api, AssistantMessage, completeSimple, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 import type { ModelSpec } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AGENT_ROLE_HEADER, PARENT_SESSION_ID_HEADER } from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
 import {
 	type DescribeAttachedImagesDeps,
 	describeAttachedImagesForTextModel,
@@ -108,6 +109,21 @@ describe("describeAttachedImagesForTextModel", () => {
 		const fileName = match![1].slice("local://".length);
 		const saved = await fs.readFile(path.join(testDir, "local", fileName));
 		expect(saved.toString("base64")).toBe(TINY_PNG_BASE64);
+	});
+
+	it("links each description request to the chat's provider session", async () => {
+		const stub = makeCompleteStub("A man holding a red balloon.");
+		await describeAttachedImagesForTextModel(
+			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
+			{ ...makeDeps(testDir, [textModel, visionModel], stub.fn), sessionId: "chat-provider-session" },
+		);
+
+		expect(stub.calls).toHaveLength(1);
+		const options = stub.calls[0]?.[2] as SimpleStreamOptions | undefined;
+		expect(options?.headers).toEqual({
+			[PARENT_SESSION_ID_HEADER]: "chat-provider-session",
+			[AGENT_ROLE_HEADER]: "helper",
+		});
 	});
 
 	it("saves the image but emits a no-vision note when no vision model is available", async () => {

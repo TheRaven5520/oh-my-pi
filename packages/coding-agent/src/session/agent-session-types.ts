@@ -286,6 +286,12 @@ export interface AgentSessionConfig {
 	agentKind?: "main" | "sub";
 	/** Provider-facing session ID override. */
 	providerSessionId?: string;
+	/**
+	 * Provider session id of the session that spawned this one (subagents,
+	 * clones). Side requests that run before this session's own first request
+	 * (the auto-thinking judge) link to it via `x-omp-parent-session-id`.
+	 */
+	parentProviderSessionId?: string;
 	/** Whether the provider prompt-cache key was explicit or fork-inherited. */
 	providerPromptCacheKeySource?: "explicit" | "fork";
 	/** Full advisor toolset built against an advisor-scoped tool session. */

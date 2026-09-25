@@ -55,6 +55,8 @@ export interface JudgeDeps {
 	sessionModel?: Model;
 	sessionId?: string;
 	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
+	/** Extra request headers for chat-model judges (e.g. the side-agent parent link). */
+	headers?: Record<string, string>;
 	onUsage?: (usage: JudgmentUsage) => void;
 }
 
@@ -265,6 +267,7 @@ export class ChainJudge implements Judge {
 			apiKey,
 			sessionId: this.#deps.sessionId,
 			metadata,
+			headers: this.#deps.headers,
 			onAttempt: attempt =>
 				this.#deps.onUsage?.({
 					role: "judge",

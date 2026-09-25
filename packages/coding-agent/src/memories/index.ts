@@ -733,6 +733,32 @@ function shouldPersistResponseItemForMemories(message: AgentMessage): boolean {
 	return false;
 }
 
+/** Exact text a person types to make a chat private (Sprilicred private mode). */
+const PRIVATE_CHAT_TRIGGER = "`private`";
+/** The proxy's own acknowledgement of {@link PRIVATE_CHAT_TRIGGER}. */
+const PRIVATE_CHAT_ACK = "OK";
+
+/**
+ * True when the person made this chat private: a user message that is exactly
+ * `` `private` `` whose next user/assistant turn is the assistant reply "OK".
+ * A private chat's transcript is never sent to a model for memory extraction.
+ */
+function isPrivateChat(messages: readonly AgentMessage[]): boolean {
+	for (let i = 0; i < messages.length; i++) {
+		const message = messages[i];
+		if ((message as { role: string }).role !== "user") continue;
+		if (extractMessageText(message).trim() !== PRIVATE_CHAT_TRIGGER) continue;
+		for (let j = i + 1; j < messages.length; j++) {
+			const role = (messages[j] as { role: string }).role;
+			if (role === "user") break;
+			if (role !== "assistant") continue;
+			if (extractMessageText(messages[j]).trim() === PRIVATE_CHAT_ACK) return true;
+			break;
+		}
+	}
+	return false;
+}
+
 function extractPersistableMessages(payload: string): AgentMessage[] {
 	const rows = parseJsonlLenient(payload);
 	if (!Array.isArray(rows)) return [];
@@ -774,6 +800,8 @@ async function runStage1Job(options: {
 	try {
 		const rolloutRaw = await Bun.file(claim.rolloutPath).text();
 		const persisted = extractPersistableMessages(rolloutRaw);
+		// A chat the person made private never leaves the machine for extraction.
+		if (isPrivateChat(persisted)) return { kind: "no_output" };
 		const serializedItems = JSON.stringify(persisted);
 		const budgetTokens = Math.min(
 			config.phase1InputTokenLimit,

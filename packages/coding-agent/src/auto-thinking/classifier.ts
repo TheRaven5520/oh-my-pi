@@ -82,6 +82,8 @@ export interface ClassifyDifficultyDeps {
 	sessionId?: string;
 	signal?: AbortSignal;
 	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
+	/** Extra request headers for the chat-model judge (the side-agent parent link). */
+	headers?: Record<string, string>;
 	onUsage?: (usage: JudgmentUsage) => void;
 }
 
@@ -112,6 +114,7 @@ export async function classifyDifficulty(
 		sessionModel: deps.model,
 		sessionId: deps.sessionId,
 		metadataResolver: deps.metadataResolver,
+		headers: deps.headers,
 		onUsage: deps.onUsage,
 	});
 	const state = { request: preprocessTinyMessage(promptText) };
