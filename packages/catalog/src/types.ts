@@ -607,6 +607,13 @@ export interface AnthropicCompat {
 	 */
 	allowAnthropicHeaderOverrides?: boolean;
 	/**
+	 * Realize `serviceTier: "priority"` (`/fast`) as Anthropic fast mode —
+	 * `speed: "fast"` plus the `fast-mode-2026-02-01` beta — on an
+	 * Anthropic-compatible gateway that declares it supports fast mode. The
+	 * direct `anthropic` provider always realizes it. Default: false.
+	 */
+	supportsFastMode?: boolean;
+	/**
 	 * Replay unsigned `thinking` blocks from prior assistant turns as native
 	 * thinking instead of demoting them to text. Official Anthropic enforces
 	 * signature-based thinking-chain integrity, so unsigned blocks must stay

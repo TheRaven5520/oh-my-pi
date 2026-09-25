@@ -1693,7 +1693,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Sampling",
 			label: "Service Tier — Anthropic",
 			description:
-				'Processing tier for Claude requests. `priority` realizes fast mode (`speed: "fast"`) on supported direct Anthropic models; ignored on Bedrock/Vertex Claude and via OpenRouter.',
+				'Processing tier for Claude requests. `priority` realizes fast mode (`speed: "fast"`) on direct Anthropic models and on gateways whose models.yml compat sets `supportsFastMode`; ignored on Bedrock/Vertex Claude and via OpenRouter.',
 			options: SERVICE_TIER_ANTHROPIC_OPTIONS,
 		},
 	},

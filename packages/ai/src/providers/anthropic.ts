@@ -52,6 +52,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types";
+import { realizesAnthropicFastMode } from "../types";
 import {
 	getHeaderCaseInsensitive,
 	isRecord,
@@ -1021,10 +1022,11 @@ export interface AnthropicOptions extends StreamOptions {
 	betas?: string[] | string;
 	/**
 	 * Realization of `serviceTier: "priority"` on Anthropic models. When
-	 * `"priority"`, sets `speed: "fast"` on the request and appends the
-	 * `fast-mode-2026-02-01` beta header. Anthropic rejects unsupported models
-	 * with `invalid_request_error`, which triggers an in-provider one-shot
-	 * fallback (see `fastModeDisabled` provider state).
+	 * `"priority"` and the model realizes fast mode (the direct provider, or a
+	 * gateway with `compat.supportsFastMode`), sets `speed: "fast"` on the
+	 * request and appends the `fast-mode-2026-02-01` beta header. Anthropic
+	 * rejects unsupported models with `invalid_request_error`, which triggers
+	 * an in-provider one-shot fallback (see `fastModeDisabled` provider state).
 	 *
 	 * Other `ServiceTier` values are currently ignored on this provider.
 	 */
@@ -2030,7 +2032,7 @@ const streamAnthropicOnce = (
 				isOAuthToken = false;
 			} else {
 				const extraBetas = normalizeExtraBetas(options?.betas);
-				const wantsAnthropicPriority = model.provider === "anthropic" && options?.serviceTier === "priority";
+				const wantsAnthropicPriority = realizesAnthropicFastMode(model) && options?.serviceTier === "priority";
 				// Skip the fast-mode beta when this session already learned the
 				// endpoint+model rejects fast mode; `speed` is dropped from the params
 				// too (dropFastMode), so the request stays a faithful non-fast request.
@@ -3149,7 +3151,7 @@ const streamAnthropicOnce = (
 					}
 					if (
 						!dropFastMode &&
-						model.provider === "anthropic" &&
+						realizesAnthropicFastMode(model) &&
 						options?.serviceTier === "priority" &&
 						firstTokenTime === undefined &&
 						AIError.isFastModeUnsupported(streamFailure)
@@ -3225,7 +3227,7 @@ const streamAnthropicOnce = (
 			}
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
-			if (dropFastMode && model.provider === "anthropic" && options?.serviceTier === "priority") {
+			if (dropFastMode && realizesAnthropicFastMode(model) && options?.serviceTier === "priority") {
 				output.disabledFeatures = [...(output.disabledFeatures ?? []), "priority"];
 			}
 			if (forceDemoteUnsignedThinking && model.compat.replayUnsignedThinking) {
@@ -4514,7 +4516,7 @@ function buildParams(
 			seqs.length > ANTHROPIC_STOP_SEQUENCES_MAX ? seqs.slice(0, ANTHROPIC_STOP_SEQUENCES_MAX) : seqs;
 	}
 
-	if (model.provider === "anthropic" && options?.serviceTier === "priority") {
+	if (realizesAnthropicFastMode(model) && options?.serviceTier === "priority") {
 		params.speed = "fast";
 	}
 

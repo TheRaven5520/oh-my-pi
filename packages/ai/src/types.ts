@@ -133,8 +133,10 @@ export type CacheRetention = "none" | "short" | "long";
  * - OpenRouter: passed through as `service_tier`; OpenRouter realizes it for
  *   the OpenAI- and Google-family upstreams it supports and ignores it
  *   otherwise.
- * - Direct Anthropic: `"priority"` is translated into `speed: "fast"` plus the
- *   fast-mode beta on supported Opus models. Other tiers are ignored.
+ * - Anthropic: `"priority"` is translated into `speed: "fast"` plus the
+ *   fast-mode beta on the direct provider and on gateways that declare
+ *   `compat.supportsFastMode` (see {@link realizesAnthropicFastMode}). Other
+ *   tiers are ignored.
  *
  * Per-family scoping is expressed by {@link ServiceTierByFamily}, not by
  * scoped sentinel values — see {@link serviceTierFamily}.
@@ -152,7 +154,7 @@ export type ServiceTierFamily = "openai" | "anthropic" | "google";
  */
 export type ServiceTierByFamily = Partial<Record<ServiceTierFamily, ServiceTier>>;
 
-type ServiceTierModel = Pick<Model, "provider" | "api" | "identity">;
+type ServiceTierModel = Pick<Model, "provider" | "api" | "identity"> & Partial<Pick<Model, "compat">>;
 // The service-tier matrix below intentionally stays in TypeScript rather than
 // the KDL compat tree: `shouldSendServiceTier` accepts bare provider strings
 // (agent telemetry, google-shared header placement) and the stats parser
@@ -251,18 +253,36 @@ export function shouldSendServiceTier(
 }
 
 /**
+ * True when an Anthropic `priority` tier is realized as fast mode
+ * (`speed: "fast"` + the fast-mode beta): always on the direct Anthropic
+ * provider, and on an `anthropic-messages` gateway whose compat declares
+ * `supportsFastMode`. Slim models without compat (historical stats rows)
+ * count only the direct provider.
+ */
+export function realizesAnthropicFastMode(model: ServiceTierModel): boolean {
+	if (model.provider === "anthropic") return true;
+	const compat = model.compat;
+	return (
+		model.api === "anthropic-messages" &&
+		compat !== undefined &&
+		"supportsFastMode" in compat &&
+		compat.supportsFastMode === true
+	);
+}
+
+/**
  * True when `priority` will actually be realized on the wire for `model`.
- * Direct Anthropic realizes fast mode; OpenAI/Google/Fireworks emit the
- * service-tier field; OpenRouter realizes it only for its OpenAI- and
- * Google-family upstreams. Bedrock/Vertex Claude and OpenRouter Anthropic
- * models do not realize priority and return `false`.
+ * Direct Anthropic and fast-mode gateways realize fast mode; OpenAI/Google/
+ * Fireworks emit the service-tier field; OpenRouter realizes it only for its
+ * OpenAI- and Google-family upstreams. Bedrock/Vertex Claude, OpenRouter
+ * Anthropic models, and gateways without `supportsFastMode` return `false`.
  */
 export function realizesPriorityServiceTier(
 	serviceTier: ServiceTier | null | undefined,
 	model: ServiceTierModel,
 ): boolean {
 	if (serviceTier !== "priority") return false;
-	if (model.provider === "anthropic") return true;
+	if (realizesAnthropicFastMode(model)) return true;
 	if (model.provider === "openrouter") {
 		const family = serviceTierFamily(model);
 		return family === "openai" || family === "google";

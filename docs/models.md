@@ -638,8 +638,12 @@ Provider-level `compat` is the baseline; per-model `compat` is deep-merged on to
 For `anthropic-messages` models the runtime uses a separate `AnthropicCompat` shape
 (`packages/catalog/src/types.ts`). The `models.yml` schema exposes the strict-tools opt-out as a
 top-level provider field plus `requiresToolResultId`, `replayUnsignedThinking`,
-`supportsEagerToolInputStreaming`, and `allowAnthropicHeaderOverrides` in `compat`. Other
-Anthropic-side knobs are supplied by built-in catalog metadata and are not configurable here.
+`supportsEagerToolInputStreaming`, `allowAnthropicHeaderOverrides`, and `supportsFastMode` in `compat`.
+`supportsFastMode: true` declares that an Anthropic-compatible gateway accepts fast mode, so `/fast`
+(the `priority` Anthropic tier) sends `speed: "fast"` and the `fast-mode-2026-02-01` beta to it, as it
+does on the direct `anthropic` provider; a gateway 400 rejecting `speed` retries once without it and
+turns `/fast` off. Other Anthropic-side knobs are supplied by built-in catalog metadata and are not
+configurable here.
 
 ### Bedrock compatibility (`bedrock-converse-stream`)
 

@@ -79,6 +79,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"supportsContextManagement?": "boolean",
 		"supportsEagerToolInputStreaming?": "boolean",
 		"allowAnthropicHeaderOverrides?": "boolean",
+		"supportsFastMode?": "boolean",
 		"requiresToolResultId?": "boolean",
 		"replayUnsignedThinking?": "boolean",
 	} as const;
