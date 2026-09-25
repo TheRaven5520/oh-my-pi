@@ -276,6 +276,12 @@ From the pause screen, press Esc, Enter, Space, or Ctrl+C to resume. Ctrl+C resu
 
 `/btw <question>` asks an independent side question using the current session
 context. Bare `/btw` opens this session's history, with the newest question selected.
+A side question may run read-only lookups (read, grep, glob, find, ast_grep,
+web_search, recall) to check files; the pane lists each lookup above the answer.
+Anything that would modify files or session state is refused, and lookups stop
+after 8 rounds. Answers are kept in full (no length cap); one that stopped at the
+model's output limit is flagged in the pane footer. In the full-screen history
+pane the mouse wheel scrolls the answer, or moves the selection over the topic list.
 Saved side questions are not appended to the main transcript or sent as history
 to unrelated turns. Each new `/btw <question>` remains independent; explicit
 follow-ups include only the selected side conversation alongside the current

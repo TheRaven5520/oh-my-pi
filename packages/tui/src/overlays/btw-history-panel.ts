@@ -30,6 +30,7 @@ import { sanitizeDisplayLine, sanitizeDisplayText } from "./extensions/display-t
 import { editorKey, rawKeyHint } from "../chrome/keybinding-hints";
 import { bottomBorder, row, topBorder } from "../chrome/overlay-box";
 import { padToWidth } from "../render/utils";
+import { routeSgrMouseInput, type SgrMouseEvent } from "../mouse";
 import { SplitPane } from "../components/layout/split-pane";
 import { clampSelection, contentRowWidth, padLinesToHeight, renderScrollableList } from "../chrome/selector-helpers";
 
@@ -68,6 +69,9 @@ const STATUS: Record<BtwHistoryRecord["status"], { label: string; color: ThemeCo
 };
 
 /** Session-local side questions. Selecting or copying never promotes them into chat. */
+/** Answer lines one wheel notch scrolls, matching the agent transcript viewer. */
+const WHEEL_SCROLL_LINES = 3;
+
 export class BtwHistoryPanel implements Component, Focusable {
 	readonly #options: BtwHistoryPanelOptions;
 	#records: readonly BtwHistoryRecord[] = [];
@@ -96,6 +100,8 @@ export class BtwHistoryPanel implements Component, Focusable {
 	#listCache: readonly string[] = [];
 	#detailCache: readonly string[] = [];
 	#bodyHeightLast = 1;
+	/** Screen row where the split body starts in the last framed render; undefined when unframed. */
+	#splitTopRow: number | undefined;
 	readonly #framePrefix = () => `${theme.fg("border", theme.boxRound.vertical)} `;
 	readonly #frameDivider = () => ` ${theme.fg("border", theme.boxRound.vertical)} `;
 	readonly #frameSuffix = () => ` ${theme.fg("border", theme.boxRound.vertical)}`;
@@ -282,6 +288,16 @@ export class BtwHistoryPanel implements Component, Focusable {
 		this.#options.requestRender();
 	}
 	handleInput(data: string): void {
+		// This fullscreen pane holds terminal mouse tracking, so wheel and click
+		// reports arrive here as SGR sequences. Consume every one before the
+		// composer, which would otherwise take the raw bytes as typed text.
+		if (data.startsWith("\x1b[<")) {
+			routeSgrMouseInput(data, event => {
+				if (event.wheel !== null) this.#handleWheel(event, event.wheel);
+				return true;
+			});
+			return;
+		}
 		if (this.#composer) {
 			// The input owns every key, including panel shortcuts and pasted text.
 			this.#composer.input.handleInput(data);
@@ -331,6 +347,21 @@ export class BtwHistoryPanel implements Component, Focusable {
 			else if (matchesSelectPageDown(data)) this.#detail.page(1);
 			else if (!this.#detail.handleScrollKey(data)) return;
 			this.#followLatest = matchesKey(data, "end");
+		}
+		this.#options.requestRender();
+	}
+
+	/** Wheel scrolls the pane under the pointer: the answer scrolls, the topic list moves its selection. */
+	#handleWheel(event: SgrMouseEvent, direction: -1 | 1): void {
+		const hit =
+			this.#splitTopRow === undefined ? undefined : this.#split.locate(event.row - this.#splitTopRow, event.col);
+		const pane = hit ? (hit.pane === "left" ? "list" : "answer") : this.#focus;
+		// While composing a follow-up the topic is fixed; only its answer scrolls.
+		if (pane === "list" && !this.#composer) {
+			this.#select(this.#selectedIndex() + direction);
+		} else {
+			this.#detail.scroll(direction * WHEEL_SCROLL_LINES);
+			this.#followLatest = false;
 		}
 		this.#options.requestRender();
 	}
@@ -563,8 +594,10 @@ export class BtwHistoryPanel implements Component, Focusable {
 			this.#detailCache = detail ?? [];
 			this.#listCache = wide || this.#focus === "list" ? this.#renderList(listWidth, bodyHeight) : [];
 			this.#split.setHeight(bodyHeight);
+			this.#splitTopRow = lines.length;
 			lines.push(...this.#split.render(width));
 		} else {
+			this.#splitTopRow = undefined;
 			const body = this.#focus === "list" ? this.#renderList(inner, bodyHeight) : (detail ?? []);
 			for (const line of padLinesToHeight(body, bodyHeight)) lines.push(framed ? row(line, width) : line);
 		}

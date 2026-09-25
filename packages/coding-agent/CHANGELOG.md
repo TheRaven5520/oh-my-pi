@@ -4,6 +4,7 @@
 
 ### Added
 
+- `/btw` side questions can now run read-only lookups (`read`, `grep`, `glob`, `find`, `ast_grep`, `web_search`, `recall`) to check files before answering; the pane lists each lookup. Anything that would modify files or session state is refused, lookups stop after 8 rounds, and they run on separate tool instances so the main agent's read state is untouched. Extensions get the same through `runEphemeralTurn({ toolPolicy: "read-only" })`.
 - Added `/usage show` to pin a static usage snapshot above the prompt and `/usage clear` to remove it without interrupting active work; plain `/usage` toggles between the two. The pinned panel shows one pool headline per provider from Sprilicred's pooled accounts — Anthropic Fable Weekly / Weekly / Five Hour and OpenAI Weekly (OpenAI has no five-hour limit) ten-cell bars — plus the fetch time; running `/usage show` again refetches and replaces the snapshot.
 - Added `/fork [request]`: a copy of the current chat that lives in the agents panel. Open it with `↓`/`Enter` to talk to it directly, `Esc` to return. The fork posts updates and a final report back to the main chat with its `hand_back` tool; the final report closes it and removes it from the panel. `x` on an idle fork closes it.
 - Rewind (double-Esc, `/branch`, `/rewind`) can now restore files, like Claude Code's `/rewind`. omp snapshots each file before `edit`, `write`, `ast_edit`, or an `lsp` rename/code action first changes it during a prompt's run; rewinding to that prompt offers **Restore code and conversation**, **Restore conversation**, **Restore code**, or **Never mind** when files changed since. `/rewind undo` puts back what the last code restore overwrote, until the next message is sent. Snapshots persist in the session's artifacts folder across `--resume` (last 100 prompts). Bash, subagent, and outside edits are not tracked; symlinked or hard-linked files are skipped with a warning.
@@ -29,6 +30,8 @@
 
 ### Fixed
 
+- Fixed `/btw` cutting answers at 4 KiB (ending in `[…truncated]`) and collapsing repeated lines such as closing braces in code; answers are now kept in full, `c` copies them with their original tabs, and an answer that stopped at the model's output limit is flagged in the pane footer.
+- Fixed the mouse wheel doing nothing in the full-screen `/btw` history pane; it now scrolls the answer, or moves the selection over the topic list.
 - Fixed tag-style session names being replaced by a meaningless tag such as `PROJECT STATUS`: when the title model deliberately answers `none` (keep the current tag, or no title yet), omp no longer asks the next fallback model, which could invent one.
 - Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
 - Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.

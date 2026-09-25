@@ -12,6 +12,11 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { Container, replaceTabs, type TUI } from "@oh-my-pi/pi-tui";
+import { Agent } from "@oh-my-pi/pi-agent-core";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 
 const usage: Usage = {
 	input: 0,
@@ -647,5 +652,71 @@ describe("BtwController", () => {
 			await controller.dispose();
 			await fs.rm(directory, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("BtwController answers through a real side turn", () => {
+	const sessions: AgentSession[] = [];
+	afterEach(async () => {
+		for (const session of sessions.splice(0)) await session.dispose();
+	});
+
+	/** A real session whose side stream replies with `answer`, ending with `stopReason`. */
+	function realSession(answer: string, stopReason: "stop" | "length"): AgentSession {
+		const session = new AgentSession({
+			agent: new Agent({
+				initialState: { model: getBundledModel("openai", "gpt-4o-mini"), systemPrompt: [], tools: [] },
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {
+				getApiKey: async () => "key",
+				resolver: () => async () => "key",
+				authStorage: { usage: { ingestHeaders: () => {} }, oauth: { identity: () => undefined } },
+				hasLazyRuntimeMetadata: () => false,
+			} as never,
+			sideStreamFn: () => {
+				const message = { ...createAssistantMessage(answer), stopReason };
+				const stream = new AssistantMessageEventStream();
+				for (let at = 0; at < answer.length; at += 500) {
+					stream.push({
+						type: "text_delta",
+						contentIndex: 0,
+						delta: answer.slice(at, at + 500),
+						partial: message,
+					});
+				}
+				stream.push({ type: "done", reason: stopReason, message });
+				return stream;
+			},
+		});
+		sessions.push(session);
+		return session;
+	}
+
+	async function ask(session: AgentSession): Promise<BtwPanelComponent> {
+		const ctx = makeCtx(makeFakeSession(args => session.runEphemeralTurn(args as never)));
+		const controller = new BtwController(ctx);
+		await controller.start("Explain it fully");
+		const panel = ctx.btwContainer.children[0] as BtwPanelComponent;
+		for (let tick = 0; tick < 200 && panel.getCopyText() === undefined; tick++) await Bun.sleep(5);
+		return panel;
+	}
+
+	it("keeps answers over 4 KiB, repeated code lines, and tabs intact", async () => {
+		const code = ["```ts", "function f() {", ...Array.from({ length: 5 }, () => "\t}"), "```"].join("\n");
+		const answer = `${"Detailed explanation. ".repeat(300)}\n\n${code}\n\nLast sentence.`;
+		expect(Buffer.byteLength(answer)).toBeGreaterThan(4096);
+
+		const panel = await ask(realSession(answer, "stop"));
+
+		expect(panel.getCopyText()).toBe(answer);
+	});
+
+	it("flags an answer the model stopped at its output limit without changing its text", async () => {
+		const panel = await ask(realSession("Partial answer that stops mid", "length"));
+
+		expect(panel.getCopyText()).toBe("Partial answer that stops mid");
+		expect(Bun.stripANSI(panel.render(120).join("\n"))).toContain("Cut off at the model's output limit");
 	});
 });

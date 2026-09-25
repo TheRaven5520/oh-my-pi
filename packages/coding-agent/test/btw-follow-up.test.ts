@@ -904,3 +904,56 @@ describe("BTW follow-up composer", () => {
 		expect(h.onCancel).not.toHaveBeenCalled();
 	});
 });
+
+describe("BTW history mouse wheel", () => {
+	/** SGR wheel report at 0-based `col`/`row` (the wire format is 1-based). */
+	const wheel = (direction: "up" | "down", col: number, row: number) =>
+		`\x1b[<${direction === "up" ? 64 : 65};${col + 1};${row + 1}M`;
+	const longAnswer = Array.from(
+		{ length: 80 },
+		(_, index) => `answer line ${String(index + 1).padStart(2, "0")}`,
+	).join("\n\n");
+
+	function panelWith(records: BtwHistoryRecord[]) {
+		const panel = new BtwHistoryPanel({
+			records,
+			onClose: vi.fn(),
+			onCopy: vi.fn(),
+			onCancel: vi.fn(),
+			canFollowUp: () => true,
+			onFollowUp: vi.fn(async () => true),
+			requestRender: vi.fn(),
+			getHeight: () => 30,
+		});
+		const view = () => Bun.stripANSI(panel.render(120).join("\n"));
+		view();
+		return { panel, view };
+	}
+	const record = (id: string, question: string, answer: string): BtwHistoryRecord => ({
+		id,
+		leafId: "main-leaf",
+		question,
+		answer,
+		status: "complete",
+		createdAt: id === "a" ? 1 : 2,
+		updatedAt: id === "a" ? 1 : 2,
+	});
+
+	it("scrolls the answer pane under the pointer", () => {
+		const h = panelWith([record("a", "Long question", longAnswer)]);
+		expect(h.view()).toContain("answer line 01");
+		for (let notch = 0; notch < 4; notch++) h.panel.handleInput(wheel("down", 100, 8));
+		expect(h.view()).not.toContain("answer line 01");
+		for (let notch = 0; notch < 4; notch++) h.panel.handleInput(wheel("up", 100, 8));
+		expect(h.view()).toContain("answer line 01");
+	});
+
+	it("moves the topic selection when wheeling over the list", () => {
+		const h = panelWith([record("a", "First topic", "first answer"), record("b", "Second topic", "second answer")]);
+		const before = h.view().includes("first answer") ? "first answer" : "second answer";
+		const after = before === "first answer" ? "second answer" : "first answer";
+		h.panel.handleInput(wheel(before === "first answer" ? "down" : "up", 3, 4));
+		expect(h.view()).toContain(after);
+		expect(h.view()).not.toContain(before);
+	});
+});

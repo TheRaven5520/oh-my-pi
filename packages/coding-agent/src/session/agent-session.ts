@@ -190,6 +190,7 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
 import sessionStopBlockedPrompt from "../prompts/system/session-stop-blocked.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
+import sideChannelReadOnlyToolsReminder from "../prompts/system/side-channel-read-only-tools.md" with { type: "text" };
 import skillfulNoticePrompt from "../prompts/system/skillful-notice.md" with { type: "text" };
 import titleRetagPrompt from "../prompts/system/title-retag.md" with { type: "text" };
 import titleTagPrompt from "../prompts/system/title-tag.md" with { type: "text" };
@@ -286,6 +287,13 @@ import type {
 import { writeArtifact } from "./artifacts";
 import { FileHistory } from "./file-history";
 import { isSessionTag, normalizeSessionTag, SessionTagTracker, TAG_CHECK_CONTEXT_MESSAGES } from "./session-tag";
+import {
+	MAX_SIDE_QUESTION_TOOL_ROUNDS,
+	refuseSideQuestionToolCall,
+	resolveSideQuestionTool,
+	runSideQuestionToolCall,
+	sideQuestionLookupTools,
+} from "./side-question-tools";
 import { formatArtifactErrorNotice, type OutputMeta, stripOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 import {
 	ASYNC_INLINE_RESULT_MAX_CHARS,
@@ -824,6 +832,9 @@ export class AgentSession {
 	#lazyContextRefreshed = new Set<string>();
 	#onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
 	#sideStreamFn: StreamFn;
+	/** Pure-lookup tools a read-only side question (`/btw`) may run, bound to the advisor's separate tool session. */
+	#sideQuestionTools: ReadonlyMap<string, AgentTool> = new Map();
+	#sideQuestionToolContext: (() => AgentToolContext | undefined) | undefined;
 	#preferWebsockets: boolean | undefined;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
@@ -1945,6 +1956,8 @@ export class AgentSession {
 			createCodexCompactionContext: createMaintenanceCodexCompactionContext,
 			sessionId: () => this.sessionId,
 		};
+		this.#sideQuestionTools = sideQuestionLookupTools(config.advisorTools ?? []);
+		this.#sideQuestionToolContext = config.advisorGetToolContext;
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: this.settings.get("advisor.enabled"),
 			tools: config.advisorTools,
@@ -9596,12 +9609,15 @@ export class AgentSession {
 	}
 
 	/**
-	 * Run a single ephemeral side-channel turn against this session's current
+	 * Run an ephemeral side-channel turn against this session's current
 	 * model + system prompt + history. The main turn's tool catalog is sent
-	 * to preserve the prompt cache unless `tools: false` is requested. The
-	 * model is reminded not to call tools and any tool calls are discarded. The side request
-	 * does not block on, or interfere with, any in-flight main turn. The
-	 * session's history and persisted state are NOT modified by this call.
+	 * to preserve the prompt cache unless `tools: false` is requested. By
+	 * default the model is reminded not to call tools and any tool calls are
+	 * discarded; with `toolPolicy: "read-only"` permitted lookups run on
+	 * side-owned tool instances for a bounded number of rounds (see
+	 * `side-question-tools.ts`). The side request does not block on, or
+	 * interfere with, any in-flight main turn. The session's history and
+	 * persisted state are NOT modified by this call.
 	 *
 	 * Used by `BtwController` (`/btw`) and `OmfgController` (`/omfg`) to share
 	 * the snapshot + stream pipeline. The snapshot includes any in-flight
@@ -9654,7 +9670,19 @@ export class AgentSession {
 		}
 		assertEphemeralTurnReady();
 		const cacheSessionId = this.sessionId;
-		const snapshot = this.#buildEphemeralSnapshot(args.promptText, args.history);
+		// Read-only lookups need the tool calls back from this transport and a
+		// side-owned tool set; Cursor runs tools server-side, so it stays tool-free.
+		const mainActiveToolNames = new Set(this.getActiveToolNames());
+		const lookupToolNames = [...this.#sideQuestionTools.keys()].filter(name => mainActiveToolNames.has(name));
+		const readOnlyLookups =
+			args.toolPolicy === "read-only" &&
+			args.tools !== false &&
+			!requiresNativeTools(model) &&
+			lookupToolNames.length > 0;
+		const reminder = readOnlyLookups
+			? prompt.render(sideChannelReadOnlyToolsReminder, { tools: lookupToolNames.join(", ") })
+			: sideChannelNoToolsReminder;
+		const snapshot = this.#buildEphemeralSnapshot(args.promptText, args.history, reminder);
 		const llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
 		assertEphemeralTurnReady();
 		const sideContext = await this.agent.buildSideRequestContext(llmMessages);
@@ -9670,23 +9698,31 @@ export class AgentSession {
 				`Model ${modelDescription} cannot support tools: false with historical tool calls. Omit tools: false or start from tool-free history.`,
 			);
 		}
-		// Apply after context transforms, without mutating a potentially shared context.
-		const context = obfuscateProviderContext(
-			this.#obfuscator,
-			args.tools === false ? { ...sideContext, tools: [] } : sideContext,
-		);
-		if (
-			args.maxContextBytes !== undefined &&
-			Buffer.byteLength(JSON.stringify(context), "utf8") > args.maxContextBytes
-		) {
-			throw new Error(`Ephemeral turn context exceeds the configured ${args.maxContextBytes}-byte limit.`);
-		}
+		// Lookup rounds append to this plain (pre-obfuscation) list only; every
+		// request re-derives the provider context from it.
+		const sideMessages = [...sideContext.messages];
+		const buildProviderContext = () => {
+			// Apply after context transforms, without mutating a potentially shared context.
+			const context = obfuscateProviderContext(
+				this.#obfuscator,
+				args.tools === false ? { ...sideContext, tools: [] } : { ...sideContext, messages: sideMessages },
+			);
+			if (
+				args.maxContextBytes !== undefined &&
+				Buffer.byteLength(JSON.stringify(context), "utf8") > args.maxContextBytes
+			) {
+				throw new Error(`Ephemeral turn context exceeds the configured ${args.maxContextBytes}-byte limit.`);
+			}
+			return context;
+		};
+		let context = buildProviderContext();
 		// `AssistantMessageEventStream` has no iterator-return cancellation hook, so
 		// throwing out of the consumer loop below (a rejected `onTextDelta` delivery,
 		// an `error` event) would leave the transport streaming: still burning
 		// inference and queueing output nobody reads. Abort the request ourselves when
 		// we stop consuming it, without touching the caller's signal.
 		const streamAbort = new AbortController();
+		const requestSignal = args.signal ? AbortSignal.any([args.signal, streamAbort.signal]) : streamAbort.signal;
 		const options = this.prepareSimpleStreamOptions(
 			{
 				apiKey: this.#modelRegistry.resolver(model, cacheSessionId),
@@ -9709,7 +9745,7 @@ export class AgentSession {
 				hideThinkingSummary: this.agent.hideThinkingSummary,
 				serviceTier: this.#models.effectiveServiceTier(model),
 				maxTokens: args.maxTokens,
-				signal: args.signal ? AbortSignal.any([args.signal, streamAbort.signal]) : streamAbort.signal,
+				signal: requestSignal,
 			},
 			model.provider,
 		);
@@ -9719,51 +9755,94 @@ export class AgentSession {
 		let providerReplyText = "";
 		let emittedReplyText = "";
 		let assistantMessage: AssistantMessage | undefined;
-		assertEphemeralTurnReady();
-		// A `/btw` follow-up's lineage id (`<session>:side:conversation:<key>`)
-		// exceeds OpenAI's 64-char key limit and gets hashed; the header keeps
-		// the link.
-		const stream = await this.#sideStreamFn(model, context, withSideAgentHeaders(options, cacheSessionId, "helper"));
-		try {
-			for await (const event of stream) {
-				if (event.type === "text_delta") {
-					providerReplyText += event.delta;
-					if (args.onTextDelta) {
-						const readyText = this.#deobfuscatedProviderTextReadyForDelta(providerReplyText);
-						if (readyText.length > emittedReplyText.length) {
-							const delta = readyText.slice(emittedReplyText.length);
-							emittedReplyText = readyText;
-							await args.onTextDelta(delta);
+		const streamRound = async (): Promise<AssistantMessage> => {
+			assertEphemeralTurnReady();
+			// Text from separate lookup rounds reads as separate paragraphs.
+			let roundStarted = false;
+			let roundMessage: AssistantMessage | undefined;
+			// A `/btw` follow-up's lineage id (`<session>:side:conversation:<key>`)
+			// exceeds OpenAI's 64-char key limit and gets hashed; the header keeps
+			// the link.
+			const stream = await this.#sideStreamFn(
+				model,
+				context,
+				withSideAgentHeaders(options, cacheSessionId, "helper"),
+			);
+			try {
+				for await (const event of stream) {
+					if (event.type === "text_delta") {
+						if (!roundStarted) {
+							roundStarted = true;
+							if (providerReplyText.trim()) providerReplyText = `${providerReplyText.trimEnd()}\n\n`;
 						}
+						providerReplyText += event.delta;
+						if (args.onTextDelta) {
+							const readyText = this.#deobfuscatedProviderTextReadyForDelta(providerReplyText);
+							if (readyText.length > emittedReplyText.length) {
+								const delta = readyText.slice(emittedReplyText.length);
+								emittedReplyText = readyText;
+								await args.onTextDelta(delta);
+							}
+						}
+						continue;
 					}
-					continue;
+					if (event.type === "done") {
+						// A well-formed provider "done" event carries `content: AssistantContentBlock[]`,
+						// but a proxy/wrapper (custom extension providers, gateway-wrapped OAuth streams,
+						// see #4323) can hand back a message whose `content` was dropped or replaced with
+						// `undefined`. Downstream `.content.filter` at the sanitize step below would then
+						// crash the recap turn with `TypeError: undefined is not an object (evaluating
+						// 'H.content.filter')`. Normalize to `[]` so the recap surfaces an empty reply
+						// instead of turning a malformed side-channel response into a session-mute crash.
+						const rawContent = Array.isArray(event.message.content) ? event.message.content : [];
+						roundMessage = this.#obfuscator?.hasSecrets()
+							? { ...event.message, content: deobfuscateAssistantContent(this.#obfuscator, rawContent) }
+							: { ...event.message, content: rawContent };
+						break;
+					}
+					if (event.type === "error") {
+						throw new Error(event.error.errorMessage || "Ephemeral turn failed");
+					}
 				}
-				if (event.type === "done") {
-					// A well-formed provider "done" event carries `content: AssistantContentBlock[]`,
-					// but a proxy/wrapper (custom extension providers, gateway-wrapped OAuth streams,
-					// see #4323) can hand back a message whose `content` was dropped or replaced with
-					// `undefined`. Downstream `.content.filter` at the sanitize step below would then
-					// crash the recap turn with `TypeError: undefined is not an object (evaluating
-					// 'H.content.filter')`. Normalize to `[]` so the recap surfaces an empty reply
-					// instead of turning a malformed side-channel response into a session-mute crash.
-					const rawContent = Array.isArray(event.message.content) ? event.message.content : [];
-					assistantMessage = this.#obfuscator?.hasSecrets()
-						? { ...event.message, content: deobfuscateAssistantContent(this.#obfuscator, rawContent) }
-						: { ...event.message, content: rawContent };
-					break;
-				}
-				if (event.type === "error") {
-					throw new Error(event.error.errorMessage || "Ephemeral turn failed");
-				}
+			} catch (error) {
+				streamAbort.abort();
+				throw error;
 			}
-		} catch (error) {
-			streamAbort.abort();
-			throw error;
+			if (!roundMessage) {
+				throw new Error("Ephemeral turn ended without a final message");
+			}
+			return roundMessage;
+		};
+
+		const toolContext = readOnlyLookups ? this.#sideQuestionToolContext?.() : undefined;
+		for (let round = 0; ; round++) {
+			assistantMessage = await streamRound();
+			if (!readOnlyLookups) break;
+			const calls = assistantMessage.content.filter((block): block is ToolCall => block.type === "toolCall");
+			// Past the limit the final request forbids tools; a model that still
+			// emits calls gets them discarded, as a tool-free side turn would.
+			if (calls.length === 0 || round > MAX_SIDE_QUESTION_TOOL_ROUNDS) break;
+			const results: ToolResultMessage[] = [];
+			for (const call of calls) {
+				const tool =
+					round < MAX_SIDE_QUESTION_TOOL_ROUNDS
+						? resolveSideQuestionTool(call, this.#sideQuestionTools, mainActiveToolNames)
+						: undefined;
+				args.onToolCall?.({ name: call.name, arguments: call.arguments, allowed: tool !== undefined });
+				results.push(
+					tool
+						? await runSideQuestionToolCall(tool, call, requestSignal, toolContext)
+						: refuseSideQuestionToolCall(
+								call,
+								round < MAX_SIDE_QUESTION_TOOL_ROUNDS ? "not-allowed" : "round-limit",
+							),
+				);
+			}
+			sideMessages.push(assistantMessage, ...results);
+			if (round === MAX_SIDE_QUESTION_TOOL_ROUNDS) options.toolChoice = "none";
+			context = buildProviderContext();
 		}
 
-		if (!assistantMessage) {
-			throw new Error("Ephemeral turn ended without a final message");
-		}
 		const replyText = this.#deobfuscateFromProvider(providerReplyText);
 		if (args.onTextDelta && replyText.length > emittedReplyText.length) {
 			await args.onTextDelta(replyText.slice(emittedReplyText.length));
@@ -9782,9 +9861,13 @@ export class AgentSession {
 	 * Build a message snapshot for an ephemeral side-channel turn.  Includes
 	 * the in-flight streaming assistant message (if any) so the model sees
 	 * the partial response in context, then appends detached side-channel history
-	 * and the current prompt after the no-tools reminder.
+	 * and the current prompt after the side-channel tool-policy `reminder`.
 	 */
-	#buildEphemeralSnapshot(promptText: string, history?: readonly Message[]): AgentMessage[] {
+	#buildEphemeralSnapshot(
+		promptText: string,
+		history: readonly Message[] | undefined,
+		reminder: string,
+	): AgentMessage[] {
 		const messages = [...this.messages];
 		const streaming = this.agent.state.streamMessage;
 		if (streaming && streaming.role === "assistant" && Array.isArray(streaming.content)) {
@@ -9817,7 +9900,7 @@ export class AgentSession {
 		}
 		messages.push({
 			role: "developer",
-			content: [{ type: "text", text: sideChannelNoToolsReminder }],
+			content: [{ type: "text", text: reminder }],
 			attribution: "agent",
 			timestamp: Date.now(),
 		});
