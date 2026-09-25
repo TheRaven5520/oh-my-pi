@@ -28,7 +28,7 @@ describe("auto-thinking judge link", () => {
 	beforeAll(async () => {
 		authRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-judge-link-auth-"));
 		authStorage = await AuthStorage.create(path.join(authRoot, "auth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage, path.join(authRoot, "models.yml"));
 	});
 

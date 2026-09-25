@@ -282,7 +282,7 @@ describe("task subagent OAuth pin inheritance", () => {
 		try {
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 			if (!model) throw new Error("Expected bundled test model");
-			authStorage.setRuntimeApiKey("anthropic", "test-key");
+			authStorage.keys.setRuntime("anthropic", "test-key");
 			const captured: Array<SimpleStreamOptions | undefined> = [];
 			const captureStreamFn: StreamFn = (_m, _ctx, opts) => {
 				captured.push(opts);
@@ -336,7 +336,7 @@ describe("task subagent OAuth pin inheritance", () => {
 		try {
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 			if (!model) throw new Error("Expected bundled test model");
-			authStorage.setRuntimeApiKey("anthropic", "test-key");
+			authStorage.keys.setRuntime("anthropic", "test-key");
 			const captured: Array<SimpleStreamOptions | undefined> = [];
 			const captureStreamFn: StreamFn = (_m, _ctx, opts) => {
 				captured.push(opts);
