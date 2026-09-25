@@ -34,6 +34,7 @@ function makeComponent(
 				state: { messages: [], model: { id: options.modelId, contextWindow: 1000, provider: options.provider } },
 				model: { id: options.modelId, contextWindow: 1000, provider: options.provider },
 				sessionManager: {
+					getSessionName: () => undefined,
 					getUsageStatistics: () => ({
 						input: 0,
 						output: 0,

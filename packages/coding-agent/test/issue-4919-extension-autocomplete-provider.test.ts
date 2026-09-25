@@ -213,7 +213,7 @@ export default function (pi) {
 		expect(extension?.items.map(item => item.value)).toContain("##fff-first");
 
 		// ...while built-in slash completion still flows through the wrapper.
-		const slash = await provider!.getSuggestions(["/"], 0, 1);
+		const slash = await provider!.getSuggestions(["/mo"], 0, 3);
 		expect(slash?.items.map(item => item.value)).toContain("model");
 
 		// Registration after the refresh re-applies immediately, preserving the chain.
@@ -243,7 +243,7 @@ export default function (pi) {
 		const provider = slot.current;
 		expect(provider).toBeDefined();
 
-		const slash = await provider!.getSuggestions(["/"], 0, 1);
+		const slash = await provider!.getSuggestions(["/mo"], 0, 3);
 		expect(slash?.items.map(item => item.value)).toContain("model");
 
 		const extension = await provider!.getSuggestions(["##"], 0, 2);

@@ -158,9 +158,9 @@ describe("InteractiveMode prompt-template autocomplete (#2462)", () => {
 		const provider = slot.current;
 		expect(provider).toBeDefined();
 
-		// Empty `/` shows the full menu.
-		const all = await fetchSlashSuggestions(provider!, "/");
-		expect(all).toContain("review");
+		// A bare `/` stays quiet (often the start of a path); the first letter opens the menu.
+		expect(await fetchSlashSuggestions(provider!, "/")).toEqual([]);
+		expect(await fetchSlashSuggestions(provider!, "/r")).toContain("review");
 
 		// Fuzzy prefix `/rev` also surfaces the template.
 		const prefixMatches = await fetchSlashSuggestions(provider!, "/rev");
