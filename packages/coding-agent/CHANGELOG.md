@@ -11,6 +11,8 @@
 - In `title.style: tag`, no automatic session name can exceed two words, whatever sets it (first tag, re-check, replan, plan approval, rewind); longer automatic names are rejected, not truncated. An automatic name left over from sentence style is re-checked on the next message and replaced by the first valid tag. Names you set with `/rename` keep any length.
 - Added `retry.usageLimitFallbackChains`: fallback chains consulted only when a turn (or advisor call) fails on a usage limit, ahead of `retry.fallbackChains`. Use it for a reserve account, e.g. `{"sprilicred-anthropic/*": ["personal-anthropic/*"]}`, that must never be used for transient errors, role resolution, subagents, or titles.
 - The `claude` statusline preset now ends with the session name (for example a `title.style: tag` tag such as `MODIFY OMP`) as a final `| NAME` section, shows the short commit id on a detached HEAD as Claude Code does instead of `[detached]`, and hides a bare temp directory's `[branch]` together with the path, for every fallback root (`/tmp`, `/var/tmp`, `~/tmp`, and macOS's `/private/tmp`); a lone repo clone in `/tmp` previously showed as `[detached]` on macOS.
+- Added `cycleModels`: model patterns (enabledModels syntax, e.g. `["sprilicred-anthropic/*", "sprilicred-openai/*"]`) that Ctrl+P / Shift+Ctrl+P cycle instead of the `cycleOrder` roles, matched against the available models on every press. For a models.yml `discovery` provider that has answered, only the models its listing names are cycled, so a configured row it withdrew stays out. Each press also re-asks those providers in the background (at most every 5 minutes per provider; the first press of a session always asks), so an added or withdrawn model shows from a later press instead of after the day-long discovery cache. Empty (the default) keeps the role cycle.
+- `openai-models-list` discovery now takes `supports_reasoning` and `max_output_tokens` from a listing row when the gateway sends them, so a model newer than the bundled catalog can think and write its full output.
 
 ### Changed
 
@@ -30,6 +32,7 @@
 - Fixed tag-style session names being replaced by a meaningless tag such as `PROJECT STATUS`: when the title model deliberately answers `none` (keep the current tag, or no title yet), omp no longer asks the next fallback model, which could invent one.
 - Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
 - Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.
+- Fixed models of an `auth: oauth` provider with `discovery` losing the OAuth (Claude Code) request shape: discovered models were sent without it, and so were listed ones once discovery found them too (including from the model cache).
 
 ## [18.3.0] - 2026-09-24
 

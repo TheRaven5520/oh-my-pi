@@ -535,6 +535,12 @@ export const SETTINGS_SCHEMA = {
 
 	cycleOrder: { type: "array", default: DEFAULT_CYCLE_ORDER },
 
+	// Model patterns (enabledModels syntax: `provider/*`, `provider/id:level`)
+	// that Ctrl+P cycles instead of the `cycleOrder` roles. Resolved against the
+	// available models on every press, so a model a provider's discovery adds or
+	// withdraws joins or leaves the cycle without editing config. Empty: roles.
+	cycleModels: { type: "array", default: EMPTY_STRING_ARRAY },
+
 	// ────────────────────────────────────────────────────────────────────────
 	// Appearance
 	// ────────────────────────────────────────────────────────────────────────

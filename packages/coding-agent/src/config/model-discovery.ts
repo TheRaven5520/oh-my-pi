@@ -25,7 +25,7 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
 import type { KindApiKind, ModelSpec, OpenAICompat } from "@oh-my-pi/pi-catalog/types";
 import { isRecord } from "@oh-my-pi/pi-utils";
-import type { ProviderDiscovery } from "./models-config-schema";
+import type { ProviderAuthMode, ProviderDiscovery } from "./models-config-schema";
 
 // Default cap on `max_tokens` for auto-discovered models that do not advertise
 // their own output limit (OpenAI-models-list, Ollama, llama.cpp, new-api/
@@ -183,6 +183,11 @@ export interface DiscoveryProviderConfig {
 	headers?: Record<string, string>;
 	compat?: ModelSpec<Api>["compat"];
 	remoteCompaction?: RemoteCompactionConfig<Api>;
+	/**
+	 * The provider's models.yml `auth`. `oauth` shapes every discovered model's
+	 * requests like the provider's listed models (see `resolveCustomModelIsOAuth`).
+	 */
+	auth?: ProviderAuthMode;
 	discovery: ProviderDiscovery;
 	optional?: boolean;
 }
@@ -890,6 +895,8 @@ export async function discoverOpenAIModelsList(
 						id?: string;
 						max_model_len?: unknown;
 						context_length?: unknown;
+						max_output_tokens?: unknown;
+						supports_reasoning?: unknown;
 						input?: unknown;
 						input_modalities?: unknown;
 						output?: unknown;
@@ -967,6 +974,11 @@ export async function discoverOpenAIModelsList(
 				? resolveLiteLLMApi(undefined, id, providerConfig.api)
 				: providerConfig.api;
 		const contextWindow = reportedContextWindow ?? DISCOVERY_DEFAULT_CONTEXT_WINDOW;
+		// Gateways that describe their models (e.g. Sprilicred) advertise whether
+		// each one reasons and how much it may write; the gateway's word wins over
+		// the bundled reference, and lets a model newer than the catalog think.
+		const advertisedReasoning = typeof item.supports_reasoning === "boolean" ? item.supports_reasoning : undefined;
+		const advertisedMaxTokens = toPositiveNumberOrUndefined(item.max_output_tokens);
 		discovered.push(
 			buildModel({
 				id,
@@ -974,7 +986,7 @@ export async function discoverOpenAIModelsList(
 				api,
 				provider: providerConfig.provider,
 				baseUrl,
-				reasoning: reference?.reasoning ?? false,
+				reasoning: advertisedReasoning ?? reference?.reasoning ?? false,
 				thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
 				input,
 				...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
@@ -986,12 +998,15 @@ export async function discoverOpenAIModelsList(
 				// Cap the reference's output limit at the discovered context
 				// window so an ID collision with a larger bundled model can
 				// never request more tokens than the local runtime advertises.
-				maxTokens: Math.min(reference?.maxTokens ?? discoveryDefaultMaxTokens(api), contextWindow),
+				maxTokens: Math.min(
+					advertisedMaxTokens ?? reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
+					contextWindow,
+				),
 				headers,
 				compat: {
 					supportsStore: false,
 					supportsDeveloperRole: false,
-					supportsReasoningEffort: referenceCompat?.supportsReasoningEffort ?? false,
+					supportsReasoningEffort: referenceCompat?.supportsReasoningEffort ?? advertisedReasoning ?? false,
 					...(referenceCompat?.reasoningEffortMap
 						? { reasoningEffortMap: referenceCompat.reasoningEffortMap }
 						: {}),

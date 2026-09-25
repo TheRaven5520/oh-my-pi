@@ -1105,6 +1105,11 @@ export class ModelRegistry {
 						"replace",
 					)
 				: finalizeCustomModel(customModel, { useDefaults: true });
+			// `isOAuth` is request shaping the provider's `auth` decided for this
+			// row; a same-id discovered or bundled base must not take it away.
+			if (customModel.isOAuth !== undefined && model.isOAuth !== customModel.isOAuth) {
+				model.isOAuth = customModel.isOAuth;
+			}
 			const override = this.#providerOverrides.get(model.provider);
 			// Custom composition already resolved headers and metadata. Reapply only
 			// the provider transport and its gateway URL, without rebuilding the model.
@@ -1369,14 +1374,21 @@ export class ModelRegistry {
 	}
 
 	#normalizeDiscoverableModels(providerConfig: DiscoveryProviderConfig, models: Model<Api>[]): Model<Api>[] {
+		// A provider declared `auth: oauth` wants every model it serves sent in
+		// the OAuth (Claude Code) request shape, listed or discovered. Cached rows
+		// never persist the flag, so this runs on live and cached discoveries.
+		const shaped =
+			providerConfig.auth === "oauth"
+				? models.map(model => (model.isOAuth === true ? model : { ...model, isOAuth: true }))
+				: models;
 		const withDecoderMetadata =
 			providerConfig.discovery.type === "ollama" ||
 			providerConfig.discovery.type === "llama.cpp" ||
 			providerConfig.discovery.type === "lm-studio"
-				? models.map(model =>
+				? shaped.map(model =>
 						buildModel({ ...model, imageInputDecoder: "stb", compat: model.compatConfig } as ModelSpec<Api>),
 					)
-				: models;
+				: shaped;
 
 		const withRemoteCompaction = providerConfig.remoteCompaction
 			? withDecoderMetadata.map(model =>
@@ -1593,6 +1605,7 @@ export class ModelRegistry {
 					headers: providerConfig.headers,
 					compat: mergeCompat(providerConfig.compat, disableStrictCompat),
 					remoteCompaction: providerConfig.remoteCompaction,
+					auth: providerConfig.auth as ProviderAuthMode | undefined,
 					discovery: providerConfig.discovery,
 					optional: false,
 				});
