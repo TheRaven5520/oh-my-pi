@@ -69,17 +69,18 @@ export class SessionTagTracker {
 
 	/**
 	 * Fold one check's answer into the decision. `proposed` is the normalized
-	 * tag the model suggested, or null when it kept the current one. A real tag
-	 * changes only after two consecutive checks propose a change, so a brief
-	 * tangent never renames the session; a missing or sentence-style name is
-	 * replaced at once. Returns the tag to apply, if any.
+	 * tag the model suggested, or null when it kept the current one. An unnamed
+	 * session takes the first tag at once; any existing name, tag or sentence
+	 * title, changes only after two consecutive checks propose a change, so a
+	 * brief tangent or a run of status questions never renames the session.
+	 * Returns the tag to apply, if any.
 	 */
 	resolve(current: string | undefined, proposed: string | null): string | undefined {
 		if (!proposed || proposed === current) {
 			this.#changeProposed = false;
 			return undefined;
 		}
-		if (!isSessionTag(current) || this.#changeProposed) {
+		if (!current || this.#changeProposed) {
 			this.#changeProposed = false;
 			return proposed;
 		}

@@ -26,6 +26,7 @@
 
 ### Fixed
 
+- Fixed tag-style session names being replaced by a meaningless tag such as `PROJECT STATUS`: when the title model deliberately answers `none` (keep the current tag, or no title yet), omp no longer asks the next fallback model, which could invent one, and a session's existing sentence-style title is converted to a tag only after two consecutive checks agree, as tag renames already required.
 - Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
 - Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.
 

@@ -352,6 +352,55 @@ describe("title generator", () => {
 		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("treats a declined title as final instead of asking the next fallback model", async () => {
+		const tinyModel = getModelOrThrow("claude-haiku-4-5");
+		const smolModel = getModelOrThrow("claude-sonnet-4-5");
+		const settings = Settings.isolated({
+			modelRoles: {
+				tiny: `${tinyModel.provider}/${tinyModel.id}`,
+				smol: `${smolModel.provider}/${smolModel.id}`,
+			},
+		});
+		const registry = createRegistry(tinyModel, [tinyModel, smolModel]);
+		for (const declined of ["<title>none</title>", "<title/>"]) {
+			const completeSimpleMock = vi
+				.spyOn(ai, "completeSimple")
+				.mockResolvedValueOnce({ stopReason: "stop", content: [{ type: "text", text: declined }] } as never)
+				.mockResolvedValue({
+					stopReason: "stop",
+					content: [{ type: "text", text: "<title>PROJECT STATUS</title>" }],
+				} as never);
+
+			// A tag check answers `none` to keep the current tag; a fallback must not overrule it.
+			expect(await generateSessionTitle("what things are blocked?", registry, settings)).toBeNull();
+			expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+			completeSimpleMock.mockRestore();
+		}
+	});
+
+	it("still falls back to the next model after an unusable reply", async () => {
+		const tinyModel = getModelOrThrow("claude-haiku-4-5");
+		const smolModel = getModelOrThrow("claude-sonnet-4-5");
+		const settings = Settings.isolated({
+			modelRoles: {
+				tiny: `${tinyModel.provider}/${tinyModel.id}`,
+				smol: `${smolModel.provider}/${smolModel.id}`,
+			},
+		});
+		const completeSimpleMock = vi
+			.spyOn(ai, "completeSimple")
+			.mockResolvedValueOnce({ stopReason: "stop", content: [{ type: "text", text: "<title>" }] } as never)
+			.mockResolvedValue({
+				stopReason: "stop",
+				content: [{ type: "text", text: "<title>Fix Parser</title>" }],
+			} as never);
+
+		expect(
+			await generateSessionTitle("fix the parser", createRegistry(tinyModel, [tinyModel, smolModel]), settings),
+		).toBe("Fix Parser");
+		expect(completeSimpleMock).toHaveBeenCalledTimes(2);
+	});
+
 	it("logs and returns null when title credentials are missing", async () => {
 		const model = getModelOrThrow("claude-sonnet-4-5");
 		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({

@@ -25,7 +25,7 @@ import type { Settings } from "../config/settings";
 import titleMarkerInstruction from "../prompts/system/title-marker-instruction.md" with { type: "text" };
 import titleSystemPrompt from "../prompts/system/title-system.md" with { type: "text" };
 import { formatTitleUserMessage } from "../tiny/message-preproc";
-import { isLowSignalTitleInput, normalizeGeneratedTitle } from "../tiny/text";
+import { isLowSignalTitleInput, isNoTitleAnswer, NO_TITLE_SENTINEL, normalizeGeneratedTitle } from "../tiny/text";
 import { tinyTitleClient } from "../tiny/title-client";
 
 const TITLE_SYSTEM_PROMPT = prompt.render(titleSystemPrompt);
@@ -382,15 +382,20 @@ async function generateTitleOnlineWithModels(
 				continue;
 			}
 
-			const title = normalizeGeneratedTitle(extractGeneratedTitle(response.content), firstMessage);
+			const answer = extractGeneratedTitle(response.content);
+			const title = normalizeGeneratedTitle(answer, firstMessage);
 
 			if (!title) {
+				// `none` / `<title/>` is a deliberate answer ("no title yet", or a tag
+				// check keeping its tag): asking the next model would only let it invent one.
+				const declined = isNoTitleAnswer(answer);
 				logger.debug("title-generator: no title returned", {
 					...modelContext,
-					reason: "model-returned-none",
+					reason: declined ? "model-declined" : "model-returned-none",
 					usage: response.usage,
 					stopReason: response.stopReason,
 				});
+				if (declined) return null;
 				continue;
 			}
 
@@ -473,8 +478,12 @@ function extractVisibleMarkedTitle(text: string): string | undefined {
 	TITLE_MARKER_GLOBAL_RE.lastIndex = 0;
 	let marker: RegExpExecArray | null = TITLE_MARKER_GLOBAL_RE.exec(text);
 	while (marker !== null) {
-		const content = marker[1];
-		if (isVisibleTitleMarker(text, marker.index)) return content?.trim() ?? "";
+		if (isVisibleTitleMarker(text, marker.index)) {
+			// A self-closing `<title/>` is the explicit "no title" answer; a bare
+			// trailing `<title>` is a truncated reply and stays empty.
+			if (marker[1] === undefined && marker[0].endsWith("/>")) return NO_TITLE_SENTINEL;
+			return marker[1]?.trim() ?? "";
+		}
 		marker = TITLE_MARKER_GLOBAL_RE.exec(text);
 	}
 	return undefined;
