@@ -88,7 +88,11 @@ describe("title generator", () => {
 			getAvailable: () => [model],
 			getApiKey: async () => "test-key",
 			getApiKeyForProvider: async () => "test-key",
-			authStorage: { listOAuthAccounts: () => [], rotateSessionCredential: async () => false },
+			authStorage: {
+				oauth: { accounts: () => [] },
+				sessions: { pin: () => {} },
+				rotateSessionCredential: async () => false,
+			},
 			resolver: () => async () => "test-key",
 		} as never;
 
