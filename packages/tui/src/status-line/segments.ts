@@ -14,6 +14,7 @@ import {
 import { type SymbolKey, type Theme, type ThemeColor, theme } from "../theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../render/render-utils";
 import { fileHyperlink } from "../render/hyperlink";
+import { clockParts } from "../render/clock";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../theme/session-color";
 import { summarizeLoopCondition } from "./loop";
 import { formatMetric } from "../components/metric";
@@ -777,17 +778,18 @@ const timeSegment: StatusLineSegment = {
 		const opts = ctx.options.time ?? {};
 		const now = ctx.now ?? new Date();
 
-		let hours = now.getHours();
+		// In the display time zone (`display.timeZone`), like every clock omp shows.
+		const clock = clockParts(now.getTime());
+		let hours = Number(clock.hour);
 		let suffix = "";
 		if (opts.format === "12h") {
 			suffix = hours >= 12 ? "pm" : "am";
 			hours = hours % 12 || 12;
 		}
 
-		const mins = now.getMinutes().toString().padStart(2, "0");
-		let timeStr = `${hours}:${mins}`;
+		let timeStr = `${hours}:${clock.minute}`;
 		if (opts.showSeconds) {
-			timeStr += `:${now.getSeconds().toString().padStart(2, "0")}`;
+			timeStr += `:${clock.second}`;
 		}
 		timeStr += suffix;
 

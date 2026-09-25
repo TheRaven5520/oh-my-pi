@@ -69,6 +69,7 @@ import { formatCompactQuota } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
 import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { clockDateTimeFormat } from "@oh-my-pi/pi-tui/render/clock";
 import {
 	getChangelogPath,
 	parseChangelog,
@@ -159,7 +160,6 @@ class UsagePanel extends Text {
 }
 
 const USAGE_BAR_CELLS = 16;
-const usageFetchTime = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
 /** Provider brand colors for the snapshot headings; unknown providers fall back to the theme accent. */
 const USAGE_PROVIDER_BRAND: Readonly<Record<string, string>> = {
@@ -244,7 +244,9 @@ function renderUsageSnapshotRows(snapshot: UsageSnapshot, width: number): string
 		);
 	}
 	const fetched =
-		snapshot.fetchedAt === undefined ? "fetching…" : `fetched ${usageFetchTime.format(snapshot.fetchedAt)}`;
+		snapshot.fetchedAt === undefined
+			? "fetching…"
+			: `fetched ${clockDateTimeFormat({ hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(snapshot.fetchedAt)}`;
 	let footer = `Usage snapshot · ${fetched} · /usage to hide`;
 	if (visibleWidth(footer) > width) footer = `${fetched} · /usage to hide`;
 	if (visibleWidth(footer) > width) footer = "/usage";

@@ -23,6 +23,7 @@ import {
 import { streamSocketEndpoint } from "./paths";
 import { runStreamTui, type StreamTuiInfo } from "./console-tui";
 import { StreamServerClient, type StreamServerFatalError } from "./server-client";
+import { clockParts } from "@oh-my-pi/pi-tui/render/clock";
 
 const MAX_LOCAL_LINE_BYTES = 4 * 1024 * 1024;
 
@@ -506,8 +507,6 @@ function probeSocket(endpoint: string): Promise<"missing" | "stale" | "live"> {
 }
 
 function formatChat(message: StreamChatMessage): string {
-	const time = new Date(message.ts);
-	const hours = String(time.getHours()).padStart(2, "0");
-	const minutes = String(time.getMinutes()).padStart(2, "0");
-	return `[${hours}:${minutes}] ${message.name}: ${message.text}`;
+	const clock = clockParts(message.ts);
+	return `[${clock.hour}:${clock.minute}] ${message.name}: ${message.text}`;
 }

@@ -1,35 +1,35 @@
 /**
- * Wall-clock formatting for transcript timestamps and usage rows, in one
- * configurable IANA time zone (`display.timeZone`; unset = the process zone).
- * Formatters are cached per zone; daylight saving comes from the zone rules.
+ * Wall-clock formatting for every time omp shows, in one configurable IANA
+ * time zone (`display.timeZone`; unset = the process zone). Formatters are
+ * cached per zone; daylight saving comes from the zone rules.
  */
 
 let clockTimeZone: string | undefined;
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
-function formatter(kind: "parts" | "zone"): Intl.DateTimeFormat {
-	const key = `${kind}:${clockTimeZone ?? ""}`;
+/**
+ * An `en-US` formatter for `options` in the configured zone. Cached per zone
+ * and options, so call it at format time rather than holding the result.
+ */
+export function clockDateTimeFormat(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+	const key = `${clockTimeZone ?? ""}|${JSON.stringify(options)}`;
 	let cached = formatters.get(key);
 	if (!cached) {
-		cached = new Intl.DateTimeFormat(
-			"en-US",
-			kind === "parts"
-				? {
-						timeZone: clockTimeZone,
-						year: "numeric",
-						month: "2-digit",
-						day: "2-digit",
-						hour: "2-digit",
-						minute: "2-digit",
-						second: "2-digit",
-						hourCycle: "h23",
-					}
-				: { timeZone: clockTimeZone, timeZoneName: "short" },
-		);
+		cached = new Intl.DateTimeFormat("en-US", { ...options, timeZone: clockTimeZone });
 		formatters.set(key, cached);
 	}
 	return cached;
 }
+
+const PARTS_OPTIONS: Intl.DateTimeFormatOptions = {
+	year: "numeric",
+	month: "2-digit",
+	day: "2-digit",
+	hour: "2-digit",
+	minute: "2-digit",
+	second: "2-digit",
+	hourCycle: "h23",
+};
 
 /**
  * Use `zone` (an IANA name such as `America/New_York`) for every clock time;
@@ -54,7 +54,8 @@ export function getClockTimeZone(): string | undefined {
 	return clockTimeZone;
 }
 
-interface ClockParts {
+/** Calendar and clock fields of an instant in the configured zone (zero-padded). */
+export interface ClockParts {
 	year: string;
 	month: string;
 	day: string;
@@ -63,9 +64,9 @@ interface ClockParts {
 	second: string;
 }
 
-function clockParts(ms: number): ClockParts {
+export function clockParts(ms: number): ClockParts {
 	const parts: Record<string, string> = {};
-	for (const part of formatter("parts").formatToParts(ms)) parts[part.type] = part.value;
+	for (const part of clockDateTimeFormat(PARTS_OPTIONS).formatToParts(ms)) parts[part.type] = part.value;
 	return {
 		year: parts.year ?? "",
 		month: parts.month ?? "",
@@ -92,6 +93,22 @@ export function formatClockDateTime(ms: number): string {
 	return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
 }
 
+/** `YYYY-MM-DD`. */
+export function formatClockDate(ms: number): string {
+	const p = clockParts(ms);
+	return `${p.year}-${p.month}-${p.day}`;
+}
+
+/** Numeric UTC offset at `ms`, e.g. `-04:00` (`+00:00` for UTC). */
+export function clockUtcOffset(ms: number): string {
+	const name =
+		clockDateTimeFormat({ timeZoneName: "longOffset" })
+			.formatToParts(ms)
+			.find(part => part.type === "timeZoneName")?.value ?? "";
+	const match = /^GMT([+-]\d{2}:\d{2})$/.exec(name);
+	return match ? match[1]! : "+00:00";
+}
+
 /** Whether two instants fall on the same calendar day in the configured zone. */
 export function isSameClockDay(a: number, b: number): boolean {
 	const x = clockParts(a);
@@ -102,7 +119,7 @@ export function isSameClockDay(a: number, b: number): boolean {
 /** Short zone label at `ms` (e.g. `EDT`, `UTC`). */
 export function clockZoneLabel(ms: number = Date.now()): string {
 	return (
-		formatter("zone")
+		clockDateTimeFormat({ timeZoneName: "short" })
 			.formatToParts(ms)
 			.find(part => part.type === "timeZoneName")?.value ?? ""
 	);

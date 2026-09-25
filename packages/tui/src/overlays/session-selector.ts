@@ -35,6 +35,7 @@ export interface SessionSelectorEntry {
 	parentSessionPath?: string;
 }
 import { shortenPath } from "../render/render-utils";
+import { clockDateTimeFormat } from "../render/clock";
 import { HookSelectorComponent } from "./hook-selector";
 import { bottomBorder, OverlayPanel, row, topBorder } from "../chrome/overlay-box";
 import { MenuSelection, getMenuWindow } from "../components/menu-selection";
@@ -635,7 +636,7 @@ class SessionList<T extends SessionSelectorEntry> implements Component {
 			if (diffDays === 1) return "1 day ago";
 			if (diffDays < 7) return `${diffDays} days ago`;
 
-			return date.toLocaleDateString();
+			return clockDateTimeFormat(CALENDAR_DATE_FORMAT).format(date);
 		};
 
 		// Window the list around the selection by actual line height (3 lines
@@ -849,6 +850,8 @@ export interface SessionSelectorOptions<T extends SessionSelectorEntry = Session
 	/** Path of the live session, or a getter so detach/newSession stays accurate. */
 	currentSessionPath?: string | (() => string | undefined);
 }
+
+const CALENDAR_DATE_FORMAT: Intl.DateTimeFormatOptions = { year: "numeric", month: "numeric", day: "numeric" };
 
 /**
  * Component that renders a session selector with optional confirmation dialog

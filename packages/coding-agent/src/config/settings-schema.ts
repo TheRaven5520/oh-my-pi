@@ -1289,7 +1289,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Time Zone",
 			description:
-				"IANA time zone for timestamps and usage-row times, e.g. America/New_York. Empty uses the system time zone.",
+				"IANA time zone for every clock time omp shows (timestamps, usage rows, the status-line clock, session and agent lists) and for today's date given to the model, e.g. America/New_York. Empty uses the system time zone.",
 		},
 	},
 	"display.cacheMissMarker": {

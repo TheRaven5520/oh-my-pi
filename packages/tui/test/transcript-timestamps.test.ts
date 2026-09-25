@@ -4,13 +4,18 @@ import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/displ
 import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
 import { TranscriptContainer, type TranscriptStableRow } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { stampRow } from "@oh-my-pi/pi-tui/chrome/transcript-stamp";
+import { formatLocalCalendarDate, formatLocalDateTimeWithOffset } from "@oh-my-pi/pi-tui/chrome/local-date";
 import {
+	clockDateTimeFormat,
+	clockUtcOffset,
 	clockZoneLabel,
 	formatClockDateTime,
 	formatClockTime,
 	isSameClockDay,
 	setClockTimeZone,
 } from "@oh-my-pi/pi-tui/render/clock";
+import { SEGMENTS } from "@oh-my-pi/pi-tui/status-line/segments";
+import type { SegmentContext } from "@oh-my-pi/pi-tui/status-line/types";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { type Component, visibleWidth } from "@oh-my-pi/pi-tui";
 
@@ -364,5 +369,30 @@ describe("clock", () => {
 		setClockTimeZone("UTC");
 		expect(setClockTimeZone("Mars/Olympus_Mons")).toBe(false);
 		expect(formatClockTime(instant)).toBe("17:03:15");
+	});
+
+	it("gives every other clock the same zone: offsets, dates, formatters and the status-line time", () => {
+		setClockTimeZone("America/New_York");
+		expect(clockUtcOffset(instant)).toBe("-05:00");
+		expect(clockUtcOffset(summer)).toBe("-04:00");
+		expect(formatLocalDateTimeWithOffset(new Date(summer))).toBe("2026-07-15 12:03 -04:00");
+		// 00:30 UTC on Jul 16 is still Jul 15 in New York.
+		expect(formatLocalCalendarDate(new Date(Date.UTC(2026, 6, 16, 0, 30)))).toBe("2026-07-15");
+		const hhmm: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+		expect(clockDateTimeFormat(hhmm).format(summer)).toBe("12:03");
+		const statusTime = (format?: "12h") =>
+			Bun.stripANSI(
+				SEGMENTS.time.render({
+					options: { time: { format, showSeconds: true } },
+					now: new Date(summer),
+				} as unknown as SegmentContext).content,
+			);
+		expect(statusTime()).toEndWith("12:03:15");
+		expect(statusTime("12h")).toEndWith("12:03:15pm");
+
+		setClockTimeZone("UTC");
+		expect(clockUtcOffset(summer)).toBe("+00:00");
+		expect(clockDateTimeFormat(hhmm).format(summer)).toBe("16:03");
+		expect(statusTime()).toEndWith("16:03:15");
 	});
 });

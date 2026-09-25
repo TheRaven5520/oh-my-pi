@@ -35,6 +35,7 @@ import { getRemoteDebugger, type RemoteDebuggerInfo, startRemoteDebuggerServer }
 import { clearArtifactCache, createDebugLogSource, createReportBundle, getArtifactCacheStats } from "./report-bundle";
 import { collectSystemInfo, formatSystemInfo } from "./system-info";
 import { collectTerminalState, formatTerminalState } from "@oh-my-pi/pi-tui/apps/debug/terminal-info";
+import { clockDateTimeFormat } from "@oh-my-pi/pi-tui/render/clock";
 
 /** Debug menu options */
 const DEBUG_MENU_ITEMS: SelectItem[] = [
@@ -528,7 +529,9 @@ export class DebugSelectorComponent extends OverlayPanel {
 		}
 
 		const sizeStr = formatBytes(stats.totalSize);
-		const oldestStr = stats.oldestDate ? stats.oldestDate.toLocaleDateString() : "unknown";
+		const oldestStr = stats.oldestDate
+			? clockDateTimeFormat({ year: "numeric", month: "numeric", day: "numeric" }).format(stats.oldestDate)
+			: "unknown";
 
 		// Show confirmation
 		const confirmed = await this.ctx.showHookConfirm(

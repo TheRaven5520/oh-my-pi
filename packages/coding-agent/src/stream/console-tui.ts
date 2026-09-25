@@ -12,6 +12,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { StreamChatMessage } from "@oh-my-pi/pi-wire";
+import { clockParts } from "@oh-my-pi/pi-tui/render/clock";
 import type { StreamConsoleEvent, StreamMuxHost } from "./streamer";
 
 const HISTORY_LIMIT = 50;
@@ -241,8 +242,8 @@ function formatLinkEvent(event: Extract<StreamConsoleEvent, { t: "link" }>): str
 }
 
 function formatChatEvent(message: StreamChatMessage): string {
-	const time = new Date(message.ts);
-	const timestamp = `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
+	const clock = clockParts(message.ts);
+	const timestamp = `${clock.hour}:${clock.minute}`;
 	const name = safeInline(message.name);
 	const coloredName = message.host
 		? chalk.bold(PURPLE(name))
