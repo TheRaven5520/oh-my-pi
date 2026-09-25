@@ -30,6 +30,7 @@
 - Fixed tag-style session names being replaced by a meaningless tag such as `PROJECT STATUS`: when the title model deliberately answers `none` (keep the current tag, or no title yet), omp no longer asks the next fallback model, which could invent one.
 - Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
 - Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.
+- A chat made private with Sprilicred private mode (a typed `` `private` `` answered "OK") no longer shows up where a model can read it: `history://` (index, completions, and lookup by id or from disk) leaves out every agent transcript of another private chat — a private chat still sees its own — and `omp __complete sessions` no longer prints private sessions, so they are also gone from shell TAB completion. The `/resume` picker, the welcome screen, and ACP session lists still show them to you. A session file on disk is still readable by any tool that opens it directly (`read`, `grep`, `bash`, `eval`).
 
 ## [18.3.0] - 2026-09-24
 

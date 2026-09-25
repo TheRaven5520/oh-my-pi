@@ -720,4 +720,107 @@ describe("history:// protocol", () => {
 			expect(AgentRegistry.global().get("Worker")?.sessionFile).toBe(childA);
 		});
 	});
+
+	describe("private chats (Sprilicred private mode)", () => {
+		const header = (id: string) =>
+			JSON.stringify({
+				type: "session",
+				version: CURRENT_SESSION_VERSION,
+				id,
+				timestamp: new Date().toISOString(),
+				cwd: "/tmp",
+			});
+		const entry = (id: string, message: unknown) =>
+			JSON.stringify({ type: "message", id, parentId: null, timestamp: new Date().toISOString(), message });
+		/** A top-level chat: the person typed `typed`, and the assistant answered `answer`. */
+		const root = (id: string, typed: string, answer: string) =>
+			`${header(id)}\n${entry(`${id}-u`, { role: "user", content: typed, timestamp: 1 })}\n${entry(`${id}-a`, {
+				role: "assistant",
+				content: [{ type: "text", text: answer }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "test-model",
+				usage: {},
+				stopReason: "stop",
+				timestamp: 2,
+			})}\n`;
+		const transcript = (id: string, text: string) =>
+			`${header(id)}\n${entry(`${id}-u`, { role: "user", content: text, timestamp: 1 })}\n`;
+
+		async function layout(dir: string) {
+			const caller = path.join(dir, "a", "main.jsonl");
+			const privateRoot = path.join(dir, "b", "main.jsonl");
+			const mentionsRoot = path.join(dir, "c", "main.jsonl");
+			await Bun.write(caller, root("a", "hello", "hi"));
+			await Bun.write(privateRoot, root("b", "`private`", "OK"));
+			await Bun.write(mentionsRoot, root("c", "make the field `private`", "OK"));
+			await Bun.write(path.join(dir, "a", "main", "Worker.jsonl"), transcript("w", "caller worker"));
+			const secret = path.join(dir, "b", "main", "Secret.jsonl");
+			await Bun.write(secret, transcript("s", "private secret"));
+			await Bun.write(path.join(dir, "b", "main", "SecretDisk.jsonl"), transcript("sd", "private disk secret"));
+			await Bun.write(path.join(dir, "c", "main", "Helper.jsonl"), transcript("h", "mentions helper"));
+			AgentRegistry.global().register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				session: null,
+				sessionFile: caller,
+				status: "running",
+			});
+			// Left in the process registry by the private chat, e.g. before a /new.
+			AgentRegistry.global().register({
+				id: "Secret",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				sessionFile: secret,
+				status: "parked",
+			});
+			registerArtifactsDir(path.join(dir, "b", "main"));
+			registerArtifactsDir(path.join(dir, "c", "main"));
+			return { privateRoot };
+		}
+
+		it("leaves another private chat's agents out of the index and completions", async () => {
+			await withTempDir(async dir => {
+				await layout(dir);
+
+				const index = (await InternalUrlRouter.instance().resolve("history://")).content;
+				expect(index).toContain("| Worker | on disk |");
+				// Mentioning `private` in a sentence does not make a chat private.
+				expect(index).toContain("| Helper | on disk |");
+				expect(index).not.toContain("Secret");
+
+				const values = (await new HistoryProtocolHandler().complete()).map(c => c.value);
+				expect(values).toContain("Worker");
+				expect(values).toContain("Helper");
+				expect(values).not.toContain("Secret");
+				expect(values).not.toContain("SecretDisk");
+			});
+		});
+
+		it("never serves another private chat's transcript by id", async () => {
+			await withTempDir(async dir => {
+				await layout(dir);
+
+				await expect(InternalUrlRouter.instance().resolve("history://Secret")).rejects.toThrow(
+					"Unknown agent: Secret",
+				);
+				await expect(InternalUrlRouter.instance().resolve("history://secretdisk")).rejects.toThrow(
+					"Unknown agent: secretdisk",
+				);
+				const helper = await InternalUrlRouter.instance().resolve("history://Helper");
+				expect(helper.content).toContain("mentions helper");
+			});
+		});
+
+		it("still serves a private chat its own agents", async () => {
+			await withTempDir(async dir => {
+				const { privateRoot } = await layout(dir);
+
+				const own = await InternalUrlRouter.instance().resolve("history://Secret", { sessionFile: privateRoot });
+				expect(own.content).toContain("private secret");
+			});
+		});
+	});
 });
