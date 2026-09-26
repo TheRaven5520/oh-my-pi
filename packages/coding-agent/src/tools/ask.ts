@@ -1,4 +1,4 @@
-import type { AskToolDetails, QuestionResult } from "@oh-my-pi/pi-tui/tools/ask";
+import type { AskAssumption, AskContinuation, AskToolDetails, QuestionResult } from "@oh-my-pi/pi-tui/tools/ask";
 /**
  * Ask Tool - Interactive user prompting during execution
  *
@@ -14,16 +14,19 @@ import type { AskToolDetails, QuestionResult } from "@oh-my-pi/pi-tui/tools/ask"
  *   - Use multi: true to allow multiple answers to be selected for a question
  *   - Use recommended: <index> to mark the default option; "(Recommended)" suffix is added automatically
  *   - Questions may time out and auto-select the recommended option (configurable, disabled in plan mode)
+ *   - With ask.continueAfter, an unanswered question stays open while the agent continues; the answer arrives later
  */
 
 import { type as arkType } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { Ellipsis, replaceTabs, TERMINAL, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { formatDuration, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 
+import type { AsyncJobManager } from "../async";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
 import { theme } from "@oh-my-pi/pi-tui/theme";
+import type { ExtensionAskDialogResult } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
 
@@ -731,6 +734,154 @@ function formatSingleQuestionResponse(result: {
 	return result.multi ? "User did not select any options" : "User cancelled the selection";
 }
 
+/** Resolves the continue-after deadline in the answer race. */
+const CONTINUE_WITHOUT_ANSWER = Symbol("continue without answer");
+
+type RichAnswer =
+	| { kind: "answered"; toolResult: AgentToolResult<AskToolDetails> }
+	| { kind: "chat"; toolResult: AgentToolResult<AskToolDetails> }
+	| { kind: "cancelled" };
+
+/**
+ * Turn a rich ask dialog's result into the tool result it stands for. Pure: the
+ * caller decides what a cancel means (abort the turn inline; keep the
+ * assumption for a question the agent already continued past).
+ */
+function interpretRichAnswer(params: AskParams, richResult: ExtensionAskDialogResult | undefined): RichAnswer {
+	if (!richResult) return { kind: "cancelled" };
+	if (richResult.kind === "chat") {
+		const questionText = params.questions.map(q => q.question).join("\n");
+		return {
+			kind: "chat",
+			toolResult: {
+				content: [
+					{
+						type: "text" as const,
+						text: `User chose to chat about this instead of answering.\n\nQuestions asked:\n${questionText}`,
+					},
+				],
+				details: { chatRedirect: true, questions: params.questions.map(q => q.question) },
+			},
+		};
+	}
+	if (richResult.results.length !== params.questions.length) {
+		throw new Error("Ask dialog returned a result count that does not match the requested questions");
+	}
+	const results: QuestionResult[] = [];
+	for (let index = 0; index < params.questions.length; index++) {
+		const question = params.questions[index];
+		const result = richResult.results[index];
+		if (!question || !result || result.id !== question.id) {
+			throw new Error("Ask dialog returned results that do not match the requested question order");
+		}
+		results.push({
+			id: question.id,
+			question: question.question,
+			options: question.options.map(option => option.label),
+			multi: question.multi ?? false,
+			selectedOptions: result.selectedOptions,
+			customInput: result.customInput,
+			note: result.note,
+			timedOut: result.timedOut,
+		});
+	}
+	if (params.questions.length === 1) {
+		const result = results[0];
+		// An empty multi-select submission is a valid "select none" answer
+		// (#8265 review); only a truly empty single-select result is a cancel.
+		if (
+			!result ||
+			(!result.timedOut && !result.multi && result.selectedOptions.length === 0 && result.customInput === undefined)
+		) {
+			return { kind: "cancelled" };
+		}
+		const details: AskToolDetails = {
+			question: result.question,
+			options: result.options,
+			multi: result.multi,
+			selectedOptions: result.selectedOptions,
+			customInput: result.customInput,
+			note: result.note,
+			timedOut: result.timedOut,
+		};
+		return {
+			kind: "answered",
+			toolResult: { content: [{ type: "text" as const, text: formatSingleQuestionResponse(result) }], details },
+		};
+	}
+	return {
+		kind: "answered",
+		toolResult: {
+			content: [{ type: "text" as const, text: `User answers:\n${results.map(formatQuestionResult).join("\n")}` }],
+			details: { results },
+		},
+	};
+}
+
+/** The option the agent should assume while a question is unanswered, if the question named one. */
+function assumedOption(question: AskParams["questions"][number]): string | undefined {
+	const { recommended, options } = question;
+	if (typeof recommended !== "number" || recommended < 0 || recommended >= options.length) return undefined;
+	return options[recommended]!.label;
+}
+
+function describeAssumptions(assumptions: readonly AskAssumption[]): string {
+	return assumptions
+		.map(assumption => {
+			const prefix = assumptions.length > 1 ? `${assumption.id}: ` : "";
+			return assumption.assumed === undefined
+				? `${prefix}no recommended option; use your best judgment and say what you chose`
+				: `${prefix}assume "${assumption.assumed}"`;
+		})
+		.join("\n");
+}
+
+/** What the agent was told to assume, stated as what it has been working on. */
+function describeHeldAssumptions(assumptions: readonly AskAssumption[]): string {
+	return assumptions
+		.map(assumption => {
+			const prefix = assumptions.length > 1 ? `${assumption.id}: ` : "";
+			return assumption.assumed === undefined
+				? `${prefix}your own judgment (the choice you stated when you continued)`
+				: `${prefix}"${assumption.assumed}"`;
+		})
+		.join("\n");
+}
+
+/** Tool result text when the agent continues without an answer. */
+function formatContinuationNotice(continuation: AskContinuation): string {
+	return [
+		`No answer after ${formatDuration(continuation.afterMs)}. The question stays open and the user may answer later; the answer will arrive as background job ${continuation.jobId}.`,
+		"Until then:",
+		describeAssumptions(continuation.assumptions),
+		"Keep working on anything that does not depend on this answer and state the assumption you made. If nothing useful can proceed without it, finish what you can and end your turn. Do not wait or poll for this job and do not ask the same question again: the answer is delivered to you on its own.",
+	].join("\n");
+}
+
+/** Job result text once the user answers (or dismisses) a question the agent continued past. */
+function formatLateAnswer(
+	params: AskParams,
+	assumptions: readonly AskAssumption[],
+	answer: RichAnswer,
+	elapsedMs: number,
+): string {
+	const assumed = describeHeldAssumptions(assumptions);
+	const asked = params.questions.map(q => q.question).join("\n");
+	if (answer.kind === "cancelled") {
+		return `The user dismissed the question you continued past, ${formatDuration(elapsedMs)} after it was asked. Keep your assumption:\n${assumed}\n\nQuestion:\n${asked}`;
+	}
+	if (answer.kind === "chat") {
+		return `The user wants to discuss the question you continued past (${formatDuration(elapsedMs)} after it was asked) rather than pick an option. Stop at a safe point and ask about it in chat.\n\nQuestion:\n${asked}`;
+	}
+	const text = answer.toolResult.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
+	return [
+		`The user answered the question you continued past, ${formatDuration(elapsedMs)} after it was asked.`,
+		`While waiting you worked on:\n${assumed}`,
+		`Answer:\n${text}`,
+		"If the answer differs from what you assumed, go back and correct the work built on the assumption before continuing; if it matches, carry on.",
+	].join("\n");
+}
+
 // =============================================================================
 // Tool Class
 // =============================================================================
@@ -767,11 +918,10 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			},
 		},
 	];
-	// Run alone in its tool batch. The interactive selector/editor is a single
-	// shared UI surface (`ExtensionUiController.showHookSelector` has no queue and
-	// overwrites `ctx.hookSelector` on each call), so two concurrent `ask` calls
-	// would clobber each other: the second steals focus and orphans the first,
-	// whose promise then hangs until the user aborts the whole turn.
+	// Run alone in its tool batch: one question at a time reads better, and the
+	// shared dialog surface shows one dialog at a time anyway (the rest queue in
+	// `ExtensionUiController#presentDialog`; a question the agent continued past
+	// steps aside for them).
 	readonly concurrency = "exclusive";
 	readonly loadMode = "discoverable";
 
@@ -795,6 +945,71 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			urgency: "normal",
 			actions: "focus",
 		});
+	}
+
+	/**
+	 * Nobody answered within `ask.continueAfter`: return now with the assumed
+	 * answers so the agent keeps working, and hand the still-open question to a
+	 * background job that delivers the real answer whenever it comes. If no job
+	 * can be started, keep waiting inline as before.
+	 */
+	async #continueWithoutAnswer(state: {
+		params: AskParams;
+		answered: Promise<ExtensionAskDialogResult | undefined>;
+		dialogAbort: AbortController;
+		yieldController: AbortController;
+		askedAt: number;
+		afterMs: number;
+		jobManager: AsyncJobManager;
+	}): Promise<AgentToolResult<AskToolDetails>> {
+		const { params, answered, dialogAbort, yieldController, askedAt, afterMs, jobManager } = state;
+		const assumptions: AskAssumption[] = params.questions.map(q => ({
+			id: q.id,
+			question: q.question,
+			...(assumedOption(q) !== undefined ? { assumed: assumedOption(q) } : {}),
+		}));
+		let jobId: string;
+		try {
+			jobId = jobManager.register(
+				"ask",
+				truncateToWidth(`answer to: ${replaceTabs(params.questions[0]!.question).replaceAll("\n", " ")}`, 80),
+				async ({ signal: jobSignal }) => {
+					const closeDialog = () => dialogAbort.abort(jobSignal.reason);
+					jobSignal.addEventListener("abort", closeDialog, { once: true });
+					try {
+						const result = await answered;
+						return formatLateAnswer(
+							params,
+							assumptions,
+							interpretRichAnswer(params, result),
+							Date.now() - askedAt,
+						);
+					} finally {
+						jobSignal.removeEventListener("abort", closeDialog);
+					}
+				},
+				{ ownerId: this.session.getAgentId?.() ?? undefined },
+			);
+		} catch (error) {
+			// No job slot (limit reached or shutting down): keep waiting inline.
+			logger.warn("ask: could not continue in the background; waiting for the answer", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			try {
+				const answer = interpretRichAnswer(params, await answered);
+				if (answer.kind === "cancelled") throw new ToolAbortError("Ask tool was cancelled by the user");
+				return answer.toolResult;
+			} finally {
+				dialogAbort.abort();
+			}
+		}
+		// Other prompts (a later question, a permission check) may now go first.
+		yieldController.abort();
+		const continuation: AskContinuation = { jobId, askedAt, afterMs, assumptions };
+		return {
+			content: [{ type: "text" as const, text: formatContinuationNotice(continuation) }],
+			details: { continued: continuation },
+		};
 	}
 
 	async execute(
@@ -922,96 +1137,89 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 
 		const richAskDialog = extensionUi.askDialog;
 		if (richAskDialog) {
+			// With `ask.continueAfter`, a question nobody answers in time stays open
+			// while the agent continues; its answer is delivered later as a job.
+			const continueAfterSeconds = planModeEnabled ? 0 : this.session.settings.get("ask.continueAfter");
+			const jobManager = this.session.asyncJobManager;
+			const continueAfterMs = continueAfterSeconds > 0 && jobManager ? continueAfterSeconds * 1000 : 0;
+			// The dialog outlives this call once it continues, so it gets its own
+			// abort: the tool call's signal only until then, the job's afterwards.
+			const dialogAbort = new AbortController();
+			const yieldController = new AbortController();
+			const forwardCallAbort = () => dialogAbort.abort(signal?.reason);
+			signal?.addEventListener("abort", forwardCallAbort, { once: true });
+			if (signal?.aborted) forwardCallAbort();
+			// The wait starts when the question is on screen, not while it queues
+			// behind another dialog. Surfaces that never report it start at once.
+			const deadline = Promise.withResolvers<typeof CONTINUE_WITHOUT_ANSWER>();
+			let deadlineTimer: NodeJS.Timeout | undefined;
+			let askedAt = Date.now();
+			const startDeadline = (): void => {
+				if (continueAfterMs <= 0 || deadlineTimer !== undefined) return;
+				askedAt = Date.now();
+				deadlineTimer = setTimeout(() => deadline.resolve(CONTINUE_WITHOUT_ANSWER), continueAfterMs);
+			};
+			const dialog = richAskDialog(
+				params.questions.map(q => ({
+					id: q.id,
+					question: q.question,
+					...(q.header?.trim() ? { header: q.header } : {}),
+					options: q.options.map(option => ({
+						label: option.label,
+						...(option.description?.trim() ? { description: option.description.trim() } : {}),
+						...(option.preview?.trim() ? { preview: option.preview } : {}),
+					})),
+					...(q.multi !== undefined ? { multi: q.multi } : {}),
+					...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
+				})),
+				{
+					// `ask.continueAfter` replaces the auto-select timeout: the question
+					// must stay answerable instead of closing on the recommended option.
+					timeout: continueAfterMs > 0 ? undefined : (timeout ?? undefined),
+					signal: dialogAbort.signal,
+					yieldSignal: yieldController.signal,
+					onPresented: startDeadline,
+				},
+			);
+			if (!extensionUi.timeoutStartsOnPresentation) startDeadline();
+			// Even a surface that ignores `signal` must not hang an aborted call.
+			const answered = untilAborted(dialogAbort.signal, () => dialog);
+			let continued = false;
 			try {
-				const showRichDialog = () =>
-					richAskDialog(
-						params.questions.map(q => ({
-							id: q.id,
-							question: q.question,
-							...(q.header?.trim() ? { header: q.header } : {}),
-							options: q.options.map(option => ({
-								label: option.label,
-								...(option.description?.trim() ? { description: option.description.trim() } : {}),
-								...(option.preview?.trim() ? { preview: option.preview } : {}),
-							})),
-							...(q.multi !== undefined ? { multi: q.multi } : {}),
-							...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
-						})),
-						{ timeout: timeout ?? undefined, signal },
-					);
-				const richResult = signal ? await untilAborted(signal, showRichDialog) : await showRichDialog();
-				if (!richResult) {
+				const raced =
+					continueAfterMs > 0
+						? await Promise.race([answered.then(result => ({ result })), deadline.promise])
+						: { result: await answered };
+				if (raced === CONTINUE_WITHOUT_ANSWER) {
+					continued = true;
+					signal?.removeEventListener("abort", forwardCallAbort);
+					return this.#continueWithoutAnswer({
+						params,
+						answered,
+						dialogAbort,
+						yieldController,
+						askedAt,
+						afterMs: continueAfterMs,
+						jobManager: jobManager!,
+					});
+				}
+				const answer = interpretRichAnswer(params, raced.result);
+				if (answer.kind === "cancelled") {
 					context.abort();
 					throw new ToolAbortError("Ask tool was cancelled by the user");
 				}
-				if (richResult.kind === "chat") {
-					const questionText = params.questions.map(q => q.question).join("\n");
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `User chose to chat about this instead of answering.\n\nQuestions asked:\n${questionText}`,
-							},
-						],
-						details: { chatRedirect: true, questions: params.questions.map(q => q.question) },
-					};
-				}
-				if (richResult.results.length !== params.questions.length) {
-					throw new Error("Ask dialog returned a result count that does not match the requested questions");
-				}
-				const results: QuestionResult[] = [];
-				for (let index = 0; index < params.questions.length; index++) {
-					const question = params.questions[index];
-					const result = richResult.results[index];
-					if (!question || !result || result.id !== question.id) {
-						throw new Error("Ask dialog returned results that do not match the requested question order");
-					}
-					results.push({
-						id: question.id,
-						question: question.question,
-						options: question.options.map(option => option.label),
-						multi: question.multi ?? false,
-						selectedOptions: result.selectedOptions,
-						customInput: result.customInput,
-						note: result.note,
-						timedOut: result.timedOut,
-					});
-				}
-				if (params.questions.length === 1) {
-					const result = results[0];
-					// An empty multi-select submission is a valid "select none"
-					// answer (#8265 review); only a truly empty single-select
-					// result counts as cancellation.
-					if (
-						!result ||
-						(!result.timedOut &&
-							!result.multi &&
-							result.selectedOptions.length === 0 &&
-							result.customInput === undefined)
-					) {
-						context.abort();
-						throw new ToolAbortError("Ask tool was cancelled by the user");
-					}
-					const details: AskToolDetails = {
-						question: result.question,
-						options: result.options,
-						multi: result.multi,
-						selectedOptions: result.selectedOptions,
-						customInput: result.customInput,
-						note: result.note,
-						timedOut: result.timedOut,
-					};
-					const responseText = formatSingleQuestionResponse(result);
-					return { content: [{ type: "text" as const, text: responseText }], details };
-				}
-				const details: AskToolDetails = { results };
-				const responseText = `User answers:\n${results.map(formatQuestionResult).join("\n")}`;
-				return { content: [{ type: "text" as const, text: responseText }], details };
+				return answer.toolResult;
 			} catch (error) {
 				if (error instanceof Error && error.name === "AbortError") {
 					throw new ToolAbortError("Ask input was cancelled");
 				}
 				throw error;
+			} finally {
+				clearTimeout(deadlineTimer);
+				if (!continued) {
+					signal?.removeEventListener("abort", forwardCallAbort);
+					dialogAbort.abort();
+				}
 			}
 		}
 

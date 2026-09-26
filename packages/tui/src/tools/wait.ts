@@ -40,7 +40,7 @@ export type CoordinationOp = "send" | "wait" | "jobs" | "cancel";
 /** Background-job row surfaced by `wait`/`cancel`/`jobs` results. */
 export interface JobSnapshot {
 	id: string;
-	type: "bash" | "task" | "eval";
+	type: "bash" | "task" | "eval" | "ask";
 	status: "running" | "completed" | "failed" | "cancelled";
 	label: string;
 	durationMs: number;

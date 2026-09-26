@@ -6037,7 +6037,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Wait for the current response to finish or abort it before refreshing.");
 			return;
 		}
-		const runningJobs = this.session.asyncJobManager?.getRunningJobs().length ?? 0;
+		const runningJobs = this.session.asyncJobManager?.getRunningWorkJobs().length ?? 0;
 		const runningSubagents = AgentRegistry.global()
 			.list()
 			.filter(agent => agent.kind === "sub" && agent.status === "running").length;

@@ -43,7 +43,8 @@ const DEFAULT_MAX_RUNNING_JOBS = 15;
 export const ASYNC_JOB_MANAGER_SHUTDOWN_REASON = Symbol("AsyncJobManager shutdown");
 
 /** Kind of work a managed job runs; drives job-row badges and delivery labels. */
-export type AsyncJobType = "bash" | "task" | "eval";
+/** `ask`: a question the agent continued past; it settles when the user answers. */
+export type AsyncJobType = "bash" | "task" | "eval" | "ask";
 
 /** Settled job-body payload: delivery text plus its parsed structured output. */
 export interface AsyncJobRunResult {
@@ -425,6 +426,15 @@ export class AsyncJobManager {
 
 	getJob(id: string): AsyncJob | undefined {
 		return this.#jobs.get(id);
+	}
+
+	/**
+	 * Running jobs that settle on their own (bash, tasks, eval). Excludes `ask`
+	 * jobs, which settle only when the user answers — possibly days later — so
+	 * nothing may wait on them or treat them as imminent work.
+	 */
+	getRunningWorkJobs(filter?: AsyncJobFilter): AsyncJob[] {
+		return this.getRunningJobs(filter).filter(job => job.type !== "ask");
 	}
 
 	/** Running background jobs; foreground-backed jobs stay hidden until promoted. */
