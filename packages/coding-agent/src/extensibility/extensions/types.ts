@@ -197,6 +197,17 @@ export interface ExtensionUIDialogOptions {
 	 *  trailing options (e.g. "Other"/"Done" actions) keep the plain cursor.
 	 *  Defaults to all options when `selectionMarker` is set. */
 	markableCount?: number;
+	/**
+	 * Once aborted, the dialog stops holding the shared dialog surface: dialogs
+	 * already waiting, and later ones, are shown first, and this one comes back
+	 * after them. Used by an `ask` whose turn has moved on without an answer.
+	 */
+	yieldSignal?: AbortSignal;
+	/**
+	 * Invoked once when the dialog is actually shown (it may first wait behind
+	 * another dialog). Surfaces that do not report it are shown immediately.
+	 */
+	onPresented?: () => void;
 }
 
 /** Raw terminal input listener for extensions. */

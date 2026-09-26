@@ -128,6 +128,47 @@ describe("AgentSession owner-routed async delivery", () => {
 		);
 		expect(deliveredImages).toEqual([image]);
 	});
+	it("treats an open question as idle, and runs a turn with the answer when it comes", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const authStorage = await AuthStorage.create(":memory:");
+		authStorages.push(authStorage);
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			modelRegistry: new ModelRegistry(authStorage),
+			agentId: "Main",
+			asyncJobManager: manager,
+		});
+
+		const answer = Promise.withResolvers<string>();
+		manager.register("ask", "answer to: Which database?", () => answer.promise, { id: "ask-1", ownerId: "Main" });
+
+		// Waiting on the user is not pending work: stop hooks, the todo reminder
+		// and idle compaction run, and the turn ends as done.
+		expect(session.hasPendingAsyncWork()).toBe(false);
+
+		answer.resolve("The user answered: PICKED POSTGRES");
+		await session.settleAsyncWork();
+		const sawAnswer = mock.calls.some(call =>
+			call.context.messages.some(message =>
+				typeof message.content === "string"
+					? message.content.includes("PICKED POSTGRES")
+					: message.content.some(content => content.type === "text" && content.text.includes("PICKED POSTGRES")),
+			),
+		);
+		expect(sawAnswer).toBe(true);
+	});
 
 	it("does not spill an incomplete background capture as full output during follow-up delivery", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;

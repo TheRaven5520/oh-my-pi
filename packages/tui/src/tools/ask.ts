@@ -1,4 +1,5 @@
 import type { ToolRenderer } from "./renderer";
+import { formatDuration } from "@oh-my-pi/pi-utils";
 
 import {
 	type Component,
@@ -51,6 +52,28 @@ export interface AskToolDetails {
 	chatRedirect?: boolean;
 	/** Questions surfaced when chatRedirect is true. */
 	questions?: string[];
+	/**
+	 * No answer came in time: the agent continued on these assumptions while the
+	 * question stayed open. The answer, when given, arrives as job `jobId`.
+	 */
+	continued?: AskContinuation;
+}
+
+/** What the agent assumed for one question it continued past. */
+export interface AskAssumption {
+	id: string;
+	question: string;
+	/** The option it assumed; undefined when it used its own judgment (no recommended option). */
+	assumed?: string;
+}
+
+export interface AskContinuation {
+	jobId: string;
+	/** Epoch ms the question was shown. */
+	askedAt: number;
+	/** How long it waited before continuing. */
+	afterMs: number;
+	assumptions: AskAssumption[];
 }
 
 // =============================================================================
@@ -377,6 +400,37 @@ export const askToolRenderer = {
 				phase: "warning",
 				borderColor: "borderMuted",
 			}));
+		}
+
+		// No answer in time: the agent moved on while the question stays open.
+		if (details.continued) {
+			const continued = details.continued;
+			const header = renderStatusLine(
+				{
+					icon: "pending",
+					title: "Ask",
+					meta: [`no answer after ${formatDuration(continued.afterMs)}`, "continuing"],
+				},
+				uiTheme,
+			);
+			return framedToolCard(uiTheme, ({ width }) => {
+				const sections = continued.assumptions.map(assumption => ({
+					...(continued.assumptions.length > 1 ? { label: uiTheme.fg("dim", `[${assumption.id}]`) } : {}),
+					content: [
+						...md(sanitizeCarriageReturns(assumption.question), width),
+						uiTheme.fg(
+							"dim",
+							assumption.assumed === undefined
+								? "assuming: the agent's own judgment"
+								: `assuming: ${sanitizeCarriageReturns(assumption.assumed)}`,
+						),
+					],
+				}));
+				sections.push({
+					content: [uiTheme.fg("dim", "still open; your answer goes to the agent when you give it")],
+				});
+				return { header, sections, phase: "warning", borderColor: "borderMuted" };
+			});
 		}
 
 		// Multi-part results: one divider-labelled section per question.

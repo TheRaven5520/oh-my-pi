@@ -58,14 +58,16 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 	const rows: TranscriptStatusRow[] = [];
 	for (const job of jobs) {
 		const jobId = job.jobId ?? "unknown";
-		const typeLabel = job.type ? `[${job.type}]` : "[job]";
 		const duration = typeof job.durationMs === "number" ? formatDuration(job.durationMs) : undefined;
+		// An `ask` job settles when the user answers, dismisses or redirects a
+		// question the agent had continued past; the delivered text says which.
+		const question = job.type === "ask";
 		rows.push({
 			parts: [
-				theme.fg("success", `${theme.status.done} Background job completed`),
-				theme.fg("dim", typeLabel),
+				theme.fg("success", `${theme.status.done} ${question ? "Question closed" : "Background job completed"}`),
+				question ? undefined : theme.fg("dim", job.type ? `[${job.type}]` : "[job]"),
 				theme.fg("accent", jobId),
-				duration ? theme.fg("dim", `(${duration})`) : undefined,
+				duration ? theme.fg("dim", `(${question ? `after ${duration}` : duration})`) : undefined,
 			],
 		});
 		if (job.meta?.artifactError) {

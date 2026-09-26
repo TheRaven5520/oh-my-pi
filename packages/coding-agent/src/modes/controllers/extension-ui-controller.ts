@@ -79,8 +79,9 @@ export class ExtensionUiController {
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
 	// Single-file dialog surface (`editorContainer` + focus) is shared by the
 	// selector / input / editor modals, so only one may be presented at a time;
-	// the rest queue. See `#presentDialog`.
-	#dialogActive = false;
+	// the rest queue, and a yielded dialog steps aside. See `#presentDialog`.
+	#activeDialog: ShownDialog | undefined;
+	#suspendedDialogs: ShownDialog[] = [];
 	#dialogQueue: Array<() => void> = [];
 	/**
 	 * Built once in `initHooksAndCustomTools()`. Reused directly by `/tree`
@@ -649,105 +650,131 @@ export class ExtensionUiController {
 		questions: ExtensionAskDialogQuestion[],
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<ExtensionAskDialogResult | undefined> {
-		return this.#presentDialog<ExtensionAskDialogResult>(dialogOptions?.signal, settle => {
-			let promptEditor: HookEditorComponent | undefined;
-			let promptResolve: ((value: string | undefined) => void) | undefined;
-			let closed = false;
-			const draftEditor = this.ctx.editor;
-			const inputGuard =
-				draftEditor.getText().length > 0
-					? {
-							isBlocked: () => draftEditor.getText().length > 0,
-							handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
-							hint: "Finish or clear the current prompt to answer",
-							// Show the draft's insertion cursor while it owns input; drop it
-							// once the draft clears and the ask controls take over.
-							syncPresentation: () => {
-								draftEditor.focused = draftEditor.getText().length > 0;
-							},
-						}
-					: undefined;
+		return this.#presentDialog<ExtensionAskDialogResult>(
+			dialogOptions?.signal,
+			settle => {
+				let promptEditor: HookEditorComponent | undefined;
+				let promptResolve: ((value: string | undefined) => void) | undefined;
+				let closed = false;
+				// Stepped aside for another dialog: the components stay alive, untouched.
+				let suspended = false;
+				const draftEditor = this.ctx.editor;
+				const inputGuard =
+					draftEditor.getText().length > 0
+						? {
+								isBlocked: () => draftEditor.getText().length > 0,
+								handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
+								hint: "Finish or clear the current prompt to answer",
+								// Show the draft's insertion cursor while it owns input; drop it
+								// once the draft clears and the ask controls take over.
+								syncPresentation: () => {
+									draftEditor.focused = draftEditor.getText().length > 0;
+								},
+							}
+						: undefined;
 
-			const restoreAskDialog = (): void => {
-				if (closed || !askDialog) return;
+				const restoreAskDialog = (): void => {
+					if (closed || suspended || !askDialog) return;
+					this.ctx.editorContainer.clear();
+					this.ctx.editorContainer.addChild(askDialog);
+					// Keep the draft editor mounted beneath the restored ask, matching the
+					// initial presentation: the guard re-blocks whenever the draft is
+					// non-empty (e.g. a failed submit restored its text while a nested
+					// prompt was open), and routed input must land on a visible surface.
+					if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
+					this.ctx.ui.setFocus(askDialog);
+					this.ctx.ui.requestRender();
+				};
+
+				const finishPrompt = (value: string | undefined): void => {
+					const resolvePrompt = promptResolve;
+					promptResolve = undefined;
+					promptEditor?.dispose();
+					promptEditor = undefined;
+					resolvePrompt?.(value);
+					// Let AskDialog apply the answer and clear its prompt guard before
+					// making the dialog visible and interactive again. This single-hop
+					// deferral relies on #promptForCustomInput/#promptForNote clearing
+					// #promptActive in the synchronous resume after their lone
+					// `await onPrompt(...)` (no await before the `finally`); adding one
+					// there reopens the drop-Enter race, so revisit this deferral then.
+					queueMicrotask(restoreAskDialog);
+				};
+
+				const promptForText = (title: string, prefill?: string): Promise<string | undefined> => {
+					if (closed) return Promise.resolve(undefined);
+					const { promise, resolve } = Promise.withResolvers<string | undefined>();
+					promptResolve = resolve;
+					promptEditor = new HookEditorComponent(
+						this.ctx.ui,
+						title,
+						prefill,
+						value => finishPrompt(value),
+						() => finishPrompt(undefined),
+						{ promptStyle: true, externalEditor: editDialogExternally },
+					);
+					this.ctx.editorContainer.clear();
+					this.ctx.editorContainer.addChild(promptEditor);
+					this.ctx.ui.setFocus(promptEditor);
+					this.ctx.ui.requestRender();
+					return promise;
+				};
+
+				const askDialog = new AskDialogComponent(
+					questions,
+					{
+						onSubmit: result => settle(result),
+						onCancel: () => settle(undefined),
+						onPrompt: promptForText,
+					},
+					{
+						timeout: dialogOptions?.timeout,
+						onTimeout: dialogOptions?.onTimeout,
+						tui: this.ctx.ui,
+						inputGuard,
+					},
+				);
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(askDialog);
-				// Keep the draft editor mounted beneath the restored ask, matching the
-				// initial presentation: the guard re-blocks whenever the draft is
-				// non-empty (e.g. a failed submit restored its text while a nested
-				// prompt was open), and routed input must land on a visible surface.
 				if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
 				this.ctx.ui.setFocus(askDialog);
 				this.ctx.ui.requestRender();
-			};
+				dialogOptions?.onPresented?.();
 
-			const finishPrompt = (value: string | undefined): void => {
-				const resolvePrompt = promptResolve;
-				promptResolve = undefined;
-				promptEditor?.dispose();
-				promptEditor = undefined;
-				resolvePrompt?.(value);
-				// Let AskDialog apply the answer and clear its prompt guard before
-				// making the dialog visible and interactive again. This single-hop
-				// deferral relies on #promptForCustomInput/#promptForNote clearing
-				// #promptActive in the synchronous resume after their lone
-				// `await onPrompt(...)` (no await before the `finally`); adding one
-				// there reopens the drop-Enter race, so revisit this deferral then.
-				queueMicrotask(restoreAskDialog);
-			};
-
-			const promptForText = (title: string, prefill?: string): Promise<string | undefined> => {
-				if (closed) return Promise.resolve(undefined);
-				const { promise, resolve } = Promise.withResolvers<string | undefined>();
-				promptResolve = resolve;
-				promptEditor = new HookEditorComponent(
-					this.ctx.ui,
-					title,
-					prefill,
-					value => finishPrompt(value),
-					() => finishPrompt(undefined),
-					{ promptStyle: true, externalEditor: editDialogExternally },
-				);
-				this.ctx.editorContainer.clear();
-				this.ctx.editorContainer.addChild(promptEditor);
-				this.ctx.ui.setFocus(promptEditor);
-				this.ctx.ui.requestRender();
-				return promise;
-			};
-
-			const askDialog = new AskDialogComponent(
-				questions,
-				{
-					onSubmit: result => settle(result),
-					onCancel: () => settle(undefined),
-					onPrompt: promptForText,
-				},
-				{
-					timeout: dialogOptions?.timeout,
-					onTimeout: dialogOptions?.onTimeout,
-					tui: this.ctx.ui,
-					inputGuard,
-				},
-			);
-			this.ctx.editorContainer.clear();
-			this.ctx.editorContainer.addChild(askDialog);
-			if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
-			this.ctx.ui.setFocus(askDialog);
-			this.ctx.ui.requestRender();
-
-			return () => {
-				closed = true;
-				askDialog?.dispose();
-				promptEditor?.dispose();
-				promptResolve?.(undefined);
-				promptResolve = undefined;
-				promptEditor = undefined;
-				this.ctx.editorContainer.clear();
-				this.ctx.editorContainer.addChild(this.ctx.editor);
-				this.ctx.ui.setFocus(this.ctx.editor);
-				this.ctx.ui.requestRender();
-			};
-		});
+				return {
+					hide: () => {
+						closed = true;
+						askDialog?.dispose();
+						promptEditor?.dispose();
+						promptResolve?.(undefined);
+						promptResolve = undefined;
+						promptEditor = undefined;
+						// A suspended dialog is off-screen; the surface belongs to another one.
+						if (suspended) return;
+						this.ctx.editorContainer.clear();
+						this.ctx.editorContainer.addChild(this.ctx.editor);
+						this.ctx.ui.setFocus(this.ctx.editor);
+						this.ctx.ui.requestRender();
+					},
+					suspend: () => {
+						suspended = true;
+					},
+					resume: () => {
+						suspended = false;
+						if (!promptEditor) {
+							restoreAskDialog();
+							return;
+						}
+						// A half-typed custom answer or note comes back as it was.
+						this.ctx.editorContainer.clear();
+						this.ctx.editorContainer.addChild(promptEditor);
+						this.ctx.ui.setFocus(promptEditor);
+						this.ctx.ui.requestRender();
+					},
+				};
+			},
+			{ yieldSignal: dialogOptions?.yieldSignal },
+		);
 	}
 
 	/**
@@ -1261,8 +1288,9 @@ export class ExtensionUiController {
 	/**
 	 * Present a modal dialog on the shared editor surface, serializing against any
 	 * dialog already open. `present` builds the component, swaps it into
-	 * `editorContainer`, steals focus, and returns a `hide` closure; it is invoked
-	 * with a single `settle` callback that the component fires on submit/cancel.
+	 * `editorContainer`, steals focus, and returns a `hide` closure (or a
+	 * {@link DialogPresentation} that can also step aside); it is invoked with a
+	 * single `settle` callback that the component fires on submit/cancel.
 	 *
 	 * Because selector / input / editor all clear `editorContainer` and re-focus,
 	 * showing a second one while the first is open would orphan the first — its
@@ -1270,28 +1298,52 @@ export class ExtensionUiController {
 	 * presented at a time and the rest queue (FIFO). `settle` (or an abort) hides
 	 * the current dialog and hands the surface to the next queued request. A request
 	 * whose signal aborts before its turn resolves `undefined` and is never shown.
+	 *
+	 * Once a dialog's `yieldSignal` aborts (an `ask` the turn moved on from), it no
+	 * longer holds the surface: waiting and later dialogs are shown first, and it
+	 * comes back, unchanged and still pending, when none are left.
 	 */
 	#presentDialog<T = string>(
 		signal: AbortSignal | undefined,
-		present: (settle: (value: T | undefined) => void) => () => void,
+		present: (settle: (value: T | undefined) => void) => (() => void) | DialogPresentation,
+		options: { yieldSignal?: AbortSignal } = {},
 	): Promise<T | undefined> {
 		const { promise, resolve, reject } = Promise.withResolvers<T | undefined>();
+		const { yieldSignal } = options;
+		const shown: ShownDialog = { yieldSignal };
 		let settled = false;
 		let started = false;
-		let hide: (() => void) | undefined;
 
 		function onAbort(): void {
 			settle(undefined);
 		}
 
+		const onYield = (): void => {
+			if (this.#activeDialog === shown && this.#dialogQueue.length > 0 && this.#suspendActiveDialog()) {
+				this.#advanceDialogQueue();
+			}
+		};
+
+		const detach = (): void => {
+			signal?.removeEventListener("abort", onAbort);
+			yieldSignal?.removeEventListener("abort", onYield);
+		};
+
 		const settle = (value: T | undefined): void => {
 			if (settled) return;
 			settled = true;
-			signal?.removeEventListener("abort", onAbort);
+			detach();
 			if (started) {
-				hide?.();
-				this.#dialogActive = false;
-				this.#advanceDialogQueue();
+				const suspendedIndex = this.#suspendedDialogs.indexOf(shown);
+				if (suspendedIndex >= 0) {
+					// Settled while stepped aside: another dialog owns the surface.
+					this.#suspendedDialogs.splice(suspendedIndex, 1);
+					shown.presentation?.hide();
+				} else if (this.#activeDialog === shown) {
+					shown.presentation?.hide();
+					this.#activeDialog = undefined;
+					this.#advanceDialogQueue();
+				}
 			}
 			resolve(value);
 		};
@@ -1303,13 +1355,14 @@ export class ExtensionUiController {
 				return;
 			}
 			started = true;
-			this.#dialogActive = true;
+			this.#activeDialog = shown;
 			try {
-				hide = present(settle);
+				const presentation = present(settle);
+				shown.presentation = typeof presentation === "function" ? { hide: presentation } : presentation;
 			} catch (error) {
 				settled = true;
-				signal?.removeEventListener("abort", onAbort);
-				this.#dialogActive = false;
+				detach();
+				this.#activeDialog = undefined;
 				reject(error);
 				this.#advanceDialogQueue();
 			}
@@ -1320,16 +1373,51 @@ export class ExtensionUiController {
 			return promise;
 		}
 		signal?.addEventListener("abort", onAbort, { once: true });
+		yieldSignal?.addEventListener("abort", onYield, { once: true });
 
-		if (this.#dialogActive) {
-			this.#dialogQueue.push(startPresentation);
-		} else {
+		if (!this.#activeDialog || this.#suspendActiveDialog()) {
 			startPresentation();
+		} else {
+			this.#dialogQueue.push(startPresentation);
 		}
 		return promise;
 	}
 
-	#advanceDialogQueue(): void {
-		this.#dialogQueue.shift()?.();
+	/** Step a yielded active dialog aside so another can take the surface; false when it keeps it. */
+	#suspendActiveDialog(): boolean {
+		const active = this.#activeDialog;
+		const presentation = active?.presentation;
+		if (!active?.yieldSignal?.aborted || !presentation?.suspend || !presentation.resume) return false;
+		presentation.suspend();
+		this.#suspendedDialogs.push(active);
+		this.#activeDialog = undefined;
+		return true;
 	}
+
+	/** Hand the surface to the next queued dialog, or bring back the most recently yielded one. */
+	#advanceDialogQueue(): void {
+		const next = this.#dialogQueue.shift();
+		if (next) {
+			next();
+			return;
+		}
+		const resumed = this.#suspendedDialogs.pop();
+		if (!resumed) return;
+		this.#activeDialog = resumed;
+		resumed.presentation?.resume?.();
+	}
+}
+
+/** A presented dialog; `suspend`/`resume` let it step aside without settling. */
+interface DialogPresentation {
+	hide: () => void;
+	/** Another dialog is taking the surface; stop touching it until `resume`. */
+	suspend?: () => void;
+	/** Take the surface back and restore focus. */
+	resume?: () => void;
+}
+
+interface ShownDialog {
+	presentation?: DialogPresentation;
+	yieldSignal?: AbortSignal;
 }

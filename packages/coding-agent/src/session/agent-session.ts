@@ -2421,7 +2421,10 @@ export class AgentSession {
 		if (!manager) return false;
 		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
 		return (
-			manager.getRunningJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
+			// An open question (`ask` job) settles only when the user answers, so it
+			// is not a pending wake: stop hooks, the todo reminder and idle
+			// compaction run now, and the answer starts a new turn when it comes.
+			manager.getRunningWorkJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
 			manager.hasPendingDeliveries(ownerFilter) ||
 			// Delivered but not yet injected: the sink has enqueued the
 			// async-result follow-up on the yield queue, and the manager no

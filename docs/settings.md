@@ -785,7 +785,10 @@ The `cost` segment shows recorded session costs. For an active provider/model wi
 | `plan.enabled`         | boolean | `true`          | Enable plan mode.                                                                                       |
 | `plan.defaultOnStartup` | boolean | `false`         | Start each fresh interactive session in plan mode when plan mode is enabled. Print/JSON (`--print`) mode ignores this and prints a note; use `--plan-yolo` for a headless plan flow. |
 | `ask.timeout`          | number  | `0`             | Seconds before an `ask` prompt times out; `0` = no timeout. |
+| `ask.continueAfter`    | number  | `0`             | Seconds a question may sit unanswered before the agent continues without it; `0` = wait forever. See below. |
 | `ask.notify`           | enum    | `on`            | `on`, `off`.                                                                                            |
+
+With `ask.continueAfter` set (e.g. `300` for five minutes), a question the agent asks stays in the input box as usual. If nobody answers within that time after it appears, the agent continues: it assumes the recommended option (or uses its own judgment when the question has none), keeps working on whatever does not depend on the answer, and says what it assumed. The question stays open and answerable. Your answer, whenever you give it, is delivered to the agent as a closed question with the assumption it worked on, and the agent corrects that work if the answer differs; dismissing it with Esc tells the agent to keep its assumption. An open question does not keep the session busy: the turn ends normally, and the answer starts a new turn. If another prompt arrives while a question is open (a second question, a permission check), it goes first and the open question comes back after it, with any partly typed answer intact. Plan mode always waits. `ask.continueAfter` takes the place of `ask.timeout` when both are set, since the question must stay answerable. The open question lives in the running process: after a restart it is gone, and the agent keeps its assumption.
 
 ### Providers and services
 

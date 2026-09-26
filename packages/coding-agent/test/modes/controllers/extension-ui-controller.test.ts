@@ -5,6 +5,7 @@ import type { ExtensionAskDialogQuestion, ExtensionUIContext } from "../../../sr
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
+import { HookSelectorComponent } from "@oh-my-pi/pi-tui/overlays/hook-selector";
 import { ExtensionUiController } from "../../../src/modes/controllers/extension-ui-controller";
 import { InputController } from "../../../src/modes/controllers/input-controller";
 import { getEditorTheme, getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
@@ -243,6 +244,106 @@ describe("ExtensionUiController Ask dialog input", () => {
 			results: [{ id: "answer", selectedOptions: [], customInput: "typed after failure" }],
 		});
 		expect(harness.editor.getText()).toBe("");
+	});
+});
+
+describe("ExtensionUiController questions the turn moved on from", () => {
+	const questions: ExtensionAskDialogQuestion[] = [
+		{ id: "db", question: "Which database?", options: [{ label: "SQLite" }, { label: "Postgres" }] },
+	];
+
+	it("holds the input box until something else needs it, then steps aside and comes back unchanged", async () => {
+		const harness = makeHarness();
+		const ui = await harness.init();
+		const yielded = new AbortController();
+		const ask = harness.controller.showAskDialog(questions, { yieldSignal: yielded.signal });
+		const askDialog = harness.getFocused()!;
+		expect(askDialog).toBeInstanceOf(AskDialogComponent);
+		harness.handleInput("\x1b[B");
+
+		// Still being waited on: a later prompt queues behind the question.
+		const early = ui.select("Allow once?", ["Yes", "No"]);
+		expect(harness.getFocused()).toBe(askDialog);
+
+		// The turn moved on: the waiting prompt goes first.
+		yielded.abort();
+		expect(harness.getFocused()).toBeInstanceOf(HookSelectorComponent);
+		harness.handleInput("\r");
+		expect(await early).toBe("Yes");
+
+		// With nothing left waiting, the same question comes back with its cursor kept.
+		expect(harness.getFocused()).toBe(askDialog);
+		expect(harness.editorContainer.children).toEqual([askDialog]);
+		const late = ui.select("Allow again?", ["Yes", "No"]);
+		expect(harness.getFocused()).toBeInstanceOf(HookSelectorComponent);
+		harness.handleInput("\x1b[B");
+		harness.handleInput("\r");
+		expect(await late).toBe("No");
+
+		expect(harness.getFocused()).toBe(askDialog);
+		harness.handleInput("\r");
+		expect(await ask).toMatchObject({ kind: "submit", results: [{ id: "db", selectedOptions: ["Postgres"] }] });
+		expect(harness.getFocused()).toBe(harness.editor);
+	});
+
+	it("brings back a half-typed custom answer after stepping aside", async () => {
+		const harness = makeHarness();
+		const ui = await harness.init();
+		const yielded = new AbortController();
+		const ask = harness.controller.showAskDialog(questions, { yieldSignal: yielded.signal });
+		harness.handleInput("\x1b[B");
+		harness.handleInput("\x1b[B");
+		harness.handleInput("\r");
+		const prompt = harness.getPrompt();
+		harness.handleInput("Mongo");
+		yielded.abort();
+
+		const permission = ui.select("Allow?", ["Yes", "No"]);
+		expect(harness.getFocused()).toBeInstanceOf(HookSelectorComponent);
+		harness.handleInput("\r");
+		expect(await permission).toBe("Yes");
+
+		expect(harness.getFocused()).toBe(prompt);
+		harness.handleInput("DB");
+		harness.handleInput("\r");
+		await Promise.resolve();
+		harness.handleInput("\r");
+		expect(await ask).toMatchObject({ kind: "submit", results: [{ id: "db", customInput: "MongoDB" }] });
+	});
+
+	it("closes a stepped-aside question without disturbing the prompt on screen", async () => {
+		const harness = makeHarness();
+		const ui = await harness.init();
+		const yielded = new AbortController();
+		const closed = new AbortController();
+		const ask = harness.controller.showAskDialog(questions, { signal: closed.signal, yieldSignal: yielded.signal });
+		yielded.abort();
+		const permission = ui.select("Allow?", ["Yes", "No"]);
+		const selector = harness.getFocused()!;
+		expect(selector).toBeInstanceOf(HookSelectorComponent);
+
+		closed.abort();
+		expect(await ask).toBeUndefined();
+		expect(harness.getFocused()).toBe(selector);
+		expect(harness.editorContainer.children).toContain(selector);
+
+		harness.handleInput("\r");
+		expect(await permission).toBe("Yes");
+		expect(harness.getFocused()).toBe(harness.editor);
+	});
+
+	it("reports the question as shown only once it is on screen", async () => {
+		const harness = makeHarness();
+		const ui = await harness.init();
+		const permission = ui.select("Allow?", ["Yes", "No"]);
+		const onPresented = vi.fn();
+		const ask = harness.controller.showAskDialog(questions, { onPresented });
+		expect(onPresented).not.toHaveBeenCalled();
+		harness.handleInput("\r");
+		await permission;
+		expect(onPresented).toHaveBeenCalledTimes(1);
+		harness.handleInput("\r");
+		await ask;
 	});
 });
 

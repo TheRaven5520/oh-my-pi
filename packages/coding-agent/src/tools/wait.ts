@@ -70,7 +70,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		for (;;) {
 			const queued = takeQueuedMessage(messaging);
 			if (queued && messaging) return messageResult(messaging.senderId, queued);
-			const jobs = manager?.getRunningJobs(ownerFilter) ?? [];
+			// Open questions settle only when the user answers; never block on them.
+			const jobs = manager?.getRunningWorkJobs(ownerFilter) ?? [];
 			// An accepted completion whose delivery has not reached the transcript
 			// yet (queued, parked on the yield queue, or skipped while an earlier
 			// wait watched it) is exactly what this wait is for: return it now

@@ -2336,6 +2336,25 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"ask.continueAfter": {
+		type: "number",
+		default: 0,
+		ui: {
+			tab: "interaction",
+			group: "Notifications",
+			label: "Continue Without Answer",
+			description:
+				"After this many seconds without an answer, the agent continues on the recommended option (or its own judgment) while the question stays open; a later answer is delivered to it. 0 waits forever. Plan mode always waits. Overrides Ask Timeout.",
+			options: [
+				{ value: "0", label: "Never" },
+				{ value: "60", label: "1 minute" },
+				{ value: "120", label: "2 minutes" },
+				{ value: "300", label: "5 minutes" },
+				{ value: "600", label: "10 minutes" },
+			],
+		},
+	},
+
 	"ask.notify": {
 		type: "enum",
 		values: ["on", "off"] as const,
