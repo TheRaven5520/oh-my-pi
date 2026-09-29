@@ -502,6 +502,56 @@ describe("subagent dock lines", () => {
 		expect(out).toContain("SchemaMigrator · Migrating the users table");
 	});
 
+	it("ends a running row with Claude Code-style stats whose time ticks from the run start", () => {
+		const startedAtMs = 1_000_000;
+		const session = makeSession({
+			id: "Indexer",
+			description: "Indexing the repo",
+			progress: makeProgress({ id: "Indexer", toolCount: 12, tokens: 34_512, durationMs: 5_000, startedAtMs }),
+		});
+		const at = (elapsedMs: number) =>
+			Bun.stripANSI(
+				renderSubagentDockLines([session], 120, undefined, false, { now: startedAtMs + elapsedMs }).join("\n"),
+			);
+		expect(at(83_400)).toContain("Indexer · Indexing the repo · 12 tool uses · 34.5k tokens · 1m 23s");
+		// Between progress snapshots the time keeps counting from the start, not the last snapshot.
+		expect(at(84_600)).toContain("· 1m 24s");
+	});
+
+	it("shows a finished row's recorded duration, and nothing it does not know yet", () => {
+		const out = renderDock([
+			makeSession({ id: "Fresh", description: "just spawned", progress: makeProgress({ id: "Fresh" }) }),
+			makeSession({
+				id: "Waiting",
+				status: "completed",
+				description: "fork",
+				progress: makeProgress({ id: "fork-1", toolCount: 1, tokens: 950, durationMs: 45_000, startedAtMs: 1 }),
+			}),
+		]);
+		expect(out).toMatch(/Fresh · just spawned\s*$/m);
+		expect(out).not.toContain("0 tool uses");
+	});
+
+	it("keeps the stats and drops the description on a narrow terminal", () => {
+		const session = makeSession({
+			id: "Worker",
+			description: "A very long description of the work this agent is doing right now",
+			progress: makeProgress({ id: "Worker", toolCount: 3, tokens: 12_000, startedAtMs: 0 }),
+		});
+		const out = Bun.stripANSI(renderSubagentDockLines([session], 50, undefined, false, { now: 45_000 }).join("\n"));
+		expect(out).toContain("Worker · 3 tool uses · 12k tokens · 45s");
+		for (const line of out.split("\n")) expect(line.length).toBeLessThanOrEqual(50);
+	});
+
+	it("uses the caller's stats for rows without progress", () => {
+		const out = Bun.stripANSI(
+			renderSubagentDockLines([makeSession({ id: "Plain", description: "no progress" })], 120, undefined, false, {
+				statsFor: () => ({ tools: 1, tokens: 2_000_000 }),
+			}).join("\n"),
+		);
+		expect(out).toContain("Plain · no progress · 1 tool use · 2m tokens");
+	});
+
 	it("shows only active subagents and hides the dock once none are working", () => {
 		const out = renderDock([
 			makeSession({ id: "Running", description: "live work" }),
@@ -670,7 +720,9 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		}
 
 		await Promise.resolve();
-		vi.runAllTimers();
+		// Only the coalesced observer flush: the dock's one-second tick keeps
+		// rescheduling while agents run, so running every timer would never end.
+		vi.advanceTimersByTime(100);
 		await Promise.resolve();
 
 		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
@@ -680,6 +732,51 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(hud).toContain("2 more — expand");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("ticks a running agent's time every second, and stops once no agent is running", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		const requestComponentRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+		const startedAtMs = Date.now();
+		const payload = makeProgressPayload("TickingAgent", 0, "Counting", true);
+		payload.progress = { ...payload.progress, toolCount: 2, tokens: 1_500, startedAtMs };
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, payload);
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		const dock = () => Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(dock()).toContain("TickingAgent · Counting · 2 tool uses · 1.5k tokens · 0s");
+
+		requestComponentRender.mockClear();
+		vi.advanceTimersByTime(2_000);
+		expect(dock()).toContain("· 2s");
+		expect(requestComponentRender).toHaveBeenCalledWith(mode.subagentContainer);
+
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			...makeLifecycle("TickingAgent", 0, "Counting", true),
+			status: "completed",
+		});
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		requestComponentRender.mockClear();
+		vi.advanceTimersByTime(5_000);
+		expect(requestComponentRender).not.toHaveBeenCalledWith(mode.subagentContainer);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("does not tick for a fork waiting between turns", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			...makeLifecycle("Fork-waiting1", 0, "side chat", true),
+			status: "completed",
+		});
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("Fork-waiting1");
+		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	it("applies the setting over a clicked expand override", async () => {

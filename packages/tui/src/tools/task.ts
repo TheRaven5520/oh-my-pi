@@ -1861,6 +1861,8 @@ export interface AgentProgress {
 	/** Cumulative billing cost in USD, accumulated incrementally from message_end events. */
 	cost: number;
 	durationMs: number;
+	/** Epoch ms the run started; lets a live view tick its elapsed time between progress snapshots. */
+	startedAtMs?: number;
 	modelOverride?: string | string[];
 	/** Explicit pre-expansion model role alias selected for this run. */
 	modelRole?: string;

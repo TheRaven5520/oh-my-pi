@@ -72,6 +72,8 @@ Contexts without a local focusable session use the Hub's full-screen transcript 
 
 While subagents run, a pinned `Subagents` block above the editor lists every live agent — sync task calls and detached background spawns alike.
 
+Each row ends with the agent's stats in Claude Code's format, `12 tool uses · 34.5k tokens · 1m 23s`: tool calls, tokens (input, output and cache writes, as the Hub counts them) and the time since it started, counting up every second while it runs. On a narrow terminal the description is dropped before the stats. `/fork` chats show tool uses and tokens only, since they wait between turns.
+
 The list stays short: it shows a few rows plus an expander (`display.pinnedAgents: collapsed`, the default), lists everything (`full`), or hides entirely (`off`). Clicking the expander toggles between the two while `tui.mouse` is on.
 
 Enable `tui.mouse` to click live subagent cards and jump-list rows directly in the main session, without opening the Hub first. A click focuses that card's most recent agent (a jump-list row focuses its exact agent); focusing a parked agent revives it. Hovering a live target lights it up first, so you can see what a click will open.

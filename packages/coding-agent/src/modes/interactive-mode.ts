@@ -116,6 +116,8 @@ import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" wit
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with { type: "text" };
 import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
 import { formatCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
+import { readSessionMetrics } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
+import { type AgentRunStats, formatAgentRunStats } from "@oh-my-pi/pi-tui/overlays/agent-run-stats";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { registerPersistedSubagents } from "../registry/persisted-agents";
 import {
@@ -827,6 +829,8 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 // Mirror Pi's compact below-editor agent panel rather than making users open
 // the full Agent Hub just to inspect or enter a child conversation.
 const SUBAGENT_HUD_VISIBLE_LIMIT = 4;
+/** How often the dock refreshes a running agent's elapsed time. */
+const SUBAGENT_DOCK_TICK_MS = 1_000;
 
 /**
  * Dock rows: subagents still working, plus `/fork` chats until they finish.
@@ -841,16 +845,40 @@ function activeDockChildren(sessions: readonly ObservableSession[]): ObservableS
 }
 
 /**
+ * Stats for a dock row from the executor's progress snapshot: its tool calls,
+ * tokens (input + output + cache writes, as Agent Hub counts them), and the
+ * elapsed time, ticking from the run's start while it works.
+ */
+export function progressRunStats(session: ObservableSession, now: number): AgentRunStats | undefined {
+	const progress = session.progress;
+	if (!progress) return undefined;
+	const running = session.status === "active" && progress.startedAtMs !== undefined;
+	return {
+		tools: progress.toolCount,
+		tokens: progress.tokens,
+		elapsedMs: running ? now - progress.startedAtMs! : progress.durationMs > 0 ? progress.durationMs : undefined,
+	};
+}
+
+/**
  * Pi-style compact agent dock: an explicit `main` root followed by the active
  * child rows, scrolled so the selected row stays visible. Used by
- * `#renderSubagentList` in place of the plain jump list.
+ * `#renderSubagentList` in place of the plain jump list. Each child row ends
+ * with Claude Code-style stats (`12 tool uses · 34.5k tokens · 1m 23s`), which
+ * keep their width while the description truncates.
  */
 export function renderSubagentDockLines(
 	sessions: ObservableSession[],
 	columns: number,
 	selectedId?: string,
 	expanded = false,
+	options: {
+		now?: number;
+		statsFor?: (session: ObservableSession, now: number) => AgentRunStats | undefined;
+	} = {},
 ): string[] {
+	const now = options.now ?? Date.now();
+	const statsFor = options.statsFor ?? progressRunStats;
 	const children = activeDockChildren(sessions);
 	if (children.length === 0) return [];
 	const visibleLimit = expanded ? children.length : SUBAGENT_HUD_VISIBLE_LIMIT;
@@ -884,9 +912,14 @@ export function renderSubagentDockLines(
 				(isForkAgentId(session.id) ? session.label.trim() : undefined);
 			const model = session.progress?.resolvedModel ?? session.progress?.modelRole;
 			const detail = [description, model].filter((value): value is string => Boolean(value)).join(" · ");
-			const budget = Math.max(12, columns - visibleWidth(`${pointer} ${glyph} ${displayId} · `) - 4);
+			const statsText = formatAgentRunStats(statsFor(session, now) ?? {});
+			const stats = statsText ? theme.fg("dim", ` · ${statsText}`) : "";
+			const budget = columns - visibleWidth(`${pointer} ${glyph} ${displayId} · `) - visibleWidth(stats) - 4;
 			const label = theme.fg(selected ? "accent" : "toolTitle", selected ? theme.bold(displayId) : displayId);
-			return `${pointer} ${glyph} ${label}${detail ? theme.fg("dim", ` · ${truncateToWidth(replaceTabs(detail), budget)}`) : ""}`;
+			// Narrow terminals drop the description before the stats.
+			const detailText =
+				detail && budget >= 8 ? theme.fg("dim", ` · ${truncateToWidth(replaceTabs(detail), budget)}`) : "";
+			return truncateToWidth(`${pointer} ${glyph} ${label}${detailText}${stats}`, Math.max(1, columns - 2), "");
 		}),
 		...(belowCount > 0 ? [theme.fg("dim", `… ${belowCount} more — expand`)] : []),
 		...(expanded && children.length > SUBAGENT_HUD_VISIBLE_LIMIT ? [theme.fg("dim", "… show less")] : []),
@@ -1329,6 +1362,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	#observerRegistry: SessionObserverRegistry;
 	/** Click override for the pinned jump-list density; undefined follows `display.pinnedAgents`. */
 	#pinnedHudOverride: boolean | undefined;
+	/** Re-renders the dock each second while a running row's elapsed time is shown. */
+	#subagentDockTickTimer: NodeJS.Timeout | undefined;
+	/** Registry-only dock rows' usage, recomputed only when their transcript grows. */
+	#dockSessionMetrics = new WeakMap<object, { messages: number; stats: AgentRunStats | undefined }>();
 	#eventBus?: EventBus;
 	#subagentEventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
@@ -3769,10 +3806,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#subagentDockSelectedId = undefined;
 		}
 		const expanded = this.#pinnedHudOverride ?? mode === "full";
+		const now = Date.now();
 		const lines =
 			mode === "off"
 				? []
-				: renderSubagentDockLines(sessions, this.ui.terminal.columns, this.#subagentDockSelectedId, expanded);
+				: renderSubagentDockLines(sessions, this.ui.terminal.columns, this.#subagentDockSelectedId, expanded, {
+						now,
+						statsFor: (session, at) => this.#dockRunStats(session, at),
+					});
 		const changed = lines.length !== this.#subagentDockRenderedLineCount;
 		this.#subagentDockRenderedLineCount = lines.length;
 		if (lines.length > 0) {
@@ -3791,7 +3832,50 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 			this.subagentContainer.addChild(new SubagentHudComponent(lines, [], undefined, owners));
 		}
+		// Running rows show a live elapsed time: refresh the dock once a second
+		// while one is on screen (progress events alone arrive irregularly).
+		this.#scheduleDockTick(lines.length > 0 && children.some(child => child.status === "active"));
 		return changed;
+	}
+
+	/**
+	 * Dock row stats: the executor's progress for subagents; for rows known only
+	 * from the agent registry (e.g. `/fork` chats), the live session's own usage
+	 * as Agent Hub counts it. Those rows have no run clock, so no time is shown.
+	 */
+	#dockRunStats(session: ObservableSession, now: number): AgentRunStats | undefined {
+		const fromProgress = progressRunStats(session, now);
+		if (fromProgress) return fromProgress;
+		const live = AgentRegistry.global().get(session.id)?.session;
+		if (!live) return undefined;
+		// Walking the transcript runs on every dock refresh: only redo it when it grew.
+		const messages = live.agent?.state?.messages.length ?? -1;
+		const cached = this.#dockSessionMetrics.get(live);
+		if (cached && cached.messages === messages) return cached.stats;
+		const metrics = readSessionMetrics(live);
+		const stats = metrics ? { tools: metrics.tools, tokens: metrics.tokens } : undefined;
+		this.#dockSessionMetrics.set(live, { messages, stats });
+		return stats;
+	}
+
+	#scheduleDockTick(needed: boolean): void {
+		if (!needed) {
+			this.#cancelDockTick();
+			return;
+		}
+		if (this.#subagentDockTickTimer) return;
+		this.#subagentDockTickTimer = setTimeout(() => {
+			this.#subagentDockTickTimer = undefined;
+			if (this.#renderSubagentList()) this.ui.requestRender();
+			else this.ui.requestComponentRender(this.subagentContainer);
+		}, SUBAGENT_DOCK_TICK_MS);
+		this.#subagentDockTickTimer.unref?.();
+	}
+
+	#cancelDockTick(): void {
+		if (!this.#subagentDockTickTimer) return;
+		clearTimeout(this.#subagentDockTickTimer);
+		this.#subagentDockTickTimer = undefined;
 	}
 
 	#vibeParentSession(): VibeParentSession {
@@ -5986,6 +6070,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#clearJudgmentBatchProgress();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
+		this.#cancelDockTick();
 		this.#cancelGoalContinuation();
 		if (this.#sttController) {
 			this.#sttController.dispose();

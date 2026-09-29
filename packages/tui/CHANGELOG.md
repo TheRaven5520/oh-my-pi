@@ -4,6 +4,7 @@
 
 ### Added
 
+- `overlays/agent-run-stats` formats agent stats Claude Code-style (`formatAgentRunStats`); `AgentProgress.startedAtMs` records a run's start so live views can tick its elapsed time; `readSessionMetrics` is exported from the Agent Hub projection.
 - The Ask card shows a question the agent continued past ("no answer after …, continuing", with the assumption), and its later answer appears as a "Question closed" row.
 - `render/clock` exports `clockDateTimeFormat` (an `Intl.DateTimeFormat` pinned to the configured zone), `clockParts`, `formatClockDate` and `clockUtcOffset`; the status-line `time` segment, Agent Hub, `/btw` history, session selector, git sidebar and `chrome/local-date` helpers use them.
 - `TranscriptContainer.stampBlockTime`/`stampBlockEnd` label transcript blocks with right-aligned times (`chatTranscriptDisplayPreferences.showTimestamps`). Labels only replace trailing padding (or the padding inside a full-width card's right border). Append-only blocks keep published rows byte-identical: a reply's duration lands on its last row only when that row was never emitted. `render/clock` formats times in a configurable IANA zone.
