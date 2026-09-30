@@ -681,6 +681,7 @@ function renderAgentProgress(
 			id: formatTaskId(progress.id),
 			width: maxWidth,
 			model: progress.resolvedModelIdentity ?? progress.resolvedModel,
+			modelIsFallback: progress.resolvedModelIsFallback === true,
 			thinkingLevel: progress.resolvedThinkingLevel,
 			advisor: progress.advisor,
 			spinnerFrame,
@@ -1010,6 +1011,7 @@ function renderAgentResult(
 					FEED_MODEL_BADGE_WIDTH,
 					Math.max(0, maxWidth - visibleWidth(`${indent}${icon} ${displayId}${badges}`) - 1),
 				),
+				result.resolvedModelIsFallback === true,
 			)
 		: "";
 	const modelLead = modelBadge ? `${modelBadge} ` : "";

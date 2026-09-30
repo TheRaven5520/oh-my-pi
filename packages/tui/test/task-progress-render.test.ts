@@ -96,10 +96,10 @@ describe("task progress rendering", () => {
 				"BadgeWorker",
 			),
 		);
-		expect(row).toContain(`openai/gpt-5 ${theme.icon.advisor} BadgeWorker: Inspect rendering`);
+		expect(row).toContain(`GPT-5 (high) ${theme.icon.advisor} BadgeWorker: Inspect rendering`);
 		expect(row).not.toContain(":high");
-		expect(row).toContain(`${theme.thinking.high.split(" ")[0]} openai/gpt-5`);
-		expect(row.indexOf(theme.status.done)).toBeLessThan(row.indexOf("openai/gpt-5"));
+		expect(row).not.toContain("openai/");
+		expect(row.indexOf(theme.status.done)).toBeLessThan(row.indexOf("GPT-5 (high)"));
 		expect(row).toContain(`${theme.format.bracketLeft}scout${theme.format.bracketRight}`);
 		expect(row.indexOf("3 req")).toBeGreaterThan(row.indexOf("BadgeWorker"));
 		expect(row).toContain("$0.25");
@@ -138,11 +138,11 @@ describe("task progress rendering", () => {
 				),
 			);
 		const withoutAdvisor = renderRow(false);
-		expect(withoutAdvisor).toContain("openai/gpt-5 SettledWorker: Inspect rendering");
+		expect(withoutAdvisor).toContain("GPT-5 (high) SettledWorker: Inspect rendering");
 		expect(withoutAdvisor).not.toContain(theme.icon.advisor);
 		expect(withoutAdvisor).not.toContain(":high");
 		expect(withoutAdvisor.indexOf("3 req")).toBeGreaterThan(withoutAdvisor.indexOf("SettledWorker"));
-		expect(renderRow(true)).toContain(`openai/gpt-5 ${theme.icon.advisor} SettledWorker`);
+		expect(renderRow(true)).toContain(`GPT-5 (high) ${theme.icon.advisor} SettledWorker`);
 	});
 
 	it("keeps the name and status on the first row at 40 columns across resizes", async () => {
@@ -192,12 +192,11 @@ describe("task progress rendering", () => {
 				}
 				expect(plainRows.join("\n")).toContain(metadata.description);
 				if (width === 160) {
-					const thinkingGlyph = theme.thinking.high.split(" ")[0];
-					expect(firstStatusRow).toContain("openai/");
-					expect(firstStatusRow).toContain(":high");
-					expect(firstStatusRow).toContain(thinkingGlyph);
+					// Friendly badge: provider dropped, the id's literal `:high` kept, level in parens.
+					expect(firstStatusRow).not.toContain("openai/");
+					expect(firstStatusRow).toContain("model:high (high)");
 					const badge = firstStatusRow!
-						.slice(firstStatusRow!.indexOf(thinkingGlyph), firstStatusRow!.indexOf(metadata.id))
+						.slice(firstStatusRow!.indexOf("custom-"), firstStatusRow!.indexOf(metadata.id))
 						.trimEnd();
 					expect(visibleWidth(badge)).toBeLessThanOrEqual(FEED_MODEL_BADGE_WIDTH);
 					expect(firstStatusRow).toContain(theme.icon.advisor);
@@ -232,7 +231,7 @@ describe("task progress rendering", () => {
 				),
 			);
 			expect(row).toContain(`${theme.status.done} HiddenBadge`);
-			expect(row).not.toContain("openai/gpt-5");
+			expect(row).not.toContain("GPT-5");
 			expect(row).not.toContain(theme.icon.advisor);
 		}
 	});
@@ -285,7 +284,7 @@ describe("task progress rendering", () => {
 		}
 	});
 
-	it("preserves old snapshot selectors without inventing thinking glyphs", async () => {
+	it("preserves old snapshot selectors without inventing thinking levels", async () => {
 		setFeedModelBadgeEnabled(true);
 		const theme = (await getThemeByName("dark"))!;
 		const metadata = { id: "LegacyWorker", resolvedModel: "custom/model:high" };
@@ -304,8 +303,8 @@ describe("task progress rendering", () => {
 					"LegacyWorker",
 				),
 			);
-			expect(row).toContain(`${theme.status.done} custom/model:high LegacyWorker`);
-			expect(row).not.toContain(theme.thinking.high.split(" ")[0]);
+			expect(row).toContain(`${theme.status.done} model:high LegacyWorker`);
+			expect(row).not.toContain("(high)");
 		}
 	});
 

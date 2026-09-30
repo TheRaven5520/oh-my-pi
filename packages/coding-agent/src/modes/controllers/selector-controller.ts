@@ -80,6 +80,7 @@ import { type AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
 import { sanitizeDisplayWarnings, shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import { ToolAbortError } from "../../tools/tool-errors";
 import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
+import { formatModelName, shownThinkingLevel, splitModelSelector } from "@oh-my-pi/pi-tui/render/model-names";
 import { captureBrowserSession } from "../../utils/browser-session";
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
@@ -176,6 +177,13 @@ interface ProviderToggleModules {
 function loadProviderToggles(): ProviderToggleModules {
 	const discovery = require("../../discovery");
 	return { disableProvider: discovery.disableProvider, enableProvider: discovery.enableProvider };
+}
+
+/** A model chosen in the picker, named as the picker names it (`Opus 5.5 via Sprilicred (high)`). */
+function pickedModelLabel(model: { name?: string; id: string }, selector: string | undefined): string {
+	const level = shownThinkingLevel(selector ? splitModelSelector(selector).level : undefined);
+	const name = formatModelName(model.name || model.id, { keepVia: true });
+	return level ? `${name} (${level})` : name;
 }
 
 export class SelectorController {
@@ -1150,7 +1158,7 @@ export class SelectorController {
 								this.ctx.statusLine.invalidate();
 								this.ctx.updateEditorBorderColor();
 							}
-							this.ctx.showStatus(`${defaultStatusLabel} model: ${selector ?? model.id}`);
+							this.ctx.showStatus(`${defaultStatusLabel} model: ${pickedModelLabel(model, selector)}`);
 						} else {
 							// Other roles (smol, slow, custom): update settings, not the current model.
 							const modelRoleValue = formatModelSelectorValue(selectorValue, thinkingLevel);
@@ -1161,7 +1169,7 @@ export class SelectorController {
 							}
 							const roleInfo = getRoleInfo(role, settings);
 							this.ctx.showStatus(
-								`${scopeLabel}${roleInfo?.tag ?? roleInfo?.name ?? role} model: ${selector ?? model.id}`,
+								`${scopeLabel}${roleInfo?.tag ?? roleInfo?.name ?? role} model: ${pickedModelLabel(model, selector)}`,
 							);
 						}
 						return true;

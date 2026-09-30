@@ -697,8 +697,9 @@ describe("Composer prepaint", () => {
 				.getViewport()
 				.map(r => Bun.stripANSI(r))
 				.join("\n");
-			const modelName = testSession.session.model?.name ?? "";
-			expect(output).toContain(modelName);
+			// The authoritative session model (`Claude Sonnet 4.5`), named the friendly way.
+			expect(testSession.session.model?.id).toBe("claude-sonnet-4-5");
+			expect(output).toContain("Sonnet 4.5");
 			realTopBorder.mockReturnValue({ content: "real status bar *18 ?5", width: 21, revision: 2 });
 			mode.ui.requestRender();
 			await terminal.waitForRender(() =>

@@ -51,6 +51,8 @@ export interface AgentTreeRowOptions {
 	id: string;
 	width: number;
 	model?: string;
+	/** The model is a retry fallback; its provider stays visible. */
+	modelIsFallback?: boolean;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	advisor?: boolean;
 	spinnerFrame?: number;
@@ -106,6 +108,7 @@ export function renderAgentTreeRow(
 					options.advisor,
 					theme,
 					Math.min(FEED_MODEL_BADGE_WIDTH, task ? Math.max(0, modelWidth) : modelWidth),
+					options.modelIsFallback === true,
 				)
 			: "";
 	const modelLead = model ? `${model} ` : "";

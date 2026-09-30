@@ -3,11 +3,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { EvalStatusEvent, EvalToolDetails } from "@oh-my-pi/pi-tui/tools/eval";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
 import { evalToolRenderer } from "@oh-my-pi/pi-tui/tools/eval";
-import {
-	isFeedModelBadgeEnabled,
-	setFeedModelBadgeEnabled,
-	thinkingLevelGlyph,
-} from "@oh-my-pi/pi-tui/render/render-utils";
+import { isFeedModelBadgeEnabled, setFeedModelBadgeEnabled } from "@oh-my-pi/pi-tui/render/render-utils";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 
 /**
@@ -94,11 +90,10 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		expect(below).toContain("0-Scout");
 		expect(below).toContain("read");
 		expect(below).toContain("Reading config");
-		expect(below).toContain(
-			`${thinkingLevelGlyph(ThinkingLevel.High, theme)} p/model:high ${theme.icon.advisor} 0-Scout`,
-		);
-		expect(below.split("p/model:high").length - 1).toBe(1);
-		expect(below).not.toContain("p/model:high:high");
+		expect(below).toContain(`model:high (high) ${theme.icon.advisor} 0-Scout`);
+		expect(below.split("model:high").length - 1).toBe(1);
+		expect(below).not.toContain("model:high:high");
+		expect(below).not.toContain("p/");
 		// Agent progress is NOT folded into the box's Status section.
 		expect(inside).not.toContain("0-Scout");
 		expect(inside).not.toContain("Reading config");
@@ -130,9 +125,9 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		const below = lines.slice(bottom + 1).join("\n");
 		// Cost stat survives the completed snapshot.
 		expect(below).toContain("$0.06");
-		expect(below).toContain(`${thinkingLevelGlyph(ThinkingLevel.High, theme)} p/model:low 0-Scout`);
-		expect(below.split("p/model:low").length - 1).toBe(1);
-		expect(below).not.toContain("p/model:low:high");
+		expect(below).toContain("model:low (high) 0-Scout");
+		expect(below.split("model:low").length - 1).toBe(1);
+		expect(below).not.toContain("model:low:high");
 		expect(below).not.toContain(theme.icon.advisor);
 	});
 
@@ -161,12 +156,13 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		]);
 		const below = lines.slice(boxBottomIndex(lines) + 1).join("\n");
 
-		expect(below).toContain("p/model:high LegacyModel");
-		expect(below).toContain("p/model:max LegacyResolved");
-		expect(below).toContain("p/model:auto LiteralAuto");
-		expect(below).not.toContain("p/unused");
-		expect(below).not.toContain(thinkingLevelGlyph(ThinkingLevel.High, theme));
-		expect(below).not.toContain(thinkingLevelGlyph(ThinkingLevel.Max, theme));
+		expect(below).toContain("model:high LegacyModel");
+		expect(below).toContain("model:max LegacyResolved");
+		expect(below).toContain("model:auto LiteralAuto");
+		expect(below).not.toContain("unused");
+		expect(below).not.toContain("(high)");
+		expect(below).not.toContain("(max)");
+		expect(below).not.toContain("(auto)");
 	});
 
 	it("hides the entire agent badge when disabled without hiding live tool activity", () => {
@@ -186,8 +182,7 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		const below = lines.slice(boxBottomIndex(lines) + 1).join("\n");
 		expect(below).toContain("0-Scout");
 		expect(below).toContain("Reading config");
-		expect(below).not.toContain("p/model");
-		expect(below).not.toContain(thinkingLevelGlyph(ThinkingLevel.High, theme));
+		expect(below).not.toContain("model:high");
 		expect(below).not.toContain(theme.icon.advisor);
 	});
 
@@ -218,7 +213,7 @@ describe("eval renderer: agent() progress below the cell box", () => {
 		]);
 		const row = lines.slice(boxBottomIndex(lines) + 1).find(line => line.includes("LongWorker"))!;
 		expect(row).toContain("failed");
-		expect(row).not.toContain("provider/model");
+		expect(row).not.toContain("model");
 		expect(visibleWidth(row)).toBeLessThanOrEqual(120);
 	});
 
@@ -290,7 +285,7 @@ describe("eval renderer: agent() progress below the cell box", () => {
 			expect(text).toContain("aborted");
 			expect(text).toContain("read");
 			if (width === 120) {
-				expect(text).toContain(model);
+				expect(text).toContain("GPT-6 Astra");
 				expect(text).toContain("$0.06");
 				expect(text).toContain("$0.09");
 				expect(text).toContain(intent);

@@ -7,7 +7,7 @@ import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/t
 import type { ToolSession } from "../src/tools";
 import { type CoordinationDetails, waitToolRenderer } from "@oh-my-pi/pi-tui/tools/wait";
 import { snapshotJobs } from "../src/async/job-control";
-import { formatDuration, thinkingLevelGlyph } from "@oh-my-pi/pi-tui/render/render-utils";
+import { formatDuration } from "@oh-my-pi/pi-tui/render/render-utils";
 
 const ansiPattern = /\x1b\[[0-9;]*m/g;
 const hyperlinkPattern = /\x1b\]8;[^\x1b\x07]*(?:\x07|\x1b\\)/g;
@@ -46,7 +46,7 @@ describe("hub jobs task model badges", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("keeps a literal thinking suffix in a completed task's identity with a separate thinking glyph", () => {
+	it("keeps a literal thinking suffix in a completed task's identity with a separate thinking level", () => {
 		settings.override("task.showResolvedModelBadge", true);
 		const identity = "p/model:high";
 		const text = renderJobText({
@@ -65,9 +65,10 @@ describe("hub jobs task model badges", () => {
 			],
 		});
 
-		expect(text).toContain(`${thinkingLevelGlyph(ThinkingLevel.High, uiTheme)} ${identity} Architect`);
-		expect(text.split(identity).length - 1).toBe(1);
-		expect(text).not.toContain(`${identity}:high`);
+		expect(text).toContain("model:high (high) Architect");
+		expect(text.split("model:high").length - 1).toBe(1);
+		expect(text).not.toContain("model:high:high");
+		expect(text).not.toContain(identity);
 		expect(text).not.toContain(uiTheme.icon.advisor);
 	});
 
@@ -96,7 +97,7 @@ describe("hub jobs task model badges", () => {
 		const row = text.split("\n")[1]!;
 
 		expect(row).toContain(`${uiTheme.icon.advisor} Architect`);
-		expect(row).toContain(thinkingLevelGlyph(ThinkingLevel.High, uiTheme));
+		expect(row).toContain("tail (high)");
 		expect(row).toContain("…");
 		expect(row).toEndWith("1.2s");
 		for (const line of text.split("\n")) expect(visibleWidth(line)).toBeLessThanOrEqual(60);
@@ -165,10 +166,10 @@ describe("hub jobs task model badges", () => {
 		const session = { asyncJobManager: manager } as unknown as ToolSession;
 		try {
 			const text = renderJobText({ jobs: snapshotJobs(session, manager.getAllJobs()) }, false, true);
-			const prefix = `${thinkingLevelGlyph(ThinkingLevel.Max, uiTheme)} ${identity} ${uiTheme.icon.advisor} Architect`;
+			const prefix = `runtime:max (max) ${uiTheme.icon.advisor} Architect`;
 			expect(text).toContain(prefix);
-			expect(text.split(identity).length - 1).toBe(1);
-			expect(text).not.toContain(`${identity}:max`);
+			expect(text.split("runtime:max").length - 1).toBe(1);
+			expect(text).not.toContain("runtime:max:max");
 
 			finish.resolve("finished architecture review");
 			await manager.getJob(id)?.promise;
@@ -180,7 +181,7 @@ describe("hub jobs task model badges", () => {
 		}
 	});
 
-	it("preserves a legacy selector without inferring a thinking glyph", () => {
+	it("preserves a legacy selector without inferring a thinking level", () => {
 		settings.override("task.showResolvedModelBadge", true);
 		const text = renderJobText({
 			jobs: [
@@ -195,8 +196,8 @@ describe("hub jobs task model badges", () => {
 			],
 		});
 
-		expect(text).toContain("p/model:high Legacy");
-		expect(text).not.toContain(thinkingLevelGlyph(ThinkingLevel.High, uiTheme));
+		expect(text).toContain("model:high Legacy");
+		expect(text).not.toContain("(high)");
 	});
 
 	it("hides a task job's resolved model selector when the badge setting is disabled", () => {
@@ -218,8 +219,7 @@ describe("hub jobs task model badges", () => {
 		});
 
 		expect(text).toContain("Architect");
-		expect(text).not.toContain("p/model");
-		expect(text).not.toContain(thinkingLevelGlyph(ThinkingLevel.High, uiTheme));
+		expect(text).not.toContain("model:high");
 		expect(text).not.toContain(uiTheme.icon.advisor);
 	});
 
@@ -243,7 +243,7 @@ describe("hub jobs task model badges", () => {
 
 		expect(text).toContain("shell-1");
 		expect(text).toContain("bash");
-		expect(text).not.toContain("p/model");
+		expect(text).not.toContain("model:high");
 		expect(text).not.toContain(uiTheme.icon.advisor);
 	});
 
@@ -265,7 +265,7 @@ describe("hub jobs task model badges", () => {
 			});
 			expect(text).toContain("ColdStart");
 			expect(text).toContain("task");
-			expect(text).not.toContain("provider/model");
+			expect(text).not.toContain("model");
 			expect(text).not.toContain(uiTheme.icon.advisor);
 		} finally {
 			await Settings.init({ inMemory: true });

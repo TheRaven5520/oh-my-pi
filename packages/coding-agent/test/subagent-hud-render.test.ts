@@ -110,7 +110,7 @@ describe("subagent HUD lines", () => {
 			resetSettingsForTest();
 		});
 
-		it("places thinking, model and optional advisor before the detached agent name", () => {
+		it("places the model, its level and optional advisor before the detached agent name", () => {
 			const session = makeSession({
 				id: "BadgeWorker",
 				agent: "scout",
@@ -124,7 +124,8 @@ describe("subagent HUD lines", () => {
 				}),
 			});
 			const out = render([session]);
-			expect(out).toContain(`${theme.thinking.high.split(" ")[0]} openai/gpt-5 ${theme.icon.advisor} BadgeWorker`);
+			expect(out).toContain(`GPT-5 (high) ${theme.icon.advisor} BadgeWorker`);
+			expect(out).not.toContain("openai/");
 			expect(out).toContain(`BadgeWorker ${theme.format.bracketLeft}scout${theme.format.bracketRight}`);
 			expect(out).toContain(": Inspect rendering");
 
@@ -136,7 +137,7 @@ describe("subagent HUD lines", () => {
 				advisor: false,
 			});
 			const withoutAdvisor = render([session]);
-			expect(withoutAdvisor).toContain("openai/gpt-5 BadgeWorker");
+			expect(withoutAdvisor).toContain("GPT-5 (high) BadgeWorker");
 			expect(withoutAdvisor).not.toContain(theme.icon.advisor);
 		});
 
@@ -157,7 +158,7 @@ describe("subagent HUD lines", () => {
 			Settings.instance.override("task.showResolvedModelBadge", false);
 			const disabled = render(sessions);
 			expect(disabled).toContain(`${theme.status.done} HiddenBadge: Inspect rendering`);
-			expect(disabled).not.toContain("openai/gpt-5");
+			expect(disabled).not.toContain("GPT-5");
 			expect(disabled).not.toContain(theme.icon.advisor);
 
 			resetSettingsForTest();
@@ -185,7 +186,7 @@ describe("subagent HUD lines", () => {
 			const lines = render(sessions, 60).split("\n");
 			for (const id of ["Description", "TaskPreview"]) {
 				const row = lines.find(line => line.includes(id))!;
-				expect(row).toContain(`variant-z ${theme.icon.advisor} ${id}`);
+				expect(row).toContain(`variant-z (high) ${theme.icon.advisor} ${id}`);
 				expect(row.indexOf("variant-z")).toBeLessThan(row.indexOf(id));
 				expect(row).not.toContain(":high");
 			}
@@ -229,15 +230,15 @@ describe("subagent HUD lines", () => {
 			}
 		});
 
-		it("preserves a legacy selector without inventing a thinking glyph", () => {
+		it("preserves a legacy selector without inventing a thinking level", () => {
 			const out = render([
 				makeSession({
 					id: "LegacyWorker",
 					progress: makeProgress({ id: "LegacyWorker", resolvedModel: "custom/model:high" }),
 				}),
 			]);
-			expect(out).toContain(`${theme.status.done} custom/model:high LegacyWorker`);
-			expect(out).not.toContain(theme.thinking.high.split(" ")[0]);
+			expect(out).toContain(`${theme.status.done} model:high LegacyWorker`);
+			expect(out).not.toContain("(high)");
 		});
 	});
 

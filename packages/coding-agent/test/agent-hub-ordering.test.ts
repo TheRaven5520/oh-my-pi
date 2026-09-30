@@ -520,8 +520,8 @@ describe("Agent hub row ordering", () => {
 
 		try {
 			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(rendered).toContain("claude-sonnet-5");
-			expect(rendered).not.toContain("gpt-5.6-sol");
+			expect(rendered).toContain("Sonnet 5");
+			expect(rendered).not.toContain("GPT-5.6 Sol");
 			expect(rendered).not.toContain("fallback →");
 		} finally {
 			hub.dispose();
@@ -624,13 +624,11 @@ describe("Agent hub row ordering", () => {
 
 		try {
 			const inherited = renderedRosterEntry(hub, "InheritedLevel", 140);
-			expect(inherited).toContain("gpt-5.4");
-			expect(inherited).toContain(theme.thinking.high);
+			expect(inherited).toContain("GPT-5.4 (high)");
 
 			const explicit = renderedRosterEntry(hub, "ExplicitLevel", 140);
-			expect(explicit).toContain("gpt-5.4");
-			expect(explicit).toContain(theme.thinking.low);
-			expect(explicit).not.toContain(theme.thinking.high);
+			expect(explicit).toContain("GPT-5.4 (low)");
+			expect(explicit).not.toContain("(high)");
 		} finally {
 			hub.dispose();
 		}
@@ -948,11 +946,11 @@ describe("Agent hub row ordering", () => {
 		try {
 			const roleBlock = renderedRosterEntry(hub, "RoleAgent", 160);
 			expect(roleBlock).toContain("Quick");
-			expect(roleBlock).toContain("gpt-4o");
-			expect(roleBlock.indexOf("Quick")).toBeLessThan(roleBlock.indexOf("gpt-4o"));
+			expect(roleBlock).toContain("GPT-4o");
+			expect(roleBlock.indexOf("Quick")).toBeLessThan(roleBlock.indexOf("GPT-4o"));
 
 			const explicitBlock = renderedRosterEntry(hub, "ExplicitAgent", 160);
-			expect(explicitBlock).toContain("gpt-4o");
+			expect(explicitBlock).toContain("GPT-4o");
 			expect(explicitBlock).not.toContain("Quick");
 		} finally {
 			hub.dispose();

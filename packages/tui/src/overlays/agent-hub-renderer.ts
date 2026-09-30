@@ -7,6 +7,7 @@ import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import type { ThemeColor } from "../theme/theme";
 import { type AgentRecordLike, MAIN_AGENT_ID } from "./agent-hub-types";
 import { parseThinkingLevel } from "../thinking";
+import { formatModelName } from "../render/model-names";
 import { TRUNCATE_LENGTHS, truncateToWidth } from "../render/render-utils";
 import { sanitizeDisplaySingleLine } from "./extensions/display-text";
 import type { ObservableSession } from "./session-observer-registry";
@@ -64,12 +65,16 @@ export function statusText(status: AgentRecordLike["status"], text: string): str
 	}
 }
 
-/** Model id + thinking level (`sonnet-4-6 ◒ high`), level colored per theme. */
-function formatModelBadge(modelId: string, level: ThinkingLevel | undefined): string {
-	const model = theme.fg("muted", sanitizeDisplaySingleLine(modelId));
+/**
+ * Friendly model name + thinking level (`Sonnet 4.6 (high)`), level colored per
+ * theme. A fallback row passes its provider and keeps the exact `provider/id`:
+ * which account served is the point of that row.
+ */
+function formatModelBadge(modelId: string, level: ThinkingLevel | undefined, provider?: string): string {
+	const clean = sanitizeDisplaySingleLine(modelId);
+	const model = theme.fg("muted", provider ? `${provider}/${clean}` : formatModelName(clean));
 	if (!level || level === ThinkingLevel.Off || level === ThinkingLevel.Inherit) return model;
-	const display = theme.thinking[level] ?? level;
-	return `${model} ${theme.getThinkingBorderColor(level)(display)}`;
+	return `${model} ${theme.getThinkingBorderColor(level)(`(${level})`)}`;
 }
 
 /** Host-resolved model-role label and color. */
@@ -92,8 +97,9 @@ function formatResolvedModelBadge(resolved: string, preserveProvider = false, fa
 	const colon = cleanResolved.lastIndexOf(":");
 	const explicitLevel = colon >= 0 ? parseThinkingLevel(cleanResolved.slice(colon + 1)) : undefined;
 	const selector = explicitLevel !== undefined ? cleanResolved.slice(0, colon) : cleanResolved;
-	const label = preserveProvider ? selector : selector.slice(selector.indexOf("/") + 1);
-	return formatModelBadge(label, explicitLevel ?? fallbackLevel);
+	const slash = selector.indexOf("/");
+	const provider = preserveProvider && slash > 0 ? selector.slice(0, slash) : undefined;
+	return formatModelBadge(selector.slice(slash + 1), explicitLevel ?? fallbackLevel, provider);
 }
 
 /**

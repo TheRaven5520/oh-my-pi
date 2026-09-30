@@ -36,6 +36,16 @@ function makeModel(provider: string, id: string, metadata?: NativeMetadata): Mod
 }
 
 /** Browser preloaded with `models`, MRU-sorted like the hub does on sync. */
+/**
+ * The list row for `provider/id`, which reads `<id> · <provider>`; matched as a
+ * whole token so `zero` never finds `negative-zero`.
+ */
+function rowFor(rows: string[], provider: string, id: string): string | undefined {
+	const label = `${id} · ${provider}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const pattern = new RegExp(`(?:^|\\s)${label}(?:\\s|$)`);
+	return rows.find(line => pattern.test(line));
+}
+
 function makeBrowser(
 	models: Model[],
 	mruOrder: string[],
@@ -375,7 +385,7 @@ describe("ModelBrowser native model metadata", () => {
 	});
 
 	test("models without upstream metadata render the plain detail line", () => {
-		expect(renderDetail(makeModel("openai", "gpt-5"))).toContain("gpt-5 · 128k ctx · 1k out · free per M");
+		expect(renderDetail(makeModel("openai", "gpt-5"))).toContain("GPT-5 · 128k ctx · 1k out · free per M");
 	});
 
 	test("price rows preserve free labels and identify invalid rates", () => {
@@ -393,16 +403,16 @@ describe("ModelBrowser native model metadata", () => {
 		invalid.cost.output = Number.POSITIVE_INFINITY;
 		const browser = makeBrowser([zero, missing, partial, negativeZero, invalid], []);
 		const rows = browser.render(100).map(line => Bun.stripANSI(line));
-		expect(rows.find(line => line.includes("fixture/zero"))).toContain("free");
-		expect(rows.find(line => line.includes("fixture/missing"))).toContain("free");
-		expect(rows.find(line => line.includes("fixture/partial"))).toContain("$?/2");
-		expect(rows.find(line => line.includes("fixture/negative-zero"))).toContain("$?/0");
-		expect(rows.find(line => line.includes("fixture/invalid"))).toContain("$?/?");
+		expect(rowFor(rows, "fixture", "zero")).toContain("free");
+		expect(rowFor(rows, "fixture", "missing")).toContain("free");
+		expect(rowFor(rows, "fixture", "partial")).toContain("$?/2");
+		expect(rowFor(rows, "fixture", "negative-zero")).toContain("$?/0");
+		expect(rowFor(rows, "fixture", "invalid")).toContain("$?/?");
 
 		browser.setQuery("free");
 		const freeRows = browser.render(100).map(line => Bun.stripANSI(line));
-		expect(freeRows.some(line => line.includes("fixture/zero"))).toBe(true);
-		expect(freeRows.some(line => line.includes("fixture/negative-zero"))).toBe(false);
+		expect(rowFor(freeRows, "fixture", "zero") !== undefined).toBe(true);
+		expect(rowFor(freeRows, "fixture", "negative-zero") !== undefined).toBe(false);
 	});
 
 	test.each([
@@ -415,7 +425,7 @@ describe("ModelBrowser native model metadata", () => {
 		model.cost.output = output;
 		const browser = makeBrowser([model], []);
 		const rows = browser.render(100).map(line => Bun.stripANSI(line));
-		expect(rows.find(line => line.includes("demo/invalid-rate"))).toContain(expected);
+		expect(rowFor(rows, "demo", "invalid-rate")).toContain(expected);
 		expect(renderDetail(model)).toContain(`${expected} per M`);
 		browser.setQuery("free");
 		expect(browser.visibleCount).toBe(0);
@@ -430,9 +440,9 @@ describe("ModelBrowser native model metadata", () => {
 		tiny.cost.output = 0.001;
 		const browser = makeBrowser([priced, tiny], []);
 		const rows = browser.render(100).map(line => Bun.stripANSI(line));
-		const listRow = rows.find(line => line.includes("fixture/priced"));
+		const listRow = rowFor(rows, "fixture", "priced");
 		const detailRow = rows.find(line => line.includes("$100/0.001 per M"));
-		const tinyRow = rows.find(line => line.includes("fixture/tiny"));
+		const tinyRow = rowFor(rows, "fixture", "tiny");
 		expect(listRow).toContain("$100/0.001");
 		expect(detailRow).toContain("$100/0.001 per M");
 		expect(tinyRow).toContain("$0.0000001/0.001");

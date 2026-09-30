@@ -118,6 +118,7 @@ import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types
 import { formatCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
 import { readSessionMetrics } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
 import { type AgentRunStats, formatAgentRunStats } from "@oh-my-pi/pi-tui/overlays/agent-run-stats";
+import { formatModelLabel, formatModelName } from "@oh-my-pi/pi-tui/render/model-names";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { registerPersistedSubagents } from "../registry/persisted-agents";
 import {
@@ -777,6 +778,7 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 							session.progress?.advisor,
 							theme,
 							Math.min(FEED_MODEL_BADGE_WIDTH, Math.max(0, titleBudget - 1)),
+							session.progress?.resolvedModelIsFallback === true,
 						)
 					: "";
 				const modelLead = modelBadge ? `${modelBadge} ` : "";
@@ -910,7 +912,16 @@ export function renderSubagentDockLines(
 				session.progress?.description?.trim() ||
 				session.progress?.task?.trim() ||
 				(isForkAgentId(session.id) ? session.label.trim() : undefined);
-			const model = session.progress?.resolvedModel ?? session.progress?.modelRole;
+			const progress = session.progress;
+			const identity = progress?.resolvedModelIdentity ?? progress?.resolvedModel;
+			const fallbackProvider =
+				progress?.resolvedModelIsFallback && identity?.includes("/")
+					? ` · ${identity.slice(0, identity.indexOf("/"))}`
+					: "";
+			// The identity never carries a level suffix; a bare selector may.
+			const model = identity
+				? `${formatModelLabel(identity, progress?.resolvedThinkingLevel, { ref: progress?.resolvedModelIdentity !== undefined ? "identity" : "selector" })}${fallbackProvider}`
+				: progress?.modelRole;
 			const detail = [description, model].filter((value): value is string => Boolean(value)).join(" · ");
 			const statsText = formatAgentRunStats(statsFor(session, now) ?? {});
 			const stats = statsText ? theme.fg("dim", ` · ${statsText}`) : "";
@@ -1423,7 +1434,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				preferences,
 				welcome: {
 					version,
-					modelName: session.model?.name ?? "Unknown",
+					modelName: session.model ? formatModelName(session.model.name || session.model.id) : "Unknown",
 					providerName: session.model?.provider ?? "Unknown",
 					lspServers: lspServers?.map(server => ({
 						name: server.name,
@@ -1784,7 +1795,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 
 		// Get current model info for welcome screen
-		const modelName = this.session.model?.name ?? "Unknown";
+		const modelName = this.session.model
+			? formatModelName(this.session.model.name || this.session.model.id)
+			: "Unknown";
 		const providerName = this.session.model?.provider ?? "Unknown";
 
 		// Prepaint started this scan before the runtime module graph loaded. Only
@@ -4923,7 +4936,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.session.applyRoleModel(entry);
 			this.statusLine.invalidate();
 			this.updateEditorBorderColor();
-			this.showStatus(`Continuing with ${entry.role}: ${entry.model.name || entry.model.id}`);
+			this.showStatus(`Continuing with ${entry.role}: ${formatModelName(entry.model.name || entry.model.id)}`);
 		} catch (error) {
 			this.showWarning(
 				`Could not switch to the ${entry.role} model: ${error instanceof Error ? error.message : String(error)}`,
@@ -5845,7 +5858,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						index: startTierIndex,
 						segments: cycle.models.map(entry => ({
 							label: entry.role,
-							detail: entry.model.name || entry.model.id,
+							detail: formatModelName(entry.model.name || entry.model.id),
 						})),
 						onChange: index => {
 							selectedTierIndex = index;
@@ -6632,7 +6645,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#updateWelcomeModel(): void {
-		const modelName = this.session.model?.name ?? "Unknown";
+		const modelName = this.session.model
+			? formatModelName(this.session.model.name || this.session.model.id)
+			: "Unknown";
 		const providerName = this.session.model?.provider ?? "Unknown";
 		this.composer.updateWelcome({ modelName, providerName });
 		this.#persistComposerWelcome(modelName, providerName);

@@ -20,6 +20,7 @@
 
 ### Changed
 
+- Models are named the friendly way everywhere they are shown: the status line, agents dock, subagent and task rows, background-job rows, Agent Hub, welcome box, Ctrl+P notices and the model picker read `Opus 5.5 (low)` or `GPT-6 Astra (high)` instead of `…/claude-opus-5-5:low`. The picker keeps a models.yml `via Sprilicred` suffix and still matches searches against the raw `provider/id`. A retry fallback still shows which account served it (`Opus 5.5 (low) · personal-anthropic`; Agent Hub fallback rows keep the exact `provider/id`).
 - `display.timeZone` now applies to every clock omp shows — the status line's `time` segment, Agent Hub, `/btw` history, session lists, the git sidebar, the pinned `/usage` fetch time, stream chat and the debug report — and to the date in the date/cwd reminder sent to the model (so after 8 PM EDT a UTC host no longer tells the model it is tomorrow). Worktree names, upload paths and scraped page dates are unchanged.
 - The startup update check and its "Update Available" banner are now off by default in this fork; set `startup.checkUpdate` to `true` to bring them back. `omp update` is unchanged.
 - Interactive `/usage` no longer opens the one-shot dashboard overlay or lists per-account rows; it pins the pooled snapshot instead.

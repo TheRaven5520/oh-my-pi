@@ -73,20 +73,32 @@ describe("feed model badges", () => {
 	});
 
 	it("preserves literal effort-like model suffixes and uses only explicit thinking metadata", () => {
-		const glyph = uiTheme.thinking.high.split(" ")[0];
 		expect(Bun.stripANSI(formatFeedModelBadge("custom:model:max", undefined, false, uiTheme))).toBe(
 			"custom:model:max",
 		);
 		expect(Bun.stripANSI(formatFeedModelBadge("custom:model:max", ThinkingLevel.High, true, uiTheme))).toBe(
-			`${glyph} custom:model:max ${uiTheme.icon.advisor}`,
+			`custom:model:max (high) ${uiTheme.icon.advisor}`,
 		);
-		expect(formatFeedModelBadge("custom:model:max", ThinkingLevel.High, true, uiTheme)).toBe(
-			uiTheme.fg("accent", `${glyph} `) + uiTheme.fg("dim", `custom:model:max ${uiTheme.icon.advisor}`),
-		);
-		expect(uiTheme.fg("accent", glyph)).not.toBe(uiTheme.fg("dim", glyph));
 		expect(Bun.stripANSI(formatFeedModelBadge("custom:model:auto", ThinkingLevel.Inherit, false, uiTheme))).toBe(
 			"custom:model:auto",
 		);
+	});
+
+	it("names known model families the friendly way and drops the provider", () => {
+		expect(
+			Bun.stripANSI(formatFeedModelBadge("sprilicred-anthropic/claude-opus-5-5", ThinkingLevel.Low, false, uiTheme)),
+		).toBe("Opus 5.5 (low)");
+		expect(Bun.stripANSI(formatFeedModelBadge("sprilicred-openai/gpt-5.6-sol", undefined, false, uiTheme))).toBe(
+			"GPT-5.6 Sol",
+		);
+	});
+
+	it("keeps the serving provider on a retry fallback", () => {
+		expect(
+			Bun.stripANSI(
+				formatFeedModelBadge("personal-anthropic/claude-opus-5-5", ThinkingLevel.Low, false, uiTheme, 60, true),
+			),
+		).toBe("Opus 5.5 (low) · personal-anthropic");
 	});
 
 	it("ignores unknown runtime thinking levels without changing the model identity", () => {
@@ -104,33 +116,28 @@ describe("feed model badges", () => {
 		expect(formatFeedModelBadge("\t\n\x1b[31m", undefined, true, uiTheme)).toBe("");
 	});
 
-	it("preserves disambiguating model tails and reserves advisor space when truncating wide names", () => {
+	it("preserves disambiguating model tails and reserves level and advisor space when truncating wide names", () => {
 		const badge = Bun.stripANSI(
-			formatFeedModelBadge(`provider/${"界".repeat(20)}-variant-b`, ThinkingLevel.High, true, uiTheme, 24),
+			formatFeedModelBadge(`provider/${"界".repeat(20)}-variant-b`, ThinkingLevel.High, true, uiTheme, 32),
 		);
 		expect(badge).toContain("…");
-		expect(badge.endsWith(`variant-b ${uiTheme.icon.advisor}`)).toBe(true);
-		expect(Bun.stringWidth(badge)).toBeLessThanOrEqual(24);
+		expect(badge.endsWith(`variant-b (high) ${uiTheme.icon.advisor}`)).toBe(true);
+		expect(Bun.stringWidth(badge)).toBeLessThanOrEqual(32);
 	});
 
-	it("never overflows tiny budgets even when glyphs leave no room for a model", () => {
-		for (let width = 0; width <= 8; width++) {
-			const badge = formatFeedModelBadge("provider/界界界-version", ThinkingLevel.Off, true, uiTheme, width);
+	it("never overflows tiny budgets, dropping the level and then the name before the advisor eye", () => {
+		for (let width = 0; width <= 12; width++) {
+			const badge = formatFeedModelBadge("provider/界界界-version", ThinkingLevel.High, true, uiTheme, width);
 			expect(Bun.stringWidth(badge)).toBeLessThanOrEqual(width);
 		}
-		const glyph = uiTheme.thinking.high.split(" ")[0];
 		const advisor = uiTheme.icon.advisor;
 		const advisorWidth = Bun.stringWidth(advisor);
-		const iconsWidth = Bun.stringWidth(`${glyph} ${advisor}`);
 		expect(Bun.stripANSI(formatFeedModelBadge("model", ThinkingLevel.High, true, uiTheme, advisorWidth))).toBe(
 			advisor,
 		);
-		expect(Bun.stripANSI(formatFeedModelBadge("model", ThinkingLevel.High, true, uiTheme, iconsWidth))).toBe(
-			`${glyph} ${advisor}`,
+		expect(Bun.stripANSI(formatFeedModelBadge("model", ThinkingLevel.High, true, uiTheme, 6 + advisorWidth))).toBe(
+			`model ${advisor}`,
 		);
-		expect(
-			Bun.stripANSI(formatFeedModelBadge("model", ThinkingLevel.High, false, uiTheme, Bun.stringWidth(glyph))),
-		).toBe(glyph);
 		expect(formatFeedModelBadge("model", ThinkingLevel.High, true, uiTheme, 0)).toBe("");
 		expect(formatFeedModelBadge(undefined, ThinkingLevel.High, true, uiTheme)).toBe("");
 	});

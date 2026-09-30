@@ -182,8 +182,9 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 		if (!planModel) throw new Error("Expected plan model");
 		expect(planModel.id).toBe("claude-haiku-4-5");
 		const rendered = Bun.stripANSI(created.ui.render(120).join("\n"));
-		expect(rendered).toContain(planModel.name);
-		expect(rendered).not.toContain(initialModel.name);
+		// The banner names models the friendly way (`Claude Haiku 4.5` reads `Haiku 4.5`).
+		expect(rendered).toContain("Haiku 4.5");
+		expect(rendered).not.toContain("Sonnet 4.5");
 
 		const requestRenderSpy = vi.spyOn(created.ui, "requestRender");
 		requestRenderSpy.mockClear();
@@ -191,8 +192,8 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 
 		expect(requestRenderSpy).toHaveBeenCalled();
 		const switched = Bun.stripANSI(created.ui.render(120).join("\n"));
-		expect(switched).toContain(initialModel.name);
-		expect(switched).not.toContain(planModel.name);
+		expect(switched).toContain("Sonnet 4.5");
+		expect(switched).not.toContain("Haiku 4.5");
 	});
 
 	it("activates write when entering plan mode even if it was hidden by discoveryMode (issue #3165)", async () => {

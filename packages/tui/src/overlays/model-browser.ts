@@ -22,6 +22,7 @@ import { replaceTabs, truncateToWidth, visibleWidth } from "../utils";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 import { thinkingLevelGlyph } from "../render/render-utils";
+import { formatModelName } from "../render/model-names";
 import { type ThemeColor, theme } from "../theme/theme";
 import {
 	matchesSelectCancel,
@@ -555,9 +556,17 @@ function formatCostPair(model: Model): string {
  * caches match indices keyed on this string and stops admitting new entries
  * past its cap, so a query-dependent haystack would thrash that cache.
  */
-export function modelSearchText({ provider, id, model }: ModelBrowserItem): string {
-	const base = `${provider}/${id}`;
-	return isFreeModel(model) ? `${base} free` : base;
+export function modelSearchText(item: ModelBrowserItem): string {
+	const base = `${item.provider}/${item.id} ${modelDisplayName(item)}`;
+	return isFreeModel(item.model) ? `${base} free` : base;
+}
+
+/**
+ * The picker's name for a row: a virtual row (a ctrl+p quick role, `@smol`)
+ * keeps its own label; a model reads friendly, keeping a configured `via <provider>`.
+ */
+function modelDisplayName({ id, model }: ModelBrowserItem): string {
+	return id === model.id ? formatModelName(model.name || id, { keepVia: true }) : id;
 }
 
 /** Provider-supplied blurb, flattened to a single renderable detail-line cell. */
@@ -1035,18 +1044,24 @@ export class ModelBrowser implements Component {
 		}
 		const overContext = this.isOverContext(item);
 		const prefix = selected && this.#focused ? `${theme.fg("accent", theme.nav.cursor)} ` : "  ";
-		const providerPrefix = this.#showProvider ? theme.fg("dim", `${item.provider}/`) : "";
+		// Friendly names (`Opus 5.5 via Sprilicred`); a name without its own
+		// `via` gets the provider after it when providers are shown.
+		const displayName = modelDisplayName(item);
+		const providerSuffix =
+			this.#showProvider && item.provider && !/\svia\s/.test(displayName)
+				? theme.fg("dim", ` · ${item.provider}`)
+				: "";
 		const name = item.labelColor
-			? theme.fg(item.labelColor, item.id)
+			? theme.fg(item.labelColor, displayName)
 			: selected
-				? theme.fg("accent", item.id)
-				: item.id;
+				? theme.fg("accent", displayName)
+				: displayName;
 		const currentMark =
 			item.selector === this.#currentSelector ? ` ${theme.fg("success", theme.status.enabled)}` : "";
 		const overLimit = overContext
 			? ` ${theme.status.disabled} context>${formatNumber(item.model.contextWindow ?? 0).toLowerCase()}`
 			: "";
-		let left = `${prefix}${providerPrefix}${name}${currentMark}${overLimit}`;
+		let left = `${prefix}${name}${providerSuffix}${currentMark}${overLimit}`;
 
 		// Metric columns collapse independently when no visible row has data.
 		const intelligenceCol =
@@ -1086,7 +1101,7 @@ export class ModelBrowser implements Component {
 		if (!selected) return ["", ""];
 		const model = selected.model;
 
-		const facts: string[] = [model.name];
+		const facts: string[] = [formatModelName(model.name || model.id, { keepVia: true })];
 		// Upstream badges sit next to the name; the provider blurb goes last so
 		// width truncation eats prose before context, cost, or perf facts.
 		if (model.isNew) facts.push("new");

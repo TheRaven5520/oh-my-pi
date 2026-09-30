@@ -30,7 +30,7 @@ describe("buildModelScopeNotification", () => {
 	it("emits the startup model scope banner when startup.quiet is disabled", () => {
 		expect(buildModelScopeNotification([scopedModel("claude-sonnet-4-5")], false)).toEqual({
 			kind: "info",
-			message: "Model scope: claude-sonnet-4-5 (Ctrl+P to cycle)",
+			message: "Model scope: Sonnet 4.5 (Ctrl+P to cycle)",
 		});
 	});
 	it("includes thinking suffix only when explicitly scoped", () => {
@@ -41,7 +41,7 @@ describe("buildModelScopeNotification", () => {
 		};
 		expect(buildModelScopeNotification([withExplicit], false)).toEqual({
 			kind: "info",
-			message: "Model scope: claude-sonnet-4-5:high (Ctrl+P to cycle)",
+			message: "Model scope: Sonnet 4.5 (high) (Ctrl+P to cycle)",
 		});
 	});
 
@@ -56,7 +56,7 @@ describe("buildModelScopeNotification", () => {
 		};
 		expect(buildModelScopeNotification([withDefault], false)).toEqual({
 			kind: "info",
-			message: "Model scope: claude-sonnet-4-5 (Ctrl+P to cycle)",
+			message: "Model scope: Sonnet 4.5 (Ctrl+P to cycle)",
 		});
 	});
 });

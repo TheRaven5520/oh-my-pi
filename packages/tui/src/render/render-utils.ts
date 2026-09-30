@@ -16,6 +16,7 @@ import type { Theme } from "../theme/theme";
 import type { Component } from "../tui";
 import { replaceTabs, sliceByColumn, truncateToWidth, visibleWidth } from "../utils";
 import { Hasher } from "./utils";
+import { formatModelName, shownThinkingLevel } from "./model-names";
 
 export { Ellipsis } from "@oh-my-pi/pi-natives";
 export { replaceTabs, truncateToWidth, wrapTextWithAnsi } from "../utils";
@@ -149,8 +150,13 @@ export function thinkingLevelGlyph(level: ConfiguredThinkingLevel, uiTheme: Them
 }
 
 /**
- * Compact feed-row prefix: explicit thinking glyph, sanitized model identity,
- * then advisor eye. Keep fitting icons if no model fits; preserve literal identity suffixes.
+ * Compact feed-row model badge: the friendly model name with its thinking level
+ * (`Opus 5.5 (low)`), then the advisor eye. The identity is literal (a `:max`
+ * tail is part of the id); only an explicit, known `thinkingLevel` is shown. A
+ * narrow badge middle-truncates the name so its distinguishing tail survives,
+ * then drops the level, then keeps only the eye. On a retry fallback the
+ * serving provider is kept (`Opus 5.5 (low) · personal-anthropic`): the switch
+ * of account is the point, and the bare name would hide it.
  */
 export function formatFeedModelBadge(
 	modelIdentity: string | undefined,
@@ -158,26 +164,24 @@ export function formatFeedModelBadge(
 	advisor: boolean | undefined,
 	uiTheme: Theme,
 	maxWidth = FEED_MODEL_BADGE_WIDTH,
+	fallback = false,
 ): string {
 	if (!modelIdentity) return "";
 	const width = Math.max(0, Math.floor(maxWidth));
 	const clean = sanitizeText(modelIdentity).replace(/\s+/g, " ").trim();
 	if (!clean || !(width > 0)) return "";
-	const glyph = thinkingLevel !== undefined ? thinkingLevelGlyph(thinkingLevel, uiTheme) : "";
-	const advisorIcon = advisor === true ? uiTheme.icon.advisor : "";
-	const prefix = glyph ? `${glyph} ` : "";
-	const suffix = advisorIcon ? ` ${advisorIcon}` : "";
-	const modelWidth = width - visibleWidth(prefix) - visibleWidth(suffix);
-	if (modelWidth < 1) {
-		const advisorWidth = visibleWidth(advisorIcon);
-		if (advisorIcon && advisorWidth <= width) {
-			const thinkingPrefix = glyph && visibleWidth(prefix) + advisorWidth <= width ? prefix : "";
-			return uiTheme.fg("accent", thinkingPrefix) + uiTheme.fg("dim", advisorIcon);
+	const name = formatModelName(clean, { ref: "identity" });
+	const level = shownThinkingLevel(thinkingLevel);
+	const provider = fallback && clean.includes("/") ? ` · ${clean.slice(0, clean.indexOf("/"))}` : "";
+	const advisorText = advisor === true ? ` ${uiTheme.icon.advisor}` : "";
+	for (const tail of [`${level ? ` (${level})` : ""}${provider}${advisorText}`, advisorText]) {
+		const nameWidth = width - visibleWidth(tail);
+		if (nameWidth >= Math.min(3, visibleWidth(name))) {
+			return uiTheme.fg("dim", `${truncateMiddleToWidth(name, nameWidth)}${tail}`);
 		}
-		return glyph && visibleWidth(glyph) <= width ? uiTheme.fg("accent", glyph) : "";
 	}
-	const model = truncateMiddleToWidth(clean, modelWidth);
-	return uiTheme.fg("accent", prefix) + uiTheme.fg("dim", `${model}${suffix}`);
+	const advisorIcon = advisorText.trimStart();
+	return advisorIcon && visibleWidth(advisorIcon) <= width ? uiTheme.fg("dim", advisorIcon) : "";
 }
 
 /** Truncation lengths for different content types */

@@ -1428,8 +1428,8 @@ describe("ModelHub", () => {
 
 			for (const ch of "glm") hub.handleInput(ch);
 			const rendered = normalize(hub.render(220));
-			expect(rendered).toContain("openrouter/z-ai/glm-5.2");
-			expect(rendered).toContain("custom-provider/glm-5.2");
+			expect(rendered).toContain("z-ai/glm-5.2 · openrouter");
+			expect(rendered).toContain("glm-5.2 · custom-provider");
 		});
 
 		test("a provider scope that loses every match falls back to All models", () => {

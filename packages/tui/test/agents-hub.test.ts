@@ -227,7 +227,7 @@ describe("AgentsHub configuration strips", () => {
 		expect(strip()).toContain("dev · model →");
 		hub.handleInput("\r"); // assign mode: model browser
 		expect(strip()).toContain("Picking model override for dev");
-		expect(strip()).toContain("claude-sonnet-4-5");
+		expect(strip()).toContain("Sonnet 4.5");
 		hub.handleInput("\r"); // pick the only model
 		expect(settings.get("task.agentModelOverrides")).toEqual({ dev: "anthropic/claude-sonnet-4-5" });
 		// Back on the list with the override reflected.

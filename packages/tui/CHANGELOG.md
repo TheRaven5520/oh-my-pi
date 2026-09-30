@@ -12,6 +12,7 @@
 
 ### Changed
 
+- `render/model-names` adds `formatModelName`/`formatModelLabel`: `claude-opus-5-5`, `claude-opus-5-5 via Sprilicred` and `Claude Opus 5.5` all read `Opus 5.5` (`Opus 5.5 (low)` with a level). Only Claude, GPT and Gemini ids are rewritten; any other id is shown whole, including its own namespace (`z-ai/glm-5.2`). `ref: "identity"` drops the provider of a `provider/id`, and `ref: "selector"` also drops a `:level` suffix. `formatFeedModelBadge` draws `Name (level)` instead of the thinking glyph plus raw `provider/id`, and takes a `fallback` flag that appends the serving provider (`Opus 5.5 (low) · personal-anthropic`). Model picker rows read `Name · provider` (or the name's own `via …`), with ctrl+p quick-role rows keeping their `@role` label; Agent Hub fallback rows keep the exact `provider/id`.
 - User messages now render like Claude Code: a dim `❯` pointer, wrapped lines indented under the text, and no blank padding rows above or below the tinted band. Collab and skill prompt bubbles also drop their padding rows. The `titanium` theme's user message background is Claude Code's gray (`#373737`).
 - A submitted prompt is drawn dim until the provider accepts the request (its response headers arrive), then switches to normal text, as in Claude Code. Transports that report no response headers fall back to the model's first streamed output.
 ## [18.3.0] - 2026-09-24

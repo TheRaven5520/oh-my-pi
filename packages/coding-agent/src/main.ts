@@ -113,6 +113,7 @@ import { registerLocalInferenceApi } from "./tiny/local-inference-api";
 import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { LspStartupServerInfo } from "./tools";
 import { sanitizeDisplayWarnings } from "@oh-my-pi/pi-tui/render/render-utils";
+import { formatModelLabel } from "@oh-my-pi/pi-tui/render/model-names";
 import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
 
@@ -353,9 +354,9 @@ export function buildModelScopeNotification(
 	}
 	const modelList = scopedModelsForDisplay
 		.map(scopedModel => {
-			const thinkingStr =
-				scopedModel.explicitThinkingLevel && scopedModel.thinkingLevel ? `:${scopedModel.thinkingLevel}` : "";
-			return `${scopedModel.model.id}${thinkingStr}`;
+			const level =
+				scopedModel.explicitThinkingLevel && scopedModel.thinkingLevel ? scopedModel.thinkingLevel : undefined;
+			return formatModelLabel(scopedModel.model.name || scopedModel.model.id, level);
 		})
 		.join(", ");
 	return { kind: "info", message: `Model scope: ${modelList} (Ctrl+P to cycle)` };

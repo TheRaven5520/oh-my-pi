@@ -189,9 +189,10 @@ describe("setup wizard model selection", () => {
 		expect(scene).toBeDefined();
 
 		const controller = scene!.mount(host);
-		expect(controller.render?.(120).join("\n")).not.toContain("minimax-m3");
+		// Picker rows use the model's display name (`MiniMax M3`), not its id.
+		expect(controller.render?.(120).join("\n")).not.toContain("MiniMax M3");
 		await controller.onMount?.();
-		expect(controller.render?.(120).join("\n")).toContain("minimax-m3");
+		expect(controller.render?.(120).join("\n")).toContain("MiniMax M3");
 		controller.handleInput?.("\r");
 		return finished.promise;
 	}
