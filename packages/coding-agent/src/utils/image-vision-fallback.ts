@@ -28,6 +28,7 @@ import type { Settings } from "../config/settings";
 import { type LocalProtocolOptions, resolveLocalRoot } from "../internal-urls";
 import describeUserPrompt from "../prompts/tools/image-attachment-describe.md" with { type: "text" };
 import describeSystemPrompt from "../prompts/tools/image-attachment-describe-system.md" with { type: "text" };
+import { privateSideCall } from "../session/private-side-calls";
 import { buildSideAgentHeaders } from "../session/side-agent-headers";
 
 /** Telemetry tag for the oneshot vision-description calls. */
@@ -148,11 +149,15 @@ async function describeImage(
 					},
 				],
 			},
-			{
-				apiKey: deps.modelRegistry.resolver(visionModel, deps.sessionId),
-				signal,
-				headers: buildSideAgentHeaders(deps.sessionId, "helper"),
-			},
+			await privateSideCall(
+				visionModel,
+				{
+					apiKey: deps.modelRegistry.resolver(visionModel, deps.sessionId),
+					signal,
+					headers: buildSideAgentHeaders(deps.sessionId, "helper"),
+				},
+				"helper",
+			),
 			{ telemetry, oneshotKind: ONESHOT_KIND, completeImpl: deps.completeImpl },
 		);
 		if (response.stopReason === "error" || response.stopReason === "aborted") {

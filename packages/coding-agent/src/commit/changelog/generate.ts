@@ -6,6 +6,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import changelogSystemPrompt from "../../commit/prompts/changelog-system.md" with { type: "text" };
 import changelogUserPrompt from "../../commit/prompts/changelog-user.md" with { type: "text" };
 import type { ChangelogGenerationResult } from "../../commit/types";
+import { privateSideCall } from "../../session/private-side-calls";
 import { toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
 import { extractTextContent, extractToolCall, parseJsonPayload } from "../utils";
 
@@ -57,6 +58,11 @@ export async function generateChangelogEntries({
 		stat,
 		diff,
 	});
+	const requestOptions = await privateSideCall(
+		model,
+		{ apiKey, sessionId, maxTokens: 1200, reasoning: toReasoningEffort(thinkingLevel) },
+		"commit",
+	);
 	const response = await retryTransientCompletion(
 		() =>
 			completeSimple(
@@ -66,7 +72,7 @@ export async function generateChangelogEntries({
 					messages: [{ role: "user", content: userContent, timestamp: Date.now() }],
 					tools: [changelogTool],
 				},
-				{ apiKey, sessionId, maxTokens: 1200, reasoning: toReasoningEffort(thinkingLevel) },
+				requestOptions,
 			),
 		{ provider: model.provider },
 	);

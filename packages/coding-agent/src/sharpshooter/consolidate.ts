@@ -11,6 +11,7 @@ import { redactMemorySecrets as redactSecrets } from "../memory-backend/redact";
 import { truncateApproxTokens } from "../mnemopi/config";
 import consolidateInputTemplate from "../prompts/memories/sharpshooter-consolidate-input.md" with { type: "text" };
 import consolidateSystemTemplate from "../prompts/memories/sharpshooter-consolidate-system.md" with { type: "text" };
+import { privateSideCall } from "../session/private-side-calls";
 import { resolveSharpshooterModel } from "./extract";
 import {
 	readSharpshooterState,
@@ -154,6 +155,17 @@ async function consolidateLocked(
 			maxFileLines: SHARPSHOOTER_MAX_FILE_LINES,
 		});
 
+		const requestOptions = await privateSideCall(
+			model,
+			{
+				apiKey: options.modelRegistry.resolver(model, options.sessionId),
+				sessionId: options.sessionId,
+				maxTokens: 8192,
+				reasoning: clampThinkingLevelForModel(model, Effort.Medium),
+				toolChoice: "required",
+			},
+			"memory",
+		);
 		const response = await retryTransientCompletion(
 			() =>
 				completeSimple(
@@ -163,13 +175,7 @@ async function consolidateLocked(
 						messages: [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }],
 						tools: [replaceMemoryFilesTool],
 					},
-					{
-						apiKey: options.modelRegistry.resolver(model, options.sessionId),
-						sessionId: options.sessionId,
-						maxTokens: 8192,
-						reasoning: clampThinkingLevelForModel(model, Effort.Medium),
-						toolChoice: "required",
-					},
+					requestOptions,
 				),
 			{ provider: model.provider },
 		);

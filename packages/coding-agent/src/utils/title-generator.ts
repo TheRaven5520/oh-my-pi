@@ -24,6 +24,7 @@ import { collectOnlineTinyCandidates, expandOnlineTinyModelFallbacks } from "../
 import type { Settings } from "../config/settings";
 import titleMarkerInstruction from "../prompts/system/title-marker-instruction.md" with { type: "text" };
 import titleSystemPrompt from "../prompts/system/title-system.md" with { type: "text" };
+import { privateSideCall } from "../session/private-side-calls";
 import { buildSideAgentHeaders, type SideAgentRole } from "../session/side-agent-headers";
 import { formatTitleUserMessage } from "../tiny/message-preproc";
 import { isLowSignalTitleInput, isNoTitleAnswer, NO_TITLE_SENTINEL, normalizeGeneratedTitle } from "../tiny/text";
@@ -357,29 +358,26 @@ async function generateTitleOnlineWithModels(
 			const messages: Message[] = [{ role: "user", content: userMessage, timestamp: Date.now() }];
 			if (model.supportsAssistantPrefill) messages.push(titlePrefill(model));
 
+			const requestOptions = await privateSideCall(
+				model,
+				{
+					apiKey: registry.resolver(model, sessionId),
+					sessionId,
+					maxTokens,
+					disableReasoning: true,
+					// Greedy decode: titling is extraction, not generation. Backends that
+					// default temperature high (e.g. Ollama's 0.8) otherwise garble names
+					// from the message ("hashline" → "HasHroshi"). Providers whose models
+					// reject sampling params drop this via `supportsSamplingParams`.
+					temperature: 0,
+					metadata,
+					headers,
+					signal,
+				},
+				role,
+			);
 			const response = await retryTransientCompletion(
-				() =>
-					completeSimple(
-						model,
-						{
-							systemPrompt,
-							messages,
-						},
-						{
-							apiKey: registry.resolver(model, sessionId),
-							sessionId,
-							maxTokens,
-							disableReasoning: true,
-							// Greedy decode: titling is extraction, not generation. Backends that
-							// default temperature high (e.g. Ollama's 0.8) otherwise garble names
-							// from the message ("hashline" → "HasHroshi"). Providers whose models
-							// reject sampling params drop this via `supportsSamplingParams`.
-							temperature: 0,
-							metadata,
-							headers,
-							signal,
-						},
-					),
+				() => completeSimple(model, { systemPrompt, messages }, requestOptions),
 				{ signal, provider: model.provider },
 			);
 

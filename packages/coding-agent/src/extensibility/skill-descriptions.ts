@@ -8,6 +8,7 @@ import { getModelMatchPreferences, parseModelPattern, resolveRoleSelection } fro
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import compressDescriptionPrompt from "../prompts/skills/compress-description.md" with { type: "text" };
+import { privateSideCall } from "../session/private-side-calls";
 import { Semaphore } from "../task/parallel";
 import type { Skill } from "./skills";
 
@@ -49,14 +50,18 @@ export function createSkillDescriptionCompressor(
 			{
 				messages: [{ role: "user", content: request, timestamp: Date.now() }],
 			},
-			{
-				apiKey: registry.resolver(model, sessionId),
-				sessionId,
-				maxTokens: 1024,
-				disableReasoning: true,
-				temperature: 0,
-				signal: AbortSignal.timeout(30_000),
-			},
+			await privateSideCall(
+				model,
+				{
+					apiKey: registry.resolver(model, sessionId),
+					sessionId,
+					maxTokens: 1024,
+					disableReasoning: true,
+					temperature: 0,
+					signal: AbortSignal.timeout(30_000),
+				},
+				"skill",
+			),
 		);
 		if (response.stopReason !== "stop") {
 			throw new Error(`Model stopped: ${response.stopReason} ${response.errorMessage ?? ""}`);
@@ -94,6 +99,20 @@ function validCompression(text: string): string | null {
 	if (!line || /[\r\n]/.test(line) || line.length > MAX_COMPRESSED_CHARS) return null;
 	if (line.split(/\s+/).length > MAX_COMPRESSED_WORDS) return null;
 	return line;
+}
+
+/**
+ * A hint that overran its bounds, cut to them: the first 12 words, then at
+ * most 160 chars ending on a word. Cached in place of the reply, so the same
+ * skill is not sent to the model again by every later prompt build.
+ */
+function cutSkillHint(text: string): string | null {
+	const words = text.trim().split(/\s+/).slice(0, MAX_COMPRESSED_WORDS).join(" ");
+	if (!words) return null;
+	if (words.length <= MAX_COMPRESSED_CHARS) return words;
+	const boundary = words.slice(0, MAX_COMPRESSED_CHARS);
+	const space = boundary.lastIndexOf(" ");
+	return space > 0 ? boundary.slice(0, space) : boundary;
 }
 
 function openDb(dbPath: string): Database | null {
@@ -186,8 +205,17 @@ export class SkillDescriptionCatalog {
 						name: skill.name,
 						description: skill.description,
 					});
-					const result = validCompression(await this.#compress!(skill.name, skill.description, request));
-					if (!result) throw new Error("Invalid single-line skill description (max 12 words, 160 chars)");
+					const reply = await this.#compress!(skill.name, skill.description, request);
+					let result = validCompression(reply);
+					if (!result) {
+						result = cutSkillHint(reply);
+						if (!result) throw new Error("Empty skill description hint");
+						logger.warn("Skill description hint over 12 words or 160 chars; cached its cut", {
+							skill: skill.name,
+							rejected: reply,
+							cached: result,
+						});
+					}
 					const db = openDb(this.#dbPath);
 					if (!db) return;
 					try {

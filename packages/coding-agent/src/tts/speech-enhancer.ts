@@ -22,6 +22,7 @@ import { roleCandidatePool } from "../config/model-roles";
 import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import speechRewritePrompt from "../prompts/system/speech-rewrite.md" with { type: "text" };
+import { privateSideCall } from "../session/private-side-calls";
 
 const SYSTEM_PROMPT = prompt.render(speechRewritePrompt);
 // Rewrite budget: a paragraph in, a spoken paragraph (usually shorter) out.
@@ -84,7 +85,7 @@ export class SpeechEnhancer {
 			// Resolve metadata after getApiKey so the session-sticky credential is recorded first.
 			const metadata = this.#deps.metadataResolver?.(model.provider);
 			const response = await retryTransientCompletion(
-				() => {
+				async () => {
 					const timeout = AbortSignal.timeout(REWRITE_TIMEOUT_MS);
 					return completeSimple(
 						model,
@@ -92,14 +93,18 @@ export class SpeechEnhancer {
 							systemPrompt: [SYSTEM_PROMPT],
 							messages: [{ role: "user", content: boundBlock(block), timestamp: Date.now() }],
 						},
-						{
-							apiKey: registry.resolver(model, sessionId),
-							sessionId,
-							maxTokens: ANSWER_MAX_TOKENS,
-							disableReasoning: true,
-							metadata,
-							signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-						},
+						await privateSideCall(
+							model,
+							{
+								apiKey: registry.resolver(model, sessionId),
+								sessionId,
+								maxTokens: ANSWER_MAX_TOKENS,
+								disableReasoning: true,
+								metadata,
+								signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+							},
+							"helper",
+						),
 					);
 				},
 				{ signal, provider: model.provider },

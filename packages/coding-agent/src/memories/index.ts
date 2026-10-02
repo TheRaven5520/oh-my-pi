@@ -26,6 +26,7 @@ import readPathTemplate from "../prompts/memories/read-path.md" with { type: "te
 import stageOneInputTemplate from "../prompts/memories/stage_one_input.md" with { type: "text" };
 import stageOneSystemTemplate from "../prompts/memories/stage_one_system.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
+import { PRIVATE_CHAT_ACK, PRIVATE_CHAT_TRIGGER, privateSideCall } from "../session/private-side-calls";
 import { buildSideAgentHeaders } from "../session/side-agent-headers";
 import {
 	claimStage1Jobs,
@@ -733,11 +734,6 @@ function shouldPersistResponseItemForMemories(message: AgentMessage): boolean {
 	return false;
 }
 
-/** Exact text a person types to make a chat private (Sprilicred private mode). */
-const PRIVATE_CHAT_TRIGGER = "`private`";
-/** The proxy's own acknowledgement of {@link PRIVATE_CHAT_TRIGGER}. */
-const PRIVATE_CHAT_ACK = "OK";
-
 /**
  * True when the person made this chat private: a user message that is exactly
  * `` `private` `` whose next user/assistant turn is the assistant reply "OK".
@@ -813,6 +809,18 @@ async function runStage1Job(options: {
 			response_items_json: truncatedItems,
 		});
 
+		const requestOptions = await privateSideCall(
+			model,
+			{
+				apiKey,
+				sessionId: options.sessionId,
+				metadata: options.metadata,
+				headers: options.headers,
+				maxTokens: Math.max(1024, Math.min(4096, Math.floor(modelMaxTokens * 0.2))),
+				reasoning: clampThinkingLevelForModel(model, Effort.Low),
+			},
+			"memory",
+		);
 		const response = await retryTransientCompletion(
 			() =>
 				completeSimple(
@@ -821,14 +829,7 @@ async function runStage1Job(options: {
 						systemPrompt: [stageOneSystemTemplate],
 						messages: [{ role: "user", content: [{ type: "text", text: inputPrompt }], timestamp: Date.now() }],
 					},
-					{
-						apiKey,
-						sessionId: options.sessionId,
-						metadata: options.metadata,
-						headers: options.headers,
-						maxTokens: Math.max(1024, Math.min(4096, Math.floor(modelMaxTokens * 0.2))),
-						reasoning: clampThinkingLevelForModel(model, Effort.Low),
-					},
+					requestOptions,
 				),
 			{ provider: model.provider },
 		);
@@ -959,6 +960,18 @@ async function runConsolidationModel(options: {
 		rollout_summaries: truncateByApproxTokens(rolloutSummaries, 12_000),
 	});
 
+	const requestOptions = await privateSideCall(
+		model,
+		{
+			apiKey,
+			sessionId: options.sessionId,
+			metadata: options.metadata,
+			headers: options.headers,
+			maxTokens: 8192,
+			reasoning: clampThinkingLevelForModel(model, Effort.Medium),
+		},
+		"memory",
+	);
 	const response = await retryTransientCompletion(
 		() =>
 			completeSimple(
@@ -967,14 +980,7 @@ async function runConsolidationModel(options: {
 					systemPrompt: [consolidationSystemTemplate],
 					messages: [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }],
 				},
-				{
-					apiKey,
-					sessionId: options.sessionId,
-					metadata: options.metadata,
-					headers: options.headers,
-					maxTokens: 8192,
-					reasoning: clampThinkingLevelForModel(model, Effort.Medium),
-				},
+				requestOptions,
 			),
 		{ provider: model.provider },
 	);

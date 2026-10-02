@@ -89,21 +89,37 @@ describe("system prompt skill descriptions", () => {
 		expect(calls).toBe(2);
 	});
 
-	it("does not cache malformed output and retries in a later session", async () => {
-		using temp = TempDir.createSync("omp-skill-description-invalid-");
+	it("caches an overlong hint cut to 12 words / 160 chars, so later sessions do not ask again", async () => {
+		using temp = TempDir.createSync("omp-skill-description-overrun-");
 		const dbPath = temp.join("skills.db");
-		const failed = new SkillDescriptionCatalog({ dbPath, compress: async () => "line one\nline two" });
-		const preview = failed.render([original])[0]?.description;
-		await failed.waitForPending();
-
-		const retry = new SkillDescriptionCatalog({
+		const skills = [original, { ...original, name: "long-words", description: `${original.description} Words.` }];
+		let calls = 0;
+		const overrun = new SkillDescriptionCatalog({
 			dbPath,
-			compress: async () => "Use for interactive sites; not static pages.",
+			compress: async name => {
+				calls++;
+				return name === "long-words"
+					? `${"supercalifragilisticexpialidocious ".repeat(6)}tail words never kept`
+					: "Use for interactive sites with logins,\nmulti-step browser actions and JavaScript; not static public pages.";
+			},
 		});
-		expect(retry.render([original])[0]?.description).toBe(preview);
-		await retry.waitForPending();
-		expect(new SkillDescriptionCatalog({ dbPath }).render([original])[0]?.description).toBe(
-			"Use for interactive sites; not static pages.",
+		overrun.render(skills);
+		await overrun.waitForPending();
+		expect(calls).toBe(2);
+
+		const later = new SkillDescriptionCatalog({
+			dbPath,
+			compress: async () => {
+				calls++;
+				return "unused";
+			},
+		});
+		const [browser, long] = later.render(skills);
+		await later.waitForPending();
+		expect(calls).toBe(2);
+		expect(browser?.description).toBe(
+			"Use for interactive sites with logins, multi-step browser actions and JavaScript; not",
 		);
+		expect(long?.description).toBe("supercalifragilisticexpialidocious ".repeat(4).trim());
 	});
 });

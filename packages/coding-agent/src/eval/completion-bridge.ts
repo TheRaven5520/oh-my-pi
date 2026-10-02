@@ -30,6 +30,7 @@ import {
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
+import { privateSideCall } from "../session/private-side-calls";
 import { buildSideAgentHeaders } from "../session/side-agent-headers";
 import { Semaphore } from "../task/parallel";
 import type { ToolSession } from "../tools";
@@ -346,14 +347,18 @@ async function executeCompletion(
 					messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
 					tools,
 				},
-				{
-					apiKey: registry.resolver(model, session.getSessionId?.() ?? undefined),
-					signal,
-					reasoning: candidate.reasoning,
-					disableReasoning: candidate.disableReasoning,
-					toolChoice: schema ? { type: "tool", name: STRUCTURED_TOOL_NAME } : undefined,
-					headers,
-				},
+				await privateSideCall(
+					model,
+					{
+						apiKey: registry.resolver(model, session.getSessionId?.() ?? undefined),
+						signal,
+						reasoning: candidate.reasoning,
+						disableReasoning: candidate.disableReasoning,
+						toolChoice: schema ? { type: "tool", name: STRUCTURED_TOOL_NAME } : undefined,
+						headers,
+					},
+					"helper",
+				),
 				{ telemetry, oneshotKind: "eval_completion" },
 			);
 		} catch (error) {

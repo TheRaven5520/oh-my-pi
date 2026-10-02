@@ -10,6 +10,7 @@ import extractInputTemplate from "../prompts/memories/sharpshooter-extract-input
 import extractSystemTemplate from "../prompts/memories/sharpshooter-extract-system.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
 import { customMessageContentText } from "../session/checkpoint-entries";
+import { privateSideCall } from "../session/private-side-calls";
 import { appendSharpshooterDelta } from "./queue";
 import type { SharpshooterDelta, SharpshooterDeltaKind, SharpshooterDeltaSource, SharpshooterFriction } from "./types";
 
@@ -212,6 +213,17 @@ async function runSharpshooterExtraction(
 	if (!model || session.isDisposed) return;
 
 	const input = prompt.render(extractInputTemplate, { ...envelope });
+	const requestOptions = await privateSideCall(
+		model,
+		{
+			apiKey: modelRegistry.resolver(model, session.sessionId),
+			sessionId: session.sessionId,
+			maxTokens: 2048,
+			reasoning: clampThinkingLevelForModel(model, Effort.Low),
+			toolChoice: "required",
+		},
+		"memory",
+	);
 	const response = await retryTransientCompletion(
 		() =>
 			completeSimple(
@@ -221,13 +233,7 @@ async function runSharpshooterExtraction(
 					messages: [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }],
 					tools: [recordDeltasTool],
 				},
-				{
-					apiKey: modelRegistry.resolver(model, session.sessionId),
-					sessionId: session.sessionId,
-					maxTokens: 2048,
-					reasoning: clampThinkingLevelForModel(model, Effort.Low),
-					toolChoice: "required",
-				},
+				requestOptions,
 			),
 		{ provider: model.provider },
 	);

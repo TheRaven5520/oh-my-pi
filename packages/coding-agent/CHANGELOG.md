@@ -30,6 +30,7 @@
 - `/tan` and `/fork` now build their clones through one shared factory.
 - Advisor notes are now delivered as soon as the advisor writes them, even while the main agent is mid-turn, instead of piling up until the turn ends. Set `advisor.holdNotesUntilTurnEnd: true` to restore the old batching.
 - Anthropic pooled usage headlines (5h, weekly, Fable) now average each window independently across the accounts that report it, matching the dashboard.
+- One-shot background calls through a `sprilicred-*` provider are now private on Sprilicred: session titles and subagent labels, skill-hint compression, memory extraction and consolidation (including mnemopi and sharpshooter), commit messages and changelogs, edit auto-repair, image questions and descriptions, eval `completion()`, speech rewrites and annotate summaries. Each kind runs on a side session of its own per omp process, which first sends Sprilicred's private trigger (`` `private` ``) once and waits for Sprilicred's own "OK"; Sprilicred then keeps no chat and no Activity row for those calls (their cost still counts in totals). The trigger and the call never name the chat they serve except through the `x-omp-parent-session-id` link, so the chat itself is never made private. If Sprilicred does not confirm the trigger, the call is not sent. Other providers are unaffected.
 
 - Restricted local memory extraction and consolidation to durable operational knowledge, user preferences, and general research or verification lessons, excluding individual experiment results and transient run state.
 
@@ -41,6 +42,7 @@
 - Fixed rapid Enter presses dropping the request to immediately deliver a steering message while its submission was still being prepared.
 - Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.
 - Fixed models of an `auth: oauth` provider with `discovery` losing the OAuth (Claude Code) request shape: discovered models were sent without it, and so were listed ones once discovery found them too (including from the model cache).
+- Fixed skill-hint compression asking the model again on every prompt rebuild, in every session and process, when the hint came back over 12 words or 160 characters: the hint is now cut to its first 12 words (and 160 characters) and cached under the same key, and the rejected text is logged.
 
 ## [18.3.0] - 2026-09-24
 

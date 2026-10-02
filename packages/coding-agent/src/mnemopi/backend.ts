@@ -21,6 +21,7 @@ import type {
 import memoryConsolidationPrompt from "../prompts/system/memory-consolidation-system.md" with { type: "text" };
 import memoryExtractionPrompt from "../prompts/system/memory-extraction-system.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
+import { privateSideCall } from "../session/private-side-calls";
 import { tinyModelClient } from "../tiny/title-client";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
@@ -595,6 +596,17 @@ async function resolveMnemopiProviderOptions(
 						});
 						continue;
 					}
+					const requestOptions = await privateSideCall(
+						model,
+						{
+							apiKey: modelRegistry.resolver(model, sessionId),
+							sessionId,
+							maxTokens: opts?.maxTokens,
+							temperature: opts?.temperature,
+							signal,
+						},
+						"memory",
+					);
 					const message = await retryTransientCompletion(
 						() =>
 							completeSimple(
@@ -603,13 +615,7 @@ async function resolveMnemopiProviderOptions(
 									...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
 									messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
 								},
-								{
-									apiKey: modelRegistry.resolver(model, sessionId),
-									sessionId,
-									maxTokens: opts?.maxTokens,
-									temperature: opts?.temperature,
-									signal,
-								},
+								requestOptions,
 							),
 						{ provider: model.provider, signal },
 					);
