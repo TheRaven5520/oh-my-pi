@@ -378,6 +378,7 @@ import {
 	type PrewalkCoordinatorHost,
 	type PrewalkRestartResult,
 } from "./prewalk";
+import { privateSideCall } from "./private-side-calls";
 import {
 	isAdvisorCard,
 	isDisplayableQueuedMessage,
@@ -9766,11 +9767,12 @@ export class AgentSession {
 			// A `/btw` follow-up's lineage id (`<session>:side:conversation:<key>`)
 			// exceeds OpenAI's 64-char key limit and gets hashed; the header keeps
 			// the link.
-			const stream = await this.#sideStreamFn(
-				model,
-				context,
-				withSideAgentHeaders(options, cacheSessionId, "helper"),
-			);
+			// Built per round: a round past the lookup limit sets `options.toolChoice`.
+			const linkedOptions = withSideAgentHeaders(options, cacheSessionId, "helper") ?? options;
+			const requestOptions = args.privateRole
+				? await privateSideCall(model, linkedOptions, args.privateRole)
+				: linkedOptions;
+			const stream = await this.#sideStreamFn(model, context, requestOptions);
 			try {
 				for await (const event of stream) {
 					if (event.type === "text_delta") {

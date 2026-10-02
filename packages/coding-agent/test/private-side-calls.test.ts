@@ -1,11 +1,19 @@
 import { describe, expect, it } from "bun:test";
-import { type Api, completeSimple, type Model, type ModelSpec, type SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+import {
+	type Api,
+	completeSimple,
+	type Model,
+	type ModelSpec,
+	type SimpleStreamOptions,
+	streamSimple,
+} from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import {
 	PRIVATE_CHAT_TRIGGER,
 	PRIVATE_SESSION_HEADER,
 	privateSideCall,
 	privateSideSessionId,
+	wrapStreamFnPrivate,
 } from "@oh-my-pi/pi-coding-agent/session/private-side-calls";
 import { buildSideAgentHeaders } from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
 
@@ -225,5 +233,18 @@ describe("private side calls through Sprilicred", () => {
 		await expect(first).rejects.toThrow("title superseded");
 		expect((await second).content).toEqual([{ type: "text", text: "Fresh title" }]);
 		expect(wire.requests.filter(isTrigger)).toHaveLength(1);
+	});
+
+	it("runs a multi-request side agent on its own fresh session, one trigger per session", async () => {
+		const model = gatewayModel("anthropic-messages", "sprilicred-anthropic");
+		const wire = gateway(request => (isTrigger(request) ? anthropicReply("OK") : anthropicReply("noted", 12)));
+		const capture = Bun.randomUUIDv7();
+		const streamFn = wrapStreamFnPrivate(streamSimple, "capture", capture);
+		const context = { messages: [{ role: "user" as const, content: "learn", timestamp: Date.now() }] };
+		for (let turn = 0; turn < 2; turn++)
+			await (await streamFn(model, context, chatScopedOptions(wire.fetch))).result();
+		expect(wire.requests.map(isTrigger)).toEqual([true, false, false]);
+		for (const request of wire.requests) expect(request.headers.get(PRIVATE_SESSION_HEADER)).toBe(capture);
+		expect(wire.requests[0].raw).not.toContain(CHAT_ID);
 	});
 });

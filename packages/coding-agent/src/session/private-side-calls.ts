@@ -21,6 +21,7 @@
  * fresh id. The call itself is sent the same way. `x-omp-parent-session-id`
  * still links it to its chat.
  */
+import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { type Api, type AssistantMessage, completeSimple, type Model, type SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { SideAgentRole } from "./side-agent-headers";
@@ -33,7 +34,7 @@ export const PRIVATE_CHAT_ACK = "OK";
 export const PRIVATE_SESSION_HEADER = "x-session-id";
 
 /** Kinds of one-shot side call; each gets its own private session per process. */
-export type PrivateSideRole = SideAgentRole | "skill" | "commit";
+export type PrivateSideRole = SideAgentRole | "skill" | "commit" | "recap";
 
 /** Sprilicred answers the trigger itself, without a provider; anything slower is a failure. */
 const TRIGGER_TIMEOUT_MS = 15_000;
@@ -104,24 +105,29 @@ async function sendTrigger(model: Model<Api>, options: SimpleStreamOptions): Pro
 }
 
 /**
- * Options for a one-shot side call that Sprilicred keeps no record of.
+ * Options for a side call that Sprilicred keeps no record of.
  *
- * For a `sprilicred-*` model, the call moves to this process's private side
- * session for `role`, and the first call on it sends the trigger and waits for
- * Sprilicred's own "OK"; concurrent and later calls share that one trigger,
- * each waiting only as long as its own `signal` allows. If the trigger is not
- * confirmed this throws, and the side call must not be sent: sent anyway, it
- * would be recorded. A failed trigger is not re-sent for a minute. Any other
- * provider gets `options` back unchanged.
+ * For a `sprilicred-*` model, the call moves to `side.sessionId`, by default
+ * this process's private side session for `role`, and the first call on that
+ * session sends the trigger and waits for Sprilicred's own "OK"; concurrent
+ * and later calls share that one trigger, each waiting only as long as its own
+ * `signal` allows. If the trigger is not confirmed this throws, and the side
+ * call must not be sent: sent anyway, it would be recorded. A failed trigger
+ * is not re-sent for a minute. Any other provider gets `options` back
+ * unchanged.
+ *
+ * `side.sessionId` must be the side agent's own fresh id, never one that
+ * names the chat it serves.
  */
 export async function privateSideCall<T extends SimpleStreamOptions>(
 	model: Model<Api>,
 	options: T,
 	role: PrivateSideRole,
+	side?: { sessionId: string },
 ): Promise<T> {
 	// Only Sprilicred answers the trigger itself; anywhere else it is a real model call.
 	if (!model.provider.startsWith("sprilicred-")) return options;
-	const sessionId = privateSideSessionId(role);
+	const sessionId = side?.sessionId ?? privateSideSessionId(role);
 	const privateOptions: T = {
 		...options,
 		sessionId,
@@ -159,4 +165,13 @@ export async function privateSideCall<T extends SimpleStreamOptions>(
 		signal.removeEventListener("abort", onAbort);
 	}
 	return privateOptions;
+}
+
+/**
+ * Wrap a multi-request side agent's stream function (the auto-learn capture
+ * turn) so every request runs privately on that agent's own session `sessionId`.
+ */
+export function wrapStreamFnPrivate(streamFn: StreamFn, role: PrivateSideRole, sessionId: string): StreamFn {
+	return async (model, context, options) =>
+		streamFn(model, context, await privateSideCall(model, options ?? {}, role, { sessionId }));
 }

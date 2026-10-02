@@ -2543,7 +2543,11 @@ export class EventController {
 		this.#idleRecapAbort = abort;
 		try {
 			const session = this.ctx.viewSession;
-			const { replyText } = await session.runEphemeralTurn({ promptText, signal: abort.signal });
+			const { replyText } = await session.runEphemeralTurn({
+				promptText,
+				signal: abort.signal,
+				privateRole: "recap",
+			});
 			if (this.#idleRecapAbort !== abort || abort.signal.aborted || !this.#idleConditionsHold()) return;
 			const recap = previewLine(replyText, TRUNCATE_LENGTHS.RECAP);
 			if (!recap) return;

@@ -42,6 +42,7 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { ToolSession } from "../tools";
 import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
+import type { PrivateSideRole } from "./private-side-calls";
 import type { SessionManager } from "./session-manager";
 
 /** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
@@ -541,6 +542,12 @@ export interface EphemeralTurnOptions {
 	signal?: AbortSignal;
 	/** Default true: collapse runs of 4+ identical lines and cap the reply at 4 KiB. Pass false when the reply is shown or saved in full. */
 	dedupeReply?: boolean;
+	/**
+	 * Background side turns nobody asked for (the idle recap): on a `sprilicred-*` model, run on this
+	 * process's private side session for the role, so Sprilicred keeps no chat or Activity row for it
+	 * (`privateSideCall`). Throws, sending nothing, if Sprilicred does not confirm the session private.
+	 */
+	privateRole?: PrivateSideRole;
 }
 
 /** A tool call made during a `toolPolicy: "read-only"` side turn. */
