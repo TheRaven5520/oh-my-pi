@@ -68,6 +68,7 @@ import {
 import { getProxyForUrl } from "../utils/proxy";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
 import { adaptSchemaForStrict, NO_STRICT, sanitizeSchemaForOpenAIResponses, toolWireSchema } from "../utils/schema";
+import { applyProviderReportedSpeed, requestedSpeedForWire } from "../utils/speed-outcome";
 import { notifyRawSseEvent } from "../utils/sse-debug";
 import { compactGrammarDefinition } from "./grammar";
 import {
@@ -2572,6 +2573,11 @@ class CodexStreamProcessor {
 
 		calculateCost(model, output.usage, output.timestamp);
 		applyCodexServiceTierPricing(model, output.usage, serviceTier, runtime.requestBodyForState.service_tier);
+		const requestedSpeed = requestedSpeedForWire(runtime.requestBodyForState.service_tier);
+		if (requestedSpeed) {
+			output.speed = { requested: requestedSpeed };
+			applyProviderReportedSpeed(output, serviceTier);
+		}
 		output.stopReason = mapOpenAIResponsesStopReason(status);
 		promoteResponsesToolUseStopReason(
 			output,

@@ -90,6 +90,7 @@ import {
 } from "../utils/harmony-leak";
 import type { CapturedHttpErrorResponse } from "../utils/http-inspector";
 import { getOpenRouterHeaders } from "../utils/openrouter-headers";
+import { applyProviderReportedSpeed, speedOutcomeFromStreamError } from "../utils/speed-outcome";
 import { isForcedToolChoice } from "../utils/tool-choice";
 import {
 	buildCopilotDynamicHeaders,
@@ -3506,9 +3507,11 @@ export async function processResponsesStream<TApi extends Api>(
 				options?.requestServiceTier,
 			);
 			output.stopReason = mapOpenAIResponsesStopReason(response?.status);
+			applyProviderReportedSpeed(output, (response as { service_tier?: unknown } | undefined)?.service_tier);
 			if (response?.status === "failed" || response?.status === "cancelled") {
 				const error = response?.error ?? (response as any)?.status_details?.error;
 				const details = response?.incomplete_details;
+				output.speed = speedOutcomeFromStreamError({ error }, output.speed);
 				const statusDetailsReason = (response as any)?.status_details?.reason;
 				// A rate-limit/overload body inside a terminal response envelope must
 				// advance the fallback chain exactly like an HTTP-status 429 would
@@ -3559,6 +3562,8 @@ export async function processResponsesStream<TApi extends Api>(
 			break;
 		} else if (event.type === "error") {
 			const err = (event as any).error ?? event;
+			// A speed refusal over WebSocket carries the speed fields in the frame's error object.
+			output.speed = speedOutcomeFromStreamError(event, output.speed);
 			// An in-band rate-limit/overload `error` event advances the fallback chain
 			// like an HTTP-status 429 (body-error.ts); the whole event is passed so
 			// event-level status/code fields count too. Other codes keep the existing
@@ -3575,6 +3580,7 @@ export async function processResponsesStream<TApi extends Api>(
 			populateResponsesUsageFromResponse(output, event.response?.usage);
 			const error = event.response?.error ?? (event.response as any)?.status_details?.error;
 			const details = event.response?.incomplete_details;
+			output.speed = speedOutcomeFromStreamError({ error }, output.speed);
 			const inBand = details ? undefined : AIError.createInBandProviderError({ ...event.response, error });
 			if (inBand) throw inBand;
 			const message = error

@@ -77,7 +77,13 @@ import type {
 	UsageReport,
 	UserMessage,
 } from "@oh-my-pi/pi-ai";
-import { type Effort, streamSimple } from "@oh-my-pi/pi-ai";
+import {
+	type Effort,
+	realizesPriorityServiceTier,
+	resolveModelServiceTier,
+	streamSimple,
+	supportsUltrafastServiceTier,
+} from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
@@ -415,6 +421,7 @@ import { SessionTools, type SessionToolsHost } from "./session-tools";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { buildMainAgentLinkHeaders, withSideAgentHeaders } from "./side-agent-headers";
 import { skillPromptTitleInput } from "@oh-my-pi/pi-tui/chat/skill-title-input";
+import { describeSpeedOutcome } from "./speed-notice";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
@@ -914,6 +921,8 @@ export class AgentSession {
 	};
 	#promptSequence = 0;
 	#skippedPostTurnSpeculationCompletion: Promise<void> | undefined;
+	/** Outcome of the last faster-tier notice shown; the next shows only when it changes. */
+	#lastSpeedNoticeKey: string | undefined;
 	#pendingAgentEndEmit: AgentSessionEvent | undefined;
 	#inFlightSettledCallbacks: Array<() => void | Promise<void>> = [];
 	#sessionStopContinuationCount = 0;
@@ -2623,6 +2632,32 @@ export class AgentSession {
 		this.#emit({ type: "notice", level, message, source });
 	}
 
+	/**
+	 * Tell the person what became of a turn that asked for fast or ultrafast
+	 * (Sprilicred's speed headers, else the provider's report), once per change
+	 * of outcome and on every refused turn. A turn whose model could not carry
+	 * the session's faster tier says it was not sent.
+	 */
+	#noticeSpeedOutcome(message: AssistantMessage): void {
+		const model = this.model;
+		let notSent: "fast" | "ultrafast" | undefined;
+		if (model && model.provider === message.provider) {
+			const tier = resolveModelServiceTier(this.serviceTierByFamily, model);
+			if (tier === "ultrafast" && !supportsUltrafastServiceTier(model)) notSent = "ultrafast";
+			else if (tier === "priority" && !realizesPriorityServiceTier(tier, model)) notSent = "fast";
+		}
+		const notice = describeSpeedOutcome(message, notSent, `${message.provider}/${message.model}`);
+		if (!notice) {
+			// Nothing faster asked or wanted: the next faster turn announces itself again.
+			if (!message.speed && !notSent && message.stopReason !== "error") this.#lastSpeedNoticeKey = undefined;
+			return;
+		}
+		if (notice.always || notice.key !== this.#lastSpeedNoticeKey) {
+			this.emitNotice(notice.level, notice.text);
+		}
+		this.#lastSpeedNoticeKey = notice.key;
+	}
+
 	#recordToolExecutionStart(event: Extract<AgentEvent, { type: "tool_execution_start" }>): void {
 		const data: ToolExecutionStartData = {
 			toolCallId: event.toolCallId,
@@ -3483,6 +3518,7 @@ export class AgentSession {
 						"priority",
 					);
 				}
+				this.#noticeSpeedOutcome(assistantMsg);
 				this.#ttsr.onAssistantMessageEnd(assistantMsg);
 				if (this.#handoff.isGeneratingHandoff) {
 					this.#maintenance.skipPostTurnMaintenanceAssistantTimestamp = assistantMsg.timestamp;
@@ -8932,6 +8968,26 @@ export class AgentSession {
 	/** Toggles priority service for the active model family. */
 	toggleFastMode(): boolean {
 		return this.#models.toggleFastMode();
+	}
+
+	/** Reports whether `/ultrafast` is on (the OpenAI family's `ultrafast` tier). */
+	isUltrafastModeEnabled(): boolean {
+		return this.#models.isUltrafastModeEnabled();
+	}
+
+	/** Reports whether the active model can carry ultrafast (a Sprilicred OpenAI model). */
+	isUltrafastAvailable(): boolean {
+		return this.#models.isUltrafastAvailable();
+	}
+
+	/** Enables (turning fast off) or disables ultrafast; `false` when the active model can't carry it. */
+	setUltrafastMode(enabled: boolean): boolean {
+		return this.#models.setUltrafastMode(enabled);
+	}
+
+	/** Toggles ultrafast; returns whether it is now on. */
+	toggleUltrafastMode(): boolean {
+		return this.#models.toggleUltrafastMode();
 	}
 
 	/** Flips the `skillful` setting for this session only. See {@link setSkillful}. */

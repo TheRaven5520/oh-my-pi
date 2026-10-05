@@ -8,11 +8,20 @@ import type { SubmenuOption } from "@oh-my-pi/pi-tui/overlays/settings-defs";
 /**
  * Per-family service-tier setting values. `"none"` is the omit-the-parameter
  * sentinel; the rest mirror the wire {@link ServiceTier} values each provider
- * family actually realizes. OpenAI accepts the full set; Anthropic realizes
- * only `priority` (fast mode); Google (Gemini API + Vertex) realizes
+ * family actually realizes. OpenAI accepts the full set (`ultrafast` is sent
+ * only through Sprilicred and omitted elsewhere); Anthropic realizes only
+ * `priority` (fast mode); Google (Gemini API + Vertex) realizes
  * `flex`/`priority`.
  */
-export const SERVICE_TIER_OPENAI_VALUES = ["none", "auto", "default", "flex", "scale", "priority"] as const;
+export const SERVICE_TIER_OPENAI_VALUES = [
+	"none",
+	"auto",
+	"default",
+	"flex",
+	"scale",
+	"priority",
+	"ultrafast",
+] as const;
 export const SERVICE_TIER_ANTHROPIC_VALUES = ["none", "priority"] as const;
 export const SERVICE_TIER_GOOGLE_VALUES = ["none", "flex", "priority"] as const;
 
@@ -104,6 +113,11 @@ export const SERVICE_TIER_OPENAI_OPTIONS: ReadonlyArray<SubmenuOption<ServiceTie
 	{ value: "flex", label: "Flex", description: "Lower cost, higher latency when available" },
 	{ value: "scale", label: "Scale", description: "Scale Tier credits when available" },
 	{ value: "priority", label: "Priority", description: "Faster, higher cost (premium request)" },
+	{
+		value: "ultrafast",
+		label: "Ultrafast",
+		description: "Fastest, six times Standard; Sprilicred OpenAI models only (omitted elsewhere)",
+	},
 ];
 
 export const SERVICE_TIER_ANTHROPIC_OPTIONS: ReadonlyArray<SubmenuOption<ServiceTierAnthropicSettingValue>> = [

@@ -33,6 +33,7 @@ import {
 } from "../utils/idle-iterator";
 import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
 import { notifyProviderResponse } from "../utils/provider-response";
+import { requestedSpeedForWire, speedOutcomeFromError, speedOutcomeFromHeaders } from "../utils/speed-outcome";
 import {
 	adaptSchemaForStrict,
 	findStrictToolSchemaViolation,
@@ -581,6 +582,10 @@ const streamOpenAIResponsesOnce = (
 				);
 				activeRequestParams = requestParams;
 				lastSubmittedRequestWasFullReplay = requestParams.previous_response_id === undefined;
+				// The faster tier this attempt puts on the wire; its outcome is filled
+				// in from the gateway's speed headers, error, or the response echo.
+				const requestedSpeed = requestedSpeedForWire(requestParams.service_tier);
+				output.speed = requestedSpeed ? { requested: requestedSpeed } : undefined;
 				let requestTimeout: NodeJS.Timeout | undefined;
 				if (requestTimeoutMs !== undefined) {
 					requestTimeout = setTimeout(
@@ -617,6 +622,8 @@ const streamOpenAIResponsesOnce = (
 					// onResponse callback must not abort an already-connected stream.
 					clearTimeout(requestTimeout);
 					await notifyProviderResponse(options, response, model, requestId);
+					if (requestedSpeed)
+						output.speed = speedOutcomeFromHeaders(response.headers, requestedSpeed) ?? output.speed;
 					return events;
 				} finally {
 					clearTimeout(requestTimeout);
@@ -960,6 +967,7 @@ const streamOpenAIResponsesOnce = (
 			});
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
+			output.speed = speedOutcomeFromError(error, output.speed);
 			output.errorId = result.id;
 			output.errorMessage = result.message;
 			if (AIError.isRequestBodyReadTimeout(result.status, result.message) && lastSubmittedRequestWasFullReplay) {

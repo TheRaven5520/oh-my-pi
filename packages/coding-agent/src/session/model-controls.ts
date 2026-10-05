@@ -1,6 +1,12 @@
 import { type Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model, ProviderSessionState, ServiceTier, ServiceTierByFamily, ServiceTierFamily } from "@oh-my-pi/pi-ai";
-import { Effort, realizesPriorityServiceTier, resolveModelServiceTier, serviceTierFamily } from "@oh-my-pi/pi-ai";
+import {
+	Effort,
+	realizesPriorityServiceTier,
+	resolveModelServiceTier,
+	serviceTierFamily,
+	supportsUltrafastServiceTier,
+} from "@oh-my-pi/pi-ai";
 import {
 	clearAnthropicFastModeFallback,
 	isAnthropicFastModeFallbackDisabled,
@@ -776,8 +782,25 @@ export class ModelControls {
 	 */
 	isFastModeActive(): boolean {
 		const model = this.#model;
-		if (!model || !realizesPriorityServiceTier(this.effectiveServiceTier(model), model)) return false;
+		if (!model) return false;
+		const tier = this.effectiveServiceTier(model);
+		if (tier === "ultrafast") return supportsUltrafastServiceTier(model);
+		if (!realizesPriorityServiceTier(tier, model)) return false;
 		return !isAnthropicFastModeFallbackDisabled(this.#host.providerSessionState, model);
+	}
+
+	/**
+	 * True when the session's OpenAI family is set to `ultrafast` — the
+	 * `/ultrafast` on/off state. Ultrafast exists only for OpenAI-family models,
+	 * and is sent only through Sprilicred ({@link isUltrafastAvailable}).
+	 */
+	isUltrafastModeEnabled(): boolean {
+		return this.#serviceTierByFamily.openai === "ultrafast";
+	}
+
+	/** True when the current model can carry the `ultrafast` tier (a Sprilicred OpenAI model). */
+	isUltrafastAvailable(): boolean {
+		return this.#model !== undefined && supportsUltrafastServiceTier(this.#model);
 	}
 
 	/**
@@ -838,20 +861,59 @@ export class ModelControls {
 			);
 			return false;
 		}
+		const next: ServiceTierByFamily = { ...this.#serviceTierByFamily };
 		if (!enabled) {
-			if (this.#serviceTierByFamily[family] === "priority") this.setServiceTierFamily(family, undefined);
-			return true;
+			if (next[family] !== "priority") return true;
+			delete next[family];
+		} else {
+			if (family === "anthropic" && this.#serviceTierByFamily.anthropic === "priority") {
+				clearAnthropicFastModeFallback(this.#host.providerSessionState);
+			}
+			// Fast and ultrafast are one choice: turning fast on turns ultrafast off.
+			if (next.openai === "ultrafast") delete next.openai;
+			next[family] = "priority";
 		}
-		if (family === "anthropic" && this.#serviceTierByFamily.anthropic === "priority") {
-			clearAnthropicFastModeFallback(this.#host.providerSessionState);
-		}
-		this.setServiceTierFamily(family, "priority");
+		this.#applyServiceTierByFamilyIfChanged(next);
 		return true;
 	}
 
 	toggleFastMode(): boolean {
 		if (!this.setFastMode(!this.isFastModeEnabled())) return false;
 		return this.isFastModeEnabled();
+	}
+
+	/**
+	 * `/ultrafast on|off`: sets (or clears) the OpenAI family's `ultrafast` tier.
+	 * Turning it on turns fast (`priority`) off in every family, and is refused
+	 * (returns `false`, nothing changes) when the current model is not a
+	 * Sprilicred OpenAI model, the only place ultrafast is sent.
+	 */
+	setUltrafastMode(enabled: boolean): boolean {
+		const next: ServiceTierByFamily = { ...this.#serviceTierByFamily };
+		if (!enabled) {
+			if (next.openai !== "ultrafast") return true;
+			delete next.openai;
+		} else {
+			if (!this.isUltrafastAvailable()) return false;
+			for (const family of ["openai", "anthropic", "google"] as const) {
+				if (next[family] === "priority") delete next[family];
+			}
+			next.openai = "ultrafast";
+		}
+		this.#applyServiceTierByFamilyIfChanged(next);
+		return true;
+	}
+
+	toggleUltrafastMode(): boolean {
+		if (!this.setUltrafastMode(!this.isUltrafastModeEnabled())) return false;
+		return this.isUltrafastModeEnabled();
+	}
+
+	#applyServiceTierByFamilyIfChanged(next: ServiceTierByFamily): void {
+		const current = this.#serviceTierByFamily;
+		const families = ["openai", "anthropic", "google"] as const;
+		if (families.every(family => current[family] === next[family])) return;
+		this.#applyServiceTierByFamily(next);
 	}
 
 	/**

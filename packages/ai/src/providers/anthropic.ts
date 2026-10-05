@@ -83,6 +83,12 @@ import { getHeadersFromError, getRetryAfterMsFromHeaders } from "../utils/retry-
 import { COMBINATOR_KEYS, NO_STRICT, toolWireSchema } from "../utils/schema";
 import { spillToDescription } from "../utils/schema/spill";
 import { createSdkStreamRequestOptions } from "../utils/sdk-stream-timeout";
+import {
+	applyProviderReportedSpeed,
+	requestedSpeedForWire,
+	speedOutcomeFromError,
+	speedOutcomeFromHeaders,
+} from "../utils/speed-outcome";
 import { notifyRawSseEvent } from "../utils/sse-debug";
 import { isForcedToolChoice } from "../utils/tool-choice";
 import {
@@ -2438,6 +2444,10 @@ const streamAnthropicOnce = (
 						? client.beta.messages.create({ ...params, stream: true }, requestOptions)
 						: client.messages.create({ ...params, stream: true }, requestOptions);
 				let streamedReplayUnsafeContent = false;
+				// The fast mode this attempt puts on the wire; its outcome is filled in
+				// from the gateway's speed headers or error, or `usage.speed`.
+				const requestedSpeed = requestedSpeedForWire(params.speed);
+				output.speed = requestedSpeed ? { requested: requestedSpeed } : undefined;
 
 				try {
 					let requestTimeout: NodeJS.Timeout | undefined;
@@ -2467,6 +2477,8 @@ const streamAnthropicOnce = (
 						if (requestTimeout !== undefined) clearTimeout(requestTimeout);
 					}
 					await notifyProviderResponse(options, response, model, requestId);
+					if (requestedSpeed)
+						output.speed = speedOutcomeFromHeaders(response.headers, requestedSpeed) ?? output.speed;
 					let sawEvent = false;
 					let sawMessageStart = false;
 					let sawTerminalEnvelope = false;
@@ -2558,6 +2570,7 @@ const streamAnthropicOnce = (
 							const startUsage = startMessage?.usage;
 							if (startUsage) {
 								applyAnthropicUsageExtras(output.usage, startUsage);
+								applyProviderReportedSpeed(output, "speed" in startUsage ? startUsage.speed : undefined);
 								output.usage.input = startUsage.input_tokens || 0;
 								output.usage.output = startUsage.output_tokens || 0;
 								output.usage.cacheRead = startUsage.cache_read_input_tokens || 0;
@@ -2919,6 +2932,7 @@ const streamAnthropicOnce = (
 									output.usage.cacheWrite = deltaUsage.cache_creation_input_tokens;
 								}
 								applyAnthropicUsageExtras(output.usage, deltaUsage);
+								applyProviderReportedSpeed(output, "speed" in deltaUsage ? deltaUsage.speed : undefined);
 								const compacted = applyCompactionIterationUsage(output.usage, deltaUsage);
 								output.usage.totalTokens =
 									output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
@@ -3249,6 +3263,7 @@ const streamAnthropicOnce = (
 				rawRequestDump,
 			});
 			output.stopReason = result.stopReason;
+			output.speed = speedOutcomeFromError(error, output.speed);
 			output.errorStatus = result.status;
 			output.errorId = result.id;
 			output.errorMessage = maybeAddReplayUnsignedThinkingHint(model, result.message);

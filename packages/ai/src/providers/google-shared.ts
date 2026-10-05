@@ -814,7 +814,12 @@ export function buildGoogleGenerateContentParams<T extends "google-generative-ai
 	// Vertex AI ignores a body field and requires the
 	// `X-Vertex-AI-LLM-Shared-Request-Type` header instead (added in
 	// streamGoogleVertex), so only emit the body field for the direct API.
-	if (model.provider === "google" && shouldSendServiceTier(options.serviceTier, model.provider)) {
+	// `ultrafast` is a Sprilicred OpenAI tier; `shouldSendServiceTier` never passes it for Google.
+	if (
+		model.provider === "google" &&
+		options.serviceTier !== "ultrafast" &&
+		shouldSendServiceTier(options.serviceTier, model.provider)
+	) {
 		config.serviceTier = options.serviceTier;
 	}
 

@@ -127,7 +127,9 @@ export type CacheRetention = "none" | "short" | "long";
  * values providers consume on the wire:
  *
  * - OpenAI / OpenAI-Codex: sent verbatim as the `service_tier` field
- *   (`flex`/`scale`/`priority`).
+ *   (`flex`/`scale`/`priority`). `ultrafast` is sent only through a
+ *   Sprilicred (`sprilicred-*`) provider, the one gateway that offers it
+ *   (see {@link supportsUltrafastServiceTier}); elsewhere it is omitted.
  * - Google (Gemini API + Vertex AI): sent as the top-level `serviceTier`
  *   field (`flex`/`priority`).
  * - OpenRouter: passed through as `service_tier`; OpenRouter realizes it for
@@ -141,7 +143,7 @@ export type CacheRetention = "none" | "short" | "long";
  * Per-family scoping is expressed by {@link ServiceTierByFamily}, not by
  * scoped sentinel values — see {@link serviceTierFamily}.
  */
-export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority";
+export type ServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "ultrafast";
 
 /** Provider families that expose an independent service-tier knob. */
 export type ServiceTierFamily = "openai" | "anthropic" | "google";
@@ -222,6 +224,18 @@ export function resolveModelServiceTier(
 }
 
 /**
+ * True when `target` may carry the `ultrafast` tier: an OpenAI-family model (or
+ * a bare provider id) on a Sprilicred provider. Sprilicred decides per request
+ * whether a model and person get it and says so in its speed headers; every
+ * other endpoint (a personal ChatGPT account, the OpenAI API) never sees it.
+ */
+export function supportsUltrafastServiceTier(target: Provider | ServiceTierModel | undefined): boolean {
+	const provider = typeof target === "string" ? target : target?.provider;
+	if (!provider?.startsWith("sprilicred-")) return false;
+	return typeof target === "string" || (target !== undefined && serviceTierFamily(target) === "openai");
+}
+
+/**
  * True when the tier should be sent on the wire as the provider's service-tier
  * request field. `auto` is never forwarded — it is OpenAI's implicit default, so
  * omitting `service_tier` is identical to requesting `auto`, and the Codex
@@ -236,6 +250,7 @@ export function shouldSendServiceTier(
 	target: Provider | ServiceTierModel | undefined,
 ): boolean {
 	if (!serviceTier || serviceTier === "auto") return false;
+	if (serviceTier === "ultrafast") return supportsUltrafastServiceTier(target);
 	const provider = typeof target === "string" ? target : target?.provider;
 	if (provider === "openai" || provider === "openai-codex") return true;
 	if (provider === "openrouter") {
@@ -331,7 +346,14 @@ export function coerceServiceTierByFamily(value: unknown): ServiceTierByFamily |
 		const out: ServiceTierByFamily = {};
 		for (const family of ["openai", "anthropic", "google"] as const) {
 			const tier = src[family];
-			if (tier === "auto" || tier === "default" || tier === "flex" || tier === "scale" || tier === "priority") {
+			if (
+				tier === "auto" ||
+				tier === "default" ||
+				tier === "flex" ||
+				tier === "scale" ||
+				tier === "priority" ||
+				(tier === "ultrafast" && family === "openai")
+			) {
 				out[family] = tier;
 			}
 		}
@@ -1073,6 +1095,33 @@ export interface ContextSnapshot {
 	lastMessageTimestamp?: number;
 }
 
+/** A faster serving tier a request can ask for. */
+export type RequestedSpeed = "fast" | "ultrafast";
+
+/**
+ * What became of a request that asked for a faster tier. `forwarded`/`reason`
+ * come from Sprilicred's `x-sprilicred-speed*` headers (or the same fields in
+ * an error body or WebSocket error frame); `served` is what the provider
+ * itself reported serving (OpenAI's echoed `service_tier`, Anthropic's
+ * `usage.speed`), which can be lower than what was forwarded. Each stays
+ * undefined when nobody said.
+ */
+export interface SpeedOutcome {
+	requested: RequestedSpeed;
+	/** Tier the gateway forwarded upstream. */
+	forwarded?: RequestedSpeed | "standard";
+	/** Tier the provider reported serving. */
+	served?: RequestedSpeed | "standard";
+	/** Gateway reason code (`forwarded`, `not_permitted`, `no_pro500_capacity`, …). */
+	reason?: string;
+	/**
+	 * The request failed over its faster tier: an older Sprilicred's 409
+	 * `speed_refused`, or an upstream refusal of Ultrafast mid-stream. Current
+	 * Sprilicred never refuses; it forwards a slower tier and says why.
+	 */
+	refused?: boolean;
+}
+
 export interface AssistantMessage {
 	role: "assistant";
 	content: (
@@ -1130,6 +1179,13 @@ export interface AssistantMessage {
 	 * server's actual state.
 	 */
 	disabledFeatures?: string[];
+	/**
+	 * Faster tier this request put on the wire (OpenAI `service_tier`
+	 * `priority`/`ultrafast`, Anthropic `speed: "fast"`) and what became of it,
+	 * from the gateway's speed headers or error, else the provider's own
+	 * report. Absent when the request asked for no faster tier.
+	 */
+	speed?: SpeedOutcome;
 	/** Provider-reported input rewrites such as dropped bound-thinking blocks. */
 	inputTransformations?: ProviderInputTransformation[];
 	/**

@@ -74,6 +74,45 @@ function formatFastModeStatus(session: AgentSession): string {
 	return session.isFastModeEnabled() ? "on" : "off";
 }
 
+/** `/ultrafast status` label: "on" when the OpenAI family is set to ultrafast, else "off". */
+function formatUltrafastModeStatus(session: AgentSession): string {
+	return session.isUltrafastModeEnabled() ? "on" : "off";
+}
+
+/**
+ * Applies a `/fast` or `/ultrafast` argument (none or `toggle` flips it, `on`,
+ * `off`, `status`) and returns its feedback, or `undefined` for an unknown
+ * argument. The two are one choice: turning one on turns the other off, and
+ * the feedback says so.
+ */
+function applySpeedCommand(session: AgentSession, mode: "fast" | "ultrafast", args: string): string | undefined {
+	const arg = args.trim().toLowerCase();
+	const ultrafast = mode === "ultrafast";
+	const name = ultrafast ? "Ultrafast" : "Fast mode";
+	if (arg === "status") {
+		return `${name} is ${ultrafast ? formatUltrafastModeStatus(session) : formatFastModeStatus(session)}.`;
+	}
+	if (arg !== "" && arg !== "toggle" && arg !== "on" && arg !== "off") return undefined;
+	const enabledNow = ultrafast ? session.isUltrafastModeEnabled() : session.isFastModeEnabled();
+	const enable = arg === "on" || (arg !== "off" && !enabledNow);
+	if (!enable) {
+		if (ultrafast) session.setUltrafastMode(false);
+		else session.setFastMode(false);
+		return `${name} disabled.`;
+	}
+	const otherWasOn = ultrafast
+		? Object.values(session.serviceTierByFamily).includes("priority")
+		: session.isUltrafastModeEnabled();
+	if (ultrafast ? !session.setUltrafastMode(true) : !session.setFastMode(true)) {
+		const model = session.model;
+		const label = model ? `${model.provider}/${model.id}` : "the current model";
+		return ultrafast
+			? `Ultrafast isn't available on ${label}: only Sprilicred's OpenAI models offer it. Nothing changed.`
+			: "Fast mode is unavailable for the current model.";
+	}
+	return otherWasOn ? `${name} enabled; ${ultrafast ? "fast mode" : "ultrafast"} disabled.` : `${name} enabled.`;
+}
+
 /** `/extended-context status` label for the premium long-context window setting. */
 function formatExtendedContextStatus(settings: Settings): string {
 	return settings.get("extendedContext") ? "on" : "off";
@@ -420,68 +459,52 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "fast",
 		description: "Toggle priority service tier (OpenAI service_tier=priority, Anthropic speed=fast)",
 		acpDescription: "Toggle fast mode",
-		acpInputHint: "[on|off|status]",
+		acpInputHint: "[on|off|toggle|status]",
 		subcommands: [
-			{ name: "on", description: "Enable fast mode" },
+			{ name: "on", description: "Enable fast mode (turns ultrafast off)" },
 			{ name: "off", description: "Disable fast mode" },
+			{ name: "toggle", description: "Flip fast mode (same as no argument)" },
 			{ name: "status", description: "Show fast mode status" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.session)}`,
 		handle: async (command, runtime) => {
-			const arg = command.args.toLowerCase();
-			if (!arg || arg === "toggle") {
-				const enabled = runtime.session.toggleFastMode();
-				await runtime.output(`Fast mode ${enabled ? "enabled" : "disabled"}.`);
-				return commandConsumed();
-			}
-			if (arg === "on") {
-				const supported = runtime.session.setFastMode(true);
-				await runtime.output(supported ? "Fast mode enabled." : "Fast mode is unavailable for the current model.");
-				return commandConsumed();
-			}
-			if (arg === "off") {
-				runtime.session.setFastMode(false);
-				await runtime.output("Fast mode disabled.");
-				return commandConsumed();
-			}
-			if (arg === "status") {
-				await runtime.output(`Fast mode is ${formatFastModeStatus(runtime.session)}.`);
-				return commandConsumed();
-			}
-			return usage("Usage: /fast [on|off|status]", runtime);
+			const feedback = applySpeedCommand(runtime.session, "fast", command.args);
+			if (feedback === undefined) return usage("Usage: /fast [on|off|toggle|status]", runtime);
+			await runtime.output(feedback);
+			return commandConsumed();
 		},
 		handleTui: (command, runtime) => {
-			const arg = command.args.trim().toLowerCase();
-			if (!arg || arg === "toggle") {
-				const enabled = runtime.ctx.session.toggleFastMode();
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus(`Fast mode ${enabled ? "enabled" : "disabled"}.`);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "on") {
-				const supported = runtime.ctx.session.setFastMode(true);
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus(
-					supported ? "Fast mode enabled." : "Fast mode is unavailable for the current model.",
-				);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "off") {
-				runtime.ctx.session.setFastMode(false);
-				refreshStatusLine(runtime.ctx);
-				runtime.ctx.showStatus("Fast mode disabled.");
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "status") {
-				runtime.ctx.showStatus(`Fast mode is ${formatFastModeStatus(runtime.ctx.session)}.`);
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			runtime.ctx.showStatus("Usage: /fast [on|off|status]");
+			const feedback = applySpeedCommand(runtime.ctx.session, "fast", command.args);
+			refreshStatusLine(runtime.ctx);
+			runtime.ctx.showStatus(feedback ?? "Usage: /fast [on|off|toggle|status]");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "ultrafast",
+		icon: "fast",
+		description: "Toggle the ultrafast tier (service_tier=ultrafast; Sprilicred OpenAI models only)",
+		acpDescription: "Toggle ultrafast mode",
+		acpInputHint: "[on|off|toggle|status]",
+		subcommands: [
+			{ name: "on", description: "Enable ultrafast (turns fast mode off)" },
+			{ name: "off", description: "Disable ultrafast" },
+			{ name: "toggle", description: "Flip ultrafast (same as no argument)" },
+			{ name: "status", description: "Show ultrafast status" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => `Ultrafast: ${formatUltrafastModeStatus(runtime.ctx.session)}`,
+		handle: async (command, runtime) => {
+			const feedback = applySpeedCommand(runtime.session, "ultrafast", command.args);
+			if (feedback === undefined) return usage("Usage: /ultrafast [on|off|toggle|status]", runtime);
+			await runtime.output(feedback);
+			return commandConsumed();
+		},
+		handleTui: (command, runtime) => {
+			const feedback = applySpeedCommand(runtime.ctx.session, "ultrafast", command.args);
+			refreshStatusLine(runtime.ctx);
+			runtime.ctx.showStatus(feedback ?? "Usage: /ultrafast [on|off|toggle|status]");
 			runtime.ctx.editor.setText("");
 		},
 	},
