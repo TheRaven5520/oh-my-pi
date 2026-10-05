@@ -60,17 +60,40 @@ function prettifyId(id: string): string {
 	return id;
 }
 
-/** The display name for a model name or id, or a `provider/id[:level]` reference (see {@link ModelNameOptions.ref}). */
-export function formatModelName(text: string, options: ModelNameOptions = {}): string {
+/**
+ * The display name and, when one was read off the text, its thinking level.
+ * A selector-shaped text (`provider/claude-opus-5-5:xhigh`) of a known family
+ * reads as that family's name whatever `ref` says, so a raw selector reaching
+ * any caller still shows `Opus 5.5`; an unfamiliar id keeps its rules below.
+ */
+function parseModelName(text: string, options: ModelNameOptions): { name: string; level?: string } {
 	let name = text.trim();
 	const via = /\s+via\s+(\S.*)$/i.exec(name);
 	if (via) name = name.slice(0, via.index).trim();
-	const suffix = options.keepVia && via ? ` via ${via[1]}` : "";
+	let suffix = options.keepVia && via ? ` via ${via[1]}` : "";
+	// `claude-opus-5-5 (personal)`: a configured name's own note on where the model comes from.
+	const note = !via ? /^(\S+)\s+\(([^()]+)\)$/.exec(name) : null;
+	if (note && prettifyId(note[1]!) !== note[1]) {
+		name = note[1]!;
+		if (options.keepVia) suffix = ` (${note[2]!.trim()})`;
+	}
 	// Already a display name (`Claude Opus 4.5`, `Gemini 2.5 Pro`): only drop the vendor word.
-	if (/\s/.test(name)) return `${name.replace(/^Claude\s+/, "")}${suffix}`;
-	if (options.ref === "selector") name = splitModelSelector(name).model;
+	if (/\s/.test(name)) return { name: `${name.replace(/^Claude\s+/, "")}${suffix}` };
+	const selector = splitModelSelector(name);
+	if (options.ref === "selector") name = selector.model;
 	if (options.ref) name = name.slice(name.indexOf("/") + 1);
-	return `${prettifyId(name)}${suffix}`;
+	const pretty = prettifyId(name);
+	if (pretty !== name || !selector.level) return { name: `${pretty}${suffix}` };
+	// A known family behind a provider and/or a level suffix the caller did not say to expect.
+	const family = prettifyId(selector.model);
+	return family !== selector.model
+		? { name: `${family}${suffix}`, level: selector.level }
+		: { name: `${pretty}${suffix}` };
+}
+
+/** The display name for a model name or id, or a `provider/id[:level]` reference (see {@link ModelNameOptions.ref}). */
+export function formatModelName(text: string, options: ModelNameOptions = {}): string {
+	return parseModelName(text, options).name;
 }
 
 /** A thinking level worth showing: a known level other than `off`/`inherit`, or `auto`. */
@@ -85,9 +108,9 @@ export function shownThinkingLevel(level: string | undefined): string | undefine
  * unknown levels and `off`/`inherit` are left out.
  */
 export function formatModelLabel(text: string, level?: string, options: ModelNameOptions = {}): string {
-	const name = formatModelName(text, options);
+	const parsed = parseModelName(text, options);
 	const shown = shownThinkingLevel(
-		level ?? (options.ref === "selector" ? splitModelSelector(text.trim()).level : undefined),
+		level ?? (options.ref === "selector" ? splitModelSelector(text.trim()).level : parsed.level),
 	);
-	return shown ? `${name} (${shown})` : name;
+	return shown ? `${parsed.name} (${shown})` : parsed.name;
 }

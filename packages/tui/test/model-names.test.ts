@@ -47,6 +47,22 @@ describe("formatModelName", () => {
 	});
 });
 
+describe("raw selectors and configured notes", () => {
+	it("reads a known family behind a provider and level suffix, wherever it arrives", () => {
+		const raw = "sprilicred-anthropic/claude-opus-5-5:xhigh";
+		expect(formatModelName(raw)).toBe("Opus 5.5");
+		expect(formatModelLabel(raw)).toBe("Opus 5.5 (xhigh)");
+		expect(formatModelLabel(raw, "xhigh", { ref: "identity" })).toBe("Opus 5.5 (xhigh)");
+		expect(formatModelLabel("sprilicred-openai/gpt-6.1-sol:high")).toBe("GPT-6.1 Sol (high)");
+	});
+
+	it("keeps where a model comes from only when asked (the status line)", () => {
+		expect(formatModelName("claude-opus-5-5 (personal)")).toBe("Opus 5.5");
+		expect(formatModelName("claude-opus-5-5 (personal)", { keepVia: true })).toBe("Opus 5.5 (personal)");
+		expect(formatModelName("gpt-6.1-sol via Sprilicred", { keepVia: true })).toBe("GPT-6.1 Sol via Sprilicred");
+	});
+});
+
 describe("formatModelLabel", () => {
 	it("puts a shown thinking level in parentheses", () => {
 		expect(formatModelLabel("sprilicred-anthropic/claude-opus-5-5:low", undefined, { ref: "selector" })).toBe(

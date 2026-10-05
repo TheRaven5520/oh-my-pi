@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Model names: a raw `provider/claude-opus-5-5:xhigh` selector reaching any surface (agents dock, Agent Hub, job rows) reads `Opus 5.5 (xhigh)`; the status line keeps where the model comes from (`Opus 5.5 via Sprilicred`, `Opus 5.5 (personal)`) so a fallback off the pool shows.
+
 ### Added
 
 - `overlays/agent-run-stats` formats agent stats Claude Code-style (`formatAgentRunStats`); `AgentProgress.startedAtMs` records a run's start so live views can tick its elapsed time; `readSessionMetrics` is exported from the Agent Hub projection.

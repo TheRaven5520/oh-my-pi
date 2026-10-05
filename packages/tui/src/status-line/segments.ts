@@ -291,7 +291,9 @@ const modelSegment: StatusLineSegment = {
 		const state = ctx.session.state;
 		const opts = ctx.options.model ?? {};
 
-		let modelName = formatModelName(state.model?.name || state.model?.id || "no-model");
+		// Keeps where the model comes from (`Opus 5.5 via Sprilicred`, `Opus 5.5 (personal)`),
+		// so a fallback off the pool is visible at a glance; other surfaces drop it.
+		let modelName = formatModelName(state.model?.name || state.model?.id || "no-model", { keepVia: true });
 		modelName = statusValue(ctx, modelName);
 
 		if (ctx.claudeStyle) {
