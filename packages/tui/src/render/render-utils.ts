@@ -247,6 +247,40 @@ export function previewLine(text: string, maxWidth: number, ellipsis?: Ellipsis)
 	return truncateToWidth(text.replace(/\s+/g, " ").trim(), maxWidth, ellipsis);
 }
 
+const SUMMARY_HEADING = /^#{1,6}\s+/;
+const SUMMARY_LIST_MARKER = /^([-*+>]|\d+[.)])\s+/;
+
+/**
+ * One-line summary of a delegated task brief for list rows. Briefs are usually
+ * Markdown (`# Target\nfoo.ts\n# Change\n1. …`); the first line that is not a
+ * heading or `:`-terminated lead-in, with list/quote markers stripped, reads as
+ * the summary. Falls back to the first lead-in, then the first heading's text. Untruncated: callers cap the width.
+ */
+export function taskSummaryLine(text: string): string {
+	const lines = sanitizeText(text)
+		.split(/\r?\n/)
+		.map(line => line.trim())
+		.filter(Boolean);
+	let heading: string | undefined;
+	let leadIn: string | undefined;
+	for (const line of lines) {
+		if (SUMMARY_HEADING.test(line)) {
+			heading ??= line.replace(SUMMARY_HEADING, "");
+			continue;
+		}
+		const body = line.replace(SUMMARY_LIST_MARKER, "").replace(/\s+/g, " ").trim();
+		if (!body) continue;
+		// Boilerplate lead-ins ("Complete assignment thoroughly:") say nothing
+		// about the task; prefer the first line after them.
+		if (body.endsWith(":")) {
+			leadIn ??= body;
+			continue;
+		}
+		return body;
+	}
+	return leadIn ?? (heading ?? "").replace(/\s+/g, " ").trim();
+}
+
 // =============================================================================
 // URL Utilities
 // =============================================================================

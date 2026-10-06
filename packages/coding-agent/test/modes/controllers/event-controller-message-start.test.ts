@@ -255,6 +255,30 @@ describe("EventController IRC expiry", () => {
 		expect(chatContainer.children).toHaveLength(1);
 	});
 
+	it("keeps a /fork report on screen past the TTL and outside the live-card cap", async () => {
+		vi.useFakeTimers();
+		const { ctx, chatContainer } = createIrcContext({ liveBlockAbove: true });
+		const controller = new EventController(ctx);
+		const result = `Counted the top-level files: ${"dotfiles has four markdown files ".repeat(4)}and the last word is zebra.`;
+		const report: CustomMessage = {
+			...createIrcMessage(50),
+			details: { from: "Fork-1", message: result, forkReport: { done: true } },
+		};
+
+		await controller.handleEvent({ type: "irc_message", message: report });
+		for (let i = 0; i < 5; i++) {
+			await controller.handleEvent({ type: "irc_message", message: createIrcMessage(200 + i) });
+		}
+		vi.advanceTimersByTime(10_000);
+
+		// Every peer card retired; the live block and the fork's report remain.
+		expect(chatContainer.children).toHaveLength(2);
+		const card = chatContainer.children[1]!.render(60).join("\n");
+		expect(card).toContain("Fork report");
+		// Wrapped rather than cut at the card width: the end of the report is still shown.
+		expect(card).toContain("zebra");
+	});
+
 	it("clears pending IRC expiry timers on dispose", async () => {
 		vi.useFakeTimers();
 		const message = createIrcMessage(3);

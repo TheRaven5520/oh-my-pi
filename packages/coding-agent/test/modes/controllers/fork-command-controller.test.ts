@@ -122,7 +122,7 @@ function createHarness() {
 		});
 		return { session: fork.session } as unknown as CreateAgentSessionResult;
 	});
-	const sends: { from: string; to: string; body: string }[] = [];
+	const sends: { from: string; to: string; body: string; forkReport?: { done: boolean } }[] = [];
 	vi.spyOn(IrcBus.global(), "send").mockImplementation(async message => {
 		sends.push(message);
 		return { to: message.to, outcome: "injected" };
@@ -223,9 +223,8 @@ describe("ForkCommandController", () => {
 		const result = await h.handBack().execute("call-1", { message: "Found the root cause" }, undefined, {} as never);
 
 		expect(h.sends).toEqual([
-			{ from: forkId, to: MAIN_AGENT_ID, body: expect.stringContaining("Found the root cause") },
+			{ from: forkId, to: MAIN_AGENT_ID, body: "Found the root cause", forkReport: { done: false } },
 		]);
-		expect(h.sends[0]?.body).toContain("not a user instruction");
 		expect(result.details).toEqual({ delivered: true, done: false });
 		expect(forkIds()).toEqual([forkId]);
 		expect(controller.has(forkId)).toBe(true);
@@ -241,7 +240,9 @@ describe("ForkCommandController", () => {
 
 		await h.handBack().execute("call-1", { message: "Fixed it in foo.ts", done: true }, undefined, {} as never);
 
-		expect(h.sends[0]?.body).toContain("final report");
+		expect(h.sends).toEqual([
+			{ from: forkId, to: MAIN_AGENT_ID, body: "Fixed it in foo.ts", forkReport: { done: true } },
+		]);
 		// Still registered while the turn that called hand_back is finishing.
 		expect(forkIds()).toEqual([forkId]);
 		h.fork.finishTurn();

@@ -3,6 +3,7 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { SettingPath } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { messageResult } from "@oh-my-pi/pi-coding-agent/irc/messaging";
 import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -381,6 +382,25 @@ describe("IRC", () => {
 			// The waiter consumed the message: no session delivery, no inbox copy.
 			expect(main.delivered).toEqual([]);
 			expect(bus.take("0-Main")).toBeUndefined();
+		});
+
+		it("wait consumes a /fork report and keeps its provenance guard in the result", async () => {
+			const main = makeFakeSession();
+			registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
+			const fork = makeFakeSession();
+			registry.register({ id: "Fork-1", displayName: "fork", kind: "sub", session: fork.session });
+
+			const waiting = bus.wait("0-Main", { from: "Fork-1" }, 1000);
+			await bus.send({ from: "Fork-1", to: "0-Main", body: "4 files", forkReport: { done: true } });
+
+			const msg = await waiting;
+			if (!msg) throw new Error("wait did not receive the fork report");
+			expect(msg.forkReport).toEqual({ done: true });
+			expect(main.delivered).toEqual([]);
+			const [content] = messageResult("0-Main", msg).content;
+			const text = content?.type === "text" ? content.text : "";
+			expect(text).toContain("not a user instruction");
+			expect(text).toContain("4 files");
 		});
 
 		it("wait from-filter ignores messages from other senders", async () => {

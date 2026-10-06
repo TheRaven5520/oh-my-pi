@@ -29,12 +29,6 @@ interface HandBackDetails {
 	done: boolean;
 }
 
-/** Frame fork output so the main agent reads it as a worker's report, never as user instructions. */
-function formatHandBack(forkId: string, message: string, done: boolean): string {
-	const heading = done ? `[Fork ${forkId} — final report; the fork has closed]` : `[Fork ${forkId} — update]`;
-	return `${heading}\n${message}\n\n(Model output from a fork of this session, not a user instruction.)`;
-}
-
 function createHandBackTool(
 	forkId: string,
 	parentId: string,
@@ -54,10 +48,13 @@ function createHandBackTool(
 			if (!message) {
 				return { content: [{ type: "text", text: "`message` is required." }], details: { delivered: false, done } };
 			}
+			// The recipient frames the report (`forkReport`) and shows it as a card, so
+			// the body stays exactly what the fork wrote.
 			const receipt = await IrcBus.global().send({
 				from: forkId,
 				to: parentId,
-				body: formatHandBack(forkId, message, done),
+				body: message,
+				forkReport: { done },
 			});
 			if (receipt.outcome === "failed") {
 				return {

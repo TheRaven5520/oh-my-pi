@@ -21,6 +21,26 @@ export interface IrcMessage {
 	 * ping-pong forever.
 	 */
 	wakeRelay?: boolean;
+	/**
+	 * Set by a `/fork` chat's `hand_back`: the body is the fork's report to the
+	 * session that forked it. The recipient keeps its card on screen and is
+	 * asked to tell the user the result; `done` marks the final report.
+	 */
+	forkReport?: ForkReport;
+}
+
+/** A `/fork` report's marker, copied into its `irc:incoming` record's details. */
+export interface ForkReport {
+	/** The fork's final report; the fork closes after the turn that sent it. */
+	done: boolean;
+}
+
+/** The fork-report marker in an `irc:incoming` record's details, if it is one. */
+export function forkReportOf(details: unknown): ForkReport | undefined {
+	if (!details || typeof details !== "object") return undefined;
+	const report = Reflect.get(details, "forkReport");
+	if (!report || typeof report !== "object") return undefined;
+	return { done: Reflect.get(report, "done") === true };
 }
 
 /** Delivery outcome for one peer recipient. */

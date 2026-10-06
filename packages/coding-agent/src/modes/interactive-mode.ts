@@ -161,8 +161,10 @@ import {
 	isFeedModelBadgeEnabled,
 	replaceTabs,
 	shortenEmbeddedPaths,
+	previewLine,
 	shortenPath,
 	TRUNCATE_LENGTHS,
+	taskSummaryLine,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui/render/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
@@ -795,9 +797,9 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 				} else {
 					// No spawn description: fall back to a muted task preview, same as
 					// the inline task rows when a row has no label.
-					const taskPreview = session.progress?.task?.trim();
+					const taskPreview = session.progress?.task ? taskSummaryLine(session.progress.task) : "";
 					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
-						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
+						const formatted = replaceTabs(taskPreview);
 						const budget = Math.min(TRUNCATE_LENGTHS.SHORT, Math.max(0, rowWidth - visibleWidth(line) - 1));
 						if (budget > 0) line += ` ${theme.fg("muted", truncateToWidth(formatted, budget))}`;
 					}
@@ -910,7 +912,7 @@ export function renderSubagentDockLines(
 			const description =
 				session.description?.trim() ||
 				session.progress?.description?.trim() ||
-				session.progress?.task?.trim() ||
+				(session.progress?.task ? taskSummaryLine(session.progress.task) : undefined) ||
 				(isForkAgentId(session.id) ? session.label.trim() : undefined);
 			const progress = session.progress;
 			const identity = progress?.resolvedModelIdentity ?? progress?.resolvedModel;
@@ -929,7 +931,9 @@ export function renderSubagentDockLines(
 			const label = theme.fg(selected ? "accent" : "toolTitle", selected ? theme.bold(displayId) : displayId);
 			// Narrow terminals drop the description before the stats.
 			const detailText =
-				detail && budget >= 8 ? theme.fg("dim", ` · ${truncateToWidth(replaceTabs(detail), budget)}`) : "";
+				detail && budget >= 8
+					? theme.fg("dim", ` · ${previewLine(sanitizeText(detail).replace(/\s*[\r\n]+\s*/g, " ↵ "), budget)}`)
+					: "";
 			return truncateToWidth(`${pointer} ${glyph} ${label}${detailText}${stats}`, Math.max(1, columns - 2), "");
 		}),
 		...(belowCount > 0 ? [theme.fg("dim", `… ${belowCount} more — expand`)] : []),

@@ -1,6 +1,6 @@
 import type { Component } from "../tui";
 import { Text } from "../components/text";
-import { visibleWidth } from "../utils";
+import { visibleWidth, wrapTextWithAnsi } from "../utils";
 import { formatAge } from "@oh-my-pi/pi-utils";
 import { shimmerEnabled, shimmerText } from "../theme/shimmer";
 import type { Theme } from "../theme/theme";
@@ -25,7 +25,7 @@ import {
 } from "../render/render-utils";
 import type { StructuredSubagentOutput } from "./task";
 import type { RenderResultOptions, ToolRenderer, ToolActivitySummary } from "./renderer";
-import type { IrcDeliveryReceipt, IrcMessage } from "./irc";
+import type { ForkReport, IrcDeliveryReceipt, IrcMessage } from "./irc";
 
 /** Whether a wait snapshot contains only running jobs and no cancellations. */
 export function isWaitingPollDetails(details: unknown): boolean {
@@ -507,12 +507,33 @@ function bodyLines(
 	return lines;
 }
 
+/** Collapsed height of a /fork report card; Ctrl+O shows the whole report. */
+const FORK_REPORT_COLLAPSED_LINES = 8;
+
+/** A /fork report's body, wrapped rather than cut: the user reads the fork's result here. */
+function forkReportLines(body: string, expanded: boolean, width: number, theme: Theme): string[] {
+	const quoted = `  ${theme.fg("dim", theme.md.quoteBorder)} `;
+	// Drop the quote margin before the text when the card is too narrow for both.
+	const prefix = width - visibleWidth(quoted) >= 8 ? quoted : "";
+	const textWidth = Math.max(1, width - visibleWidth(prefix));
+	const wrapped = replaceTabs(body.trim())
+		.split("\n")
+		.flatMap(line => (line.trim() ? wrapTextWithAnsi(line.trimEnd(), textWidth) : [""]));
+	const preview = cappedHeadLines(wrapped, expanded ? wrapped.length : FORK_REPORT_COLLAPSED_LINES);
+	const lines = preview.lines.map(line => `${prefix}${theme.fg("toolOutput", line)}`);
+	if (preview.hidden > 0) {
+		lines.push(`${prefix}${theme.fg("dim", `… +${preview.hidden} more ${preview.hidden === 1 ? "line" : "lines"}`)}`);
+	}
+	return lines;
+}
+
 /**
  * Display-only transcript card for live IRC traffic: `irc:incoming` DMs
  * delivered to this session, `irc:autoreply` side-channel replies sent on
  * this session's behalf, and `irc:relay` observations of agent↔agent
  * traffic. Shares the tool renderer's glyph + quote-border conventions so
- * cards and peer-message output look identical in the transcript.
+ * cards and peer-message output look identical in the transcript. An
+ * incoming `/fork` report is titled as one and shows its whole body wrapped.
  */
 export function createIrcMessageCard(
 	card: {
@@ -524,19 +545,22 @@ export function createIrcMessageCard(
 		timestamp?: number;
 		pool?: string;
 		mode?: string;
+		forkReport?: ForkReport;
 	},
 	getExpanded: () => boolean,
 	uiTheme: Theme,
 ): Component {
 	const from = card.from?.trim() || "?";
 	const title =
-		card.kind === "incoming"
-			? `IRC ${uiTheme.nav.back} ${from}`
-			: card.kind === "autoreply"
-				? `IRC ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
-				: card.kind === "workpool"
-					? `Pool ${card.pool?.trim() || "?"} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
-					: `IRC ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
+		card.kind === "incoming" && card.forkReport
+			? `Fork ${card.forkReport.done ? "report" : "update"} ${uiTheme.nav.back} ${from}`
+			: card.kind === "incoming"
+				? `IRC ${uiTheme.nav.back} ${from}`
+				: card.kind === "autoreply"
+					? `IRC ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
+					: card.kind === "workpool"
+						? `Pool ${card.pool?.trim() || "?"} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
+						: `IRC ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
 	const body = card.body ?? "";
 	const meta: string[] = [];
 	if (card.kind === "autoreply") meta.push("auto");
@@ -549,7 +573,11 @@ export function createIrcMessageCard(
 		(width, expanded) => {
 			const lines = [renderStatusLine({ iconOverride: ircGlyph(uiTheme), title, meta }, uiTheme)];
 			if (body.trim()) {
-				lines.push(...bodyLines(body, expanded, uiTheme, { indent: "  ", collapsedLines: 3 }));
+				lines.push(
+					...(card.forkReport
+						? forkReportLines(body, expanded, width, uiTheme)
+						: bodyLines(body, expanded, uiTheme, { indent: "  ", collapsedLines: 3 })),
+				);
 			}
 			return lines.map(line => truncateToWidth(line, width, Ellipsis.Unicode));
 		},
@@ -579,6 +607,21 @@ export const waitToolRenderer = {
 		}
 		const waited = result.details?.waited;
 		if (!waited) return jobsRenderResult(result, options, uiTheme);
+		// A /fork report consumed by a pending `wait` reads like the delivered card.
+		if (waited.forkReport) {
+			return createIrcMessageCard(
+				{
+					kind: "incoming",
+					from: waited.from,
+					body: waited.body,
+					replyTo: waited.replyTo,
+					timestamp: waited.ts,
+					forkReport: waited.forkReport,
+				},
+				() => options.expanded,
+				uiTheme,
+			);
+		}
 		return createCachedComponent(
 			() => options.expanded,
 			(width, expanded) =>
