@@ -106,7 +106,7 @@ function lineEnd(content: string, offset: number): number {
 
 /** True when the first reply after a trigger line ending at `from` is the gateway's "OK". */
 function acknowledgedAfter(content: string, from: number): boolean {
-	for (let start = from + 1; start < content.length; ) {
+	for (let start = from + 1; start < content.length;) {
 		const end = lineEnd(content, start);
 		const message = messageOfLine(content.slice(start, end));
 		start = end + 1;
