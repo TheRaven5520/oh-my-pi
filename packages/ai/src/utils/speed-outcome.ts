@@ -171,8 +171,23 @@ export function speedOutcomeFromError(error: unknown, prior: SpeedOutcome | unde
  * Record what the provider reported serving (OpenAI's echoed `service_tier`,
  * Anthropic's `usage.speed`). It can be lower than what the gateway forwarded,
  * so it is kept alongside, never in place of, the forwarded tier.
+ *
+ * One exception: ChatGPT OAuth echoes `service_tier: "default"` for a premium
+ * request Sprilicred says it forwarded at a faster tier, whether as asked
+ * (`forwarded`) or as a fallback (Ultrafast forwarded as Fast). That echo is
+ * the OpenAI wire value `default`, which Anthropic's `usage.speed`
+ * (`standard`/`fast`) never sends, so only it falls back to the forwarded
+ * tier; a Claude turn forwarded fast but served `standard`, and a turn
+ * Sprilicred forwarded at standard, stay standard.
  */
 export function applyProviderReportedSpeed(output: Pick<AssistantMessage, "speed">, reported: unknown): void {
+	const speed = output.speed;
 	const served = asTier(reported);
-	if (output.speed && served !== undefined) output.speed.served = served;
+	if (!speed || served === undefined) return;
+	const openAIDefaultEcho =
+		typeof reported === "string" &&
+		reported.trim().toLowerCase() === "default" &&
+		speed.forwarded !== undefined &&
+		speed.forwarded !== "standard";
+	speed.served = openAIDefaultEcho ? speed.forwarded : served;
 }
