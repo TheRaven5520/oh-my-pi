@@ -909,7 +909,7 @@ export async function getLatestRelease(options: { timeoutMs?: number; channel?: 
 		asset = resolveReleaseBinaryAsset(candidate, candidate.tag_name, getBinaryName(), { allowPrerelease: true });
 	}
 	return {
-		tag: data && isRecord(data) && typeof data.tag_name === "string" ? data.tag_name : `v${asset.version}-spring.1`,
+		tag: asset.tag,
 		version: asset.version,
 		dist: "binary",
 		asset,
