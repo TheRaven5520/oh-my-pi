@@ -74,14 +74,13 @@ describe("/handoff dispatch (ACP)", () => {
 		expect(h.output).toHaveBeenCalledWith("Context handed off and compacted in place.");
 	});
 
-	it("reports success as a single line and never reports a saved path", async () => {
-		// `SessionHandoff` only writes the document to disk under
-		// `options.autoTriggered`, which the user-invoked path never passes, so
-		// `savedPath` is unreachable here even when the type allows it.
+	it("reports the saved handoff path when available", async () => {
 		const h = acpRuntime({ handoffResult: { document: "doc", savedPath: "/tmp/handoff.md" } });
 		await executeAcpBuiltinSlashCommand("/handoff", h.runtime);
 		expect(h.output).toHaveBeenCalledTimes(1);
-		expect(h.output).toHaveBeenCalledWith("Context handed off and compacted in place.");
+		expect(h.output).toHaveBeenCalledWith(
+			"Context handed off and compacted in place. Handoff saved to: /tmp/handoff.md",
+		);
 	});
 
 	it("reports cancellation when the handoff resolves undefined", async () => {

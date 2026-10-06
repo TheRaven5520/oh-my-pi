@@ -2500,6 +2500,13 @@ export class EventController {
 				this.ctx.showStatus("Auto-shake completed");
 			}
 		} else if (event.result) {
+			const savedPath =
+				isHandoffAction &&
+				event.result.details &&
+				typeof event.result.details === "object" &&
+				"savedPath" in event.result.details
+					? (event.result.details as { savedPath?: unknown }).savedPath
+					: undefined;
 			this.ctx.lastAssistantUsage = undefined;
 			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
 			this.ctx.statusLine.invalidate();
@@ -2513,6 +2520,7 @@ export class EventController {
 			// replaces history instead of appending a second copy. The force
 			// matters too: post-clear the frame looks unchanged to the diff.
 			this.ctx.ui.requestRender(true, { clearScrollback: true });
+			if (savedPath) this.ctx.showStatus(`Auto-handoff saved to: ${savedPath}`);
 		} else if (event.errorMessage) {
 			this.ctx.showWarning(event.errorMessage);
 		} else if (isHandoffAction) {

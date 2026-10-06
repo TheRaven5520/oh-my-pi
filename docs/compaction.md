@@ -349,7 +349,7 @@ Advisor runtimes retain native `preserveData` for subsequent maintenance and att
 
 Handoff commits a regular `CompactionEntry` on the current session: `SessionMaintenance.handoff()` (manual `/handoff`) and the auto-maintenance `handoff` method both generate the document via `SessionHandoff.generateDocument()` and store it as the compaction summary with `firstKeptEntryId` from `prepareCompaction`, so recent history is kept and the session id, transcript, and provider cache key are unchanged.
 
-When `compaction.handoffSaveToDisk` is enabled, an **automatically triggered** handoff also writes `handoff-<ISO timestamp>.md` in the persisted session's artifact directory. Manual handoffs are not written by this setting, and non-persisted sessions have no artifact directory.
+Every successful handoff writes `handoff-<ISO timestamp>.md` in the persisted session's artifact directory, for both manual and automatically triggered handoffs. The compaction summary includes the absolute `Handoff saved to:` path. Non-persisted sessions have no artifact directory and therefore cannot save a file.
 
 ### File-operation context in summaries
 
@@ -515,7 +515,6 @@ Defined in `packages/coding-agent/src/session/context-settings.ts`:
 - `compaction.keepRecentTokens` = `20000`
 - `compaction.autoContinue` = `true`
 - `compaction.midTurnEnabled` = `true`; a `false` value applies to the session that configured it, not to spawned subagents — each subagent keeps mid-run checks so its single-turn assignment still compacts at the configured threshold.
-- `compaction.handoffSaveToDisk` = `false`
 - The `handoff` method generates a handoff document through the live-cache side-request pipeline and commits it as a compaction entry on the current session (no new session is created); `/handoff` does the same manually.
 - `compaction.remoteEndpoint` = `undefined`
 - `compaction.remoteStreamingV2Enabled` = `true`
