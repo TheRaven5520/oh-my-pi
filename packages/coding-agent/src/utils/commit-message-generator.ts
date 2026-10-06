@@ -12,7 +12,6 @@ import { getModelMatchPreferences, resolveModelRoleValue } from "../config/model
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import commitSystemPrompt from "../prompts/system/commit-message-system.md" with { type: "text" };
-import { privateSideCall } from "../session/private-side-calls";
 import { concreteThinkingLevel, toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
 
 const COMMIT_SYSTEM_PROMPT = prompt.render(commitSystemPrompt);
@@ -107,16 +106,6 @@ export async function generateCommitMessage(
 
 		try {
 			const maxTokens = COMMIT_MAX_TOKENS;
-			const requestOptions = await privateSideCall(
-				candidate.model,
-				{
-					apiKey: registry.resolver(candidate.model, sessionId),
-					sessionId,
-					maxTokens,
-					reasoning: toReasoningEffort(candidate.thinkingLevel),
-				},
-				"commit",
-			);
 			const response = await retryTransientCompletion(
 				() =>
 					completeSimple(
@@ -125,7 +114,12 @@ export async function generateCommitMessage(
 							systemPrompt: [COMMIT_SYSTEM_PROMPT],
 							messages: [{ role: "user", content: userMessage, timestamp: Date.now() }],
 						},
-						requestOptions,
+						{
+							apiKey: registry.resolver(candidate.model, sessionId),
+							sessionId,
+							maxTokens,
+							reasoning: toReasoningEffort(candidate.thinkingLevel),
+						},
 					),
 				{ provider: candidate.model.provider },
 			);

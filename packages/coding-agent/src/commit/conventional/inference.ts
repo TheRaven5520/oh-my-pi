@@ -2,7 +2,6 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, ApiKey, AuthStorage, Model } from "@oh-my-pi/pi-ai";
 import { completeSimple } from "@oh-my-pi/pi-ai";
 import { toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
-import { privateSideCall } from "../../session/private-side-calls";
 import type { ResolvedCommitModel } from "../model-selection";
 import { extractTextContent } from "../utils";
 import { type CommitInferenceCache, computeCommitCacheKey } from "./cache";
@@ -124,17 +123,13 @@ export class OmpCommitInference implements CommitInference {
 						systemPrompt: request.systemPrompt.trim() ? [request.systemPrompt] : undefined,
 						messages: [{ role: "user", content: request.userPrompt, timestamp: Date.now() }],
 					},
-					await privateSideCall(
-						target.model,
-						{
-							apiKey: target.apiKey,
-							sessionId: this.#sessionId,
-							maxTokens: 16_384,
-							reasoning,
-							signal,
-						},
-						"commit",
-					),
+					{
+						apiKey: target.apiKey,
+						sessionId: this.#sessionId,
+						maxTokens: 16_384,
+						reasoning,
+						signal,
+					},
 				);
 				responseText = extractTextContent(message);
 				if (message.stopReason === "error") throw new Error(message.errorMessage ?? "Provider error");

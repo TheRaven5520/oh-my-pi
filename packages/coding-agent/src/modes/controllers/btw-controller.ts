@@ -55,15 +55,6 @@ function assistantMessageWithReplyText(assistantMessage: AssistantMessage, reply
 	return { ...assistantMessage, content, providerPayload: undefined };
 }
 
-/** One-line label for a /btw lookup: the tool plus its main target (`read src/app.ts`). */
-export function btwLookupLabel(name: string, args: Record<string, unknown>): string {
-	const target = [args.path, args.pattern, args.query, args.url].find(
-		(value): value is string => typeof value === "string" && value.trim().length > 0,
-	);
-	const label = target ? `${name} ${target.trim()}` : name;
-	return label.length > TRUNCATE_LENGTHS.CONTENT ? `${label.slice(0, TRUNCATE_LENGTHS.CONTENT - 1)}…` : label;
-}
-
 export class BtwController {
 	#activeRequest: BtwRequest | undefined;
 	#lastQuestion: string | undefined;
@@ -666,14 +657,8 @@ export class BtwController {
 				promptText,
 				history,
 				conversationKey: request.conversationKey,
-				// Pure lookups (read/grep/glob/...) so a side question can check files;
-				// anything that would modify the workspace or session is refused.
-				toolPolicy: "read-only",
-				onToolCall: call => {
-					if (this.#isActiveRequest(request) && this.#visible) {
-						request.component.noteLookup(btwLookupLabel(call.name, call.arguments), call.allowed);
-					}
-				},
+				// /btw answers are read in full and saved to history: keep the
+				// repeated-line collapse, but not the 4 KiB cap meant for one-liners.
 				replyMaxBytes: Number.POSITIVE_INFINITY,
 				onTextDelta: delta => {
 					const latest = getBtwLatestTurn(request.record);
@@ -685,17 +670,12 @@ export class BtwController {
 					}
 				},
 				signal: request.abortController.signal,
-				// The answer is shown and saved in full; the default ephemeral-reply
-				// cleanup cuts at 4 KiB and collapses repeated lines, which ate real
-				// answers and code blocks.
-				dedupeReply: false,
 			});
 			if (getBtwLatestTurn(request.record).status !== "running") return;
 			this.#updateRequest(request, { answer: replyText, status: "complete", updatedAt: Date.now() });
 			if (this.#isActiveRequest(request)) {
 				request.component.setAnswer(replyText);
-				// The answer stays the model's own text; a cutoff is panel state, not content.
-				request.component.markComplete({ cutOff: assistantMessage.stopReason === "length" });
+				request.component.markComplete();
 				// Tern: the sheet was put away while answering; say where the answer is.
 				if (this.ctx.ui.nativeRendering && !this.#historyOverlay) {
 					this.ctx.showStatus("/btw answer ready · /btw to read it");

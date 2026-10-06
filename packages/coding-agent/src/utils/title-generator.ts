@@ -25,7 +25,6 @@ import { collectOnlineTinyCandidates, expandOnlineTinyModelFallbacks } from "../
 import type { Settings } from "../config/settings";
 import titleMarkerInstruction from "../prompts/system/title-marker-instruction.md" with { type: "text" };
 import titleSystemPrompt from "../prompts/system/title-system.md" with { type: "text" };
-import { privateSideCall } from "../session/private-side-calls";
 import { buildSideAgentHeaders, type SideAgentRole } from "../session/side-agent-headers";
 import { formatTitleUserMessage } from "../tiny/message-preproc";
 import { isLowSignalTitleInput, isNoTitleAnswer, NO_TITLE_SENTINEL, normalizeGeneratedTitle } from "../tiny/text";
@@ -353,9 +352,7 @@ async function generateTitleOnlineWithModels(
 			const messages: Message[] = [{ role: "user", content: userMessage, timestamp: Date.now() }];
 			if (model.supportsAssistantPrefill) messages.push(titlePrefill(model));
 
-			const requestOptions = await privateSideCall(
-				model,
-				{
+			const requestOptions = {
 					apiKey: registry.resolver(model, sessionId),
 					sessionId,
 					maxTokens,
@@ -368,9 +365,7 @@ async function generateTitleOnlineWithModels(
 					metadata,
 					headers,
 					signal,
-				},
-				role,
-			);
+			};
 			const response = await retryTransientCompletion(
 				() => completeSimple(model, { systemPrompt, messages }, requestOptions),
 				{ signal, provider: model.provider },

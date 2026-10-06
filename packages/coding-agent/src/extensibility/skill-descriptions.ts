@@ -17,7 +17,6 @@ import { getModelMatchPreferences, parseModelPattern, resolveRoleSelection } fro
 import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import compressDescriptionPrompt from "../prompts/skills/compress-description.md" with { type: "text" };
-import { privateSideCall } from "../session/private-side-calls";
 import { Semaphore } from "../task/parallel";
 import type { Skill } from "./skills";
 
@@ -63,18 +62,14 @@ export function createSkillDescriptionCompressor(
 			{
 				messages: [{ role: "user", content: request, timestamp: Date.now() }],
 			},
-			await privateSideCall(
-				model,
-				{
-					apiKey: registry.resolver(model, sessionId),
-					sessionId,
-					maxTokens: 1024,
-					disableReasoning: true,
-					temperature: 0,
-					signal: AbortSignal.timeout(30_000),
-				},
-				"skill",
-			),
+			{
+				apiKey: registry.resolver(model, sessionId),
+				sessionId,
+				maxTokens: 1024,
+				disableReasoning: true,
+				temperature: 0,
+				signal: AbortSignal.timeout(30_000),
+			},
 			{ telemetry: getTelemetry?.(), oneshotKind: "skill_description" },
 		);
 		if (response.stopReason !== "stop") {

@@ -28,11 +28,7 @@ function restoreEnv(key: string, value: string | undefined): void {
 import * as advisorModule from "../src/advisor";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
-import {
-	cfgAdvisorEnabled,
-	cfgAdvisorHoldNotesUntilTurnEnd,
-	cfgAdvisorMaxNotesPerUpdate,
-} from "@oh-my-pi/pi-coding-agent/advisor/settings";
+import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "@oh-my-pi/pi-coding-agent/advisor/settings";
 import { cfgCompactionKeepRecentTokens } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 
 describe("AgentSession advisor toggle", () => {
@@ -1134,8 +1130,7 @@ describe("AgentSession advisor toggle", () => {
 			},
 			streamFn: mock.stream,
 		});
-		// This test covers the withheld-note path, so hold mid-turn notes.
-		const settings = Settings.isolated({ "compaction.enabled": false, "advisor.holdNotesUntilTurnEnd": true });
+		const settings = Settings.isolated({ "compaction.enabled": false });
 		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
 		const quotaSession = new AgentSession({
 			agent: primaryAgent,
@@ -1260,8 +1255,6 @@ describe("AgentSession advisor toggle", () => {
 			expect(JSON.stringify(rejected.content)).toContain("budget is spent");
 		};
 
-		// The budget is observed through withheld-note acknowledgments.
-		cfgAdvisorHoldNotesUntilTurnEnd.set(session.settings, true);
 		cfgAdvisorMaxNotesPerUpdate.set(session.settings, 2);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 
@@ -1276,29 +1269,5 @@ describe("AgentSession advisor toggle", () => {
 		// Settings (2) overrides the default (4) when shared and per-advisor are undefined.
 		expect(session.applyAdvisorConfigs([{ name: "SettingsOnly" }], undefined, undefined)).toBe(1);
 		await exerciseBudget("settings", 2);
-	});
-
-	it("routes mid-turn advisor notes at once by default and holds them when configured", async () => {
-		const adviseTool = () => {
-			const tool = session.getAdvisorAgent()?.state.tools?.find(candidate => candidate.name === "advise");
-			if (!(tool instanceof advisorModule.AdviseTool)) throw new Error("Expected advise tool");
-			return tool;
-		};
-
-		expect(session.setAdvisorEnabled(true)).toBe(true);
-		let tool = adviseTool();
-		tool.beginUpdate(true);
-		const immediate = await tool.execute("now", { note: "Rename the helper before it spreads.", severity: "nit" });
-		expect(JSON.stringify(immediate.content)).not.toContain("Queued for the end of the turn");
-		expect(session.yieldQueue.has("advisor")).toBe(true);
-		session.yieldQueue.drainLazy();
-
-		cfgAdvisorHoldNotesUntilTurnEnd.set(session.settings, true);
-		await Promise.resolve();
-		tool = adviseTool();
-		tool.beginUpdate(true);
-		const held = await tool.execute("later", { note: "Cover the empty-input case.", severity: "nit" });
-		expect(JSON.stringify(held.content)).toContain("Queued for the end of the turn");
-		expect(session.yieldQueue.has("advisor")).toBe(false);
 	});
 });

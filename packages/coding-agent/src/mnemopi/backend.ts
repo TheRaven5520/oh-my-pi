@@ -1,7 +1,6 @@
 import { rm } from "node:fs/promises";
 import * as path from "node:path";
 import { type ApiKeyResolver, completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
 import type { Mnemopi } from "@oh-my-pi/pi-mnemopi";
 import type { MnemopiLlmCompleteOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
@@ -25,7 +24,6 @@ import memoryConsolidationPrompt from "../prompts/system/memory-consolidation-sy
 import memoryExtractionPrompt from "../prompts/system/memory-extraction-system.md" with { type: "text" };
 import mnemopiInstructions from "../prompts/system/mnemopi-instructions.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
-import { privateSideCall } from "../session/private-side-calls";
 import { tinyModelClient } from "../tiny/title-client";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
@@ -614,28 +612,6 @@ async function resolveMnemopiProviderOptions(
 						});
 						continue;
 					}
-					const requestOptions = await privateSideCall(
-						model,
-						{
-							apiKey: modelRegistry.resolver(model, sessionId),
-							sessionId,
-							maxTokens: opts?.maxTokens,
-							temperature: opts?.temperature,
-							signal,
-							onAttempt: (message: AssistantMessage) =>
-								onUsage?.({
-									purpose: "memory",
-									role: "memory",
-									api: model.api,
-									provider: model.provider,
-									model: model.id,
-									usage: message.usage,
-									stopReason: message.stopReason,
-									errorMessage: message.errorMessage,
-								}),
-						},
-						"memory",
-					);
 					const message = await retryTransientCompletion(
 						() =>
 							completeSimple(
@@ -644,7 +620,24 @@ async function resolveMnemopiProviderOptions(
 									...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
 									messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
 								},
-								requestOptions,
+								{
+									apiKey: modelRegistry.resolver(model, sessionId),
+									sessionId,
+									maxTokens: opts?.maxTokens,
+									temperature: opts?.temperature,
+									signal,
+									onAttempt: message =>
+										onUsage?.({
+											purpose: "memory",
+											role: "memory",
+											api: model.api,
+											provider: model.provider,
+											model: model.id,
+											usage: message.usage,
+											stopReason: message.stopReason,
+											errorMessage: message.errorMessage,
+										}),
+								},
 							),
 						{ provider: model.provider, signal },
 					);

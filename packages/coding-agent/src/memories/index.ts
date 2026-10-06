@@ -26,8 +26,6 @@ import readPathTemplate from "../prompts/memories/read-path.md" with { type: "te
 import stageOneInputTemplate from "../prompts/memories/stage_one_input.md" with { type: "text" };
 import stageOneSystemTemplate from "../prompts/memories/stage_one_system.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
-import { PRIVATE_CHAT_ACK, PRIVATE_CHAT_TRIGGER, privateSideCall } from "../session/private-side-calls";
-import { buildSideAgentHeaders } from "../session/side-agent-headers";
 import {
 	claimStage1Jobs,
 	clearMemoryData as clearMemoryDataInDb,
@@ -431,7 +429,6 @@ async function runPhase1(options: MemoryStartupOptions): Promise<void> {
 				modelMaxTokens: computeModelTokenBudget(phase1Model, config),
 				config,
 				metadata: session.agent?.metadataForProvider(phase1Model.provider),
-				headers: buildSideAgentHeaders(session.agent?.sessionId ?? session.sessionId, "memory"),
 			});
 			if (!isMemoryStartupActive(options)) return;
 
@@ -593,7 +590,6 @@ async function runPhase2(options: MemoryStartupOptions): Promise<void> {
 				apiKey: modelRegistry.resolver(phase2Model, session.sessionId),
 				sessionId: session.sessionId,
 				metadata: session.agent?.metadataForProvider(phase2Model.provider),
-				headers: buildSideAgentHeaders(session.agent?.sessionId ?? session.sessionId, "memory"),
 			});
 			if (!isMemoryStartupActive(options)) return;
 			await applyConsolidation(memoryRoot, consolidated);
@@ -746,27 +742,6 @@ function shouldPersistResponseItemForMemories(message: AgentMessage): boolean {
 	return false;
 }
 
-/**
- * True when the person made this chat private: a user message that is exactly
- * `` `private` `` whose next user/assistant turn is the assistant reply "OK".
- * A private chat's transcript is never sent to a model for memory extraction.
- */
-function isPrivateChat(messages: readonly AgentMessage[]): boolean {
-	for (let i = 0; i < messages.length; i++) {
-		const message = messages[i];
-		if ((message as { role: string }).role !== "user") continue;
-		if (extractMessageText(message).trim() !== PRIVATE_CHAT_TRIGGER) continue;
-		for (let j = i + 1; j < messages.length; j++) {
-			const role = (messages[j] as { role: string }).role;
-			if (role === "user") break;
-			if (role !== "assistant") continue;
-			if (extractMessageText(messages[j]).trim() === PRIVATE_CHAT_ACK) return true;
-			break;
-		}
-	}
-	return false;
-}
-
 function extractPersistableMessages(payload: string): AgentMessage[] {
 	const rows = parseJsonlLenient(payload);
 	if (!Array.isArray(rows)) return [];
@@ -793,8 +768,6 @@ async function runStage1Job(options: {
 	modelMaxTokens: number;
 	config: MemoryRuntimeConfig;
 	metadata?: Record<string, unknown>;
-	/** Side-agent link headers (`x-omp-parent-session-id`, `x-omp-agent-role`). */
-	headers?: Record<string, string>;
 }): Promise<
 	| {
 			kind: "output";
@@ -808,8 +781,6 @@ async function runStage1Job(options: {
 	try {
 		const rolloutRaw = await Bun.file(claim.rolloutPath).text();
 		const persisted = extractPersistableMessages(rolloutRaw);
-		// A chat the person made private never leaves the machine for extraction.
-		if (isPrivateChat(persisted)) return { kind: "no_output" };
 		const serializedItems = JSON.stringify(persisted);
 		const budgetTokens = Math.min(
 			config.phase1InputTokenLimit,
@@ -821,18 +792,6 @@ async function runStage1Job(options: {
 			response_items_json: truncatedItems,
 		});
 
-		const requestOptions = await privateSideCall(
-			model,
-			{
-				apiKey,
-				sessionId: options.sessionId,
-				metadata: options.metadata,
-				headers: options.headers,
-				maxTokens: Math.max(1024, Math.min(4096, Math.floor(modelMaxTokens * 0.2))),
-				reasoning: clampThinkingLevelForModel(model, Effort.Low),
-			},
-			"memory",
-		);
 		const response = await retryTransientCompletion(
 			() =>
 				completeSimple(
@@ -841,7 +800,13 @@ async function runStage1Job(options: {
 						systemPrompt: [stageOneSystemTemplate],
 						messages: [{ role: "user", content: [{ type: "text", text: inputPrompt }], timestamp: Date.now() }],
 					},
-					requestOptions,
+					{
+						apiKey,
+						sessionId: options.sessionId,
+						metadata: options.metadata,
+						maxTokens: Math.max(1024, Math.min(4096, Math.floor(modelMaxTokens * 0.2))),
+						reasoning: clampThinkingLevelForModel(model, Effort.Low),
+					},
 				),
 			{ provider: model.provider },
 		);
@@ -951,8 +916,6 @@ async function runConsolidationModel(options: {
 	apiKey: ApiKey;
 	sessionId: string;
 	metadata?: Record<string, unknown>;
-	/** Side-agent link headers (`x-omp-parent-session-id`, `x-omp-agent-role`). */
-	headers?: Record<string, string>;
 }): Promise<{
 	memoryMd: string;
 	memorySummary: string;
@@ -972,18 +935,6 @@ async function runConsolidationModel(options: {
 		rollout_summaries: truncateByApproxTokens(rolloutSummaries, 12_000),
 	});
 
-	const requestOptions = await privateSideCall(
-		model,
-		{
-			apiKey,
-			sessionId: options.sessionId,
-			metadata: options.metadata,
-			headers: options.headers,
-			maxTokens: 8192,
-			reasoning: clampThinkingLevelForModel(model, Effort.Medium),
-		},
-		"memory",
-	);
 	const response = await retryTransientCompletion(
 		() =>
 			completeSimple(
@@ -992,7 +943,13 @@ async function runConsolidationModel(options: {
 					systemPrompt: [consolidationSystemTemplate],
 					messages: [{ role: "user", content: [{ type: "text", text: input }], timestamp: Date.now() }],
 				},
-				requestOptions,
+				{
+					apiKey,
+					sessionId: options.sessionId,
+					metadata: options.metadata,
+					maxTokens: 8192,
+					reasoning: clampThinkingLevelForModel(model, Effort.Medium),
+				},
 			),
 		{ provider: model.provider },
 	);

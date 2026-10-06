@@ -1,7 +1,6 @@
 import { completeSimple } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { CustomCommandContext } from "../../../../extensibility/custom-commands/types";
-import { privateSideCall } from "../../../../session/private-side-calls";
 import summaryPrompt from "./prompts/text-summary.md" with { type: "text" };
 import { normalizeTextReviewContextSummary } from "./text-review";
 
@@ -24,16 +23,12 @@ export async function generateTextReviewContextSummary(
 			systemPrompt: [prompt.render(summaryPrompt)],
 			messages: [{ role: "user", content: sourceText, timestamp: Date.now() }],
 		},
-		await privateSideCall(
-			model,
-			{
-				apiKey: ctx.modelRegistry.resolver(model, ctx.sessionManager.getSessionId()),
-				disableReasoning: true,
-				maxTokens: 512,
-				signal: requestSignal,
-			},
-			"helper",
-		),
+		{
+			apiKey: ctx.modelRegistry.resolver(model, ctx.sessionManager.getSessionId()),
+			disableReasoning: true,
+			maxTokens: 512,
+			signal: requestSignal,
+		},
 	);
 	if (message.stopReason === "error" || message.stopReason === "aborted") return undefined;
 	const completion = message.content

@@ -21,7 +21,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { AgentRef } from "../registry/agent-registry";
 import { AgentRegistry } from "../registry/agent-registry";
-import { ensurePersistedRoster, resolveRootSessionFile, sessionFileBelongsToRoot } from "../registry/persisted-agents";
+import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
 import {
 	bashExecutionToText,
@@ -34,7 +34,6 @@ import {
 	type HookMessage,
 	type PythonExecutionMessage,
 } from "../session/messages";
-import { isPrivateSessionFile } from "../session/private-chat";
 import { loadSessionMessagesReadOnly } from "../session/session-loader";
 import type { SessionEntry } from "../session/session-entries";
 import historyPromptDoc from "../prompts/internal-urls/history.md" with { type: "text" };
@@ -51,12 +50,10 @@ import type {
 /** Registry lookup for a `history://<id>` URL, bound to the caller's root. */
 interface RefLookup {
 	ref?: AgentRef;
-	/** Registered refs excluding advisors and other private chats. */
+	/** Registered, non-advisor refs. */
 	visible: AgentRef[];
 	/** Caller root's artifact dir, scanned first by on-disk fallbacks. */
 	preferredArtifactDir?: string;
-	/** Root allowed to read its own private transcripts. */
-	callerRoot?: string;
 }
 
 /** True for `history://current/<path>`; throws unless the route is exactly `current/full`. */
@@ -88,49 +85,6 @@ interface IndexEntry {
 	kind: string;
 	parent: string;
 	lastActivity: string;
-}
-
-/**
- * True when `sessionFile` belongs to a chat the person made private (Sprilicred
- * private mode) other than the caller's own chat `callerRoot`. Such a transcript
- * is never listed, completed or served: reading it here would hand a private
- * chat to a model outside it. Only the top-level chat holds the typed trigger,
- * so the root's file decides for every transcript under it.
- */
-async function isOtherPrivateChat(sessionFile: string, callerRoot: string | undefined): Promise<boolean> {
-	if (callerRoot && sessionFileBelongsToRoot(sessionFile, callerRoot)) return false;
-	// Root resolution climbs `<dir>.jsonl` parents; any other path is its own root.
-	const root = sessionFile.endsWith(".jsonl")
-		? await resolveRootSessionFile(AgentRegistry.global(), sessionFile)
-		: sessionFile;
-	return root !== undefined && (await isPrivateSessionFile(root));
-}
-
-/**
- * Registry refs the caller may see. Advisor transcripts are observability-only —
- * surfaced in the Agent Hub, never in the agent-facing roster — and another
- * private chat's agents are never shown at all.
- */
-async function visibleRefs(callerRoot: string | undefined): Promise<AgentRef[]> {
-	const visible: AgentRef[] = [];
-	for (const ref of AgentRegistry.global().list()) {
-		if (ref.kind === "advisor") continue;
-		if (ref.sessionFile && (await isOtherPrivateChat(ref.sessionFile, callerRoot))) continue;
-		visible.push(ref);
-	}
-	return visible;
-}
-
-/** {@link sessionFilesFromDisk} without another private chat's transcripts. */
-async function visibleDiskTranscripts(
-	callerRoot: string | undefined,
-	preferredDir?: string,
-): Promise<Map<string, string>> {
-	const files = await sessionFilesFromDisk(preferredDir);
-	for (const [id, file] of files) {
-		if (await isOtherPrivateChat(file, callerRoot)) files.delete(id);
-	}
-	return files;
 }
 
 function jsonFence(text: string): string {
@@ -350,10 +304,10 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		if (isCurrentFullRoute(url)) return null;
 		const agentId = url.rawHost || url.hostname;
 		if (!agentId) return null;
-		const { ref, callerRoot, preferredArtifactDir } = await this.#lookup(agentId, context);
+		const { ref, preferredArtifactDir } = await this.#lookup(agentId, context);
 		if (ref?.sessionFile) return ref.sessionFile;
 		if (ref?.session) return null;
-		return (await this.#findOnDisk(ref?.id ?? agentId, callerRoot, preferredArtifactDir))?.file ?? null;
+		return (await this.#findOnDisk(ref?.id ?? agentId, preferredArtifactDir))?.file ?? null;
 	}
 
 	/**
@@ -374,27 +328,26 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		// same-named transcript restored by another root's scan never shadows
 		// this caller's own on-disk transcript.
 		const preferredArtifactDir = rootSessionFile?.slice(0, -".jsonl".length);
-		// The caller's own chat stays visible even when private; an unresolved
-		// root cannot read another private chat.
-		const callerRoot =
-			rootSessionFile ?? (await resolveRootSessionFile(registry, context?.sessionFile).catch(() => undefined));
-		const visible = await visibleRefs(callerRoot);
-		return { visible, callerRoot, preferredArtifactDir };
+		// Advisor transcripts are observability-only — surfaced in the Agent Hub, never
+		// in the agent-facing roster. Hide them from the index, lookup, and completions.
+		const visible = registry.list().filter(ref => ref.kind !== "advisor");
+		return { visible, preferredArtifactDir };
 	}
 
 	/**
 	 * Find the registry ref for `agentId` (exact, then case-insensitive),
-	 * skipping advisors and other private chats.
+	 * skipping advisor transcripts.
 	 */
 	async #lookup(agentId: string, context: ResolveContext | undefined): Promise<RefLookup> {
-		const { visible, callerRoot, preferredArtifactDir } = await this.#roster(context);
-		let ref = visible.find(candidate => candidate.id === agentId);
+		const { visible, preferredArtifactDir } = await this.#roster(context);
+		let ref = AgentRegistry.global().get(agentId);
+		if (ref?.kind === "advisor") ref = undefined;
 		if (!ref) {
 			// Case-insensitive fallback: agent ids are human-typed (e.g. AuthLoader).
 			const lower = agentId.toLowerCase();
 			ref = visible.find(candidate => candidate.id.toLowerCase() === lower);
 		}
-		return { ref, visible, callerRoot, preferredArtifactDir };
+		return { ref, visible, preferredArtifactDir };
 	}
 
 	#resolveCurrentFull(url: InternalUrl, context: ResolveContext | undefined): InternalResource {
@@ -420,8 +373,8 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		if (isCurrentFullRoute(url)) return this.#resolveCurrentFull(url, context);
 		const agentId = url.rawHost || url.hostname;
 		if (!agentId) {
-			const { visible, callerRoot, preferredArtifactDir } = await this.#roster(context);
-			const content = await this.#renderIndex(visible, callerRoot, preferredArtifactDir);
+			const { visible, preferredArtifactDir } = await this.#roster(context);
+			const content = await this.#renderIndex(visible, preferredArtifactDir);
 			return {
 				url: url.href,
 				content,
@@ -430,11 +383,11 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			};
 		}
 
-		const { ref, visible, callerRoot, preferredArtifactDir } = await this.#lookup(agentId, context);
+		const { ref, visible, preferredArtifactDir } = await this.#lookup(agentId, context);
 		if (!ref) {
 			// Registry miss — the agent may have been unregistered or lost on resume.
 			// Serve its transcript straight from disk if the session file persists.
-			const disk = await this.#resolveFromDisk(agentId, callerRoot, preferredArtifactDir);
+			const disk = await this.#resolveFromDisk(agentId, preferredArtifactDir);
 			if (disk) return { ...disk, url: url.href };
 
 			const known = visible.map(candidate => candidate.id);
@@ -453,7 +406,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		} else {
 			// No live session and no retained sessionFile — try the disk scan before
 			// giving up, in case the transcript lingers under an artifacts dir.
-			const disk = await this.#resolveFromDisk(ref.id, callerRoot, preferredArtifactDir);
+			const disk = await this.#resolveFromDisk(ref.id, preferredArtifactDir);
 			if (disk) return { ...disk, url: url.href };
 			throw new Error(`Agent ${ref.id} has no transcript: session is gone and no session file was retained`);
 		}
@@ -474,15 +427,10 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	 * matched case-insensitively. Returns `undefined` when no file is found.
 	 * `preferredArtifactDir` — the caller root's artifact directory, when
 	 * known — is scanned before every registry-derived dir, so a same-id
-	 * transcript from another root cannot shadow the caller's own. Another
-	 * private chat's transcripts are never matched.
+	 * transcript from another root cannot shadow the caller's own.
 	 */
-	async #resolveFromDisk(
-		agentId: string,
-		callerRoot: string | undefined,
-		preferredArtifactDir?: string,
-	): Promise<InternalResource | undefined> {
-		const match = await this.#findOnDisk(agentId, callerRoot, preferredArtifactDir);
+	async #resolveFromDisk(agentId: string, preferredArtifactDir?: string): Promise<InternalResource | undefined> {
+		const match = await this.#findOnDisk(agentId, preferredArtifactDir);
 		if (!match) return undefined;
 		const messages = await loadSessionMessagesReadOnly(match.file);
 		const content = formatSessionHistoryMarkdown(messages, { title: `${match.id} (on disk)` });
@@ -499,10 +447,9 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	/** On-disk `<id>.jsonl` for `agentId`: exact id wins, else the last case-insensitive match. */
 	async #findOnDisk(
 		agentId: string,
-		callerRoot: string | undefined,
 		preferredArtifactDir?: string,
 	): Promise<{ id: string; file: string } | undefined> {
-		const files = await visibleDiskTranscripts(callerRoot, preferredArtifactDir);
+		const files = await sessionFilesFromDisk(preferredArtifactDir);
 		const lower = agentId.toLowerCase();
 		let match: { id: string; file: string } | undefined;
 		for (const [id, file] of files) {
@@ -514,11 +461,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		return match;
 	}
 
-	async #renderIndex(
-		refs: AgentRef[],
-		callerRoot: string | undefined,
-		preferredArtifactDir: string | undefined,
-	): Promise<string> {
+	async #renderIndex(refs: AgentRef[], preferredArtifactDir: string | undefined): Promise<string> {
 		const entries: IndexEntry[] = refs.map(ref => ({
 			id: ref.id,
 			status: ref.status,
@@ -528,7 +471,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		}));
 		// Merge on-disk transcripts for agents absent from the registry.
 		const registered = new Set(refs.map(ref => ref.id));
-		const disk = await visibleDiskTranscripts(callerRoot, preferredArtifactDir);
+		const disk = await sessionFilesFromDisk(preferredArtifactDir);
 		for (const id of disk.keys()) {
 			if (registered.has(id)) continue;
 			entries.push({ id, status: "on disk", kind: "—", parent: "—", lastActivity: "—" });
@@ -550,16 +493,15 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	async complete(): Promise<UrlCompletion[]> {
 		const completions: UrlCompletion[] = [];
 		const seen = new Set<string>();
-		// No caller context here: the process's own chat (Main's root) stays visible.
-		const callerRoot = await resolveRootSessionFile(AgentRegistry.global()).catch(() => undefined);
-		for (const ref of await visibleRefs(callerRoot)) {
+		for (const ref of AgentRegistry.global().list()) {
+			if (ref.kind === "advisor") continue;
 			seen.add(ref.id);
 			completions.push({
 				value: ref.id,
 				description: `${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
 			});
 		}
-		const disk = await visibleDiskTranscripts(callerRoot);
+		const disk = await sessionFilesFromDisk();
 		for (const id of disk.keys()) {
 			if (seen.has(id)) continue;
 			seen.add(id);

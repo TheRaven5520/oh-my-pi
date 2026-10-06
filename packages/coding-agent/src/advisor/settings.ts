@@ -38,21 +38,6 @@ export const cfgAdvisorSyncBacklog = register({
 	},
 });
 
-export const cfgAdvisorHoldNotesUntilTurnEnd = register({
-	id: "advisor.holdNotesUntilTurnEnd",
-	protocolDefault: ["rpc", "acp"],
-	type: "boolean",
-	default: false,
-	ui: {
-		tab: "model",
-		group: "Advisor",
-		label: "Hold Advisor Notes Until Turn End",
-		description:
-			"Withhold non-blocker notes the advisor writes while the main agent is mid-turn and deliver them together when the turn ends. Off delivers each note as soon as it is written.",
-		condition: "advisorEnabled",
-	},
-});
-
 export const cfgAdvisorImmuneTurns = register({
 	id: "advisor.immuneTurns",
 	protocolDefault: ["rpc", "acp"],

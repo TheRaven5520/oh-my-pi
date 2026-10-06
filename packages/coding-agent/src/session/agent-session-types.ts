@@ -45,7 +45,6 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { ToolSession } from "../tools";
 import type { XdevState } from "../tools/xdev";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
-import type { PrivateSideRole } from "./private-side-calls";
 import type { SettingsGatedToolDelta } from "./session-tools";
 import type { SessionManager } from "./session-manager";
 
@@ -575,17 +574,6 @@ export interface EphemeralTurnOptions {
 	conversationKey?: string;
 	/** Omit tool definitions and request no tool calls. Rejects before inference on transports with mandatory native tools (Cursor). */
 	tools?: false;
-	/**
-	 * `"none"` (default): tool calls are discarded without execution.
-	 * `"read-only"`: calls to the pure-lookup tools in `SIDE_QUESTION_TOOL_NAMES`
-	 * that the main agent currently has run on side-owned tool instances, whose
-	 * caches are separate from the main agent's; every other call gets an error
-	 * result. Bounded rounds, never appended to session history. Ignored with
-	 * `tools: false` and on transports that require native tools (Cursor).
-	 */
-	toolPolicy?: "none" | "read-only";
-	/** Called before each tool call a `"read-only"` side turn runs or refuses. */
-	onToolCall?: (call: EphemeralToolCallInfo) => void;
 	/** Optional positive safe-integer output-token cap. Transports that omit or overwrite caller output limits reject this option before inference. On budget-thinking models a cap disables optional thinking (models that require it reject the cap). */
 	maxTokens?: number;
 	/** Positive safe-integer UTF-8 byte cap. Reject before inference when the serialized post-transform, secret-obfuscated provider context exceeds it. Measured before `before_provider_request` hooks; payload replacements are not re-measured. */
@@ -595,23 +583,10 @@ export interface EphemeralTurnOptions {
 	signal?: AbortSignal;
 	/** Default true: collapse runs of 4+ identical lines and cap the reply at 4 KiB. Pass false when the reply is shown or saved in full. */
 	dedupeReply?: boolean;
-	/**
-	 * Background side turns nobody asked for (the idle recap): on a `sprilicred-*` model, run on this
-	 * process's private side session for the role, so Sprilicred keeps no chat or Activity row for it
-	 * (`privateSideCall`). Throws, sending nothing, if Sprilicred does not confirm the session private.
-	 */
-	privateRole?: PrivateSideRole;
 	/** UTF-8 byte cap of the deduped reply (default 4 KiB); `Infinity` keeps a long answer whole. */
 	replyMaxBytes?: number;
 }
 
-/** A tool call made during a `toolPolicy: "read-only"` side turn. */
-export interface EphemeralToolCallInfo {
-	name: string;
-	arguments: Record<string, unknown>;
-	/** False when the call was refused (not a permitted lookup, or the round limit was reached). */
-	allowed: boolean;
-}
 
 /** A side-turn response that is not appended to session history. */
 export interface EphemeralTurnResult {

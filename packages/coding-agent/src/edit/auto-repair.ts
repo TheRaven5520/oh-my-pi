@@ -18,7 +18,6 @@ import { diffLineRuns, editDiffString, summarizeCode } from "@oh-my-pi/pi-native
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import { resolveRoleSelection } from "../config/model-resolver";
 import type { WritethroughCallback } from "../lsp";
-import { privateSideCall } from "../session/private-side-calls";
 import type { ToolSession } from "../tools";
 import { invalidateFsScanAfterWrite } from "../tools/fs-cache-invalidation";
 import repairPromptSource from "./auto-repair.md" with { type: "text" };
@@ -320,23 +319,18 @@ export async function attemptEditAutoRepair(options: {
 	const timeout = AbortSignal.timeout(REPAIR_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
 	const complete = async (builtPrompt: string): Promise<string> => {
-		const requestOptions = await privateSideCall(
-			model,
-			{
-				apiKey: registry.resolver(model, sessionId),
-				sessionId,
-				maxTokens: COMPLETION_MAX_TOKENS,
-				disableReasoning: true,
-				signal,
-			},
-			"helper",
-		);
 		const response = await retryTransientCompletion(
 			() =>
 				completeSimple(
 					model,
 					{ messages: [{ role: "user", content: builtPrompt, timestamp: Date.now() }] },
-					requestOptions,
+					{
+						apiKey: registry.resolver(model, sessionId),
+						sessionId,
+						maxTokens: COMPLETION_MAX_TOKENS,
+						disableReasoning: true,
+						signal,
+					},
 				),
 			{ signal, provider: model.provider },
 		);

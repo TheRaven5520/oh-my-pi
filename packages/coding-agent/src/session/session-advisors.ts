@@ -36,7 +36,7 @@ import type {
 	ServiceTier,
 	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
-import { completeSimple, isUsageLimitOutcome, resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
+import { isUsageLimitOutcome, resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -115,7 +115,6 @@ import type { CompactionEntry, SessionEntry } from "./session-entries";
 import { formatSessionHistoryMarkdown } from "./session-history-format";
 import type { SessionManager } from "./session-manager";
 import { buildSessionMetadata } from "./session-metadata";
-import { withSideAgentHeaders, wrapStreamFnWithSideAgentHeaders } from "./side-agent-headers";
 import type { YieldQueue } from "./yield-queue";
 
 import {
@@ -125,7 +124,6 @@ import {
 	cfgAdvisorReviewInterval,
 	cfgAdvisorReviewMode,
 	cfgAdvisorSyncBacklog,
-	cfgAdvisorHoldNotesUntilTurnEnd,
 } from "../advisor/settings";
 import { cfgCompaction, cfgContextPromotionEnabled } from "./context-settings";
 import { cfgRetry, cfgTierAdvisor } from "./settings";
@@ -502,11 +500,6 @@ export interface SessionAdvisorsHost {
 		currentSelector: string,
 		currentModel?: Model | null,
 	): RetryFallbackSelector[];
-	/** `retry.usageLimitFallbackChains` candidates; consult only for a usage-limit failure. */
-	usageLimitFallbackCandidates(
-		currentSelector: string,
-		currentModel?: Model | null,
-	): Array<{ role: string; selector: RetryFallbackSelector }>;
 	isRetryFallbackSelectorSuppressed(selector: RetryFallbackSelector): boolean;
 	noteRetryFallbackCooldown(currentSelector: string, retryAfterMs: number | undefined, errorMessage: string): void;
 	createCodexCompactionContext(options: {
@@ -985,24 +978,6 @@ export class SessionAdvisors {
 		this.#advisorInterruptImmuneTurnStart = this.#advisorPrimaryTurnsCompleted + 1;
 	}
 
-	/**
-	 * The primary's live provider session id — the exact value the main agent
-	 * sends as its own session id — read per request so it tracks `/new`,
-	 * session switches, and fresh provider sessions.
-	 */
-	#primaryProviderSessionId(): string | undefined {
-		return this.#host.agent.sessionId ?? this.#host.sessionId();
-	}
-
-	/** Advisor transport: the session stream function plus the side-agent link headers. */
-	#advisorSideStreamFn(): StreamFn {
-		return wrapStreamFnWithSideAgentHeaders(
-			this.#advisorStreamFn ?? streamSimple,
-			() => this.#primaryProviderSessionId(),
-			"advisor",
-		);
-	}
-
 	/** Rebind one advisor to the active primary conversation's provider identity. */
 	#refreshAdvisorProviderIdentity(advisor: ActiveAdvisor): void {
 		const primaryProviderSessionId = this.#host.sessionId();
@@ -1307,17 +1282,11 @@ export class SessionAdvisors {
 			const adviseTool = new AdviseTool(
 				(note, severity, turn) => this.#routeAdvice(advisorRef, note, severity, turn),
 				emissionGuard,
-				() => cfgAdvisorHoldNotesUntilTurnEnd.get(this.#host.settings) === true,
 			);
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
-			const systemPrompt = [
-				prompt.render(advisorSystemPrompt, {
-					max_notes_per_update: budgetPerUpdate,
-					hold_notes_until_turn_end: cfgAdvisorHoldNotesUntilTurnEnd.get(this.#host.settings) === true,
-				}),
-			];
+			const systemPrompt = [prompt.render(advisorSystemPrompt, { max_notes_per_update: budgetPerUpdate })];
 			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorMemoryPrompt) systemPrompt.push(this.#advisorMemoryPrompt);
 			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
@@ -1411,9 +1380,7 @@ export class SessionAdvisors {
 				// not the same permission as calling one of its tools.
 				mcpResources: this.#advisorMcpResources,
 			});
-			// Every advisor request carries the primary's provider session id and
-			// the `advisor` role so a proxy can link it to the main conversation.
-			const baseAdvisorStreamFn = this.#advisorSideStreamFn();
+			const baseAdvisorStreamFn = this.#advisorStreamFn ?? streamSimple;
 			const advisorStreamFn: StreamFn = (requestModel, context, streamOptions) => {
 				// Read per request so a mid-session `providers.openaiWebsockets` change reaches advisors.
 				const options = {
@@ -2167,48 +2134,48 @@ export class SessionAdvisors {
 			pinnedRole: advisor.retryFallback?.role,
 			roleHint: "advisor",
 		});
-		const candidates = usageLimit ? this.#host.usageLimitFallbackCandidates(currentSelector, currentModel) : [];
-		for (const role of chainKeys) {
-			for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
-				candidates.push({ role, selector });
-			}
+		if (
+			!chainKeys.some(role => this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel).length > 0)
+		) {
+			return declineUsageLimit();
 		}
-		if (candidates.length === 0) return declineUsageLimit();
 
 		this.#host.noteRetryFallbackCooldown(currentSelector, retryAfterMs, message);
-		for (const { role, selector } of candidates) {
-			if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
-			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
-			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-			if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
-			if (!this.#canReplayAdvisorHistory(advisor, candidate)) continue;
-			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId, { signal });
-			if (!apiKey) continue;
-			signal.throwIfAborted();
+		for (const role of chainKeys) {
+			for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
+				if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
+				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
+				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
+				if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
+				if (!this.#canReplayAdvisorHistory(advisor, candidate)) continue;
+				const apiKey = await this.#host.modelRegistry.getApiKey(candidate, advisor.providerSessionId, { signal });
+				if (!apiKey) continue;
+				signal.throwIfAborted();
 
-			const originalThinkingLevel = advisor.thinkingLevel;
-			const requestedThinkingLevel = selector.thinkingLevel ?? originalThinkingLevel;
-			const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
-			if (advisor.retryFallback) {
-				advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
-			} else {
-				advisor.retryFallback = {
+				const originalThinkingLevel = advisor.thinkingLevel;
+				const requestedThinkingLevel = selector.thinkingLevel ?? originalThinkingLevel;
+				const nextThinkingLevel = this.#setAdvisorModel(advisor, candidate, requestedThinkingLevel);
+				if (advisor.retryFallback) {
+					advisor.retryFallback.lastAppliedThinkingLevel = nextThinkingLevel;
+				} else {
+					advisor.retryFallback = {
+						role,
+						originalSelector: currentSelector,
+						originalThinkingLevel,
+						lastAppliedThinkingLevel: nextThinkingLevel,
+					};
+				}
+				advisor.retryFallbackPendingSuccess = true;
+				this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
+				await this.#host.emitSessionEvent({
+					type: "retry_fallback_applied",
+					from: currentSelector,
+					to: selector.raw,
 					role,
-					originalSelector: currentSelector,
-					originalThinkingLevel,
-					lastAppliedThinkingLevel: nextThinkingLevel,
-				};
+					reason: `Advisor request failed: ${message}`,
+				});
+				return true;
 			}
-			advisor.retryFallbackPendingSuccess = true;
-			this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
-			await this.#host.emitSessionEvent({
-				type: "retry_fallback_applied",
-				from: currentSelector,
-				to: selector.raw,
-				role,
-				reason: `Advisor request failed: ${message}`,
-			});
-			return true;
 		}
 		return declineUsageLimit();
 	}
@@ -2520,14 +2487,6 @@ export class SessionAdvisors {
 						providerSessionState: this.#host.providerSessionState,
 						preferWebsockets: this.#host.preferWebsockets(),
 						codexCompaction,
-						// Summarization one-shots bypass the advisor `Agent`; stamp the same
-						// link headers onto them.
-						completeImpl: (requestModel, requestContext, requestOptions) =>
-							completeSimple(
-								requestModel,
-								requestContext,
-								withSideAgentHeaders(requestOptions, this.#primaryProviderSessionId(), "advisor"),
-							),
 					},
 				);
 				break;

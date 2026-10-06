@@ -5,9 +5,9 @@
  * `x-sprilicred-speed-requested` (what was asked), `x-sprilicred-speed` (the
  * tier it forwarded upstream: `fast`/`ultrafast`/`standard`) and
  * `x-sprilicred-speed-reason` (`forwarded`, `not_permitted`, …), on errors
- * too. Fast it can't run goes at standard; Ultrafast it can't run is refused
- * (HTTP 400 with an `ultrafast_*` code, never served slower); an older
- * server refused fast too (HTTP 409 `speed_refused`). Over WebSocket
+ * Fast it can't run falls back to standard; Ultrafast falls back to fast,
+ * then standard. A 400 `ultrafast_*` is an outright refusal; an older server
+ * refused fast too (HTTP 409 `speed_refused`). Over WebSocket
  * the same values ride inside the error frame's error object as
  * `speed_requested` / `speed` / `speed_reason`. What the provider then served
  * comes from its own report: OpenAI's echoed `service_tier`, Anthropic's
@@ -173,6 +173,13 @@ export function speedOutcomeFromError(error: unknown, prior: SpeedOutcome | unde
  * so it is kept alongside, never in place of, the forwarded tier.
  */
 export function applyProviderReportedSpeed(output: Pick<AssistantMessage, "speed">, reported: unknown): void {
+	const echoed = typeof reported === "string" ? reported.trim().toLowerCase() : undefined;
+	// Codex echoes `default`/`auto` for a request Sprilicred forwarded at fast;
+	// that echo names the provider default, not the gateway tier actually served.
+	if (output.speed?.forwarded !== undefined && (echoed === "default" || echoed === "auto")) {
+		output.speed.served = output.speed.forwarded;
+		return;
+	}
 	const served = asTier(reported);
 	if (output.speed && served !== undefined) output.speed.served = served;
 }

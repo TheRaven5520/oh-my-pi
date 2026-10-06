@@ -12,9 +12,6 @@ import { hintsRow, type NativeHint, statusHintsRow } from "../native/overlay";
 
 type BtwPanelState = "running" | "complete" | "branching" | "aborted" | "error";
 
-/** Most recent lookup lines shown above a /btw answer. */
-const MAX_LOOKUP_LINES = 6;
-
 interface BtwPanelComponentOptions {
 	question: string;
 	tui: TUI;
@@ -32,13 +29,9 @@ export class BtwPanelComponent extends OverlayPanel {
 	#visibleAnswer = "";
 	#closed = false;
 	#copied = false;
-	/** The model stopped at its output-token limit, so the answer is incomplete. */
-	#cutOff = false;
 	#baseTitle: string;
 	readonly #question: string;
 	readonly #content: StreamingPanelContent;
-	/** Lookups this answer ran (or was refused), shown dim above the answer; never part of copied text. */
-	#lookups: string[] = [];
 	#native: { node: NativeNode; canFollowUp: boolean; canBranch: boolean } | undefined;
 
 	constructor(options: BtwPanelComponentOptions) {
@@ -50,7 +43,7 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#canBranch = options.canBranch;
 		this.#canFollowUp = options.canFollowUp;
 		this.#content = new StreamingPanelContent(() => ({
-			sections: [this.#lookupSection(), this.#contentComponent()],
+			sections: [this.#contentComponent()],
 			footer: () => this.#footerLine(),
 		}));
 		this.addChild(this.#content);
@@ -65,14 +58,6 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#rebuild();
 	}
 
-	/** Record one read-only lookup (`read src/app.ts`) or a refused call. */
-	noteLookup(label: string, allowed: boolean): void {
-		if (this.#closed) return;
-		const line = replaceTabs(label);
-		this.#lookups.push(allowed ? `· ${line}` : `${theme.status.warning} ${line} (not allowed)`);
-		this.#rebuild();
-	}
-
 	setAnswer(text: string): void {
 		if (this.#closed) return;
 		this.#answer = text;
@@ -81,10 +66,9 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#rebuild();
 	}
 
-	markComplete(options: { cutOff?: boolean } = {}): void {
+	markComplete(): void {
 		if (this.#closed) return;
 		this.#state = "complete";
-		this.#cutOff = options.cutOff === true;
 		this.#errorMessage = undefined;
 		this.#setCopied(false);
 		this.#rebuild();
@@ -136,9 +120,7 @@ export class BtwPanelComponent extends OverlayPanel {
 
 	getCopyText(): string | undefined {
 		if (!this.isCopyable()) return undefined;
-		// The answer as written: tabs are widened only for display, so copied
-		// tab-indented code (Makefiles, Go) keeps its tabs.
-		return this.#answer.trim();
+		return this.#visibleAnswer;
 	}
 
 	close(): void {
@@ -162,15 +144,11 @@ export class BtwPanelComponent extends OverlayPanel {
 			...(live ? [node("spinner", {})] : []),
 			title,
 		]);
-		const lookups = this.#describeLookups();
-		const described = col(
-			[head, ...(lookups ? [lookups] : []), this.#describeBody(), this.#describeFooter(canFollowUp, canBranch)],
-			{
-				role: this.nativeRole,
-				gap: "sm",
-				tone: this.#state === "error" ? "error" : this.#state === "aborted" ? "warning" : undefined,
-			},
-		);
+		const described = col([head, this.#describeBody(), this.#describeFooter(canFollowUp, canBranch)], {
+			role: this.nativeRole,
+			gap: "sm",
+			tone: this.#state === "error" ? "error" : this.#state === "aborted" ? "warning" : undefined,
+		});
 		this.#native = { node: described, canFollowUp, canBranch };
 		return described;
 	}
@@ -196,14 +174,8 @@ export class BtwPanelComponent extends OverlayPanel {
 				if (canFollowUp) hints.push({ keys: ["f"], label: "to follow up" });
 				if (canBranch) hints.push({ keys: ["b"], label: "to branch" });
 				hints.push(esc);
-				const status = [
-					...(this.#cutOff
-						? [span(`${theme.status.warning} Cut off at the model's output limit`, "warning")]
-						: []),
-					...(this.#copied ? [span(`${this.#cutOff ? " · " : ""}✓ Copied to clipboard`, "success")] : []),
-				];
-				if (status.length === 0) return hintsRow(hints);
-				return statusHintsRow(status, hints);
+				if (!this.#copied) return hintsRow(hints);
+				return statusHintsRow([span("✓ Copied to clipboard", "success")], hints);
 			}
 			case "branching":
 				return text([span(`${theme.status.pending} Branching to chat…`, "muted")]);
@@ -224,23 +196,6 @@ export class BtwPanelComponent extends OverlayPanel {
 		this.#tui.requestComponentRender(this);
 	}
 
-	/** The most recent lookup lines, led by `… N earlier` when some scrolled off. */
-	#lookupLines(): string[] {
-		const shown = this.#lookups.slice(-MAX_LOOKUP_LINES);
-		const hidden = this.#lookups.length - shown.length;
-		return hidden > 0 ? [`… ${hidden} earlier`, ...shown] : shown;
-	}
-
-	#lookupSection(): Component | undefined {
-		if (this.#lookups.length === 0) return undefined;
-		return new Text(theme.fg("dim", this.#lookupLines().join("\n")), 0, 0);
-	}
-
-	#describeLookups(): NativeNode | undefined {
-		if (this.#lookups.length === 0) return undefined;
-		return col(this.#lookupLines().map(line => text([span(line, "dim")], { truncate: "end", lines: 1 })));
-	}
-
 	#footerLine(): string {
 		// The main editor routes `app.interrupt` (Escape by default) to the panel.
 		const esc = interruptKey();
@@ -254,13 +209,10 @@ export class BtwPanelComponent extends OverlayPanel {
 				if (this.#canFollowUp?.()) actions.push(`${formatKeyHint("f")} to follow up`);
 				if (this.#canBranch?.() ?? this.isBranchable()) actions.push(`${formatKeyHint("b")} to branch`);
 				actions.push(`${esc} to close`);
-				const cutOff = this.#cutOff
-					? `${theme.fg("warning", `${theme.status.warning} Cut off at the model's output limit`)}${theme.fg("muted", " · ")}`
-					: "";
 				if (this.#copied) {
-					return `${cutOff}${theme.fg("success", "✓ Copied to clipboard")}${theme.fg("muted", actions.length > 0 ? ` · ${actions.join(" · ")}` : "")}`;
+					return `${theme.fg("success", "✓ Copied to clipboard")}${theme.fg("muted", actions.length > 0 ? ` · ${actions.join(" · ")}` : "")}`;
 				}
-				return `${cutOff}${theme.fg("muted", actions.join(" · "))}`;
+				return theme.fg("muted", actions.join(" · "));
 			}
 			case "branching":
 				return theme.fg("muted", `${theme.status.pending} Branching to chat…`);

@@ -201,7 +201,6 @@ import {
 import { describeUsageFallback } from "./session/retry-fallback-reason";
 import { getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
-import { wrapStreamFnPrivate } from "./session/private-side-calls";
 import { buildMainAgentLinkHeaders, wrapStreamFnWithSideAgentHeaders } from "./session/side-agent-headers";
 import {
 	collectMountedMCPToolRoutes,
@@ -5121,12 +5120,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					getToolContext: toolCall => toolContextStore.getContext(toolCall),
 					// The capture turn runs under its own provider session id; link
 					// every request to the primary conversation it learns from.
-					// Sprilicred keeps no chat or Activity row for it (privateSideCall).
-					streamFn: wrapStreamFnPrivate(
-						wrapStreamFnWithSideAgentHeaders(primaryStreamFn, () => agent.sessionId, "capture"),
-						"capture",
-						captureSessionId,
-					),
+					streamFn: wrapStreamFnWithSideAgentHeaders(primaryStreamFn, () => agent.sessionId, "capture"),
 					transformToolCallArguments,
 					// No fallback resolver. The capture agent advertises only
 					// `learn`/`manage_skill`, both of which stay top-level and never

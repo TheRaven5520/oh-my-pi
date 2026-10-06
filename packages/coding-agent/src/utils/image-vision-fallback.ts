@@ -30,8 +30,6 @@ import { cfgImagesBlockImages } from "../modes/settings";
 import { cfgImagesDescribeForTextModels } from "../session/settings";
 import describeUserPrompt from "../prompts/tools/image-attachment-describe.md" with { type: "text" };
 import describeSystemPrompt from "../prompts/tools/image-attachment-describe-system.md" with { type: "text" };
-import { privateSideCall } from "../session/private-side-calls";
-import { buildSideAgentHeaders } from "../session/side-agent-headers";
 
 /** Telemetry tag for the oneshot vision-description calls. */
 const ONESHOT_KIND = "image_attachment_describe";
@@ -69,10 +67,6 @@ export interface DescribeAttachedImagesDeps {
 	/** `provider/id` of the active model; a last-resort vision-model candidate (filtered to image-capable). */
 	activeModelString?: string;
 	telemetryConfig?: AgentTelemetryConfig;
-	/**
-	 * The chat's live provider session id: sticky credential selection, and the
-	 * `x-omp-parent-session-id` link on each description request.
-	 */
 	sessionId?: string;
 	/** Test seam: overrides the underlying completeSimple call. */
 	completeImpl?: typeof completeSimple;
@@ -164,15 +158,7 @@ async function describeImage(
 					},
 				],
 			},
-			await privateSideCall(
-				visionModel,
-				{
-					apiKey: deps.modelRegistry.resolver(visionModel, deps.sessionId),
-					signal,
-					headers: buildSideAgentHeaders(deps.sessionId, "helper"),
-				},
-				"helper",
-			),
+			{ apiKey: deps.modelRegistry.resolver(visionModel, deps.sessionId), signal },
 			{ telemetry, oneshotKind: ONESHOT_KIND, completeImpl: deps.completeImpl },
 		);
 		if (response.stopReason === "error" || response.stopReason === "aborted") {

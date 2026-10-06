@@ -30,8 +30,6 @@ import {
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
-import { privateSideCall } from "../session/private-side-calls";
-import { buildSideAgentHeaders } from "../session/side-agent-headers";
 import { Semaphore } from "../task/parallel";
 import type { ToolSession } from "../tools";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
@@ -314,11 +312,6 @@ async function executeCompletion(
 			]
 		: undefined;
 	const telemetry = resolveTelemetry(session.getTelemetry?.(), session.getSessionId?.() ?? undefined);
-	// The completion runs with no provider session id; link it to the chat.
-	const headers = buildSideAgentHeaders(
-		session.getProviderSessionId?.() ?? session.getSessionId?.() ?? undefined,
-		"helper",
-	);
 	const systemPrompt = system ? [system] : ["You are a helpful assistant."];
 	// Each fallback that issues a model request consumes one retry attempt,
 	// mirroring session recovery. Keyless candidates are skipped without
@@ -350,18 +343,13 @@ async function executeCompletion(
 					messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
 					tools,
 				},
-				await privateSideCall(
-					model,
-					{
-						apiKey: registry.resolver(model, session.getSessionId?.() ?? undefined),
-						signal,
-						reasoning: candidate.reasoning,
-						disableReasoning: candidate.disableReasoning,
-						toolChoice: schema ? { type: "tool", name: STRUCTURED_TOOL_NAME } : undefined,
-						headers,
-					},
-					"helper",
-				),
+				{
+					apiKey: registry.resolver(model, session.getSessionId?.() ?? undefined),
+					signal,
+					reasoning: candidate.reasoning,
+					disableReasoning: candidate.disableReasoning,
+					toolChoice: schema ? { type: "tool", name: STRUCTURED_TOOL_NAME } : undefined,
+				},
 				{ telemetry, oneshotKind: "eval_completion" },
 			);
 		} catch (error) {

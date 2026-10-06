@@ -148,6 +148,13 @@ describe("speed outcome from Sprilicred's headers and errors (OpenAI Responses)"
 		expect(message.speed?.served).toBe("fast");
 	});
 
+	it("keeps Sprilicred fast when Codex echoes its default tier", async () => {
+		const { message } = await runResponses(openaiModel("sprilicred-openai"), "priority", () =>
+			sse([...TEXT, completed("default")], SPEED("fast", "fast", "forwarded")),
+		);
+		expect(message.speed).toMatchObject({ requested: "fast", forwarded: "fast", served: "fast" });
+	});
+
 	it("falls back to the provider's echo when no speed headers come back", async () => {
 		const { message } = await runResponses(openaiModel("sprilicred-openai"), "priority", () =>
 			sse([...TEXT, completed("default")]),
