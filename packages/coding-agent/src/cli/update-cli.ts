@@ -2134,10 +2134,12 @@ export async function runUpdateCommand(opts: {
 				const binaryPath = resolveOmpPath();
 				if (binaryPath) {
 					const bytes = await Bun.file(tryRealpath(binaryPath) ?? binaryPath).arrayBuffer();
-					const digest = `sha256:${createHash("sha256").update(Buffer.from(bytes)).digest("hex")}`;
-					digestMatches = digest === release.asset.digest;
+					const hasher = new Bun.CryptoHasher("sha256");
+					hasher.update(bytes);
+					digestMatches = `sha256:${hasher.digest("hex")}` === release.asset.digest;
 				}
-			} catch {
+			} catch (err) {
+				if (!(err instanceof Error) || !/ENOENT|EACCES|permission|not found/i.test(err.message)) throw err;
 				digestMatches = true;
 			}
 		}
@@ -2177,55 +2179,15 @@ export async function runUpdateCommand(opts: {
 		const forceBinary = shouldForceBinaryUpdate(release);
 		const allowPrerelease = channel === "canary";
 		const target = await resolveUpdateTarget({ allowPackageManagers: !forceBinary });
-		if (channel === "canary" && (target.method === "nix" || target.method === "brew" || target.method === "mise")) {
-			console.log(chalk.yellow("Canary updates are only supported for bun, npm, or binary installs."));
-			return;
+		if (target.method !== "binary" || target.replacesSymlink) {
+			const manager = target.method === "binary" ? "package manager" : target.method;
+			throw new Error(`This installation is managed by ${manager} (upstream); reinstall with the Spring-Silicon installer.`);
 		}
-		if (target.method === "nix") {
-			console.log(chalk.yellow("This installation is managed by Nix and cannot update itself."));
-			console.log(chalk.dim("Update the flake input or profile that provides omp, then rebuild."));
-			return;
-		} else if (target.method === "brew") {
-			await updateViaHomebrew(release.version, opts.force);
-		} else if (target.method === "mise") {
-			await updateViaMise(release.version, opts.force);
-		} else if (target.method === "bun" || target.method === "npm") {
-			if (forceBinary) {
-				// Reachable in forced mode only through a Windows script
-				// launcher resolved from PATH (the bun/npm bin-dir probes are
-				// skipped), so the launcher path is always known.
-				if (!target.path) throw new Error(`Could not resolve ${APP_NAME} launcher path in PATH`);
-				console.log(chalk.dim("This release ships as a standalone binary; replacing the script launcher."));
-				await updateViaShimTakeover(target.path, release.version, { allowPrerelease });
-				console.log(
-					chalk.yellow(
-						`This install is no longer managed by ${target.method}. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,
-					),
-				);
-			} else {
-				await updateViaManager(
-					release,
-					target.path,
-					packageManagerUpdateSteps(target.method, release, allowPrerelease),
-				);
-			}
-		} else {
-			if (forceBinary && target.replacesSymlink) {
-				console.log(chalk.dim("Replacing the package-manager launcher with the standalone binary."));
-			}
-			await updateViaBinaryAt(target.path, release.version, {
-				allowPrerelease,
-				asset: release.asset,
-				validateExistingTarget: target.validateExistingTarget,
-			});
-			if (forceBinary && target.replacesSymlink) {
-				console.log(
-					chalk.yellow(
-						`This install is no longer managed by bun/npm. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,
-					),
-				);
-			}
-		}
+		await updateViaBinaryAt(target.path, release.version, {
+			allowPrerelease,
+			asset: release.asset,
+			validateExistingTarget: target.validateExistingTarget,
+		});
 		if (opts.channel) persistChannel(channel);
 	} catch (err) {
 		console.error(chalk.red(`Update failed: ${err}`));
