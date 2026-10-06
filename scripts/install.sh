@@ -59,6 +59,7 @@ probe=$!
   sleep 30 & sleeper=$!
   trap 'kill "$sleeper" 2>/dev/null || :; exit 0' HUP INT TERM
   wait "$sleeper"
+  : > "$stage/timed-out"
   children=$(ps -axo pid=,ppid= | awk -v parent="$probe" '$2 == parent {print $1}')
   kill -TERM "$probe" 2>/dev/null || :
   sleep 2 & sleeper=$!; wait "$sleeper"
@@ -67,7 +68,8 @@ probe=$!
 ) >/dev/null 2>&1 &
 watchdog=$!
 status=0; wait "$probe" || status=$?; probe=""
-kill "$watchdog" 2>/dev/null || :; wait "$watchdog" 2>/dev/null || :; watchdog=""
-[ "$status" = 0 ] && [ -s "$stage/version" ] || { echo 'Downloaded omp cannot start (30s limit)' >&2; exit 1; }
+if [ ! -e "$stage/timed-out" ]; then kill "$watchdog" 2>/dev/null || :; fi
+wait "$watchdog" 2>/dev/null || :; watchdog=""
+[ "$status" = 0 ] && [ ! -e "$stage/timed-out" ] && [ -s "$stage/version" ] || { echo 'Downloaded omp cannot start (30s limit)' >&2; exit 1; }
 mv -f "$stage/omp" "$INSTALL_DIR/omp"
 echo "Installed Spring Silicon omp to $INSTALL_DIR/omp"
