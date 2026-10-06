@@ -1181,7 +1181,7 @@ export function isMuslLinuxForTest(options: Required<MuslDetectionOptions>): boo
 /**
  * Get the appropriate binary name for this platform.
  */
-function getBinaryName(): string {
+export function getBinaryName(): string {
 	if (process.platform === "linux" && process.arch === "x64") return `${APP_NAME}-linux-x64`;
 	if (process.platform === "darwin" && process.arch === "arm64") return `${APP_NAME}-darwin-arm64`;
 	throw new Error(
