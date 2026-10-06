@@ -14,6 +14,7 @@ import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import { runSprilicredLogin } from "./sprilicred-login";
 import { formatLoginIdentity, pickOAuthProvider, runTerminalOAuthLogin } from "./oauth-terminal";
 
 /**
@@ -22,9 +23,23 @@ import { formatLoginIdentity, pickOAuthProvider, runTerminalOAuthLogin } from ".
  * An unknown/unavailable provider, a cancelled selection or prompt, and a
  * failed OAuth flow print `Login failed: …` to stderr and set exit code 1.
  */
-export async function runLoginCommand(provider: string | undefined): Promise<void> {
+export async function runLoginCommand(provider: string | undefined, key?: string): Promise<void> {
 	const cwd = getProjectDir();
 	const settings = await Settings.init({ cwd });
+
+	if (provider === "sprilicred") {
+		const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+		try {
+			await runSprilicredLogin(rl, settings, key);
+		} catch (error) {
+			process.stderr.write(chalk.red(`Login failed: ${error instanceof Error ? error.message : String(error)}\n`));
+			process.exitCode = 1;
+		} finally {
+			rl.close();
+		}
+		return;
+	}
+
 	const authStorage = await discoverAuthStorage(undefined, { settings });
 	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 	try {
