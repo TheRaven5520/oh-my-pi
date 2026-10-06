@@ -18,6 +18,8 @@ import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-containe
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
+import { cfgDisplayShowTokenUsage } from "@oh-my-pi/pi-coding-agent/modes/settings";
+
 // 4242 → "4.2K": distinctive enough not to collide with a read group's render.
 const USAGE_INPUT = 4242;
 const USAGE_LABEL = formatNumber(USAGE_INPUT);
@@ -69,7 +71,7 @@ function makeHarness(showTokenUsage: boolean): { ctx: InteractiveModeContext; he
 		ui: { requestRender: vi.fn() },
 		statusLine: { invalidate: vi.fn() },
 		updateEditorBorderColor: vi.fn(),
-		settings: { get: (key: string) => (key === "display.showTokenUsage" ? showTokenUsage : false) },
+		settings: Settings.isolated({ "display.showTokenUsage": showTokenUsage }),
 		addMessageToChat: (message: AgentMessage) => helpers.addMessageToChat(message),
 		session: {
 			retryAttempt: 0,
@@ -142,7 +144,7 @@ describe("UiHelpers.renderSessionContext token-usage row placement", () => {
 describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 	beforeEach(async () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
-		settings.set("display.showTokenUsage", true);
+		cfgDisplayShowTokenUsage.set(settings, true);
 	});
 	afterEach(() => {
 		resetSettingsForTest();

@@ -69,7 +69,7 @@ export function describeSpeedOutcome(
 			level: "info",
 			text:
 				notSent === "ultrafast"
-					? `Ultrafast not sent: ${modelLabel} isn't a Sprilicred OpenAI model.`
+					? `Ultrafast not sent: ${modelLabel} doesn't offer Ultrafast.`
 					: `Fast mode not sent: ${modelLabel} has no fast mode here.`,
 			always: false,
 		};

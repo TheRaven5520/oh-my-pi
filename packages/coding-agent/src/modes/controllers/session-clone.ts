@@ -6,6 +6,7 @@ import type { AgentSession } from "../../session/agent-session";
 import { SessionManager } from "../../session/session-manager";
 import type { CustomTool } from "../../extensibility/custom-tools/types";
 import { createMCPProxyTools, createSubagentSettings } from "../../task/executor";
+import { cfgTaskEnableLsp } from "../../task/settings";
 import type { InteractiveModeContext } from "../types";
 
 /** Per-clone identity passed to {@link SessionCloneParent.sessionOptions}. */
@@ -81,7 +82,7 @@ export function captureSessionCloneParent(
 	const cloneDir = parentFile.slice(0, -6);
 	const settings = createSubagentSettings(ctx.settings);
 	const customTools = mcpManager ? createMCPProxyTools(mcpManager) : undefined;
-	const enableLsp = ctx.settings.get("task.enableLsp") !== false;
+	const enableLsp = cfgTaskEnableLsp.get(ctx.settings) !== false;
 	const agentRegistry = AgentRegistry.global();
 
 	return {

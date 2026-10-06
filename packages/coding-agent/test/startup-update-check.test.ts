@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { cfgStartupCheckUpdate } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { checkForNewVersion } from "@oh-my-pi/pi-coding-agent/main";
 
 /** Answer every registry request with a release far newer than any real version. */
@@ -33,7 +34,7 @@ describe("startup update check", () => {
 	});
 
 	it("reports a newer release once startup.checkUpdate is turned on", async () => {
-		settings.set("startup.checkUpdate", true);
+		cfgStartupCheckUpdate.set(settings, true);
 		mockRegistryWithNewerRelease();
 
 		expect(await checkForNewVersion("0.0.1")).toBe("999.0.0");

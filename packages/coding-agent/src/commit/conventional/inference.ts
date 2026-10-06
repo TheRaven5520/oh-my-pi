@@ -1,9 +1,10 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { Api, ApiKey, AssistantMessage, AuthStorage, Model } from "@oh-my-pi/pi-ai";
+import type { Api, ApiKey, AuthStorage, Model } from "@oh-my-pi/pi-ai";
 import { completeSimple } from "@oh-my-pi/pi-ai";
 import { toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
 import { privateSideCall } from "../../session/private-side-calls";
 import type { ResolvedCommitModel } from "../model-selection";
+import { extractTextContent } from "../utils";
 import { type CommitInferenceCache, computeCommitCacheKey } from "./cache";
 import type { ConventionalGenerationConfig } from "./config";
 import type { ConventionalPromptFamily } from "./prompts";
@@ -135,7 +136,7 @@ export class OmpCommitInference implements CommitInference {
 						"commit",
 					),
 				);
-				responseText = extractAssistantText(message);
+				responseText = extractTextContent(message);
 				if (message.stopReason === "error") throw new Error(message.errorMessage ?? "Provider error");
 				if (!responseText.trim()) throw new Error("Empty model response");
 				const raw = { text: responseText, stopReason: message.stopReason };
@@ -179,12 +180,4 @@ export class OmpCommitInference implements CommitInference {
 		this.#cache?.close();
 		this.#authStorage?.close();
 	}
-}
-
-function extractAssistantText(message: AssistantMessage): string {
-	return message.content
-		.filter(content => content.type === "text")
-		.map(content => content.text)
-		.join("")
-		.trim();
 }

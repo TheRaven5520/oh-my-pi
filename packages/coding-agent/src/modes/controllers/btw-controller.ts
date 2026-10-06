@@ -24,6 +24,8 @@ interface BtwRequest {
 	leafId: string | null;
 	sessionId: string;
 	session: InteractiveModeContext["session"];
+	/** Manager of the view that asked; the request outlives focus changes. */
+	sessionManager: InteractiveModeContext["sessionManager"];
 	store: BtwHistoryStore;
 	record: BtwHistoryRecord;
 	history?: readonly BtwHistoryTurn[];
@@ -80,12 +82,23 @@ export class BtwController {
 	#storePromise: Promise<BtwHistoryStore> | undefined;
 	#storeSessionId: string | undefined;
 	#storeArtifactsDir: string | undefined;
+	#storeScope: string | undefined;
 	#historyPanel: BtwHistoryPanel | undefined;
 	#historyOverlay: OverlayHandle | undefined;
 	readonly #writes = new Set<Promise<boolean>>();
 	readonly #failedWrites = new Map<BtwRequest, Error>();
 
 	constructor(private readonly ctx: InteractiveModeContext) {}
+
+	/** /btw asks about the transcript on screen: the focused agent's session, else main. */
+	get #sessionManager(): InteractiveModeContext["sessionManager"] {
+		return this.ctx.focusedAgentId ? this.ctx.viewSession.sessionManager : this.ctx.sessionManager;
+	}
+
+	/** Focused agents share main's artifacts directory; scope their history by session id. */
+	get #historyScope(): string | undefined {
+		return this.ctx.focusedAgentId ? this.#sessionManager.getSessionId() : undefined;
+	}
 
 	/** Whether the inline panel owns Escape. */
 	hasActiveRequest(): boolean {
@@ -100,6 +113,8 @@ export class BtwController {
 	handlesBranchKey(): boolean {
 		if (this.#branchInFlight) return true;
 		if (!this.#visible || this.#activeRequest?.component.isBranchable() !== true) return false;
+		// Branch promotion rewrites the main session; focused-subagent answers stay side-only.
+		if (this.#activeRequest.session !== this.ctx.session || this.ctx.focusedAgentId) return false;
 		return (
 			this.#lastQuestion !== undefined &&
 			this.#lastReplyText !== undefined &&
@@ -113,6 +128,8 @@ export class BtwController {
 		if (this.#branchInFlight) return "a branch is already in progress";
 		if (this.#transitionCount > 0) return "a session operation is in progress";
 		if (!this.#visible || this.#activeRequest?.component.isBranchable() !== true) return "the answer is not ready";
+		if (this.#activeRequest.session !== this.ctx.session || this.ctx.focusedAgentId)
+			return "only main-session answers can be branched";
 		// Inline branch promotion carries one pair; do not drop earlier side turns.
 		if (this.#activeRequest.history?.length) return "multi-turn side conversations remain in BTW history";
 		if (!this.#lastQuestion || !this.#lastReplyText || !this.#lastAssistantMessage)
@@ -209,6 +226,8 @@ export class BtwController {
 			this.#transitionCount === 0 &&
 			request !== undefined &&
 			this.#isActiveRequest(request) &&
+			// Follow-ups reopen the request's own history; leaving its view parks them.
+			request.sessionId === this.#sessionManager.getSessionId() &&
 			getBtwLatestTurn(request.record).status === "complete"
 		);
 	}
@@ -247,6 +266,7 @@ export class BtwController {
 			this.#storePromise = undefined;
 			this.#storeSessionId = undefined;
 			this.#storeArtifactsDir = undefined;
+			this.#storeScope = undefined;
 		} finally {
 			this.#transitionCount--;
 		}
@@ -303,20 +323,27 @@ export class BtwController {
 	}
 
 	async #loadHistory(): Promise<BtwHistoryStore> {
-		const sessionId = this.ctx.sessionManager.getSessionId();
-		const artifactsDir = this.ctx.sessionManager.getArtifactsDir() ?? undefined;
-		if (this.#storeSessionId !== sessionId || this.#storeArtifactsDir !== artifactsDir) {
+		const sessionId = this.#sessionManager.getSessionId();
+		const artifactsDir = this.#sessionManager.getArtifactsDir() ?? undefined;
+		const scope = this.#historyScope;
+		if (
+			this.#storeSessionId !== sessionId ||
+			this.#storeArtifactsDir !== artifactsDir ||
+			this.#storeScope !== scope
+		) {
 			await this.dispose();
 			if (
-				this.ctx.sessionManager.getSessionId() !== sessionId ||
-				(this.ctx.sessionManager.getArtifactsDir() ?? undefined) !== artifactsDir
+				this.#sessionManager.getSessionId() !== sessionId ||
+				(this.#sessionManager.getArtifactsDir() ?? undefined) !== artifactsDir ||
+				this.#historyScope !== scope
 			) {
 				throw new Error("The session changed while opening BTW history.");
 			}
 			this.#storeSessionId = sessionId;
 			this.#storeArtifactsDir = artifactsDir;
+			this.#storeScope = scope;
 		}
-		this.#storePromise ??= BtwHistoryStore.open(artifactsDir);
+		this.#storePromise ??= BtwHistoryStore.open(artifactsDir, scope);
 		const pending = this.#storePromise;
 		try {
 			const store = await pending;
@@ -344,26 +371,38 @@ export class BtwController {
 			this.ctx.showStatus("A /btw action is in progress. Please wait.", { dim: true });
 			return false;
 		}
-		if (
-			trimmedQuestion &&
-			this.#activeRequest &&
-			getBtwLatestTurn(this.#activeRequest.record).status === "running" &&
-			this.#activeRequest.sessionId === this.ctx.sessionManager.getSessionId()
-		) {
-			this.ctx.showStatus("A /btw question is still running. Open /btw to view it or cancel it first.", {
-				dim: true,
-			});
-			return false;
+		const viewSession = this.ctx.focusedAgentId ? this.ctx.viewSession : this.ctx.session;
+		const active = this.#activeRequest;
+		if (active && getBtwLatestTurn(active.record).status === "running") {
+			if (active.session !== viewSession) {
+				// Opening this view's store would dispose (cancel) the other view's live question.
+				this.ctx.showStatus(
+					"A /btw question is still running in another session view. Wait for it or cancel it first.",
+					{ dim: true },
+				);
+				return false;
+			}
+			if (trimmedQuestion && active.sessionId === this.#sessionManager.getSessionId()) {
+				this.ctx.showStatus("A /btw question is still running. Open /btw to view it or cancel it first.", {
+					dim: true,
+				});
+				return false;
+			}
 		}
-		const originalSessionId = this.ctx.sessionManager.getSessionId();
+		const originalSessionId = this.#sessionManager.getSessionId();
 		this.#starting = true;
 		try {
 			const store = await this.#loadHistory();
 			const generation = this.#generation;
-			const sessionId = this.ctx.sessionManager.getSessionId();
+			const sessionId = this.#sessionManager.getSessionId();
 			if (signal?.aborted || store !== this.#store || sessionId !== originalSessionId) return false;
 			if (!trimmedQuestion) {
-				this.#showHistory(store);
+				const panel = this.#showHistory(store);
+				// Tern: reopening lands on the side question put away while it answered.
+				const active = this.#activeRequest;
+				if (this.ctx.ui.nativeRendering && active?.store === store && this.#isActiveRequest(active)) {
+					panel.showRecord(active.record.id);
+				}
 				return true;
 			}
 			// A just-cancelled/completed turn may still be publishing its checkpoint.
@@ -372,7 +411,7 @@ export class BtwController {
 				signal?.aborted ||
 				generation !== this.#generation ||
 				store !== this.#store ||
-				sessionId !== this.ctx.sessionManager.getSessionId()
+				sessionId !== this.#sessionManager.getSessionId()
 			)
 				return false;
 			const previous = recordId ? store.getRecords().find(record => record.id === recordId) : undefined;
@@ -380,19 +419,18 @@ export class BtwController {
 				this.ctx.showStatus("This side conversation is unavailable or still running.", { dim: true });
 				return false;
 			}
-			const session = this.ctx.session;
-			if (!session.model) {
+			if (!viewSession.model) {
 				this.ctx.showError("No active model available for /btw.");
 				return false;
 			}
-			await this.ctx.sessionManager.ensureOnDisk();
-			if (signal?.aborted || generation !== this.#generation || sessionId !== this.ctx.sessionManager.getSessionId())
+			await this.#sessionManager.ensureOnDisk();
+			if (signal?.aborted || generation !== this.#generation || sessionId !== this.#sessionManager.getSessionId())
 				return false;
 			if (!previous) this.#closeHistory();
 			this.#activeRequest?.component.close();
 			this.#clearCompletedState();
 			const now = Date.now();
-			const leafId = this.ctx.sessionManager.getLeafId();
+			const leafId = this.#sessionManager.getLeafId();
 			const turn: BtwHistoryTurn = {
 				question: trimmedQuestion,
 				answer: "",
@@ -418,7 +456,8 @@ export class BtwController {
 				question: trimmedQuestion,
 				leafId,
 				sessionId,
-				session,
+				session: viewSession,
+				sessionManager: this.#sessionManager,
 				store,
 				record,
 				history,
@@ -426,7 +465,10 @@ export class BtwController {
 				persisted: false,
 			};
 			this.#activeRequest = request;
-			this.#visible = !previous || !this.#historyOverlay;
+			// Tern shows the answer in the BTW history sheet (its body scrolls, its
+			// markdown is native); the text renderer keeps the inline panel.
+			const sheet = this.ctx.ui.nativeRendering;
+			this.#visible = !sheet && (!previous || !this.#historyOverlay);
 			this.ctx.btwContainer.clear();
 			if (this.#visible) this.ctx.btwContainer.addChild(request.component);
 			this.ctx.ui.requestRender();
@@ -455,6 +497,7 @@ export class BtwController {
 				return false;
 			}
 			this.#refreshHistory();
+			if (sheet && !previous) this.#showHistory(store).showRecord(record.id);
 			void this.#runRequest(request);
 			return true;
 		} catch (error) {
@@ -471,7 +514,7 @@ export class BtwController {
 			return this.#historyPanel;
 		}
 		this.#hideInline();
-		const historySessionId = this.ctx.sessionManager.getSessionId();
+		const historySessionId = this.#sessionManager.getSessionId();
 		const panel = new BtwHistoryPanel({
 			records: this.#historyRecords(store),
 			onClose: () => this.#closeHistory(),
@@ -489,13 +532,16 @@ export class BtwController {
 				getBtwLatestTurn(record).status !== "running" &&
 				(!this.#activeRequest || getBtwLatestTurn(this.#activeRequest.record).status !== "running"),
 			onFollowUp: (record, question, signal) => {
-				if (historySessionId !== this.ctx.sessionManager.getSessionId()) {
+				if (historySessionId !== this.#sessionManager.getSessionId()) {
 					return Promise.resolve(false);
 				}
 				return this.startFollowUp(record.id, question, signal);
 			},
+			spaceHold: input => this.ctx.dictationSpaceHold(input),
 			requestRender: () => this.ctx.ui.requestRender(),
 			getHeight: () => this.ctx.ui.terminal.rows,
+			// Tern has no inline panel: Esc puts the sheet away, `x` cancels.
+			escapeHides: this.ctx.ui.nativeRendering,
 		});
 		this.#historyPanel = panel;
 		this.#historyOverlay = this.ctx.ui.showOverlay(panel, {
@@ -527,14 +573,18 @@ export class BtwController {
 		this.#historyPanel = undefined;
 		if (!overlay) return;
 		overlay.hide();
-		// Closing a different history entry returns to the active BTW instead of
-		// leaving a request running without a visible panel.
+		// Closing while a BTW still answers keeps it running: text mode returns
+		// to its inline panel; Tern has none, so it says how to get back.
 		const request = this.#activeRequest;
 		if (request && this.#isActiveRequest(request) && getBtwLatestTurn(request.record).status === "running") {
-			request.component.setAnswer(getBtwLatestTurn(request.record).answer);
-			this.#visible = true;
-			this.ctx.btwContainer.clear();
-			this.ctx.btwContainer.addChild(request.component);
+			if (this.ctx.ui.nativeRendering) {
+				this.ctx.showStatus("/btw is still answering in the background · /btw to reopen it", { dim: true });
+			} else {
+				request.component.setAnswer(getBtwLatestTurn(request.record).answer);
+				this.#visible = true;
+				this.ctx.btwContainer.clear();
+				this.ctx.btwContainer.addChild(request.component);
+			}
 		}
 		this.ctx.ui.requestRender();
 	}
@@ -552,7 +602,7 @@ export class BtwController {
 				// checkpoint; terminal failures must survive removal from #writes.
 				if (request.persisted) this.#failedWrites.set(request, toError(error));
 				logger.error("BTW history save failed", { error });
-				if (request.sessionId === this.ctx.sessionManager.getSessionId()) {
+				if (request.sessionId === request.sessionManager.getSessionId()) {
 					this.ctx.showError(sanitizeErrorLine(`Could not save /btw history: ${toError(error).message}`));
 				}
 				return false;
@@ -624,6 +674,7 @@ export class BtwController {
 						request.component.noteLookup(btwLookupLabel(call.name, call.arguments), call.allowed);
 					}
 				},
+				replyMaxBytes: Number.POSITIVE_INFINITY,
 				onTextDelta: delta => {
 					const latest = getBtwLatestTurn(request.record);
 					if (latest.status !== "running") return;
@@ -645,6 +696,10 @@ export class BtwController {
 				request.component.setAnswer(replyText);
 				// The answer stays the model's own text; a cutoff is panel state, not content.
 				request.component.markComplete({ cutOff: assistantMessage.stopReason === "length" });
+				// Tern: the sheet was put away while answering; say where the answer is.
+				if (this.ctx.ui.nativeRendering && !this.#historyOverlay) {
+					this.ctx.showStatus("/btw answer ready · /btw to read it");
+				}
 				const copyText = request.component.getCopyText();
 				if (copyText !== undefined) {
 					this.#lastQuestion = request.question;
@@ -688,7 +743,8 @@ export class BtwController {
 		this.#lastSessionId = undefined;
 	}
 
+	/** The request is current and its own session is still loaded, whichever view is on screen. */
 	#isActiveRequest(request: BtwRequest): boolean {
-		return this.#activeRequest === request && request.sessionId === this.ctx.sessionManager.getSessionId();
+		return this.#activeRequest === request && request.sessionId === request.sessionManager.getSessionId();
 	}
 }

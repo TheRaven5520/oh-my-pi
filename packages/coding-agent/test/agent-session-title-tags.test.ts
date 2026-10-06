@@ -8,6 +8,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TAG_CHECK_EVERY_PROMPTS } from "@oh-my-pi/pi-coding-agent/session/session-tag";
+import { cfgTitleStyle } from "@oh-my-pi/pi-coding-agent/goals/settings";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 describe("AgentSession tag-style titles", () => {
@@ -148,7 +149,7 @@ describe("AgentSession tag-style titles", () => {
 	it("converts a sentence title right after the user switches to tag style", async () => {
 		const active = await createTagSession("unpinned");
 		expect(await active.sessionManager.setSessionName("Merge and Update Project Dependencies", "auto")).toBe(true);
-		active.settings.set("title.style", "tag");
+		cfgTitleStyle.set(active.settings, "tag");
 		const generateTitle = vi.spyOn(active, "generateTitle").mockResolvedValue("modify omp");
 
 		await active.prompt("keep going on the omp fork");

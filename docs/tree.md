@@ -14,12 +14,12 @@ This is an in-file leaf move, not a new session export.
 
 Primary implementation:
 
-- `src/slash-commands/builtin-registry.ts` (`/tree`, `/branch` command routing)
-- `src/modes/controllers/input-controller.ts` (keybinding wiring, double-escape behavior)
-- `src/modes/controllers/selector-controller.ts` (tree UI launch + summary prompt flow)
+- `packages/coding-agent/src/slash-commands/builtin-session.ts` (`/tree`, `/branch` command routing)
+- `packages/coding-agent/src/modes/controllers/input-controller.ts` (keybinding wiring, double-escape behavior)
+- `packages/coding-agent/src/modes/controllers/selector-controller.ts` (tree UI launch + summary prompt flow)
 - `packages/tui/src/overlays/tree-selector.ts` (navigation, filters, search, labels, rendering)
-- `src/session/agent-session.ts` (`navigateTree` leaf switching + optional summary)
-- `src/session/session-manager.ts` (`getTree`, `branch`, `branchWithSummary`, `resetLeaf`, label persistence)
+- `packages/coding-agent/src/session/agent-session.ts` (`navigateTree` leaf switching + optional summary)
+- `packages/coding-agent/src/session/session-manager.ts` (`getTree`, `branch`, `branchWithSummary`, `resetLeaf`, label persistence)
 
 ## How to open it
 
@@ -28,8 +28,10 @@ Any of the following opens the same selector:
 - `/tree`
 - configured keybinding for the `app.session.tree` action
 
-Double-escape on an empty editor (or `/branch`, alias `/rewind`) opens the fullscreen transcript rewind selector instead (see `doubleEscapeAction`): it replays the transcript, outlines the block the rewind would land on, and rewinds in place with `navigateTree()`. Rewinding to a user prompt puts that prompt back in the editor.
+Double-escape on an empty editor follows `doubleEscapeAction`: `rewind` (default) opens the fullscreen transcript rewind selector (alias `/branch` and `/rewind`), `tree` opens this tree selector, and `none` disables the shortcut. Transcript rewind replays the transcript, outlines the block the rewind would land on, calls `navigateTree(..., { summarize: false })` for every target, and stays in the current session file. User-request drafts replace the editor text.
 
+Rewind opens on the latest ~600 entries, keeping whole user turns (which may exceed the limit). Press `a` for all earlier history without changing the selected point or branch.
+Press `f` to filter the replayed transcript (loading the whole branch); Left/Right navigate the rewind selector's sibling-branch strip when available. These controls belong to transcript rewind, not the tree selector below.
 ### Restoring code
 
 Before `edit`, `write`, `ast_edit`, or an `lsp` rename/code action first changes a file during a turn, omp saves the file's prior contents (or notes that it did not exist). Each prompt that starts a run is a checkpoint; a message sent while the agent is already working joins that run and gets no checkpoint of its own. When you rewind to a checkpoint prompt and files have changed since it, a menu asks what to restore:
@@ -42,6 +44,7 @@ Before `edit`, `write`, `ast_edit`, or an `lsp` rename/code action first changes
 Until you send your next message, `/rewind undo` puts back the file versions the last code restore overwrote (including files it deleted). Sending a message, or anything else that starts an agent run, drops the undo. It only covers files; to undo a conversation rewind, pick the abandoned branch in `/tree`.
 
 Without file changes the rewind happens immediately, as before. Snapshots live in `<session artifacts>/file-history/` (in memory for `--no-session`), survive `--resume`, and keep the 100 most recent checkpoints. Not tracked: bash commands, SQLite row writes, subagents (each keeps its own history), edits a language server applies on its own through `workspace/applyEdit`, and edits made outside omp. Symlinked and hard-linked files are skipped with a warning rather than written through.
+
 
 ## Tree UI model
 
@@ -67,7 +70,7 @@ Example tree view (active path marked with •):
 
 The selector recenters around current selection and shows up to:
 
-- `max(5, floor(terminalHeight / 2))` rows
+- `max(1, min(max(5, floor(terminalHeight / 2)), terminalHeight - 8))` rows, reserving panel chrome on short terminals
 
 ## Keybindings inside tree selector
 
@@ -104,8 +107,16 @@ Shows conversational nodes plus any entry types not explicitly suppressed. It hi
 - `custom`
 - `model_change`
 - `thinking_level_change`
+- `model_usage`
+- `service_tier_change`
+- `title_change`
+- `credential_pin`
+- `session_init`
+- `ttsr_injection`
+- `mode_change`
+- `reset_boundary`
 
-Other entry types without specialized rendering (for example service-tier, title, credential-pin, reset, and mode entries) may appear as blank rows in current code.
+The `all` filter renders these as metadata rows; entries without specialized rendering use their type name rather than a blank row.
 
 ### `no-tools`
 
@@ -113,7 +124,7 @@ Same as `default`, plus hides `toolResult` messages.
 
 ### `user-only`
 
-Only `message` entries where role is `user`.
+User requests: ordinary user messages and user-invoked skill/collaboration custom prompts.
 
 ### `labeled-only`
 
@@ -136,6 +147,7 @@ Assistant messages that contain only tool calls (no canonical text) are hidden i
 - Matching is fuzzy (subsequence) and case-insensitive (`fuzzyMatch`)
 - All tokens must match (AND semantics)
 - Searchable text includes label, role, and type-specific content (message text, branch summary text, custom type, tool command snippets, etc.)
+- Message/custom-message text is bounded to a 200-character search preview; search does not index every byte of a long message.
 
 ## Selection outcomes (important)
 
@@ -151,7 +163,8 @@ Assistant messages that contain only tool calls (no canonical text) are hidden i
 ### Selecting `custom_message`
 
 - Ordinary custom messages use the same parent-leaf rule and text prefill as user messages
-- `skill-prompt` custom messages are not editable; selecting one lands on that node like other non-user entries
+- User-invoked skill/collaboration custom prompts restore the original user draft and image attachments, using the parent-leaf rule
+- Agent/autoload `skill-prompt` injections are not editable; selecting one lands on that node like other non-user entries
 
 ### Selecting a past `ask` tool result
 
@@ -168,6 +181,7 @@ Assistant messages that contain only tool calls (no canonical text) are hidden i
 ### Selecting current leaf
 
 - Normally closes with `Already at this point`
+- The `/tree` UI treats a current-leaf user prompt as a no-op; transcript `/branch` rewind and direct `navigateTree()` calls can still rewind past that prompt
 - A current-leaf `ask` result still permits the re-answer flow
 
 ```text
@@ -188,7 +202,7 @@ selected node
 
 ## Summary-on-switch flow
 
-Summary prompting is controlled by `branchSummary.enabled` (default `false`). `Shift+Enter` requests summarization directly regardless of the prompt setting; a model and provider credential must be available.
+Summary prompting is controlled by `branchSummary.enabled` (default `false`). `Shift+Enter` requests summarization directly regardless of the prompt setting. A model must be available; provider credentials are checked only when the built-in summarizer runs (not for hook-supplied summaries or an empty abandoned path).
 
 When prompting is enabled, ordinary Enter offers:
 
@@ -229,11 +243,12 @@ Label edits in tree UI call `appendLabelChange(targetId, label)`.
 | Operation | Scope                                            | Result                                                                                                                                                   |
 | --------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/tree`   | Current session file                             | Moves leaf to selected point (same file)                                                                                                                 |
-| `/branch` | Current session file                             | Opens the transcript rewind selector (alias `/rewind`); rewinds in place, keeping the old path as a sibling branch, and can restore files (see Restoring code) |
-| `/fork`   | Whole current session                            | Duplicates session into a new persisted session file                                                                                                     |
-| `/resume` | Session list                                     | Switches to another session file                                                                                                                         |
+| `/branch` (alias `/rewind`) | Current session file | Opens transcript rewind; moves the leaf in place, keeping the old path as a sibling branch, restores user-request drafts, and can restore files (see Restoring code) |
+| `/duplicate` | Whole current session                            | Duplicates session into a new persisted session file                                                                                                     |
+| `/fork`      | Current session                                  | Opens a forked report-back agent chat in the Agents panel                                                                                               |
+| `/resume`    | Session list                                     | Switches to another session file                                                                                                                         |
 
-Key distinction: `/tree` and `/branch` both move within one session file; `/branch` picks from the rendered transcript and can also restore files. `/fork` and `/resume` change session-file context.
+Key distinction: `/tree` and `/branch` navigate inside one session file. `/duplicate` copies the session into a new persisted session file; `/fork` opens a report-back agent chat in the Agents panel; `/resume` switches session files. The programmatic `AgentSession.branch()` API still creates a separate branched session.
 
 ## Operator workflows
 

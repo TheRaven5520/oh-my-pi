@@ -28,6 +28,21 @@ function openaiModel(provider: string): Model<Api> {
 	} as ModelSpec<"openai-responses">);
 }
 
+function anthropicModel(provider = "anthropic"): Model<Api> {
+	return buildModel({
+		id: "claude-sonnet",
+		name: "claude-sonnet",
+		api: "anthropic-messages",
+		provider,
+		baseUrl: "https://anthropic.example/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200_000,
+		maxTokens: 16_000,
+	} as ModelSpec<"anthropic-messages">);
+}
+
 function turn(speed: SpeedOutcome | undefined, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
 	return {
 		role: "assistant",
@@ -129,11 +144,26 @@ describe("/fast and /ultrafast", () => {
 		expect(await run(current, "/ultrafast status")).toEqual(["Ultrafast is on."]);
 	});
 
-	it("refuses ultrafast on a model outside Sprilicred and changes nothing", async () => {
+	it("clears stored ultrafast when toggled off from another model family", async () => {
+		const current = createSession(openaiModel("sprilicred-openai"));
+		current.setUltrafastMode(true);
+		expect(current.serviceTierByFamily.openai).toBe("ultrafast");
+		authStorage.keys.setRuntime("anthropic", "token");
+		await current.setModel(anthropicModel());
+		const notices: string[] = [];
+		current.subscribe(event => {
+			if (event.type === "notice") notices.push(event.message);
+		});
+		expect(current.toggleUltrafastMode()).toBe(false);
+		expect(current.serviceTierByFamily.openai).toBeUndefined();
+		expect(notices).toEqual([]);
+	});
+
+	it("refuses ultrafast on an unsupported model and changes nothing", async () => {
 		const current = createSession(openaiModel("personal-openai"));
 		current.setFastMode(true);
 		expect(await run(current, "/ultrafast on")).toEqual([
-			"Ultrafast isn't available on personal-openai/gpt-6-astra: only Sprilicred's OpenAI models offer it. Nothing changed.",
+			"Ultrafast isn't available on personal-openai/gpt-6-astra. Nothing changed.",
 		]);
 		expect(current.serviceTierByFamily).toEqual({ openai: "priority" });
 	});
@@ -340,7 +370,7 @@ describe("speed outcome messages", () => {
 
 	it("says a wanted tier was not sent when the model can't carry it", () => {
 		expect(describeSpeedOutcome(turn(undefined), "ultrafast", "personal-openai/gpt-6-astra")?.text).toBe(
-			"Ultrafast not sent: personal-openai/gpt-6-astra isn't a Sprilicred OpenAI model.",
+			"Ultrafast not sent: personal-openai/gpt-6-astra doesn't offer Ultrafast.",
 		);
 	});
 });

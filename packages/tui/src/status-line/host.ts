@@ -45,6 +45,8 @@ export interface StatusLineSession {
 			orchestrationCacheRead: number;
 			premiumRequests: number;
 			cost: number;
+			/** Portion of `cost` carried by completed subagent task results. */
+			subagentCost?: number;
 		};
 	};
 	modelRegistry: {
@@ -55,6 +57,8 @@ export interface StatusLineSession {
 	isFastModeActive(): boolean;
 	/** Speed label (Normal / Fast / Ultrafast, or what Sprilicred served of it) and its colour. */
 	speedStatus?(): { text: string; level: "dim" | "normal" | "warning" };
+	/** Anthropic usage-limit label (`limit reached · wrapping up · resets 14:30`, `low priority until 14:30 · 62% left`). */
+	getAnthropicSlowModeLabel?(): string | undefined;
 	getPrewalkState?(): unknown;
 	getAsyncJobSnapshot(): { running: readonly { type: string; agentId?: string }[] } | null | undefined;
 	getGoalModeState(): { goal?: { status: string; tokensUsed: number; tokenBudget?: number } } | undefined;

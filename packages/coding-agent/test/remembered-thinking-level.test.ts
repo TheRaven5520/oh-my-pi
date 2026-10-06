@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { Effort } from "@oh-my-pi/pi-ai";
+import { cfgDefaultThinkingLevel } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -61,7 +62,7 @@ describe("remembered thinking level across Ctrl+P and sessions", () => {
 	/** Settings as a person's config.yml has them; `set` writes through, unlike isolated overrides. */
 	function settingsWith(level: Effort): Settings {
 		const settings = Settings.isolated();
-		settings.set("defaultThinkingLevel", level);
+		cfgDefaultThinkingLevel.set(settings, level);
 		return settings;
 	}
 
@@ -73,7 +74,7 @@ describe("remembered thinking level across Ctrl+P and sessions", () => {
 			sessionManager,
 			settings,
 			modelRegistry: registry,
-			thinkingLevel: settings.get("defaultThinkingLevel") as Effort,
+			thinkingLevel: cfgDefaultThinkingLevel.get(settings) as Effort,
 		});
 		sessions.push(session);
 		return session;
@@ -101,12 +102,12 @@ describe("remembered thinking level across Ctrl+P and sessions", () => {
 		const first = start(settings);
 		let picked = first.cycleThinkingLevel();
 		while (picked !== Effort.Low) picked = first.cycleThinkingLevel();
-		expect(settings.get("defaultThinkingLevel")).toBe(Effort.Low);
+		expect(cfgDefaultThinkingLevel.get(settings)).toBe(Effort.Low);
 
 		settings.setModelRole("quick", "gateway/claude-short-ladder:medium");
 		await first.cycleRoleModels(["default", "quick"]);
 		expect(first.thinkingLevel).toBe(Effort.Medium);
-		expect(settings.get("defaultThinkingLevel")).toBe(Effort.Low);
+		expect(cfgDefaultThinkingLevel.get(settings)).toBe(Effort.Low);
 
 		const next = start(settings);
 		expect(next.thinkingLevel).toBe(Effort.Low);

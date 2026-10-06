@@ -6,6 +6,7 @@ import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { ty
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "./agent-session-events";
+import { escapeHarnessTags } from "./harness-tags";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
@@ -179,11 +180,17 @@ export class IrcBridge {
 		if (this.#host.isDisposed()) throw new Error("Recipient session is disposed.");
 		const streaming = this.#host.isStreaming();
 		const planModeIdle = !streaming && this.#host.planModeEnabled();
+		const fromParent = AgentRegistry.global().get(msg.to)?.parentId === msg.from;
 		// An idle subagent runs a monitored wake turn whose output is relayed
 		// back to the sender (task executor `relayWakeTurnOutput`); the main
 		// agent and mid-turn asides have no such relay.
 		const relayOnStop = !streaming && !planModeIdle && msg.to !== MAIN_AGENT_ID && msg.wakeRelay !== true;
 		const forkReport = msg.forkReport;
+		// The body is agent-authored (a peer's message, or a wake relay's
+		// `<task-result>` around a subagent's output), so it must not close the
+		// harness envelope it is rendered into or open a forged one, e.g. a parent
+		// steer. `details.message` keeps the raw body for the transcript card and inbox.
+		const envelopeBody = escapeHarnessTags(msg.body);
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
@@ -192,13 +199,13 @@ export class IrcBridge {
 			content: forkReport
 				? prompt.render(forkReportTemplate, {
 						from: msg.from,
-						message: msg.body,
+						message: envelopeBody,
 						done: forkReport.done,
 						midTurn: streaming,
 					})
 				: prompt.render(ircIncomingTemplate, {
 						from: msg.from,
-						message: msg.body,
+						message: envelopeBody,
 						replyTo: msg.replyTo ?? "",
 						interrupting: streaming,
 						relayOnStop,
@@ -211,6 +218,7 @@ export class IrcBridge {
 				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
 				...(msg.wakeRelay ? { wakeRelay: true } : {}),
 				...(forkReport ? { forkReport: { done: forkReport.done } } : {}),
+				...(fromParent ? { fromParent: true } : {}),
 			},
 			attribution: "agent",
 			timestamp: msg.ts,
@@ -223,11 +231,10 @@ export class IrcBridge {
 				this.#asides.push(record);
 				return "injected";
 			}
-			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
-			if (recipientParentId === msg.from) {
+			if (fromParent) {
 				this.#host.agent.steer({
 					role: "user",
-					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: msg.body }),
+					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: envelopeBody }),
 					attribution: "agent",
 					timestamp: msg.ts,
 					steering: true,

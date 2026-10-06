@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { SkillDescriptionCatalog } from "../src/extensibility/skill-descriptions";
+import { SkillDescriptionCatalog, SkillDescriptionStore } from "../src/extensibility/skill-descriptions";
 import type { Skill } from "../src/extensibility/skills";
 import { buildSystemPrompt } from "../src/system-prompt";
 
@@ -16,7 +16,7 @@ const original: Skill = {
 describe("system prompt skill descriptions", () => {
 	it("renders an immediate bounded preview, deduplicates in-flight work, and holds a session snapshot", async () => {
 		using temp = TempDir.createSync("omp-skill-description-");
-		const dbPath = temp.join("skills.db");
+		using store = SkillDescriptionStore.open(temp.join("skills.db"));
 		const { promise, resolve } = Promise.withResolvers<string>();
 		const started = Promise.withResolvers<void>();
 		let calls = 0;
@@ -26,7 +26,7 @@ describe("system prompt skill descriptions", () => {
 			expect(request).toContain(original.description);
 			return promise;
 		};
-		const session = new SkillDescriptionCatalog({ dbPath, compress });
+		const session = new SkillDescriptionCatalog({ store, compress });
 		const preview = session.render([original, original])[0]?.description;
 		expect(preview).toBeDefined();
 		expect(preview!.length).toBeLessThanOrEqual(100);
@@ -35,7 +35,7 @@ describe("system prompt skill descriptions", () => {
 		expect(calls).toBe(0);
 		await started.promise;
 		expect(calls).toBe(1);
-		const concurrent = new SkillDescriptionCatalog({ dbPath, compress });
+		const concurrent = new SkillDescriptionCatalog({ store, compress });
 		expect(concurrent.render([original])[0]?.description).toBe(preview);
 		await Promise.resolve();
 		expect(calls).toBe(1);
@@ -52,7 +52,7 @@ describe("system prompt skill descriptions", () => {
 		resolve(compressed);
 		await session.waitForPending();
 		expect(session.render([original])[0]?.description).toBe(preview);
-		const nextSession = new SkillDescriptionCatalog({ dbPath });
+		const nextSession = new SkillDescriptionCatalog({ store });
 		expect(nextSession.render([original])[0]?.description).toBe(compressed);
 		const after = await buildSystemPrompt({
 			skills: [original],
@@ -65,10 +65,10 @@ describe("system prompt skill descriptions", () => {
 
 	it("misses on a changed full description rather than serving stale cached text", async () => {
 		using temp = TempDir.createSync("omp-skill-description-change-");
-		const dbPath = temp.join("skills.db");
+		using store = SkillDescriptionStore.open(temp.join("skills.db"));
 		let calls = 0;
 		const first = new SkillDescriptionCatalog({
-			dbPath,
+			store,
 			compress: async () => {
 				calls++;
 				return "Use for interactive browser tasks.";
@@ -78,7 +78,7 @@ describe("system prompt skill descriptions", () => {
 		await first.waitForPending();
 		const changed = { ...original, description: `${original.description} Also inspect accessibility trees.` };
 		const next = new SkillDescriptionCatalog({
-			dbPath,
+			store,
 			compress: async () => {
 				calls++;
 				return "Use for interactive browser and accessibility tasks.";
@@ -91,11 +91,11 @@ describe("system prompt skill descriptions", () => {
 
 	it("caches an overlong hint cut to 12 words / 160 chars, so later sessions do not ask again", async () => {
 		using temp = TempDir.createSync("omp-skill-description-overrun-");
-		const dbPath = temp.join("skills.db");
+		using store = SkillDescriptionStore.open(temp.join("skills.db"));
 		const skills = [original, { ...original, name: "long-words", description: `${original.description} Words.` }];
 		let calls = 0;
 		const overrun = new SkillDescriptionCatalog({
-			dbPath,
+			store,
 			compress: async name => {
 				calls++;
 				return name === "long-words"
@@ -108,7 +108,7 @@ describe("system prompt skill descriptions", () => {
 		expect(calls).toBe(2);
 
 		const later = new SkillDescriptionCatalog({
-			dbPath,
+			store,
 			compress: async () => {
 				calls++;
 				return "unused";

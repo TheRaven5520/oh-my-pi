@@ -1,5 +1,5 @@
 import type { Model, ServiceTier, ServiceTierByFamily, ServiceTierFamily } from "@oh-my-pi/pi-ai";
-// `settings-schema` pulls this module into CLI startup; import the classifier
+// Setting declarations (`session/settings.ts`) pull this module into CLI startup; import the classifier
 // from the dependency-free types module so the `pi-ai` index (and the native
 // addon behind it) stays lazy.
 import { serviceTierFamily } from "@oh-my-pi/pi-ai/types";
@@ -8,8 +8,9 @@ import type { SubmenuOption } from "@oh-my-pi/pi-tui/overlays/settings-defs";
 /**
  * Per-family service-tier setting values. `"none"` is the omit-the-parameter
  * sentinel; the rest mirror the wire {@link ServiceTier} values each provider
- * family actually realizes. OpenAI accepts the full set (`ultrafast` is sent
- * only through Sprilicred and omitted elsewhere); Anthropic realizes only
+ * family actually realizes. OpenAI accepts the full set (`ultrafast` reaches
+ * Sprilicred OpenAI models, the OpenAI API with preview access, and Codex
+ * models whose discovery lists it; it is omitted elsewhere); Anthropic realizes only
  * `priority` (fast mode); Google (Gemini API + Vertex) realizes
  * `flex`/`priority`.
  */
@@ -73,6 +74,7 @@ export const SERVICE_TIER_INHERIT_SETTING_VALUES = [
 	"flex",
 	"scale",
 	"priority",
+	"ultrafast",
 ] as const;
 
 export type ServiceTierInheritSettingValue = (typeof SERVICE_TIER_INHERIT_SETTING_VALUES)[number];
@@ -116,7 +118,8 @@ export const SERVICE_TIER_OPENAI_OPTIONS: ReadonlyArray<SubmenuOption<ServiceTie
 	{
 		value: "ultrafast",
 		label: "Ultrafast",
-		description: "Fastest, six times Standard; Sprilicred OpenAI models only (omitted elsewhere)",
+		description:
+			"Lowest-latency serving (six times Standard on Sprilicred); Sprilicred OpenAI models, OpenAI API preview access, or Codex models that advertise it (omitted elsewhere)",
 	},
 ];
 
@@ -143,6 +146,7 @@ export const SERVICE_TIER_INHERIT_OPTIONS: ReadonlyArray<SubmenuOption<ServiceTi
 	{ value: "flex", label: "Flex", description: "Flexible capacity tier (OpenAI/Google families)" },
 	{ value: "scale", label: "Scale", description: "Scale Tier credits (OpenAI family)" },
 	{ value: "priority", label: "Priority", description: "Priority on every supported family of the spawned model" },
+	{ value: "ultrafast", label: "Ultrafast", description: "Ultrafast serving (OpenAI family, where available)" },
 ];
 
 /** Map a per-family setting value to a wire {@link ServiceTier}, or `undefined` to omit. */

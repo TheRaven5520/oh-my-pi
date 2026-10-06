@@ -3,6 +3,8 @@ import { type Component, Container } from "../tui";
 import { Disclosure } from "../components/disclosure";
 import { Markdown } from "../components/markdown";
 import { formatBytes } from "@oh-my-pi/pi-utils";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { TspSpan } from "@oh-my-pi/pi-wire";
 import { ensureThemeSync, getMarkdownTheme, theme } from "../theme";
 import {
 	attachmentSgr,
@@ -15,10 +17,15 @@ import {
 	skillChipStyle,
 } from "../prompt/composer-attachments";
 import { MODEL_MENTION_TAG_RE } from "../prompt/model-mention-syntax";
-import { fileHyperlink } from "../render";
+import { expandKeyHint, fileHyperlink } from "../render";
 import { imageReferenceHyperlink } from "../prompt/image-references";
 import { highlightMagicKeywords } from "../prompt/magic-keywords";
 import type { ReactionTarget } from "./reaction";
+import { card, md, node, row, span, text } from "../native/describe";
+import { base64ImageNode } from "../native/blobs";
+import { hasTranscriptActions, runTranscriptAction } from "./transcript-actions";
+import { type NativeChild, type NativeNode, type NativeUiEvent, rootToggleExpanded } from "../native/node";
+import { Memo } from "../native/memo";
 
 // OSC 133 shell integration: marks prompt zones for terminal multiplexers.
 //
@@ -50,10 +57,16 @@ const USER_POINTER_WIDTH = 2;
 export interface UserBubbleOptions {
 	/** Materialized `file://` targets per attached image, indexed by chip number. */
 	imageLinks?: readonly (string | undefined)[];
+	/** The message's attached images in chip order (`#1` first); a native bubble shows them. */
+	images?: readonly ImageContent[];
 	/** Agent-attributed input: dim, flat prose. */
 	synthetic?: boolean;
+	/** Delivered into the response that was streaming; marked `*` at the bubble's top-left. */
+	liveSteered?: boolean;
 	/** SKILL.md path for a skill chip by name; `undefined` leaves the chip unlinked. */
 	skillPath?: (name: string) => string | undefined;
+	/** When the message was sent (ms); shown beside the native hover toolbar. */
+	timestamp?: number;
 }
 
 /**
@@ -107,30 +120,31 @@ export function userBubbleColor(
 /**
  * Component that renders a user message the way Claude Code does: a dim `❯`
  * pointer, then the text on the tinted bubble with no padding rows. Accepts an
- * agent reaction badge (see {@link ReactionTarget}) drawn at the end of the first row.
- * While the request is in flight (sent, but not yet accepted by the server) the
- * text is dim, as Claude Code greys a prompt until the server receives it.
+ * agent reaction badge drawn at the end of the first row. While the request is
+ * in flight (sent, but not yet accepted by the server) the text is dim, as
+ * Claude Code greys a prompt until the server receives it. Live-steered input
+ * is marked with `*` in the pointer cell.
  */
 export class UserMessageComponent extends Container implements ReactionTarget {
 	readonly #md: Markdown;
 	readonly #text: string;
 	readonly #options: UserBubbleOptions;
-	readonly #mentionLabels: string[];
-	/** Dim rendering used only while awaiting the model; built on first use. */
 	#awaitingMd: Markdown | undefined;
 	#awaitingModel = false;
-	// Memoized on the Markdown render (same source ref ⇒ identical rows) so this
-	// component stays reference-stable for the transcript's incremental assembly.
 	#source: readonly string[] | undefined;
 	#lines: string[] | undefined;
+	readonly #liveSteered: boolean;
+	readonly #synthetic: boolean;
+	readonly #timestamp: number | undefined;
+	readonly #images: readonly ImageContent[];
+	readonly #imageLinks: readonly (string | undefined)[] | undefined;
+	readonly #tokens: RegExp;
 	#reaction: string | undefined;
+	#native: NativeNode | undefined;
 
 	constructor(text: string, options: UserBubbleOptions = {}) {
 		super();
 		ensureThemeSync();
-		// Display-only collapse: the stored/wire text carries bracketed `[Image #N, WxH]` markers,
-		// but the transcript shows the same compact `<icon> #N` chip the composer used. Runs before
-		// Markdown layout so wrapping is computed on the visible text.
 		text = collapseImageMarkers(text, Number.POSITIVE_INFINITY, () => {});
 		const mentionLabels: string[] = [];
 		MODEL_MENTION_TAG_RE.lastIndex = 0;
@@ -139,27 +153,31 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 			mentionLabels.push(label);
 			return label;
 		});
+		this.#liveSteered = options.liveSteered === true;
+		this.#synthetic = options.synthetic === true;
+		this.#timestamp = options.timestamp;
+		this.#images = options.images ?? [];
+		this.#imageLinks = options.imageLinks;
 		this.#text = text;
 		this.#options = options;
-		this.#mentionLabels = mentionLabels;
+		this.#tokens = composerTokenRegex(mentionLabels);
 		this.#md = this.#markdown(options);
-		this.addChild(this.#md);
 	}
 
 	#markdown(options: UserBubbleOptions): Markdown {
-		const md = new Markdown(this.#text, 0, 0, getMarkdownTheme(), {
+		const markdown = new Markdown(this.#text, 0, 0, getMarkdownTheme(), {
 			bgColor: (value: string) => theme.bg("userMessageBg", value),
-			color: userBubbleColor(options, composerTokenRegex(this.#mentionLabels)),
+			color: userBubbleColor(options, this.#tokens),
 		});
-		md.setIgnoreTight(true);
-		return md;
+		markdown.setIgnoreTight(true);
+		return markdown;
 	}
 
-	/** Dim the text until the server accepts the request carrying this prompt. */
 	setAwaitingModel(awaiting: boolean): void {
 		if (this.#awaitingModel === awaiting) return;
 		this.#awaitingModel = awaiting;
 		this.#lines = undefined;
+		this.#native = undefined;
 	}
 
 	get awaitingModel(): boolean {
@@ -168,40 +186,142 @@ export class UserMessageComponent extends Container implements ReactionTarget {
 
 	override invalidate(): void {
 		super.invalidate();
+		this.#md.invalidate();
 		this.#awaitingMd?.invalidate();
 		this.#lines = undefined;
+		this.#source = undefined;
+		this.#native = undefined;
 	}
 
 	setReaction(emoji: string): void {
 		if (this.#reaction === emoji) return;
 		this.#reaction = emoji;
 		this.#lines = undefined;
+		this.#native = undefined;
+	}
+
+	/**
+	 * A head-less user-toned frame with the prompt as markdown under its
+	 * attached images. A quiet toolbar fades in on hover when transcript actions
+	 * are available; badges remain at the bottom-right.
+	 */
+	override describe(): NativeNode {
+		if (this.#native) return this.#native;
+		const children: NativeChild[] = [];
+		if (!this.#synthetic && hasTranscriptActions()) {
+			const tools: NativeChild[] = [];
+			if (this.#timestamp !== undefined) {
+				const at = new Date(this.#timestamp);
+				tools.push(
+					text([span(at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), "dim mono")], {
+						role: "omp.user.time",
+						title: at.toLocaleString(),
+					}),
+				);
+			}
+			tools.push(
+				// `copy-message`, not Tern's local `copy` (that would copy the label).
+				text("Copy", {
+					role: "omp.user.tool",
+					actions: { click: "copy-message" },
+					title: "Copy message",
+					key: "copy",
+				}),
+			);
+			tools.push(
+				text("Rewind", {
+					role: "omp.user.tool",
+					actions: { click: "rewind" },
+					title: "Rewind the conversation to an earlier message",
+					key: "rewind",
+				}),
+			);
+			children.push(node("row", { gap: "xs", role: "omp.user.tools" }, tools, "tools"));
+		}
+		const thumbs: NativeNode[] = [];
+		if (!this.#synthetic)
+			this.#images.forEach((image, i) => {
+				if (!image.mimeType.startsWith("image/")) return;
+				const label = `#${i + 1}`;
+				const link = this.#imageLinks?.[i];
+				const open = link ? { href: link, actions: { menu: ["open"] } } : {};
+				thumbs.push(base64ImageNode(image.data, image.mimeType, { alt: label, title: label, ...open }, label));
+			});
+		if (thumbs.length > 0)
+			children.push(row(thumbs, { gap: "sm", wrap: true, align: "start", role: "omp.user.images" }));
+		const marks = this.#synthetic ? [] : tokenMarks(this.#text, this.#tokens);
+		children.push(md(this.#text, marks.length > 0 ? { marks } : undefined));
+		const badges: NativeChild[] = [];
+		if (this.#liveSteered)
+			badges.push(
+				node("badge", { text: "steered", tone: "accent", title: "Delivered into the response that was streaming" }),
+			);
+		if (this.#reaction !== undefined) badges.push(node("badge", { text: this.#reaction, role: "omp.reaction" }));
+		if (badges.length > 0)
+			children.push(node("row", { gap: "xs", justify: "end", role: "omp.user.badges" }, badges, "badges"));
+		this.#native = card(
+			{ role: this.#synthetic ? "omp.user.synthetic" : "omp.user", tone: this.#synthetic ? "muted" : "user" },
+			children,
+		);
+		return this.#native;
+	}
+
+	/** Hover toolbar clicks: omp's own copy and rewind commands. */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (event.type !== "action") return;
+		if (event.act === "copy-message") runTranscriptAction({ act: "copy", text: this.#text });
+		else if (event.act === "rewind") runTranscriptAction({ act: "rewind" });
 	}
 
 	override render(width: number): readonly string[] {
 		const reaction = this.#reaction;
-		// Right edge: one cell of bubble padding, or ` <badge> ` on the first row.
 		const rightWidth = reaction === undefined ? 1 : visibleWidth(reaction) + 2;
-		const md = this.#awaitingModel
+		const markdown = this.#awaitingModel
 			? (this.#awaitingMd ??= this.#markdown({ ...this.#options, synthetic: true }))
 			: this.#md;
-		const inner = md.render(Math.max(1, width - USER_POINTER_WIDTH - rightWidth));
+		const inner = markdown.render(Math.max(1, width - USER_POINTER_WIDTH - rightWidth));
 		if (inner.length === 0) return inner;
 		if (this.#source === inner && this.#lines !== undefined) return this.#lines;
 		const bubble = (value: string) => theme.bg("userMessageBg", value);
-		const pointer = bubble(`${theme.fg("dim", USER_POINTER)} `);
+		const pointer = bubble(`${theme.fg("dim", USER_POINTER)}${this.#liveSteered ? theme.fg("accent", "*") : " "}`);
 		const indent = bubble(padding(USER_POINTER_WIDTH));
 		const rightPad = bubble(padding(rightWidth));
-		const lines = inner.map((line, index) => {
-			if (index > 0) return indent + line + rightPad;
-			return pointer + line + (reaction === undefined ? rightPad : bubble(` ${reaction} `));
-		});
+		const lines = inner.map((line, index) =>
+			index > 0
+				? indent + line + rightPad
+				: pointer + line + (reaction === undefined ? rightPad : bubble(` ${reaction} `)),
+		);
 		lines[0] = OSC133_ZONE_START + lines[0];
 		lines[lines.length - 1] += OSC133_ZONE_CLOSE;
 		this.#source = inner;
 		this.#lines = lines;
 		return lines;
 	}
+}
+
+/**
+ * The composer tokens in `text` as `md` marks, styled as the composer
+ * decorates them (`CustomEditor.describeDecorations`), so a sent prompt keeps
+ * its chips highlighted.
+ */
+function tokenMarks(text: string, tokens: RegExp): TspSpan[] {
+	// One mark per distinct token: Tern styles every occurrence of its text.
+	const styles = new Map<string, string>();
+	const mark = (s: string) => (label: string) => {
+		styles.set(label, s);
+		return "";
+	};
+	renderPlaceholders(
+		text,
+		{
+			renderText: () => "",
+			renderSkill: mark("customMessageLabel strong"),
+			renderMention: mark("statusLineModel strong"),
+			renderReference: mark("accent strong"),
+		},
+		tokens,
+	);
+	return [...styles].map(([t, s]) => ({ t, s }));
 }
 
 /**
@@ -224,7 +344,7 @@ class SyntheticSummary implements Component {
 	render(width: number): readonly string[] {
 		width = Math.max(1, width);
 		if (this.#cache?.width === width) return this.#cache.lines;
-		const hint = `${theme.sep.dot.trim()} ctrl+o`;
+		const hint = `${theme.sep.dot.trim()} ${expandKeyHint()}`;
 		const lines = [` ${theme.fg("dim", truncateSummary(`${this.#summary} ${hint}`, Math.max(10, width - 1)))}`];
 		this.#cache = { width, lines };
 		return lines;
@@ -246,6 +366,8 @@ class SyntheticSummary implements Component {
  */
 export class CollapsedSyntheticMessageComponent implements Component {
 	#disclosure: Disclosure;
+	#expanded = false;
+	readonly #native = new Memo();
 
 	readonly #text: string;
 	readonly #imageLinks?: readonly (string | undefined)[];
@@ -264,7 +386,34 @@ export class CollapsedSyntheticMessageComponent implements Component {
 
 	/** ctrl+o toggle: reveal/hide the full Markdown body. */
 	setExpanded(expanded: boolean): void {
+		this.#expanded = expanded;
 		this.#disclosure.setExpanded(expanded);
+	}
+
+	/**
+	 * A muted collapsible card whose head is the one-line summary. The
+	 * (potentially huge) markdown body is only described while expanded, so
+	 * collapsed history costs no layout on either side; a native toggle
+	 * expands it through {@link handleNativeEvent}.
+	 */
+	describe(): NativeNode {
+		return this.#native.get([this.#expanded], () =>
+			card(
+				{
+					role: "omp.user.synthetic",
+					tone: "muted",
+					head: [span(summarizeSyntheticInput(this.#text), "dim")],
+					collapsible: true,
+					collapsed: !this.#expanded,
+				},
+				this.#expanded ? [md(this.#text)] : [],
+			),
+		);
+	}
+
+	handleNativeEvent(event: NativeUiEvent): void {
+		const expanded = rootToggleExpanded(event);
+		if (expanded !== undefined) this.setExpanded(expanded);
 	}
 
 	setIgnoreTight(ignore: boolean): this {
