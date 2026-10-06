@@ -12,6 +12,7 @@
 ### Fixed
 
 - Sprilicred's `pool_exhausted` 429 (no pooled account can serve the model) is now classified as a usage limit from its structured code, whatever its message wording, and OpenAI-wire requests surface it at once instead of sleeping through up to six `Retry-After` waits first.
+- A Sprilicred Codex turn that Sprilicred forwarded at Fast or Ultrafast (as asked, or Ultrafast falling back to Fast) no longer shows as served Normal (`Fast→Normal`, `Ultrafast→Normal`) just because ChatGPT OAuth echoes `service_tier: "default"`; that echo now records the forwarded tier as served. A turn Sprilicred forwarded at standard, and Anthropic's `usage.speed: "standard"`, are still genuine downgrades and stay standard.
 ## [18.6.1] - 2026-10-04
 
 ### Fixed

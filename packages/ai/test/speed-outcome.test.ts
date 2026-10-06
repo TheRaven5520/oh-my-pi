@@ -148,11 +148,40 @@ describe("speed outcome from Sprilicred's headers and errors (OpenAI Responses)"
 		expect(message.speed?.served).toBe("fast");
 	});
 
-	it("keeps Sprilicred fast when Codex echoes its default tier", async () => {
-		const { message } = await runResponses(openaiModel("sprilicred-openai"), "priority", () =>
-			sse([...TEXT, completed("default")], SPEED("fast", "fast", "forwarded")),
+	it("uses Sprilicred's forwarded tier when Codex echoes default", async () => {
+		const { message } = await runResponses(openaiModel("sprilicred-openai"), "ultrafast", () =>
+			sse([...TEXT, completed("default")], SPEED("ultrafast", "ultrafast", "forwarded")),
 		);
-		expect(message.speed).toMatchObject({ requested: "fast", forwarded: "fast", served: "fast" });
+		expect(message.speed).toEqual({
+			requested: "ultrafast",
+			forwarded: "ultrafast",
+			reason: "forwarded",
+			served: "ultrafast",
+		});
+	});
+
+	it("uses Sprilicred's fallback Fast tier when Codex echoes default for Ultrafast", async () => {
+		const { message } = await runResponses(openaiModel("sprilicred-openai"), "ultrafast", () =>
+			sse([...TEXT, completed("default")], SPEED("ultrafast", "fast", "no_pro500_capacity")),
+		);
+		expect(message.speed).toEqual({
+			requested: "ultrafast",
+			forwarded: "fast",
+			reason: "no_pro500_capacity",
+			served: "fast",
+		});
+	});
+
+	it("keeps a default echo standard when Sprilicred forwarded standard", async () => {
+		const { message } = await runResponses(openaiModel("sprilicred-openai"), "priority", () =>
+			sse([...TEXT, completed("default")], SPEED("fast", "standard", "api_fallback_refused")),
+		);
+		expect(message.speed).toEqual({
+			requested: "fast",
+			forwarded: "standard",
+			reason: "api_fallback_refused",
+			served: "standard",
+		});
 	});
 
 	it("falls back to the provider's echo when no speed headers come back", async () => {
@@ -333,6 +362,16 @@ describe("speed outcome on Anthropic fast mode", () => {
 	it("reads the gateway's forwarded fast and the provider's usage.speed", async () => {
 		const message = await run(() => anthropicSse("fast", SPEED("fast", "fast", "forwarded")));
 		expect(message.speed).toEqual({ requested: "fast", forwarded: "fast", reason: "forwarded", served: "fast" });
+	});
+
+	it("keeps a Claude turn Sprilicred forwarded fast but the provider served standard as standard", async () => {
+		const message = await run(() => anthropicSse("standard", SPEED("fast", "fast", "forwarded")));
+		expect(message.speed).toEqual({
+			requested: "fast",
+			forwarded: "fast",
+			reason: "forwarded",
+			served: "standard",
+		});
 	});
 
 	it("falls back to usage.speed without speed headers", async () => {

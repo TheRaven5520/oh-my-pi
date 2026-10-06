@@ -5,9 +5,9 @@
  * `x-sprilicred-speed-requested` (what was asked), `x-sprilicred-speed` (the
  * tier it forwarded upstream: `fast`/`ultrafast`/`standard`) and
  * `x-sprilicred-speed-reason` (`forwarded`, `not_permitted`, …), on errors
- * Fast it can't run falls back to standard; Ultrafast falls back to fast,
- * then standard. A 400 `ultrafast_*` is an outright refusal; an older server
- * refused fast too (HTTP 409 `speed_refused`). Over WebSocket
+ * too. Fast it can't run goes at standard; Ultrafast it can't run is refused
+ * (HTTP 400 with an `ultrafast_*` code, never served slower); an older
+ * server refused fast too (HTTP 409 `speed_refused`). Over WebSocket
  * the same values ride inside the error frame's error object as
  * `speed_requested` / `speed` / `speed_reason`. What the provider then served
  * comes from its own report: OpenAI's echoed `service_tier`, Anthropic's
@@ -171,15 +171,23 @@ export function speedOutcomeFromError(error: unknown, prior: SpeedOutcome | unde
  * Record what the provider reported serving (OpenAI's echoed `service_tier`,
  * Anthropic's `usage.speed`). It can be lower than what the gateway forwarded,
  * so it is kept alongside, never in place of, the forwarded tier.
+ *
+ * One exception: ChatGPT OAuth echoes `service_tier: "default"` for a premium
+ * request Sprilicred says it forwarded at a faster tier, whether as asked
+ * (`forwarded`) or as a fallback (Ultrafast forwarded as Fast). That echo is
+ * the OpenAI wire value `default`, which Anthropic's `usage.speed`
+ * (`standard`/`fast`) never sends, so only it falls back to the forwarded
+ * tier; a Claude turn forwarded fast but served `standard`, and a turn
+ * Sprilicred forwarded at standard, stay standard.
  */
 export function applyProviderReportedSpeed(output: Pick<AssistantMessage, "speed">, reported: unknown): void {
-	const echoed = typeof reported === "string" ? reported.trim().toLowerCase() : undefined;
-	// Codex echoes `default`/`auto` for a request Sprilicred forwarded at fast;
-	// that echo names the provider default, not the gateway tier actually served.
-	if (output.speed?.forwarded !== undefined && (echoed === "default" || echoed === "auto")) {
-		output.speed.served = output.speed.forwarded;
-		return;
-	}
+	const speed = output.speed;
 	const served = asTier(reported);
-	if (output.speed && served !== undefined) output.speed.served = served;
+	if (!speed || served === undefined) return;
+	const openAIDefaultEcho =
+		typeof reported === "string" &&
+		reported.trim().toLowerCase() === "default" &&
+		speed.forwarded !== undefined &&
+		speed.forwarded !== "standard";
+	speed.served = openAIDefaultEcho ? speed.forwarded : served;
 }
