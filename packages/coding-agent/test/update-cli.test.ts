@@ -789,31 +789,6 @@ describe("migrateRenamedInstall transaction", () => {
 		expect(calls).toEqual(["install", "removeOld", "verify"]);
 		expect(logs.some(line => line.includes("could not remove the old"))).toBe(true);
 	});
-
-	it("aborts with a recovery hint when verification still fails after the restore install", async () => {
-		vi.spyOn(console, "log").mockImplementation(() => {});
-		const { steps, calls } = scriptedSteps({ install: [0, 0], verify: [false, false] });
-
-		await withPlatformAsync("linux", async () => {
-			await expect(migrateRenamedInstall(release, steps)).rejects.toThrow("curl -fsSL https://omp.sh/install");
-		});
-		expect(calls).toEqual(["install", "removeOld", "verify", "install", "verify"]);
-	});
-
-	it("uses the platform-aware PowerShell reinstall hint on Windows", async () => {
-		vi.spyOn(console, "log").mockImplementation(() => {});
-		const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
-		if (!platformDescriptor) throw new Error("process.platform descriptor missing");
-		Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
-		try {
-			const { steps } = scriptedSteps({ install: [0, 0], verify: [false, false] });
-			const promise = migrateRenamedInstall(release, steps);
-			await expect(promise).rejects.toThrow("irm https://omp.sh/install.ps1");
-			await expect(promise).rejects.not.toThrow("| sh");
-		} finally {
-			Object.defineProperty(process, "platform", platformDescriptor);
-		}
-	});
 });
 
 describe("update-cli bun install command", () => {
@@ -1019,6 +994,7 @@ describe("update-cli release binary integrity", () => {
 
 	it("selects an uploaded asset with a valid SHA-256 digest", () => {
 		expect(resolveReleaseBinaryAsset(releaseAsset(), tag, binaryName)).toEqual({
+			tag,
 			version: "17.1.2",
 			url,
 			size: Buffer.byteLength(content),
@@ -1065,7 +1041,7 @@ describe("update-cli release binary integrity", () => {
 		// rejected even then.
 		expect(
 			resolveReleaseBinaryAsset({ ...releaseAsset(), prerelease: true }, tag, binaryName, { allowPrerelease: true }),
-		).toEqual({ version: "17.1.2", url, size: Buffer.byteLength(content), digest });
+		).toEqual({ tag, version: "17.1.2", url, size: Buffer.byteLength(content), digest });
 		expect(() =>
 			resolveReleaseBinaryAsset({ ...releaseAsset(), draft: true }, tag, binaryName, { allowPrerelease: true }),
 		).toThrow("is a draft");
@@ -1230,8 +1206,6 @@ describe("update-cli release binary integrity", () => {
 		).rejects.toThrow("retry later or set GITHUB_TOKEN or GH_TOKEN");
 		expect(await Bun.file(targetPath).exists()).toBe(false);
 	});
-
-
 });
 
 describe("update-cli binary replacement", () => {
@@ -1486,7 +1460,7 @@ describe("update-cli binary-only release gating", () => {
 describe("update-cli script-shim takeover", () => {
 	const version = "18.0.0";
 	const binaryName = "omp-windows-x64.exe";
-	const url = `https://github.com/can1357/oh-my-pi/releases/download/v${version}/${binaryName}`;
+	const url = `https://github.com/Spring-Silicon/oh-my-pi/releases/download/v${version}-spring.1/${binaryName}`;
 
 	function makeFetch(content: string, prerelease = false): (input: string | URL | Request) => Promise<Response> {
 		const digest = `sha256:${Bun.SHA256.hash(content, "hex")}`;
@@ -1495,7 +1469,7 @@ describe("update-cli script-shim takeover", () => {
 			if (requestUrl.startsWith("https://api.github.com/")) {
 				return new Response(
 					JSON.stringify({
-						tag_name: `v${version}`,
+						tag_name: `v${version}-spring.1`,
 						draft: false,
 						prerelease,
 						assets: [

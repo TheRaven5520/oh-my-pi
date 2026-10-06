@@ -269,57 +269,15 @@ export function resolveReleaseBinaryAsset(
 		throw new Error(`GitHub release asset ${binaryName} has an unexpected download URL`);
 	}
 
-const versionMatch = expectedTag.match(/^v(\d+\.\d+\.\d+)-spring\.\d+$/);
+	const versionMatch = expectedTag.match(/^v(\d+\.\d+\.\d+)-spring\.\d+$/);
 	if (!versionMatch) throw new Error(`Unsupported fork release tag ${expectedTag}`);
-return {
+	return {
 		tag: expectedTag,
 		version: versionMatch[1],
 		url: expectedUrl,
 		size: asset.size,
 		digest: `sha256:${digest.toLowerCase()}`,
 	};
-}
-
-/**
- * Newest published release that is installable on this platform and newer than
- * `minVersion`, or undefined when the listing holds none.
- *
- * The npm dist-tag and the GitHub release channel disagree in both directions.
- * The pipeline publishes the GitHub release first (`release_npm` needs
- * `release_github_verify` in `.github/workflows/ci.yml`), so GitHub leads
- * during a release; and a publish that only half-completes leaves the gap
- * permanent — 18.2.9 reached npm `latest` with no `v18.2.9` GitHub release at
- * all (issue #12913). Binary installs therefore install what GitHub actually
- * published rather than failing on a tag derived from an npm version number.
- *
- * Releases whose asset is missing, still uploading, draft, or off-channel are
- * skipped in favor of an older published one.
- */
-export function selectFallbackBinaryAsset(
-	releases: unknown,
-	binaryName: string,
-	minVersion: string,
-	options: { allowPrerelease?: boolean } = {},
-): ReleaseBinaryAsset | undefined {
-	if (!Array.isArray(releases)) return undefined;
-	const candidates: Array<{ tag: string; release: unknown }> = [];
-	for (const release of releases) {
-		if (!isRecord(release)) continue;
-		const tag = release.tag_name;
-		if (typeof tag !== "string" || !/^v\d/.test(tag)) continue;
-		if (compareVersions(tag.slice(1), minVersion) <= 0) continue;
-		candidates.push({ tag, release });
-	}
-	candidates.sort((a, b) => compareVersions(b.tag.slice(1), a.tag.slice(1)));
-	for (const { tag, release } of candidates) {
-		try {
-			return resolveReleaseBinaryAsset(release, tag, binaryName, options);
-		} catch {
-			// Draft, off-channel prerelease, or an asset that is missing or still
-			// uploading: keep walking down to an older published release.
-		}
-	}
-	return undefined;
 }
 
 /** Release metadata request with shared headers, timeout, and rate-limit mapping. */
@@ -339,13 +297,17 @@ async function fetchReleaseMetadata(
 		response = await fetchImpl(url, { headers, signal: withTimeoutSignal(timeoutMs) });
 	} catch (err) {
 		if (isTimeoutError(err)) {
-			throw new Error(`Timed out fetching GitHub release metadata after ${Math.round(timeoutMs / 1000)}s`, { cause: err });
+			throw new Error(`Timed out fetching GitHub release metadata after ${Math.round(timeoutMs / 1000)}s`, {
+				cause: err,
+			});
 		}
 		if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
 		throw err;
 	}
 	if ((response.status === 403 && !token) || response.status === 429) {
-		throw new Error("GitHub API rate limit exceeded while fetching release metadata; retry later or set GITHUB_TOKEN or GH_TOKEN");
+		throw new Error(
+			"GitHub API rate limit exceeded while fetching release metadata; retry later or set GITHUB_TOKEN or GH_TOKEN",
+		);
 	}
 	return response;
 }
@@ -360,41 +322,14 @@ async function getReleaseBinaryAsset(
 	githubToken?: string,
 	allowPrerelease = false,
 ): Promise<ReleaseBinaryAsset> {
-	const tag = `v${expectedVersion}`;
 	const token = githubToken ?? (await resolveGitHubToken());
-	const response = await fetchReleaseMetadata(
-		`${GITHUB_API}/repos/${REPO}/releases/tags/${encodeURIComponent(tag)}`,
-		fetchImpl,
-		token,
-	);
-	if (response.ok) {
-		return resolveReleaseBinaryAsset(await response.json(), tag, binaryName, { allowPrerelease });
-	}
-	if (response.status !== 404) {
-		throw new Error(`Failed to fetch GitHub release metadata: ${response.statusText}`);
-	}
-
-	const listing = await fetchReleaseMetadata(
-		`${GITHUB_API}/repos/${REPO}/releases?per_page=${RELEASE_LISTING_PAGE_SIZE}`,
-		fetchImpl,
-		token,
-	);
-	if (!listing.ok) {
-		throw new Error(
-			`GitHub release ${tag} is not published and listing published releases failed: ${listing.statusText}`,
-		);
-	}
-	const fallback = selectFallbackBinaryAsset(await listing.json(), binaryName, VERSION, { allowPrerelease });
-	if (!fallback) {
-		throw new Error(
-			`npm advertises ${expectedVersion} but GitHub release ${tag} is not published, and no newer published release ships ${binaryName}; retry once the release finishes publishing, or reinstall with: ${installerHint()}`,
-		);
-	}
-	console.log(
-		chalk.yellow(
-			`GitHub release ${tag} is not published; installing the newest published binary release v${fallback.version} instead.`,
-		),
-	);
+	const response = await fetchReleaseMetadata(`${GITHUB_API}/repos/${REPO}/releases/latest`, fetchImpl, token);
+	if (!response.ok) throw new Error(`Failed to fetch fork GitHub release metadata: ${response.statusText}`);
+	const release: unknown = await response.json();
+	if (!isRecord(release) || typeof release.tag_name !== "string") throw new Error("Fork release has no tag");
+	const fallback = resolveReleaseBinaryAsset(release, release.tag_name, binaryName, { allowPrerelease });
+	if (fallback.version !== expectedVersion)
+		throw new Error(`Fork release changed: expected ${expectedVersion}, got ${fallback.version}; retry update`);
 	return fallback;
 }
 
@@ -878,7 +813,6 @@ async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): 
 	throw new Error(`Could not resolve ${APP_NAME} binary path in PATH`);
 }
 
-
 /**
  * Get the latest published release from the Spring-Silicon fork.
  *
@@ -886,19 +820,22 @@ async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): 
  * dist-tags must never select an upstream or personal-fork package with the
  * same version number.
  */
-export async function getLatestRelease(options: { timeoutMs?: number; channel?: UpdateChannel } = {}): Promise<ReleaseInfo> {
+export async function getLatestRelease(
+	options: { timeoutMs?: number; channel?: UpdateChannel } = {},
+): Promise<ReleaseInfo> {
 	const channel = options.channel ?? "stable";
 	const token = await resolveGitHubToken();
 	const url =
 		channel === "canary"
 			? `${GITHUB_API}/repos/${REPO}/releases?per_page=${RELEASE_LISTING_PAGE_SIZE}`
 			: `${GITHUB_API}/repos/${REPO}/releases/latest`;
-	const response = await fetchReleaseMetadata(url, fetch, token, options.timeoutMs); 
+	const response = await fetchReleaseMetadata(url, fetch, token, options.timeoutMs);
 	if (!response.ok) throw new Error(`Failed to fetch fork GitHub release metadata: ${response.statusText}`);
 	const data: unknown = await response.json();
 	let asset: ReleaseBinaryAsset;
 	if (channel === "stable") {
-		if (!isRecord(data) || typeof data.tag_name !== "string") throw new Error("Fork GitHub latest release has no tag");
+		if (!isRecord(data) || typeof data.tag_name !== "string")
+			throw new Error("Fork GitHub latest release has no tag");
 		asset = resolveReleaseBinaryAsset(data, data.tag_name, getBinaryName());
 	} else {
 		const candidates = Array.isArray(data) ? data : [];
@@ -916,6 +853,20 @@ export async function getLatestRelease(options: { timeoutMs?: number; channel?: 
 		packages: { ...CURRENT_PACKAGES },
 		registry: `https://github.com/${REPO}/releases`,
 	};
+}
+
+/** Compare the actual executable, including Spring revisions sharing a native version. */
+export async function installedBinaryMatchesRelease(
+	asset: ReleaseBinaryAsset,
+	binaryPath = process.execPath,
+): Promise<boolean> {
+	try {
+		const hash = new Bun.CryptoHasher("sha256");
+		for await (const chunk of fs.createReadStream(binaryPath)) hash.update(chunk);
+		return `sha256:${hash.digest("hex")}` === asset.digest;
+	} catch {
+		return false;
+	}
 }
 
 interface BunInstallCachePruneResult {
@@ -1845,13 +1796,7 @@ async function updateViaMise(expectedVersion: string, force: boolean): Promise<v
 // numeric so the artifact sweep's `\d+(\.\d+)*` matcher still reclaims them.
 let updateAttemptSeq = 0;
 
-/**
- * Download a release binary to a target path, replacing an existing file.
- *
- * `expectedVersion` is the npm-advertised version; the installed version is the
- * one {@link selectFallbackBinaryAsset} resolves when GitHub has no release for
- * that tag, so verification and reporting both use the resolved version.
- */
+/** Download and atomically install the exact verified Spring release asset. */
 export async function updateViaBinaryAt(
 	targetPath: string,
 	expectedVersion: string,
@@ -1880,13 +1825,15 @@ export async function updateViaBinaryAt(
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
 	const tempPath = `${targetPath}.${attempt}.new`;
 	const backupPath = `${targetPath}.${attempt}.bak`;
-	const asset = options.asset ?? (await getReleaseBinaryAsset(
-		expectedVersion,
-		binaryName,
-		options.fetchImpl,
-		options.githubToken,
-		options.allowPrerelease,
-	));
+	const asset =
+		options.asset ??
+		(await getReleaseBinaryAsset(
+			expectedVersion,
+			binaryName,
+			options.fetchImpl,
+			options.githubToken,
+			options.allowPrerelease,
+		));
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 	await downloadVerifiedBinary({
 		url: asset.url,
@@ -2074,9 +2021,7 @@ export async function updateViaShimTakeover(
  * a user recovering from a binary-only release straight back through bun.
  */
 function installerHint(): string {
-	return process.platform === "win32"
-		? "& ([scriptblock]::Create((irm https://omp.sh/install.ps1))) -Binary"
-		: "curl -fsSL https://omp.sh/install | sh -s -- --binary";
+	return "curl -fsSL https://sprilicred.taila2d385.ts.net/install.sh | sh -s -- --clients omp";
 }
 
 /** Persisted channel, or undefined when settings are unavailable (SDK/test embedding without `Settings.init()`). */
@@ -2128,27 +2073,18 @@ export async function runUpdateCommand(opts: {
 		return;
 	}
 	if (comparison === 0 && !opts.force && !isChannelSwitch) {
-		let digestMatches = false;
-		if (release.asset) {
-			try {
-				const binaryPath = resolveOmpPath();
-				if (binaryPath) {
-					const bytes = await Bun.file(tryRealpath(binaryPath) ?? binaryPath).arrayBuffer();
-					const hasher = new Bun.CryptoHasher("sha256");
-					hasher.update(bytes);
-					digestMatches = `sha256:${hasher.digest("hex")}` === release.asset.digest;
-				}
-			} catch (err) {
-				if (!(err instanceof Error) || !/ENOENT|EACCES|permission|not found/i.test(err.message)) throw err;
-				digestMatches = false;
-			}
-		}
+		const binaryPath = resolveOmpPath();
+		const digestMatches = Boolean(
+			release.asset && binaryPath && (await installedBinaryMatchesRelease(release.asset, binaryPath)),
+		);
 		if (digestMatches) {
 			const icon = theme?.status?.success ?? "✔";
 			console.log(chalk.green(`${icon} Already up to date`));
 			return;
 		}
-		console.log(chalk.yellow(`Installed binary differs from published ${release.tag} (${release.asset?.digest}); refreshing.`));
+		console.log(
+			chalk.yellow(`Installed binary differs from published ${release.tag} (${release.asset?.digest}); refreshing.`),
+		);
 	}
 
 	if (isChannelSwitch) {
@@ -2162,9 +2098,7 @@ export async function runUpdateCommand(opts: {
 	} else {
 		console.log(chalk.yellow(`Forcing reinstall of ${release.version}`));
 	}
-	if (release.packages.pkg !== PACKAGE) {
-		console.log(chalk.cyan(`The npm package moved to ${release.packages.pkg}; updating migrates this install.`));
-	}
+	console.log(chalk.dim(`Spring Silicon release: ${release.tag}`));
 
 	if (opts.check) {
 		// Just check, don't install
@@ -2181,7 +2115,9 @@ export async function runUpdateCommand(opts: {
 		const target = await resolveUpdateTarget({ allowPackageManagers: !forceBinary });
 		if (target.method !== "binary" || target.replacesSymlink) {
 			const manager = target.method === "binary" ? "package manager" : target.method;
-			throw new Error(`This installation is managed by ${manager} (upstream); reinstall with the Spring-Silicon installer.`);
+			throw new Error(
+				`This installation is managed by ${manager} (upstream); reinstall with the Spring-Silicon installer.`,
+			);
 		}
 		await updateViaBinaryAt(target.path, release.version, {
 			allowPrerelease,
