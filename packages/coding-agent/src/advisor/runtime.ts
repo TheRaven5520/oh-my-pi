@@ -13,6 +13,7 @@ import { SecretValueSet } from "../secrets/placeholder";
 import {
 	formatExecutionSourcePreview,
 	formatSessionHistoryMarkdown,
+	OVERSEER_TICK_CUSTOM_TYPE,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
 import { ADVISOR_RENDER_OPTIONS, renderAdvisorDeltaChunks } from "./delta-split";
@@ -399,9 +400,22 @@ export class AdvisorRuntime {
 	onTurnEnd(messages?: AgentMessage[], opts?: { willContinue?: boolean; dispatch?: boolean }): void {
 		if (this.disposed || this.#quotaExhausted || this.#halted) return;
 		const all = messages ?? this.host.snapshotMessages();
+		const rendered = this.#captureDelta(all, opts?.willContinue ?? false);
+		if (opts?.dispatch === false) {
+			if (!rendered) return;
+			// The batch renders from `rawMessages` only when a later boundary
+			// dispatches it, after the primary's per-turn prune may have elided
+			// these tool results in place. Detach the held copies so the review
+			// sees what the primary saw at this boundary.
+			this.#held.push({ ...rendered, rawMessages: rendered.rawMessages.map(message => ({ ...message })), turns: 1 });
+			return;
+		}
+		this.#dispatch(rendered ? { ...rendered, turns: 1 } : undefined);
+	}
+
+	/** Advance the primary cursor over `all` and render that delta, restoring cursor state on render failure. */
+	#captureDelta(all: AgentMessage[], wip: boolean): Omit<PendingDelta, "turns" | "overflowRecovery"> | null {
 		this.#latestMessages = all;
-		const wip = opts?.willContinue ?? false;
-		let rendered: Omit<PendingDelta, "turns" | "overflowRecovery"> | null = null;
 		// #renderDelta advances the cursor/prefix/dedup state before formatting
 		// can throw; snapshot them so a formatter bug loses NOTHING — the next
 		// turn re-renders this delta (a prefix change mid-render self-heals via
@@ -410,7 +424,7 @@ export class AdvisorRuntime {
 		const prefixBefore = this.#deliveredPrefix.slice();
 		const seenBefore = [...this.#seenContext];
 		try {
-			rendered = this.#renderDelta(all, wip);
+			return this.#renderDelta(all, wip);
 		} catch (err) {
 			// A render bug must never propagate into the primary agent's
 			// turn-end callback: the advisor skips this delta and stops gating
@@ -422,17 +436,39 @@ export class AdvisorRuntime {
 			this.#failing = true;
 			this.#releaseFailureWaiters();
 			logger.warn("advisor delta render failed", { err: String(err) });
+			return null;
 		}
-		if (opts?.dispatch === false) {
-			if (!rendered) return;
-			// The batch renders from `rawMessages` only when a later boundary
-			// dispatches it, after the primary's per-turn prune may have elided
-			// these tool results in place. Detach the held copies so the review
-			// sees what the primary saw at this boundary.
-			this.#held.push({ ...rendered, rawMessages: rendered.rawMessages.map(message => ({ ...message })), turns: 1 });
-			return;
-		}
-		this.#dispatch(rendered ? { ...rendered, turns: 1 } : undefined);
+	}
+
+	/**
+	 * Queue an out-of-band supervision update. Primary transcript appended since
+	 * the last capture (e.g. the user request and the still-running tool call
+	 * before any turn boundary) rides ahead of it, advancing the cursor once.
+	 */
+	enqueueSynthetic(text: string): void {
+		if (this.disposed || this.#quotaExhausted || this.#halted || !text.trim()) return;
+		// Capture first so secrets discovered in the primary delta also redact the tick.
+		const primary = this.#captureDelta(this.host.snapshotMessages(), true);
+		const rawMessage: AgentMessage = {
+			role: "custom",
+			customType: OVERSEER_TICK_CUSTOM_TYPE,
+			content: text,
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		const message = this.host.obfuscator
+			? obfuscateAdvisorMessage(this.host.obfuscator, rawMessage, this.#advisorRegexSecretValues)
+			: rawMessage;
+		const safeContent = (message as AgentMessage & { content?: unknown }).content;
+		const safeText = typeof safeContent === "string" ? safeContent : text;
+		this.#dispatch({
+			text: primary ? `${primary.text}\n\n${safeText}` : safeText,
+			rawMessages: primary ? [...primary.rawMessages, message] : [message],
+			renderRevision: primary?.renderRevision ?? this.#renderRevision,
+			turns: 1,
+			wip: true,
+		});
 	}
 
 	/**

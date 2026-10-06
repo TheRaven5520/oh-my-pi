@@ -452,7 +452,7 @@ import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
-import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "../advisor/settings";
+import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate, cfgAdvisorOverseer } from "../advisor/settings";
 import { cfgBrowserEnabled, cfgBrowserFreezeOnTurnEnd, cfgBrowserIdleCloseSec } from "../tools/browser/settings";
 import {
 	cfgClaudeResets,
@@ -887,6 +887,7 @@ export class AgentSession implements SettingsScope {
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
 	#agentKind: "main" | "sub" = "main";
+	#overseerEligible = false;
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
@@ -1999,6 +2000,7 @@ export class AgentSession implements SettingsScope {
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
+		this.#overseerEligible = config.overseer === true;
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
 		// replay-safe and transient provider errors after it stay retryable —
@@ -2093,6 +2095,7 @@ export class AgentSession implements SettingsScope {
 			modelRegistry: this.#modelRegistry,
 			yieldQueue: this.yieldQueue,
 			obfuscator: () => this.#obfuscator,
+			todoPhases: () => this.getTodoPhases(),
 			providerSessionState: this.#providerSessionState,
 			preferWebsockets: () => this.preferWebsockets,
 			onPayload: this.#onPayload,
@@ -2136,6 +2139,7 @@ export class AgentSession implements SettingsScope {
 		this.#sideQuestionToolContext = config.advisorGetToolContext;
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: cfgAdvisorEnabled.get(this.settings),
+			overseer: this.#overseerEligible && cfgAdvisorOverseer.get(this.settings),
 			tools: config.advisorTools,
 			createGrepTool: config.advisorCreateGrepTool,
 			createEditTool: config.advisorCreateEditTool,
@@ -2419,6 +2423,7 @@ export class AgentSession implements SettingsScope {
 			if (next.enabled !== previous.enabled) this.setAdvisorEnabled(next.enabled);
 			else if (this.isAdvisorEnabled()) this.setAdvisorEnabled(true);
 		});
+		cfgAdvisorOverseer.listen(this, on => this.#advisors.setOverseerEnabled(this.#overseerEligible && on));
 		cfgExternalThinking.listen(this, async () => {
 			try {
 				await this.#tools.reconcileThinkTool();
@@ -3823,6 +3828,11 @@ export class AgentSession implements SettingsScope {
 
 		if (event.type === "tool_execution_start") {
 			this.#recordToolExecutionStart(event);
+			this.#advisors.onToolExecutionStart(event.toolCallId, event.toolName);
+		}
+		if (event.type === "tool_execution_end") {
+			// Completion is synchronous even when extension event hooks await or fail.
+			this.#advisors.onToolExecutionEnd(event.toolCallId);
 		}
 
 		// Both buffer resets run before the awaited fan-out: event handlers run

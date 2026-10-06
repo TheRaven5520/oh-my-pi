@@ -22,6 +22,21 @@ export const cfgAdvisorEnabled = register({
 	},
 });
 
+export const cfgAdvisorOverseer = register({
+	id: "advisor.overseer",
+	protocolDefault: ["rpc", "acp"],
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "model",
+		group: "Advisor",
+		label: "Enable Overseer",
+		description:
+			"Keep the project-manager advisor on the main session to police progress, timing, and parallelization.",
+		condition: "advisorEnabled",
+	},
+});
+
 export const cfgAdvisorSyncBacklog = register({
 	id: "advisor.syncBacklog",
 	protocolDefault: ["rpc", "acp"],

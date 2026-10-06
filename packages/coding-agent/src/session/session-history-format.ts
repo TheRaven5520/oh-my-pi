@@ -388,6 +388,9 @@ function executionLine(
  */
 export const PRIMARY_CONTEXT_CUSTOM_TYPES: ReadonlySet<string> = new Set(["plan-mode-context", "plan-mode-reference"]);
 
+/** Hidden supervision snapshots must remain multiline, but are not primary constraints. */
+export const OVERSEER_TICK_CUSTOM_TYPE = "overseer-tick";
+
 /**
  * Hidden non-primary custom messages whose content is needed to understand visible transcript entries:
  * vision descriptions and the source file behind an `[image]` a user pasted or dropped.
@@ -591,6 +594,12 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 			case "custom":
 			case "hookMessage": {
 				const custom = msg as CustomMessage | HookMessage;
+				if (custom.customType === OVERSEER_TICK_CUSTOM_TYPE) {
+					const text = contentToText(custom.content).trim();
+					if (text) lines.push("<overseer-tick>", escapeXmlText(text), "</overseer-tick>", "");
+					lastWatchedLabel = undefined;
+					break;
+				}
 				if (
 					custom.display === false &&
 					!PRIMARY_CONTEXT_CUSTOM_TYPES.has(custom.customType) &&

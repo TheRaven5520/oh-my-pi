@@ -4483,6 +4483,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
 			advisorSharedMaxNotesPerUpdate: discoveredAdvisors.sharedMaxNotesPerUpdate,
 			advisorConfigs: discoveredAdvisors.advisors,
+			overseer: agentKind === "main",
 			advisorConfigWarnings: discoveredAdvisors.warnings,
 			agent,
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,

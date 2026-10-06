@@ -47,6 +47,14 @@ A configured `modelRoles.advisor` wins without silently falling back when it is 
 
 Without an effort suffix, advisors request `medium`, clamped to the model's supported range. `:auto` follows the primary agent's resolved effort at review boundaries rather than running a separate advisor classifier. Models without controllable effort inherit their normal reasoning behavior.
 
+### Overseer
+
+With `advisor.overseer: true` (the default), the main session also runs the built-in **Overseer** advisor next to the default advisor or the roster. Subagents and `/fork`/`/tan` chats never get it. Overseer is a project manager rather than a code reviewer: it reviews every primary turn on `claude-opus-5-5:high` with its own prompt, polices the todo list and its Eastern-time ETAs, points out work that could run in parallel, and sends a `blocker` when the primary stops with actionable todos and nothing to wait on, so the primary continues without a user prompt. It never edits files or todos itself.
+
+While a primary tool runs, Overseer gets a wall-clock update (tool name, elapsed time, Eastern time, todo snapshot) after 20 s, then after a further 1, 2, 5 and 5 minutes; at most five per tool call. The updates stop when the tool ends, on `/new` or session switch, and on disposal. They are hidden from the primary transcript.
+
+A `WATCHDOG.yml` entry named `overseer` replaces the built-in model and settings. With `advisor.overseer: false`, the built-in Overseer and its wall-clock updates go away; a user entry named `overseer` keeps running as an ordinary advisor.
+
 ### Backup reviewer
 
 When the advisor's model fails (outage, rate limit, unreachable endpoint), the advisor switches to the next model in its `retry.fallbackChains` entry and retries the same review. Key the chain on the `advisor` role, or on the advisor's exact model selector:

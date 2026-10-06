@@ -367,6 +367,8 @@ export interface AgentSessionConfig {
 	advisorContextPrompt?: string;
 	/** Memory backend developer instructions rendered for advisor sessions. */
 	advisorMemoryPrompt?: string;
+	/** Whether this session receives the built-in main-session Overseer advisor. */
+	overseer?: boolean;
 	/** Advisors discovered from WATCHDOG.yml. */
 	advisorConfigs?: AdvisorConfig[];
 	/** Config problems collected during WATCHDOG.yml discovery. */

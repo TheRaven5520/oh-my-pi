@@ -42,6 +42,7 @@ import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { extractHttpStatusFromError, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	ADVISOR_DEFAULT_BUDGET_PER_UPDATE,
 	ADVISOR_DEFAULT_TOOL_NAMES,
@@ -89,6 +90,7 @@ import { estimateToolSchemaTokens } from "@oh-my-pi/pi-tui/status-line/context-u
 import type { PlanModeState } from "../plan-mode/state";
 import advisorBoundaryGuidance from "../prompts/advisor/boundary-guidance.md" with { type: "text" };
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
+import overseerSystemPrompt from "../prompts/advisor/overseer.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import {
 	AUTO_THINKING,
@@ -131,6 +133,16 @@ import { cfgCompaction, cfgContextPromotionEnabled } from "./context-settings";
 import { cfgRetry, cfgTierAdvisor } from "./settings";
 
 const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
+
+const OVERSEER_NAME = "Overseer";
+const OVERSEER_MODEL = "claude-opus-5-5:high";
+const OVERSEER_SLOW_TOOL_MS = 20_000;
+const BUILTIN_OVERSEER_CONFIG: AdvisorConfig = {
+	name: OVERSEER_NAME,
+	model: OVERSEER_MODEL,
+	reviewMode: "turn",
+	reviewInterval: 1,
+};
 
 /**
  * Buffer added to a sibling credential's unblock deadline before the advisor
@@ -310,6 +322,8 @@ interface AdvisorRetryFallbackState {
 interface ActiveAdvisor {
 	name: string;
 	slug: string;
+	/** Whether this runtime is the active Overseer role, not merely an advisor whose slug is `overseer`. */
+	overseer: boolean;
 	agent: Agent;
 	runtime: AdvisorRuntime;
 	adviseTool: AdviseTool;
@@ -374,6 +388,7 @@ interface AdvisorRuntimeDescriptor {
 	config: AdvisorConfig;
 	name: string;
 	slug: string;
+	overseer: boolean;
 	model: Model;
 	thinkingLevel: ThinkingLevel;
 	reviewMode: AdvisorReviewMode | undefined;
@@ -400,6 +415,7 @@ export interface AdvisorCatchupOptions {
 /** Inputs that configure the advisor roster owned by a session. */
 export interface SessionAdvisorsOptions {
 	enabled: boolean;
+	overseer?: boolean;
 	tools?: AgentTool[];
 	/**
 	 * Build a `grep` honoring a Cursor `pi_grep` frame's own context width and
@@ -464,6 +480,7 @@ export interface SessionAdvisorsHost {
 	providerSessionState: Map<string, ProviderSessionState>;
 	/** Live `providers.openaiWebsockets` hint for provider calls. */
 	preferWebsockets(): boolean | undefined;
+	todoPhases(): TodoPhase[];
 	onPayload: SimpleStreamOptions["onPayload"] | undefined;
 	onResponse: SimpleStreamOptions["onResponse"] | undefined;
 	onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
@@ -532,6 +549,7 @@ export interface AdvisorStatusOverviewEntry {
 export class SessionAdvisors {
 	readonly #host: SessionAdvisorsHost;
 	#advisorEnabled: boolean;
+	#overseerEnabled: boolean;
 	#advisorTools: AgentTool[] | undefined;
 	#advisorCreateGrepTool: SessionAdvisorsOptions["createGrepTool"];
 	#advisorCreateEditTool: SessionAdvisorsOptions["createEditTool"];
@@ -594,6 +612,9 @@ export class SessionAdvisors {
 	 * simultaneous notes never force N separate cards or continuation turns.
 	 */
 	#advisorBoundaryNotes: AdvisorNote[] = [];
+	#overseerToolTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	#overseerToolProgress = new Map<string, { toolName: string; startedAt: number }>();
+
 	/** Primary-turn count when the staleness header last shipped; `undefined`
 	 *  until the first merged delivery. Gates {@link ADVISOR_BOUNDARY_GUIDANCE}
 	 *  to at most once per {@link ADVISOR_BOUNDARY_GUIDANCE_TURNS} turns. */
@@ -605,6 +626,7 @@ export class SessionAdvisors {
 	constructor(host: SessionAdvisorsHost, options: SessionAdvisorsOptions) {
 		this.#host = host;
 		this.#advisorEnabled = options.enabled;
+		this.#overseerEnabled = options.overseer === true;
 		this.#advisorTools = options.tools;
 		this.#advisorCreateGrepTool = options.createGrepTool;
 		this.#advisorCreateEditTool = options.createEditTool;
@@ -620,6 +642,45 @@ export class SessionAdvisors {
 		this.#advisorStreamFn = options.streamFn;
 		this.#transformProviderContext = options.transformProviderContext;
 		if (this.#advisorEnabled) this.#buildAdvisorRuntime();
+	}
+	/** Start a wall-clock tick for a tool that may otherwise hide a stalled turn. */
+	onToolExecutionStart(toolCallId: string, toolName: string): void {
+		const overseer = this.#advisors.find(advisor => advisor.overseer);
+		if (!overseer || this.#host.isDisposed()) return;
+		this.onToolExecutionEnd(toolCallId);
+		const startedAt = Date.now();
+		let tickCount = 0;
+		const emit = (): void => {
+			if (this.#host.isDisposed() || !this.#overseerToolProgress.has(toolCallId)) return;
+			tickCount++;
+			const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+			const easternNow = new Intl.DateTimeFormat("en-US", {
+				timeZone: "America/New_York",
+				dateStyle: "short",
+				timeStyle: "medium",
+			}).format(new Date());
+			const todos = JSON.stringify(this.#host.todoPhases(), null, 2);
+			overseer.runtime.enqueueSynthetic(
+				`Overseer wall-clock tick: tool "${toolName}" has been running for ${elapsedSeconds}s at ${easternNow} ET.\n` +
+					`Todo snapshot (primary owns durable edits):\n${todos}`,
+			);
+			if (tickCount >= 5) return;
+			const delay = [60_000, 120_000, 300_000, 300_000][tickCount - 1] ?? 300_000;
+			const timer = setTimeout(emit, delay);
+			timer.unref?.();
+			this.#overseerToolTimers.set(toolCallId, timer);
+		};
+		this.#overseerToolProgress.set(toolCallId, { toolName, startedAt });
+		const timer = setTimeout(emit, OVERSEER_SLOW_TOOL_MS);
+		timer.unref?.();
+		this.#overseerToolTimers.set(toolCallId, timer);
+	}
+
+	/** Stop wall-clock supervision as soon as the tool produces its terminal event. */
+	onToolExecutionEnd(toolCallId: string): void {
+		clearTimeout(this.#overseerToolTimers.get(toolCallId));
+		this.#overseerToolTimers.delete(toolCallId);
+		this.#overseerToolProgress.delete(toolCallId);
 	}
 
 	/** Queues eligible primary updates for each live advisor. */
@@ -762,6 +823,13 @@ export class SessionAdvisors {
 	/** Stops every advisor runtime and starts recorder shutdown. */
 	stopRuntime(): void {
 		this.#stopAdvisorRuntime();
+	}
+
+	/** Apply the live Overseer toggle without changing ordinary advisor settings. */
+	setOverseerEnabled(on: boolean): void {
+		if (this.#overseerEnabled === on) return;
+		this.#overseerEnabled = on;
+		if (this.#advisorEnabled && !this.#host.isDisposed()) this.#rebuildAdvisorRuntime();
 	}
 
 	/**
@@ -1051,6 +1119,7 @@ export class SessionAdvisors {
 	 * so none of them inject into the new conversation.
 	 */
 	#resetAdvisorSessionState(preserveCost: boolean): void {
+		for (const toolCallId of this.#overseerToolTimers.keys()) this.onToolExecutionEnd(toolCallId);
 		if (!preserveCost) {
 			this.#advisorCosts.clear();
 			this.#advisorSubscriptionSlugs.clear();
@@ -1083,12 +1152,21 @@ export class SessionAdvisors {
 	}
 
 	#resolveAdvisorRuntimeDescriptors(emitWarnings: boolean): AdvisorRuntimeDescriptor[] {
-		const legacy = !this.#advisorConfigs?.length;
-		const roster: AdvisorConfig[] = legacy ? [{ name: "default" }] : this.#advisorConfigs!;
+		const userConfigs = this.#advisorConfigs ?? [];
+		const configuredOverseer = userConfigs.find(config => slugifyAdvisorName(config.name) === "overseer");
+		const overseerConfig = configuredOverseer ?? BUILTIN_OVERSEER_CONFIG;
+		const legacy = userConfigs.length === 0;
+		const roster: AdvisorConfig[] = legacy
+			? [{ name: "default" }, ...(this.#overseerEnabled ? [overseerConfig] : [])]
+			: [
+					...(this.#overseerEnabled ? [overseerConfig] : []),
+					...userConfigs.filter(config => !this.#overseerEnabled || config !== configuredOverseer),
+				];
 		const descriptors: AdvisorRuntimeDescriptor[] = [];
 		const usedSlugs = new Set<string>();
 		for (const config of roster) {
-			let slug = legacy ? "" : slugifyAdvisorName(config.name);
+			const isLegacyDefault = legacy && config.name === "default";
+			let slug = isLegacyDefault ? "" : slugifyAdvisorName(config.name);
 			if (slug) {
 				let candidate = slug;
 				let n = 2;
@@ -1104,13 +1182,13 @@ export class SessionAdvisors {
 			}
 			// Roster entries default to every-turn review; the roster-less default
 			// advisor leaves both unset and follows the cadence settings live.
-			const reviewMode: AdvisorReviewMode | undefined = legacy
+			const reviewMode: AdvisorReviewMode | undefined = isLegacyDefault
 				? undefined
 				: config.reviewMode === "agent-end"
 					? "agent-end"
 					: "turn";
 			const configuredReviewInterval = config.reviewInterval;
-			const reviewInterval = legacy
+			const reviewInterval = isLegacyDefault
 				? undefined
 				: typeof configuredReviewInterval === "number" &&
 					  Number.isSafeInteger(configuredReviewInterval) &&
@@ -1190,6 +1268,8 @@ export class SessionAdvisors {
 				config,
 				name: config.name,
 				slug,
+				// A WATCHDOG `overseer` entry is an ordinary advisor while the built-in Overseer is off.
+				overseer: this.#overseerEnabled && config === overseerConfig,
 				model,
 				thinkingLevel: advisorThinkingLevel,
 				reviewMode,
@@ -1206,6 +1286,7 @@ export class SessionAdvisors {
 					slug,
 					model,
 					autoThinking ? AUTO_THINKING : advisorThinkingLevel,
+					this.#overseerEnabled && config === overseerConfig,
 				),
 			});
 		}
@@ -1217,6 +1298,7 @@ export class SessionAdvisors {
 		slug: string,
 		model: Model,
 		thinkingLevel: ThinkingLevel | typeof AUTO_THINKING,
+		overseer: boolean,
 	): string {
 		const tools = config.tools?.length ? config.tools.join("\u001e") : "";
 		const instructions = config.instructions?.trim() ?? "";
@@ -1232,6 +1314,7 @@ export class SessionAdvisors {
 			instructions,
 			budget,
 			tier,
+			overseer ? "overseer" : "advisor",
 		].join("\u001f");
 	}
 
@@ -1293,6 +1376,7 @@ export class SessionAdvisors {
 			const {
 				config,
 				slug,
+				overseer: isOverseer,
 				model: advisorModel,
 				name: advisorName,
 				thinkingLevel: advisorThinkingLevel,
@@ -1313,10 +1397,12 @@ export class SessionAdvisors {
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
 			const systemPrompt = [
-				prompt.render(advisorSystemPrompt, {
-					max_notes_per_update: budgetPerUpdate,
-					hold_notes_until_turn_end: cfgAdvisorHoldNotesUntilTurnEnd.get(this.#host.settings) === true,
-				}),
+				isOverseer
+					? overseerSystemPrompt
+					: prompt.render(advisorSystemPrompt, {
+							max_notes_per_update: budgetPerUpdate,
+							hold_notes_until_turn_end: cfgAdvisorHoldNotesUntilTurnEnd.get(this.#host.settings) === true,
+						}),
 			];
 			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorMemoryPrompt) systemPrompt.push(this.#advisorMemoryPrompt);
@@ -1643,6 +1729,7 @@ export class SessionAdvisors {
 			const advisorRef: ActiveAdvisor = {
 				name: advisorName,
 				slug,
+				overseer: isOverseer,
 				agent: advisorAgent,
 				runtime,
 				adviseTool,
@@ -1911,6 +1998,7 @@ export class SessionAdvisors {
 	}
 
 	#stopAdvisorRuntime(): void {
+		for (const toolCallId of this.#overseerToolTimers.keys()) this.onToolExecutionEnd(toolCallId);
 		// Detach each recorder feed BEFORE aborting its advisor agent: dispose() aborts
 		// the loop, and an abort emits a final `message_end` we must not enqueue against
 		// a closing recorder (it would reopen and resurrect an already-released file).

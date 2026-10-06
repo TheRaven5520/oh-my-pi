@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { Model } from "@oh-my-pi/pi-ai";
+import { Effort, type Model } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
@@ -13,7 +15,8 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { createInMemoryAuthStorage } from "../../helpers/agent-session-setup";
 
 const model = { provider: "anthropic", id: "claude-sonnet-4-5" } as Model;
 
@@ -309,4 +312,131 @@ describe("ForkCommandController", () => {
 		expect(h.forkSpy).not.toHaveBeenCalled();
 		expect(h.ctx.showError).toHaveBeenCalledWith("/fork requires a persisted session.");
 	});
+});
+
+describe("ForkCommandController with a real child session", () => {
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+	beforeEach(() => {
+		AgentRegistry.resetGlobalForTests();
+		AgentLifecycleManager.resetGlobalForTests();
+	});
+	afterEach(() => {
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		__resetDirsFromEnvForTests();
+	});
+
+	function bundled(id: string): Model {
+		const found = getBundledModel("anthropic", id);
+		if (!found) throw new Error(`Expected bundled anthropic/${id}`);
+		return found;
+	}
+
+	/**
+	 * Run `/fork` from a real main session that started on `transcriptModel`
+	 * (its saved transcript model), has a different configured default role,
+	 * and then switched live; return the real child session's state.
+	 */
+	async function forkFromLiveParent(
+		settingsTier: "none" | "priority",
+		switchLive: (parent: AgentSession, liveModel: Model) => Promise<void>,
+	) {
+		using tempDir = TempDir.createSync("@omp-fork-inheritance-");
+		const cwd = tempDir.path();
+		const agentDir = tempDir.join("agent");
+		// The child session resolves agent-scoped state through the global agent dir.
+		setAgentDir(agentDir);
+		const transcriptModel = bundled("claude-haiku-4-5");
+		const defaultRoleModel = bundled("claude-sonnet-4-5");
+		const liveModel = bundled("claude-opus-4-5");
+		const authStorage = createInMemoryAuthStorage();
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
+		const settings = Settings.isolated({
+			defaultThinkingLevel: "low",
+			"tier.anthropic": settingsTier,
+			"task.enableLsp": false,
+			"compaction.enabled": false,
+		});
+		settings.setModelRole("default", `${defaultRoleModel.provider}/${defaultRoleModel.id}`);
+		const sessionManager = SessionManager.create(cwd, tempDir.join("sessions"));
+		const { session: parent } = await sdkModule.createAgentSession({
+			cwd,
+			agentDir,
+			authStorage,
+			modelRegistry,
+			settings,
+			sessionManager,
+			model: transcriptModel,
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			toolNames: ["read"],
+		});
+		const focusAgentSession = vi.fn(async (_id: string) => {});
+		const showError = vi.fn();
+		const ctx = {
+			session: parent,
+			sessionManager,
+			settings,
+			showStatus: vi.fn(),
+			showError,
+			focusAgentSession,
+		} as unknown as InteractiveModeContext;
+		const controller = new ForkCommandController(ctx);
+		try {
+			await switchLive(parent, liveModel);
+			await controller.start("");
+
+			expect(showError).not.toHaveBeenCalled();
+			const forkId = focusAgentSession.mock.calls[0]?.[0] ?? "";
+			const child = AgentRegistry.global().get(forkId)?.session;
+			if (!child) throw new Error("fork child session was not registered");
+			expect(child).not.toBe(parent);
+			return {
+				liveModel: `${liveModel.provider}/${liveModel.id}`,
+				model: `${child.model?.provider}/${child.model?.id}`,
+				configuredThinkingLevel: child.configuredThinkingLevel(),
+				thinkingLevel: child.thinkingLevel,
+				serviceTierByFamily: { ...child.serviceTierByFamily },
+			};
+		} finally {
+			await controller.dispose();
+			await parent.dispose();
+			authStorage.close();
+		}
+	}
+
+	it("inherits the main chat's live model, effort, and raised tier over its transcript, default role, and settings", async () => {
+		const child = await forkFromLiveParent("none", async (parent, liveModel) => {
+			// An ephemeral switch (prewalk, retry fallback, context promotion) is the live
+			// model a transcript restore skips: it would bring back the saved haiku entry.
+			await parent.setModelTemporary(liveModel, Effort.High, { ephemeral: true });
+			parent.setServiceTierFamily("anthropic", "priority");
+		});
+
+		expect(child.model).toBe(child.liveModel);
+		expect(child.configuredThinkingLevel).toBe(Effort.High);
+		expect(child.thinkingLevel).toBe(Effort.High);
+		expect(child.serviceTierByFamily).toEqual({ anthropic: "priority" });
+	}, 30_000);
+
+	it("keeps a tier the main chat turned off even when settings still enable it", async () => {
+		const child = await forkFromLiveParent("priority", async (parent, liveModel) => {
+			await parent.setModelTemporary(liveModel, Effort.High, { ephemeral: true });
+			expect(parent.serviceTierByFamily).toEqual({ anthropic: "priority" });
+			parent.setServiceTierFamily("anthropic", undefined);
+		});
+
+		expect(child.model).toBe(child.liveModel);
+		expect(child.serviceTierByFamily).toEqual({});
+	}, 30_000);
 });
