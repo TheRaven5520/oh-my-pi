@@ -48,6 +48,7 @@
 - Fixed advisor notes flushed together at the end of a turn showing only the first card live, with the rest appearing at the bottom of the chat only after a refresh.
 - Fixed models of an `auth: oauth` provider with `discovery` losing the OAuth (Claude Code) request shape: discovered models were sent without it, and so were listed ones once discovery found them too (including from the model cache).
 - Fixed skill-hint compression asking the model again on every prompt rebuild, in every session and process, when the hint came back over 12 words or 160 characters: the hint is now cut to its first 12 words (and 160 characters) and cached under the same key, and the rejected text is logged.
+- A chat made private with Sprilicred private mode (a typed `` `private` `` answered "OK") no longer shows up where a model can read it: `history://` (index, completions, and lookup by id or from disk) leaves out every agent transcript of another private chat — a private chat still sees its own — and `omp __complete sessions` no longer prints private sessions, so they are also gone from shell TAB completion. The `/resume` picker, the welcome screen, and ACP session lists still show them to you. A session file on disk is still readable by any tool that opens it directly (`read`, `grep`, `bash`, `eval`).
 
 ## [18.3.0] - 2026-09-24
 

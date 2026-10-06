@@ -11,6 +11,7 @@
 import { type GeneratedProvider, getBundledModels, getBundledProviders } from "@oh-my-pi/pi-catalog/models";
 import { Command } from "@oh-my-pi/pi-utils/cli";
 import { completeHelp as commandHelp } from "../cli/command-help";
+import { isPrivateSessionFile } from "../session/private-chat";
 import { SessionManager } from "../session/session-manager";
 
 export default class Complete extends Command {
@@ -60,6 +61,8 @@ async function completeSessions(prefix: string): Promise<void> {
 	const lines: string[] = [];
 	for (const session of sessions) {
 		if (prefix && !session.id.startsWith(prefix)) continue;
+		// A private chat is never printed: a model is one bash call away from this output.
+		if (await isPrivateSessionFile(session.path)) continue;
 		const label = clean(session.title ?? session.firstMessage ?? "").slice(0, 72);
 		lines.push(`${session.id}\t${label}`);
 	}

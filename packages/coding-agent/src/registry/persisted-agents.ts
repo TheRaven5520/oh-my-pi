@@ -460,7 +460,14 @@ function latchOwnershipValid(registry: AgentRegistry, owned: Map<string, string>
 	return true;
 }
 
-async function resolveRootSessionFile(registry: AgentRegistry, hint?: string | null): Promise<string | undefined> {
+/**
+ * Root (top-level chat) session file of `hint`, or of the registry's `Main`
+ * when no `.jsonl` hint is given: climbs `<dir>.jsonl` parents while they exist.
+ */
+export async function resolveRootSessionFile(
+	registry: AgentRegistry,
+	hint?: string | null,
+): Promise<string | undefined> {
 	const mainFile = registry.get(MAIN_AGENT_ID)?.sessionFile;
 	const candidate =
 		typeof hint === "string" && hint.endsWith(".jsonl")
@@ -485,7 +492,8 @@ function rosterScanError(error: unknown): string {
 	return text.length <= 200 ? text : `${text.slice(0, 197)}...`;
 }
 
-function sessionFileBelongsToRoot(sessionFile: string, rootSessionFile: string): boolean {
+/** True when `sessionFile` is `rootSessionFile` itself or a transcript under its artifacts dir. */
+export function sessionFileBelongsToRoot(sessionFile: string, rootSessionFile: string): boolean {
 	const file = path.resolve(sessionFile);
 	const root = path.resolve(rootSessionFile);
 	const artifactRoot = root.slice(0, -".jsonl".length);
