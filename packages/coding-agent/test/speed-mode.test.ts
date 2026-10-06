@@ -221,6 +221,11 @@ describe("/fast and /ultrafast", () => {
 			text: "Ultrafast",
 			level: "normal",
 		});
+		// Sprilicred's fallback: Ultrafast served at fast, then at standard.
+		const slower = (forwarded: "fast" | "standard") =>
+			turn({ requested: "ultrafast", forwarded, reason: "no_pro500_capacity" });
+		expect(await status(slower("fast"))).toEqual({ text: "Ultrafast→Fast", level: "warning" });
+		expect(await status(slower("standard"))).toEqual({ text: "Ultrafast→Normal", level: "warning" });
 		current.setFastMode(true);
 		expect(await status()).toEqual({ text: "Fast", level: "normal" });
 		expect(
@@ -284,10 +289,16 @@ describe("speed outcome messages", () => {
 			"Ultrafast refused by the serving account. Use /fast.",
 		],
 		[
-			"an older Sprilicred served ultrafast at fast",
+			"ultrafast with no Pro 500 room falls back to fast",
 			{ requested: "ultrafast", forwarded: "fast", reason: "no_pro500_capacity" },
 			"stop",
-			"Ultrafast unavailable: no Pro 500 account has room right now. Use /fast.",
+			"Ultrafast unavailable (no Pro 500 account has room); using fast mode.",
+		],
+		[
+			"ultrafast not permitted, fast not either",
+			{ requested: "ultrafast", forwarded: "standard", reason: "not_permitted" },
+			"stop",
+			"Ultrafast unavailable (not enabled for you); using standard.",
 		],
 		[
 			"fast on a subscription account",

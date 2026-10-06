@@ -2,11 +2,10 @@
  * The one-line notice that tells the person what became of a turn that asked
  * for fast or ultrafast, read from the turn's `AssistantMessage.speed`
  * (Sprilicred's speed headers, else the provider's own report). Sprilicred
- * serves fast it can't run at standard, and the reason header says why; it
- * never serves ultrafast slower: it refuses the turn (a 400
- * `ultrafast_not_allowed` / `ultrafast_unsupported_model` /
- * `ultrafast_unavailable`), and the notice says why in the same words as the
- * Sprilicred omp extension.
+ * never refuses a faster tier: ultrafast it can't run goes at fast (when fast
+ * is allowed) or standard, fast at standard, and the reason header says why.
+ * A turn refused outright (a 400 `ultrafast_*`, from a Sprilicred that
+ * refused Ultrafast) says why in the same words as the Sprilicred omp extension.
  */
 import type { AssistantMessage, RequestedSpeed } from "@oh-my-pi/pi-ai";
 
@@ -19,10 +18,11 @@ export interface SpeedNotice {
 	always: boolean;
 }
 
-/** Why Sprilicred served fast mode at standard, by `x-sprilicred-speed-reason` code. */
+/** Why Sprilicred did not forward the tier asked for, by `x-sprilicred-speed-reason` code. */
 const REASON_TEXT: Readonly<Record<string, string>> = {
 	not_permitted: "not enabled for you",
 	model_unsupported: "this model doesn't offer it",
+	no_pro500_capacity: "no Pro 500 account has room",
 	account_refuses: "the serving account refused it",
 };
 
@@ -102,16 +102,7 @@ export function describeSpeedOutcome(
 	}
 	// Sprilicred forwarded a slower tier than asked: say why, and what it used instead.
 	if (speed.forwarded !== undefined && speed.forwarded !== speed.requested) {
-		// Only an older Sprilicred serves Ultrafast slower; it reads as the refusal it now is.
-		if (speed.requested === "ultrafast") {
-			return {
-				key: `downgraded:ultrafast:${speed.forwarded}:${reason ?? ""}`,
-				level: "warning",
-				text: ultrafastRefusalText(reason),
-				always: false,
-			};
-		}
-		const using = "standard";
+		const using = speed.forwarded === "fast" ? "fast mode" : "standard";
 		return {
 			key: `downgraded:${speed.requested}:${speed.forwarded}:${reason ?? ""}`,
 			level: "warning",
@@ -149,15 +140,14 @@ const MODE_NAME: Readonly<Record<SpeedMode, string>> = { normal: "Normal", fast:
 /**
  * What the status line says for the selected mode and, when Sprilicred
  * reported on the last turn in that mode, what it served: "Fast" as asked,
- * "Fast→Normal" served slower, "Ultrafast refused" (Sprilicred never serves
- * Ultrafast slower). `served` is the tier served, or "refused". Identical in
+ * "Ultrafast→Fast" / "Fast→Normal" served slower, "Ultrafast refused" for a
+ * turn that failed with Sprilicred's refusal. `served` is the tier served, or "refused". Identical in
  * the Sprilicred omp extension (deploy/omp-extension/sprilicred.ts).
  */
 export function speedStatus(selected: SpeedMode, served?: SpeedMode | "refused"): SpeedStatus {
 	if (selected === "normal") return { text: MODE_NAME.normal, level: "dim" };
 	if (served === undefined || served === selected) return { text: MODE_NAME[selected], level: "normal" };
-	if (served === "refused" || selected === "ultrafast")
-		return { text: `${MODE_NAME[selected]} refused`, level: "warning" };
+	if (served === "refused") return { text: `${MODE_NAME[selected]} refused`, level: "warning" };
 	return { text: `${MODE_NAME[selected]}→${MODE_NAME[served]}`, level: "warning" };
 }
 
