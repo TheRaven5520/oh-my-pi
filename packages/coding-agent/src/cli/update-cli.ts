@@ -2128,7 +2128,7 @@ export async function runUpdateCommand(opts: {
 		return;
 	}
 	if (comparison === 0 && !opts.force && !isChannelSwitch) {
-		let digestMatches = true;
+		let digestMatches = false;
 		if (release.asset) {
 			try {
 				const binaryPath = resolveOmpPath();
