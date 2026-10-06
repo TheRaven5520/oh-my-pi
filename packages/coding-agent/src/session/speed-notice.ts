@@ -135,3 +135,42 @@ export function describeSpeedOutcome(
 		always: false,
 	};
 }
+
+export type SpeedMode = "normal" | "fast" | "ultrafast";
+
+/** The status line's speed label and how to colour it. Same words as the Sprilicred omp extension. */
+export interface SpeedStatus {
+	text: string;
+	level: "dim" | "normal" | "warning";
+}
+
+const MODE_NAME: Readonly<Record<SpeedMode, string>> = { normal: "Normal", fast: "Fast", ultrafast: "Ultrafast" };
+
+/**
+ * What the status line says for the selected mode and, when Sprilicred
+ * reported on the last turn in that mode, what it served: "Fast" as asked,
+ * "Fast→Normal" served slower, "Ultrafast refused" (Sprilicred never serves
+ * Ultrafast slower). `served` is the tier served, or "refused". Identical in
+ * the Sprilicred omp extension (deploy/omp-extension/sprilicred.ts).
+ */
+export function speedStatus(selected: SpeedMode, served?: SpeedMode | "refused"): SpeedStatus {
+	if (selected === "normal") return { text: MODE_NAME.normal, level: "dim" };
+	if (served === undefined || served === selected) return { text: MODE_NAME[selected], level: "normal" };
+	if (served === "refused" || selected === "ultrafast")
+		return { text: `${MODE_NAME[selected]} refused`, level: "warning" };
+	return { text: `${MODE_NAME[selected]}→${MODE_NAME[served]}`, level: "warning" };
+}
+
+/**
+ * What Sprilicred served of `mode` on this turn, or `undefined` when the turn
+ * says nothing about it (asked for another tier, failed for another reason,
+ * or no Sprilicred report).
+ */
+export function servedSpeed(message: AssistantMessage, mode: SpeedMode): SpeedMode | "refused" | undefined {
+	const speed = message.speed;
+	if (!speed || speed.requested !== mode) return undefined;
+	if (speed.refused) return "refused";
+	if (message.stopReason === "error" || message.stopReason === "aborted") return undefined;
+	const served = speed.served ?? speed.forwarded;
+	return served === "standard" ? "normal" : served;
+}

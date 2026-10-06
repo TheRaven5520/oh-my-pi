@@ -53,6 +53,8 @@ export interface StatusLineSession {
 	getContextUsage(): { tokens: number; contextWindow: number; percent: number | null } | undefined;
 	autoResolvedThinkingLevel(): string | undefined;
 	isFastModeActive(): boolean;
+	/** Speed label (Normal / Fast / Ultrafast, or what Sprilicred served of it) and its colour. */
+	speedStatus?(): { text: string; level: "dim" | "normal" | "warning" };
 	getPrewalkState?(): unknown;
 	getAsyncJobSnapshot(): { running: readonly { type: string; agentId?: string }[] } | null | undefined;
 	getGoalModeState(): { goal?: { status: string; tokensUsed: number; tokenBudget?: number } } | undefined;

@@ -302,6 +302,7 @@ interface StatusLineExternalInputs {
 	isStreaming: boolean | undefined;
 	isAutoThinking: boolean | undefined;
 	isFastModeActive: boolean;
+	speedStatusText: string | undefined;
 	compactionSpeculation: unknown;
 }
 
@@ -2430,6 +2431,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			isAutoThinking: this.session.isAutoThinking,
 			isFastModeActive:
 				typeof this.session.isFastModeActive === "function" ? this.session.isFastModeActive() : false,
+			speedStatusText: typeof this.session.speedStatus === "function" ? this.session.speedStatus().text : undefined,
 			compactionSpeculation: this.session.compactionSpeculation,
 		};
 	}
@@ -2484,6 +2486,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			left.isStreaming === right.isStreaming &&
 			left.isAutoThinking === right.isAutoThinking &&
 			left.isFastModeActive === right.isFastModeActive &&
+			left.speedStatusText === right.speedStatusText &&
 			left.compactionSpeculation === right.compactionSpeculation
 		);
 	}

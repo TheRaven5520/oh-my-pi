@@ -310,6 +310,17 @@ const modelSegment: StatusLineSegment = {
 			}
 			let content = claudeFg(CLAUDE_COLORS.model, modelName);
 			if (effort) content += ` ${claudeFg(CLAUDE_COLORS.effort, `(${statusValue(ctx, effort)})`)}`;
+			const speed = ctx.session.speedStatus?.();
+			if (speed) {
+				const text = statusValue(ctx, speed.text);
+				content += ` ${
+					speed.level === "warning"
+						? theme.fg("warning", text)
+						: speed.level === "dim"
+							? `${CLAUDE_DIM_ANSI}${text}\x1b[39m`
+							: claudeFg(CLAUDE_COLORS.effort, text)
+				}`;
+			}
 			return { content, visible: true };
 		}
 
@@ -382,6 +393,18 @@ const modelSegment: StatusLineSegment = {
 		}
 		if (tail) {
 			content += accentFg(ctx, "statusLineModel", tail);
+		}
+		// Speed mode: Normal (dim), Fast, Ultrafast, or what Sprilicred served of it (`Fast→Normal`, `Ultrafast refused`).
+		const speed = ctx.session.speedStatus?.();
+		if (speed) {
+			const text = statusValue(ctx, speed.text);
+			content +=
+				theme.sep.dot +
+				(speed.level === "warning"
+					? theme.fg("warning", text)
+					: speed.level === "dim"
+						? theme.fg("dim", text)
+						: accentFg(ctx, "statusLineModel", text));
 		}
 
 		return { content, visible: true };

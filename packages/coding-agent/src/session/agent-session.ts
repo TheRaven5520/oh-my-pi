@@ -421,7 +421,7 @@ import { SessionTools, type SessionToolsHost } from "./session-tools";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { buildMainAgentLinkHeaders, withSideAgentHeaders } from "./side-agent-headers";
 import { skillPromptTitleInput } from "@oh-my-pi/pi-tui/chat/skill-title-input";
-import { describeSpeedOutcome } from "./speed-notice";
+import { describeSpeedOutcome, type SpeedMode, type SpeedStatus, servedSpeed, speedStatus } from "./speed-notice";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
@@ -923,6 +923,8 @@ export class AgentSession {
 	#skippedPostTurnSpeculationCompletion: Promise<void> | undefined;
 	/** Outcome of the last faster-tier notice shown; the next shows only when it changes. */
 	#lastSpeedNoticeKey: string | undefined;
+	/** What Sprilicred served on the last reported turn, for the model and mode it ran in (the status line). */
+	#lastSpeedServed: { key: string; tiers: ServiceTierByFamily; served: SpeedMode | "refused" } | undefined;
 	#pendingAgentEndEmit: AgentSessionEvent | undefined;
 	#inFlightSettledCallbacks: Array<() => void | Promise<void>> = [];
 	#sessionStopContinuationCount = 0;
@@ -2640,6 +2642,23 @@ export class AgentSession {
 	 */
 	#noticeSpeedOutcome(message: AssistantMessage): void {
 		const model = this.model;
+		// Only Sprilicred reports what it served; other providers' status shows the selected mode.
+		if (
+			model &&
+			model.provider === message.provider &&
+			model.id === message.model &&
+			model.provider.startsWith("sprilicred-")
+		) {
+			const mode = this.#selectedSpeedMode();
+			const served = servedSpeed(message, mode);
+			if (served !== undefined) {
+				this.#lastSpeedServed = {
+					key: `${model.provider}/${model.id}|${mode}`,
+					tiers: this.serviceTierByFamily,
+					served,
+				};
+			}
+		}
 		let notSent: "fast" | "ultrafast" | undefined;
 		if (model && model.provider === message.provider) {
 			const tier = resolveModelServiceTier(this.serviceTierByFamily, model);
@@ -8968,6 +8987,27 @@ export class AgentSession {
 	/** Toggles priority service for the active model family. */
 	toggleFastMode(): boolean {
 		return this.#models.toggleFastMode();
+	}
+
+	#selectedSpeedMode(): SpeedMode {
+		if (this.isUltrafastModeEnabled() && this.isUltrafastAvailable()) return "ultrafast";
+		return this.isFastModeActive() ? "fast" : "normal";
+	}
+
+	/**
+	 * The status line's speed label: the mode selected for the active model,
+	 * or what Sprilicred served of it on the last turn in that mode and model
+	 * (`Fast→Normal`, `Ultrafast refused`). Changing mode or model shows the selection again.
+	 */
+	speedStatus(): SpeedStatus {
+		const model = this.model;
+		const mode = this.#selectedSpeedMode();
+		const last = this.#lastSpeedServed;
+		// Every mode change replaces the tier map, so a served outcome lasts until the next change.
+		const current =
+			model && last?.tiers === this.serviceTierByFamily && last.key === `${model.provider}/${model.id}|${mode}`;
+		const served = current ? last.served : undefined;
+		return speedStatus(mode, served);
 	}
 
 	/** Reports whether `/ultrafast` is on (the OpenAI family's `ultrafast` tier). */

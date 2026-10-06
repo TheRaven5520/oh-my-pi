@@ -195,6 +195,54 @@ describe("/fast and /ultrafast", () => {
 			"Ultrafast mode on.",
 		]);
 	});
+
+	it("shows the selected speed, then what Sprilicred served of it, resetting on a new mode", async () => {
+		const current = createSession(openaiModel("sprilicred-openai"));
+		const status = async (message?: AssistantMessage) => {
+			if (message) {
+				current.agent.emitExternalEvent({ type: "message_end", message });
+				await current.waitForIdle();
+			}
+			return current.speedStatus();
+		};
+		expect(await status()).toEqual({ text: "Normal", level: "dim" });
+		current.setUltrafastMode(true);
+		expect(await status()).toEqual({ text: "Ultrafast", level: "normal" });
+		// A refused Ultrafast turn (a 400 before any stream) never reads as Ultrafast.
+		const refused: SpeedOutcome = {
+			requested: "ultrafast",
+			forwarded: "standard",
+			reason: "no_pro500_capacity",
+			refused: true,
+		};
+		expect(await status(turn(refused, "error"))).toEqual({ text: "Ultrafast refused", level: "warning" });
+		expect(await status(turn(undefined, "error"))).toEqual({ text: "Ultrafast refused", level: "warning" });
+		expect(await status(turn({ requested: "ultrafast", forwarded: "ultrafast", reason: "forwarded" }))).toEqual({
+			text: "Ultrafast",
+			level: "normal",
+		});
+		current.setFastMode(true);
+		expect(await status()).toEqual({ text: "Fast", level: "normal" });
+		expect(
+			await status(turn({ requested: "fast", forwarded: "standard", reason: "subscription_extra_usage" })),
+		).toEqual({
+			text: "Fast→Normal",
+			level: "warning",
+		});
+		current.setFastMode(false);
+		expect(await status()).toEqual({ text: "Normal", level: "dim" });
+		current.setFastMode(true);
+		expect(await status()).toEqual({ text: "Fast", level: "normal" });
+	});
+
+	it("shows only the selected speed for providers that aren't Sprilicred", async () => {
+		const current = createSession(openaiModel("personal-openai"));
+		current.setFastMode(true);
+		const message = { ...turn({ requested: "fast", served: "standard" }), provider: "personal-openai" };
+		current.agent.emitExternalEvent({ type: "message_end", message });
+		await current.waitForIdle();
+		expect(current.speedStatus()).toEqual({ text: "Fast", level: "normal" });
+	});
 });
 
 describe("speed outcome messages", () => {
