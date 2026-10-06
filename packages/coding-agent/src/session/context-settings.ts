@@ -152,18 +152,6 @@ export const cfgCompactionThresholdTokens = register({
 	},
 });
 
-export const cfgCompactionHandoffSaveToDisk = register({
-	id: "compaction.handoffSaveToDisk",
-	type: "boolean",
-	default: false,
-	ui: {
-		tab: "context",
-		group: "Compaction",
-		label: "Save Handoff Docs",
-		description: "Save generated handoff documents to markdown files for the auto-handoff flow",
-	},
-});
-
 export const cfgCompactionRemoteStreamingV2Enabled = register({
 	id: "compaction.remoteStreamingV2Enabled",
 	type: "boolean",
@@ -311,7 +299,6 @@ export const cfgCompaction = combine({
 	keepRecentTokens: cfgCompactionKeepRecentTokens,
 	midTurnEnabled: cfgCompactionMidTurnEnabled,
 	asyncEnabled: cfgCompactionAsyncEnabled,
-	handoffSaveToDisk: cfgCompactionHandoffSaveToDisk,
 	autoContinue: cfgCompactionAutoContinue,
 	remoteEndpoint: cfgCompactionRemoteEndpoint,
 	remoteStreamingV2Enabled: cfgCompactionRemoteStreamingV2Enabled,

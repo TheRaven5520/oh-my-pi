@@ -365,15 +365,17 @@ function mergeLlmCompactionPreserveData(
 	return snapcompact.stripPreservedArchive(Object.keys(preserveData).length > 0 ? preserveData : undefined);
 }
 
-/** Wrap a handoff document as a compaction summary: append the cumulative file-operations tag and derive entry details. */
+/** Wrap a handoff document as a compaction summary: append the saved path and cumulative file-operations tag. */
 function handoffSummaryFromDocument(
 	document: string,
 	preparation: CompactionPreparation,
+	savedPath?: string,
 ): { summary: string; details: CompactionDetails } {
 	const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
+	const summary = upsertFileOperations(document, readFiles, modifiedFiles, preparation.fileOps.read);
 	return {
-		summary: upsertFileOperations(document, readFiles, modifiedFiles, preparation.fileOps.read),
-		details: { readFiles, modifiedFiles },
+		summary: savedPath ? `${summary}\n\nHandoff saved to: ${savedPath}` : summary,
+		details: { readFiles, modifiedFiles, ...(savedPath ? { savedPath } : {}) },
 	};
 }
 
@@ -2016,7 +2018,7 @@ export class SessionMaintenance {
 		try {
 			const result = await this.#host.generateHandoffDocument(customInstructions, options);
 			if (!result) return undefined;
-			const { summary, details } = handoffSummaryFromDocument(result.document, preparation);
+			const { summary, details } = handoffSummaryFromDocument(result.document, preparation, result.savedPath);
 			await this.#commitCompactionEntry({
 				summary,
 				shortSummary: undefined,
@@ -2205,7 +2207,7 @@ export class SessionMaintenance {
 				signal,
 			});
 			if (!generated) return clear();
-			const { summary, details } = handoffSummaryFromDocument(generated.document, preparation);
+			const { summary, details } = handoffSummaryFromDocument(generated.document, preparation, generated.savedPath);
 			armed = {
 				result: {
 					summary,
@@ -4756,7 +4758,11 @@ export class SessionMaintenance {
 				details = compactionPrep.details;
 				preserveData = compactionPrep.preserveData;
 			} else if (handoffDocument) {
-				const handoffSummary = handoffSummaryFromDocument(handoffDocument.document, preparation);
+				const handoffSummary = handoffSummaryFromDocument(
+					handoffDocument.document,
+					preparation,
+					handoffDocument.savedPath,
+				);
 				summary = handoffSummary.summary;
 				shortSummary = undefined;
 				firstKeptEntryId = preparation.firstKeptEntryId;

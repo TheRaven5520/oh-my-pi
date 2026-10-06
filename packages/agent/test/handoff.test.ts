@@ -70,7 +70,8 @@ describe("handoff summary injection", () => {
 	// Regression: without handoff-specific framing the successor misreads the
 	// document's first-person "Next Steps" as fresh user instructions, or tries
 	// to write the handoff again.
-	const document = "## Goal\nContinue the resize fix.\n\n## Next Steps\n1. Run the focused test";
+	const document =
+		"## Goal\nContinue the resize fix.\n\n## Next Steps\n1. Run the focused test\n\nHandoff saved to: /tmp/handoff.md";
 
 	function convertedText(method: string | undefined): string {
 		const message = createCompactionSummaryMessage(document, 1000, new Date().toISOString(), { method });
@@ -85,7 +86,8 @@ describe("handoff summary injection", () => {
 		const text = convertedText("handoff");
 		expect(text).toContain("<handoff>");
 		expect(text).toContain("prior instance");
-		expect(text).toContain("NEVER write another handoff document");
+		expect(text).toContain("Handoff saved to: <path>");
+		expect(text).toContain("/tmp/handoff.md");
 		expect(text).toContain(document);
 		expect(text).not.toContain("<summary>");
 	});

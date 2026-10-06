@@ -377,10 +377,9 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					await runtime.output("Handoff cancelled.");
 					return;
 				}
-				// `savedPath` is deliberately not reported: `SessionHandoff` only writes
-				// the document to disk when `options.autoTriggered` is set, which the
-				// user-invoked path never passes.
-				await runtime.output("Context handed off and compacted in place.");
+				await runtime.output(
+					`Context handed off and compacted in place.${result.savedPath ? ` Handoff saved to: ${result.savedPath}` : ""}`,
+				);
 			};
 			if (runtime.runCommandInBackground) {
 				runtime.runCommandInBackground(runHandoff);

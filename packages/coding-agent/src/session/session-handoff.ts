@@ -18,8 +18,6 @@ import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { HandoffResult, SessionHandoffOptions } from "./agent-session-types";
 import type { SessionManager } from "./session-manager";
 
-import { cfgCompactionHandoffSaveToDisk } from "./context-settings";
-
 function createHandoffFileName(date = new Date()): string {
 	const fileTimestamp = date.toISOString().replace(/[:.]/g, "-");
 	return `handoff-${fileTimestamp}.md`;
@@ -209,22 +207,20 @@ export class SessionHandoff {
 			}
 
 			let savedPath: string | undefined;
-			if (options?.autoTriggered && cfgCompactionHandoffSaveToDisk.get(this.#host.settings)) {
-				const artifactsDir = this.#host.sessionManager.getArtifactsDir();
-				if (artifactsDir) {
-					const handoffFilePath = path.join(artifactsDir, createHandoffFileName());
-					try {
-						await Bun.write(handoffFilePath, `${handoffText}\n`);
-						savedPath = handoffFilePath;
-					} catch (error) {
-						logger.warn("Failed to save handoff document to disk", {
-							path: handoffFilePath,
-							error: error instanceof Error ? error.message : String(error),
-						});
-					}
-				} else {
-					logger.debug("Skipping handoff document save because session is not persisted");
+			const artifactsDir = this.#host.sessionManager.getArtifactsDir();
+			if (artifactsDir) {
+				const handoffFilePath = path.join(artifactsDir, createHandoffFileName());
+				try {
+					await Bun.write(handoffFilePath, `${handoffText}\n`);
+					savedPath = handoffFilePath;
+				} catch (error) {
+					logger.warn("Failed to save handoff document to disk", {
+						path: handoffFilePath,
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
+			} else {
+				logger.debug("Skipping handoff document save because session is not persisted");
 			}
 
 			return { document: handoffText, savedPath };

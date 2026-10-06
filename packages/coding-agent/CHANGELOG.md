@@ -4,6 +4,7 @@
 ### Changed
 
 - `omp update` and startup release checks use only Spring-Silicon/oh-my-pi GitHub releases, including verified `v18.6.1-spring.N` platform assets; npm/upstream release metadata is never used.
+- Handoffs now always save a timestamped artifact for persisted sessions, including manual `/handoff` and speculative/automatic handoffs. The absolute path is included in the compaction summary, successor instructions, TUI status, and ACP output; sessions without an artifacts directory fall back to the in-context handoff document.
 
 ### Added
 

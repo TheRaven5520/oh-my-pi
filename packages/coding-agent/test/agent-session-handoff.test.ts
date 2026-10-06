@@ -24,7 +24,6 @@ import * as snapcompact from "@oh-my-pi/snapcompact";
 
 import {
 	cfgCompactionEnabled,
-	cfgCompactionHandoffSaveToDisk,
 	cfgCompactionMethodOrder,
 	cfgCompactionThresholdPercent,
 	cfgContextPromotionEnabled,
@@ -993,7 +992,8 @@ describe("AgentSession handoff", () => {
 		expect(compaction.summary).toContain(handoffText);
 		expect(session.agent.state.messages.some(message => message.role === "compactionSummary")).toBe(true);
 		const persistedSessionText = await Bun.file(sessionFile).text();
-		expect(persistedSessionText).toContain(JSON.stringify(handoffText));
+		expect(persistedSessionText).toContain(JSON.stringify(handoffText).slice(0, -1));
+		expect(persistedSessionText).toContain("Handoff saved to:");
 	});
 
 	it("does not run auto maintenance when strategy is off", async () => {
@@ -1313,9 +1313,7 @@ describe("AgentSession handoff", () => {
 		expect(streamOptions.sessionId).not.toBe("shared-cache-key");
 	});
 
-	it("saves auto-handoff document to disk when enabled", async () => {
-		cfgCompactionHandoffSaveToDisk.set(session.settings, true);
-
+	it("saves auto-handoff documents to disk", async () => {
 		const handoffText = "## Goal\nContinue from here";
 		vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue(handoffText);
 
@@ -1327,13 +1325,19 @@ describe("AgentSession handoff", () => {
 		expect(savedText).toContain(handoffText);
 	});
 
-	it("does not save manual handoff document when save setting is enabled", async () => {
-		cfgCompactionHandoffSaveToDisk.set(session.settings, true);
-
-		vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue("## Goal\nManual handoff");
+	it("saves manual handoff documents and records the path in the compaction", async () => {
+		const handoffText = "## Goal\nManual handoff";
+		vi.spyOn(compactionModule, "generateHandoffFromContext").mockResolvedValue(handoffText);
 
 		const result = await session.handoff();
-		expect(result?.savedPath).toBeUndefined();
+		expect(result?.savedPath).toBeDefined();
+		if (!result?.savedPath) throw new Error("Expected handoff document path");
+		const savedText = await Bun.file(result.savedPath).text();
+		expect(savedText).toContain(handoffText);
+		const compaction = sessionManager.getBranch().at(-1);
+		if (compaction?.type !== "compaction") throw new Error("Expected handoff compaction entry");
+		expect(compaction.summary).toContain(`Handoff saved to: ${result.savedPath}`);
+		expect(compaction.details).toMatchObject({ savedPath: result.savedPath });
 	});
 
 	it("does not start handoff prompt when provided signal is already cancelled", async () => {

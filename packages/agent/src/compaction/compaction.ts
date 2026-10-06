@@ -103,10 +103,11 @@ import {
 // File Operation Tracking
 // ============================================================================
 
-/** Details stored in CompactionEntry.details for file tracking */
+/** Details stored in CompactionEntry.details for file tracking and handoff artifacts. */
 export interface CompactionDetails {
 	readFiles: string[];
 	modifiedFiles: string[];
+	savedPath?: string;
 }
 
 /**
