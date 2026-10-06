@@ -21,17 +21,9 @@ import {
 	unsupportedProxyMessage,
 	withTimeoutSignal,
 } from "../utils/fetch-timeout";
-import {
-	DEFAULT_NPM_REGISTRY,
-	loadNpmRegistryResolver,
-	type NpmRegistry,
-	type NpmRegistryResolver,
-	npmRegistryPackageUrl,
-} from "./npm-registry";
-
 import { cfgUpdateChannel } from "../modes/settings";
-
-const REPO = "can1357/oh-my-pi";
+import { DEFAULT_NPM_REGISTRY } from "./npm-registry";
+const REPO = "Spring-Silicon/oh-my-pi";
 const PACKAGE = "@oh-my-pi/pi-coding-agent";
 const HOMEBREW_FORMULA = "can1357/tap/omp";
 const MISE_TOOL = "github:can1357/oh-my-pi";
@@ -89,20 +81,18 @@ const CURRENT_PACKAGES: ReleasePackages = { pkg: PACKAGE, natives: NATIVES_PACKA
 export interface ReleaseInfo {
 	tag: string;
 	version: string;
-	/** Parsed `omp.dist` from the registry manifest; undefined when absent. */
+	/** Published fork binary distribution. */
 	dist?: ReleaseDist;
-	/** npm names to install, resolved after following any `omp.rename` pointers. */
+	/** Exact platform asset selected from the fork release. */
+	asset?: ReleaseBinaryAsset;
 	packages: ReleasePackages;
-	/**
-	 * Registry URL the version was resolved from; bun/npm installs pin to it
-	 * so the install sees the same catalog as the check. See #1686.
-	 */
+	/** GitHub release catalog URL. */
 	registry: string;
 }
 
 /** A release binary the updater can download, resolved from published GitHub release metadata. */
 export interface ReleaseBinaryAsset {
-	/** Release version the asset installs, without the `v` tag prefix. */
+	tag: string;
 	version: string;
 	url: string;
 	size: number;
@@ -279,8 +269,11 @@ export function resolveReleaseBinaryAsset(
 		throw new Error(`GitHub release asset ${binaryName} has an unexpected download URL`);
 	}
 
-	return {
-		version: expectedTag.replace(/^v/, ""),
+const versionMatch = expectedTag.match(/^v(\d+\.\d+\.\d+)-spring\.\d+$/);
+	if (!versionMatch) throw new Error(`Unsupported fork release tag ${expectedTag}`);
+return {
+		tag: expectedTag,
+		version: versionMatch[1],
 		url: expectedUrl,
 		size: asset.size,
 		digest: `sha256:${digest.toLowerCase()}`,
@@ -329,28 +322,30 @@ export function selectFallbackBinaryAsset(
 	return undefined;
 }
 
-/** Release metadata request with the shared headers, timeout, and rate-limit mapping. */
-async function fetchReleaseMetadata(url: string, fetchImpl: Fetch, token: string | undefined): Promise<Response> {
+/** Release metadata request with shared headers, timeout, and rate-limit mapping. */
+async function fetchReleaseMetadata(
+	url: string,
+	fetchImpl: Fetch,
+	token: string | undefined,
+	timeoutMs = RELEASE_METADATA_TIMEOUT_MS,
+): Promise<Response> {
 	const headers: Record<string, string> = {
 		Accept: "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28",
 	};
 	if (token) headers.Authorization = `Bearer ${token}`;
-
 	let response: Response;
 	try {
-		response = await fetchImpl(url, { headers, signal: withTimeoutSignal(RELEASE_METADATA_TIMEOUT_MS) });
+		response = await fetchImpl(url, { headers, signal: withTimeoutSignal(timeoutMs) });
 	} catch (err) {
 		if (isTimeoutError(err)) {
-			throw new Error("Timed out fetching GitHub release metadata after 30s", { cause: err });
+			throw new Error(`Timed out fetching GitHub release metadata after ${Math.round(timeoutMs / 1000)}s`, { cause: err });
 		}
 		if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
 		throw err;
 	}
 	if ((response.status === 403 && !token) || response.status === 429) {
-		throw new Error(
-			"GitHub API rate limit exceeded while fetching release metadata; retry later or set GITHUB_TOKEN or GH_TOKEN",
-		);
+		throw new Error("GitHub API rate limit exceeded while fetching release metadata; retry later or set GITHUB_TOKEN or GH_TOKEN");
 	}
 	return response;
 }
@@ -883,131 +878,43 @@ async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): 
 	throw new Error(`Could not resolve ${APP_NAME} binary path in PATH`);
 }
 
-/** Bound on `omp.rename` hops so a broken pointer chain cannot loop forever. */
-const MAX_RENAME_HOPS = 3;
-
-async function fetchLatestManifest(
-	pkg: string,
-	registry: NpmRegistry,
-	timeoutMs: number,
-	channel: UpdateChannel,
-): Promise<{ version: string; manifest: Record<string, unknown> }> {
-	const tag = channel === "canary" ? "canary" : "latest";
-	const headers: Record<string, string> = { accept: "application/json" };
-	if (registry.authorization) headers.authorization = registry.authorization;
-	const origin = registry.url === DEFAULT_NPM_REGISTRY ? "" : ` from ${registry.url} (${registry.source})`;
-	const get = async (url: string): Promise<Response> => {
-		try {
-			return await fetch(url, { headers, signal: withTimeoutSignal(timeoutMs) });
-		} catch (err) {
-			if (isTimeoutError(err)) {
-				throw new Error(
-					`Timed out fetching release info for ${pkg}${origin} after ${Math.round(timeoutMs / 1000)}s`,
-					{ cause: err },
-				);
-			}
-			if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
-			throw err;
-		}
-	};
-	const noCanary = () =>
-		new Error(`No canary release has been published for ${pkg} yet. Try \`${APP_NAME} update --stable\`.`);
-
-	const fromPackument = (packument: unknown): Record<string, unknown> => {
-		const distTags = isRecord(packument) ? packument["dist-tags"] : undefined;
-		const version = isRecord(distTags) ? distTags[tag] : undefined;
-		if (typeof version !== "string") {
-			if (channel === "canary") throw noCanary();
-			throw new Error(`Malformed npm registry response for ${pkg}${origin}: missing dist-tags.${tag}`);
-		}
-		const versions = isRecord(packument) ? packument.versions : undefined;
-		const manifest = isRecord(versions) ? versions[version] : undefined;
-		if (!isRecord(manifest)) {
-			throw new Error(`Malformed npm registry response for ${pkg}${origin}: missing versions.${version}`);
-		}
-		return manifest;
-	};
-	const isPackument = (body: unknown): boolean => isRecord(body) && isRecord(body["dist-tags"]);
-
-	let response = await get(npmRegistryPackageUrl(registry, pkg, tag));
-	let data: unknown;
-	let useFullPackument = false;
-	if (response.ok) {
-		try {
-			data = await response.json();
-		} catch (err) {
-			// Only a malformed body falls back; body-read timeouts and resets must surface.
-			if (!origin || !(err instanceof SyntaxError)) throw err;
-			useFullPackument = true;
-		}
-		if (isPackument(data)) {
-			// Some registries (e.g. Sonatype Nexus) answer the dist-tag shortcut
-			// with the full packument instead of the tagged version manifest.
-			data = fromPackument(data);
-		} else if (origin && !(isRecord(data) && typeof data.version === "string")) {
-			useFullPackument = true;
-		}
-	} else if (origin && [400, 404, 405].includes(response.status)) {
-		useFullPackument = true;
-	}
-	if (useFullPackument) {
-		// Not every registry implementation serves npmjs's `/<pkg>/<dist-tag>`
-		// shortcut; the full packument is the one endpoint all of them share.
-		response = await get(npmRegistryPackageUrl(registry, pkg));
-		data = response.ok ? fromPackument(await response.json()) : undefined;
-	}
-	if (!response.ok) {
-		if (response.status === 404 && channel === "canary") throw noCanary();
-		const authHint =
-			response.status === 401 || response.status === 403 ? "; check the registry credentials in your .npmrc" : "";
-		throw new Error(
-			`Failed to fetch release info for ${pkg}${origin}: ${response.status} ${response.statusText}${authHint}`,
-		);
-	}
-
-	if (!isRecord(data) || typeof data.version !== "string") {
-		throw new Error(`Malformed npm registry response for ${pkg}${origin}: missing version`);
-	}
-	return { version: data.version, manifest: data };
-}
 
 /**
- * Get the latest release info from the npm registry, following `omp.rename`
- * pointers ({@link resolveReleaseRename}) when the package has moved to a new
- * npm name. Version, dist, and install names all come from the final manifest
- * in the chain. Uses npm instead of GitHub API to avoid unauthenticated rate
- * limiting.
+ * Get the latest published release from the Spring-Silicon fork.
  *
- * The registry comes from the user's npm/bun configuration
- * ({@link loadNpmRegistryResolver}), so a configured feed is honored for every
- * install method, including standalone binaries.
+ * GitHub releases are the only distribution catalog for this fork. npm
+ * dist-tags must never select an upstream or personal-fork package with the
+ * same version number.
  */
-export async function getLatestRelease(
-	options: { timeoutMs?: number; channel?: UpdateChannel; registries?: NpmRegistryResolver } = {},
-): Promise<ReleaseInfo> {
-	const timeoutMs = options.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
+export async function getLatestRelease(options: { timeoutMs?: number; channel?: UpdateChannel } = {}): Promise<ReleaseInfo> {
 	const channel = options.channel ?? "stable";
-	const registries = options.registries ?? (await loadNpmRegistryResolver());
-	const packages: ReleasePackages = { ...CURRENT_PACKAGES };
-	const visited = new Set([packages.pkg]);
-	let registry = registries(packages.pkg);
-	let latest = await fetchLatestManifest(packages.pkg, registry, timeoutMs, channel);
-	for (let hop = 0; hop < MAX_RENAME_HOPS; hop++) {
-		const rename = resolveReleaseRename(latest.manifest);
-		if (!rename || visited.has(rename.pkg)) break;
-		visited.add(rename.pkg);
-		packages.pkg = rename.pkg;
-		if (rename.natives) packages.natives = rename.natives;
-		registry = registries(packages.pkg);
-		latest = await fetchLatestManifest(packages.pkg, registry, timeoutMs, channel);
+	const token = await resolveGitHubToken();
+	const url =
+		channel === "canary"
+			? `${GITHUB_API}/repos/${REPO}/releases?per_page=${RELEASE_LISTING_PAGE_SIZE}`
+			: `${GITHUB_API}/repos/${REPO}/releases/latest`;
+	const response = await fetchReleaseMetadata(url, fetch, token, options.timeoutMs); 
+	if (!response.ok) throw new Error(`Failed to fetch fork GitHub release metadata: ${response.statusText}`);
+	const data: unknown = await response.json();
+	let asset: ReleaseBinaryAsset;
+	if (channel === "stable") {
+		if (!isRecord(data) || typeof data.tag_name !== "string") throw new Error("Fork GitHub latest release has no tag");
+		asset = resolveReleaseBinaryAsset(data, data.tag_name, getBinaryName());
+	} else {
+		const candidates = Array.isArray(data) ? data : [];
+		const candidate = candidates.find(value => isRecord(value) && value.prerelease === true && value.draft === false);
+		if (!candidate || typeof candidate.tag_name !== "string") {
+			throw new Error(`No canary release has been published for ${REPO} yet. Try \`${APP_NAME} update --stable\`.`);
+		}
+		asset = resolveReleaseBinaryAsset(candidate, candidate.tag_name, getBinaryName(), { allowPrerelease: true });
 	}
-
 	return {
-		tag: `v${latest.version}`,
-		version: latest.version,
-		dist: resolveReleaseDist(latest.manifest),
-		packages,
-		registry: registry.url,
+		tag: data && isRecord(data) && typeof data.tag_name === "string" ? data.tag_name : `v${asset.version}-spring.1`,
+		version: asset.version,
+		dist: "binary",
+		asset,
+		packages: { ...CURRENT_PACKAGES },
+		registry: `https://github.com/${REPO}/releases`,
 	};
 }
 
@@ -1275,40 +1182,11 @@ export function isMuslLinuxForTest(options: Required<MuslDetectionOptions>): boo
  * Get the appropriate binary name for this platform.
  */
 function getBinaryName(): string {
-	const platform = process.platform;
-	const arch = process.arch;
-
-	let os: string;
-	switch (platform) {
-		case "linux":
-			os = isMuslLinux() ? "linux-musl" : "linux";
-			break;
-		case "darwin":
-			os = "darwin";
-			break;
-		case "win32":
-			os = "windows";
-			break;
-		default:
-			throw new Error(`Unsupported platform: ${platform}`);
-	}
-
-	let archName: string;
-	switch (arch) {
-		case "x64":
-			archName = "x64";
-			break;
-		case "arm64":
-			archName = "arm64";
-			break;
-		default:
-			throw new Error(`Unsupported architecture: ${arch}`);
-	}
-
-	if (os === "windows") {
-		return `${APP_NAME}-${os}-${archName}.exe`;
-	}
-	return `${APP_NAME}-${os}-${archName}`;
+	if (process.platform === "linux" && process.arch === "x64") return `${APP_NAME}-linux-x64`;
+	if (process.platform === "darwin" && process.arch === "arm64") return `${APP_NAME}-darwin-arm64`;
+	throw new Error(
+		`No published Spring-Silicon binary for ${process.platform}-${process.arch}; supported platforms are linux-x64 and darwin-arm64`,
+	);
 }
 
 /**
@@ -1854,7 +1732,7 @@ function packageManagerUpdateSteps(
 			if (isWindowsScriptLauncherPath(launcherPath)) {
 				await updateViaShimTakeover(launcherPath, release.version, { allowPrerelease });
 			} else {
-				await updateViaBinaryAt(launcherPath, release.version, { allowPrerelease });
+				await updateViaBinaryAt(launcherPath, release.version, { allowPrerelease, asset: release.asset });
 			}
 		},
 	};
@@ -1982,6 +1860,7 @@ export async function updateViaBinaryAt(
 		fetchImpl?: Fetch;
 		githubToken?: string;
 		allowPrerelease?: boolean;
+		asset?: ReleaseBinaryAsset;
 		/** Refuse replacement unless the existing path is a non-script OMP executable. */
 		validateExistingTarget?: boolean;
 		verifyInstalledVersion?: typeof verifyInstalledVersion;
@@ -2001,13 +1880,13 @@ export async function updateViaBinaryAt(
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
 	const tempPath = `${targetPath}.${attempt}.new`;
 	const backupPath = `${targetPath}.${attempt}.bak`;
-	const asset = await getReleaseBinaryAsset(
+	const asset = options.asset ?? (await getReleaseBinaryAsset(
 		expectedVersion,
 		binaryName,
 		options.fetchImpl,
 		options.githubToken,
 		options.allowPrerelease,
-	);
+	));
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 	await downloadVerifiedBinary({
 		url: asset.url,
@@ -2243,10 +2122,31 @@ export async function runUpdateCommand(opts: {
 
 	const comparison = compareVersions(release.version, VERSION);
 
-	if (comparison <= 0 && !opts.force && !isChannelSwitch) {
+	if (comparison < 0 && !opts.force && !isChannelSwitch) {
 		const icon = theme?.status?.success ?? "✔";
 		console.log(chalk.green(`${icon} Already up to date`));
 		return;
+	}
+	if (comparison === 0 && !opts.force && !isChannelSwitch) {
+		let digestMatches = true;
+		if (release.asset) {
+			try {
+				const binaryPath = resolveOmpPath();
+				if (binaryPath) {
+					const bytes = await Bun.file(tryRealpath(binaryPath) ?? binaryPath).arrayBuffer();
+					const digest = `sha256:${createHash("sha256").update(Buffer.from(bytes)).digest("hex")}`;
+					digestMatches = digest === release.asset.digest;
+				}
+			} catch {
+				digestMatches = true;
+			}
+		}
+		if (digestMatches) {
+			const icon = theme?.status?.success ?? "✔";
+			console.log(chalk.green(`${icon} Already up to date`));
+			return;
+		}
+		console.log(chalk.yellow(`Installed binary differs from published ${release.tag} (${release.asset?.digest}); refreshing.`));
 	}
 
 	if (isChannelSwitch) {
@@ -2315,6 +2215,7 @@ export async function runUpdateCommand(opts: {
 			}
 			await updateViaBinaryAt(target.path, release.version, {
 				allowPrerelease,
+				asset: release.asset,
 				validateExistingTarget: target.validateExistingTarget,
 			});
 			if (forceBinary && target.replacesSymlink) {

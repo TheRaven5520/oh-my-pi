@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `omp update` and startup release checks now use only Spring-Silicon/oh-my-pi GitHub releases, including `v18.6.1-spring.N` tags and verified platform assets; npm/upstream release metadata is never used.
 
 ### Added
 
