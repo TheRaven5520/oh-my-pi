@@ -72,6 +72,40 @@ describe("task progress rendering", () => {
 		setShimmerMode("classic");
 	});
 
+	it("collapses long context and task briefs to a short preview until expanded", async () => {
+		const theme = (await getThemeByName("dark"))!;
+		const brief = (title: string) =>
+			[`# ${title}`, ...Array.from({ length: 12 }, (_, i) => `- ${title} item ${i + 1}`)].join("\n");
+		const args = { agent: "task", context: brief("Goal"), tasks: [{ name: "Briefed", task: brief("Target") }] };
+		const progress = runningProgress({ id: "Briefed", description: "Brief work", task: brief("Target") });
+		const render = (expanded: boolean, call: boolean) =>
+			Bun.stripANSI(
+				(call
+					? taskToolRenderer.renderCall(args as never, { expanded, isPartial: true }, theme)
+					: taskToolRenderer.renderResult(
+							{ content: [], details: detailsFor(progress) },
+							{ expanded, isPartial: true },
+							theme,
+							args as never,
+						)
+				)
+					.render(120)
+					.join("\n"),
+			);
+		for (const call of [true, false]) {
+			const collapsed = render(false, call);
+			const expanded = render(true, call);
+			expect(collapsed).toContain("Goal item 1");
+			expect(collapsed).not.toContain("Goal item 12");
+			expect(collapsed).toContain("more lines");
+			expect(collapsed).toContain("Briefed");
+			expect(collapsed).not.toMatch(/#1: #/);
+			expect(collapsed.split("\n").length).toBeLessThan(20);
+			expect(expanded).toContain("Goal item 12");
+			expect(expanded).not.toContain("more lines");
+		}
+	});
+
 	it("places the model and advisor before the live agent title without displacing stats", async () => {
 		setFeedModelBadgeEnabled(true);
 		const theme = (await getThemeByName("dark"))!;

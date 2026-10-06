@@ -340,8 +340,8 @@ describe("subagent HUD lines", () => {
 			}),
 		]);
 		expect(multiLineTask).toContain("ReviewShell");
-		expect(multiLineTask).toContain("Complete assignment thoroughly: ↵ # Tar");
-		expect(multiLineTask).not.toContain("\n# Target");
+		expect(multiLineTask).toContain("⟧ Files: src/foo.ts");
+		expect(multiLineTask).not.toContain("#");
 
 		const multiLineDesc = render([
 			makeSession({
@@ -531,6 +531,29 @@ describe("subagent dock lines", () => {
 		]);
 		expect(out).toMatch(/Fresh · just spawned\s*$/m);
 		expect(out).not.toContain("0 tool uses");
+	});
+
+	it("summarizes a Markdown task brief into one row when there is no description", () => {
+		const session = makeSession({
+			id: "Briefed",
+			progress: makeProgress({
+				id: "Briefed",
+				task: "# Target\nsrc/foo.ts\n# Change\n1. Rename bar\n2. Update callers",
+			}),
+		});
+		const lines = Bun.stripANSI(renderSubagentDockLines([session], 120).join("\n")).split("\n");
+		const rows = lines.filter(line => line.includes("Briefed") || line.includes("Change") || line.includes("Rename"));
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toContain("Briefed · src/foo.ts");
+		expect(rows[0]).not.toContain("#");
+	});
+
+	it("folds a multi-line description into one width-capped row", () => {
+		const out = renderDock([makeSession({ id: "Multi", description: "first line\nsecond line\n\nthird" })], 60);
+		const row = out.split("\n").find(line => line.includes("Multi"));
+		expect(row).toContain("first line ↵ second line ↵ third");
+		expect(out).not.toMatch(/^second/m);
+		for (const line of out.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
 	});
 
 	it("keeps the stats and drops the description on a narrow terminal", () => {

@@ -4,10 +4,12 @@
 
 ### Fixed
 
+- Task card: agent rows summarize a Markdown task brief instead of showing `# Target`; a collapsed card caps long `context`/`task` briefs to their first lines plus `… N more lines`.
 - Model names: a raw `provider/claude-opus-5-5:xhigh` selector reaching any surface (agents dock, Agent Hub, job rows) reads `Opus 5.5 (xhigh)`; the status line keeps where the model comes from (`Opus 5.5 via Sprilicred`, `Opus 5.5 (personal)`) so a fallback off the pool shows.
 
 ### Added
 
+- `render/render-utils` exports `taskSummaryLine(text)`: one summary line of a Markdown task brief (first non-heading line, list/quote markers stripped; heading text as fallback).
 - `IrcMessage.forkReport` (`{ done }`) marks a `/fork` chat's `hand_back` report; `forkReportOf(details)` reads it back from an `irc:incoming` record. `createIrcMessageCard` titles such a card `Fork report` / `Fork update` and shows the whole report wrapped (8 lines collapsed) instead of three 100-column lines.
 - `overlays/agent-run-stats` formats agent stats Claude Code-style (`formatAgentRunStats`); `AgentProgress.startedAtMs` records a run's start so live views can tick its elapsed time; `readSessionMetrics` is exported from the Agent Hub projection.
 - The Ask card shows a question the agent continued past ("no answer after …, continuing", with the assumption), and its later answer appears as a "Question closed" row.

@@ -62,7 +62,7 @@ describe("task renderer: streaming call preview", () => {
 		expect(out).toContain("First");
 	});
 
-	it("always renders the full task markdown, collapsed or expanded", () => {
+	it("previews a long task brief when collapsed and renders it in full when expanded", () => {
 		const taskLines = Array.from({ length: 6 }, (_, i) => `Step ${i + 1}: do the thing.`);
 		const args: TaskParams = {
 			agent: "task",
@@ -70,15 +70,17 @@ describe("task renderer: streaming call preview", () => {
 			task: taskLines.join("\n"),
 		};
 
-		// The task text is the brief handed to the subagent; it renders as
-		// markdown in full regardless of the expanded toggle.
+		// Collapsed, the brief is a short preview with a count of the rest, so a
+		// batch of long briefs does not fill the screen; Ctrl+O shows all of it.
 		const collapsed = render(args, false);
 		expect(collapsed).toContain("Step 1");
-		expect(collapsed).toContain("Step 6");
+		expect(collapsed).not.toContain("Step 6");
+		expect(collapsed).toContain("2 more lines");
 
 		const expanded = render(args, true);
 		expect(expanded).toContain("Step 1");
 		expect(expanded).toContain("Step 6");
+		expect(expanded).not.toContain("more lines");
 	});
 
 	it("surfaces the isolation flag in the header bar", () => {

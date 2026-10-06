@@ -30,6 +30,7 @@ import {
 	formatNumber,
 	isFeedModelBadgeEnabled,
 	previewLine,
+	taskSummaryLine,
 	previewWindowRows,
 	replaceTabs,
 	shortenPath,
@@ -432,17 +433,6 @@ function renderTaskSection(
 }
 
 /**
- * First line of a streamed `task` brief, trimmed — a row's secondary text.
- * The args stream in token by token, so non-string values fall through to "".
- */
-function taskFirstLine(task: unknown): string {
-	if (typeof task !== "string") return "";
-	const trimmed = sanitizeText(task).trim();
-	const newline = trimmed.indexOf("\n");
-	return newline === -1 ? trimmed : trimmed.slice(0, newline);
-}
-
-/**
  * Header label for a task call while nothing has spawned yet: the flat form's
  * `agent` type. Batch calls return undefined — each item row carries its own
  * `⟨agent⟩` badge, so a joined list in the header would just repeat them.
@@ -471,7 +461,7 @@ function renderTaskCallLines(args: Partial<TaskParams> | undefined, theme: Theme
 
 	const rawName = typeof args.name === "string" ? args.name.trim() : "";
 	const idLabel = rawName ? formatTaskId(rawName) : "";
-	const brief = taskFirstLine(args.task);
+	const brief = typeof args.task === "string" ? taskSummaryLine(args.task) : "";
 	if (idLabel || brief) {
 		let line = `${bullet} ${theme.fg("accent", theme.bold(idLabel || "agent"))}`;
 		if (brief) {
@@ -507,7 +497,7 @@ function renderTaskItemLines(tasks: TaskItem[] | undefined, theme: Theme): strin
 		const rawName = typeof item?.name === "string" ? item.name.trim() : "";
 		const idLabel = rawName ? formatTaskId(rawName) : `#${i + 1}`;
 		let line = `${bullet} ${theme.fg("accent", theme.bold(idLabel))}`;
-		const brief = taskFirstLine(item?.task);
+		const brief = typeof item?.task === "string" ? taskSummaryLine(item.task) : "";
 		if (brief) {
 			line += `: ${theme.fg("muted", previewLine(brief, 64))}`;
 		}
@@ -525,7 +515,7 @@ function renderTaskItemLines(tasks: TaskItem[] | undefined, theme: Theme): strin
 
 /** One renderable frame section: optional label, body rows, leading divider. */
 type TaskRenderSection = { label?: string; content: readonly string[]; separator?: boolean };
-type AssignmentSectionRenderer = (width: number) => TaskRenderSection;
+type AssignmentSectionRenderer = (width: number, expanded: boolean) => TaskRenderSection;
 
 // Default output-block layout is: left border + one-cell content inset + right
 // border. Render markdown at that inner width so the output block does not need
@@ -568,11 +558,36 @@ function createContextSectionRenderer(
 	return createMarkdownSectionRenderer(context, theme);
 }
 
+/** Rendered rows a collapsed card keeps per brief: a heading plus a few content lines. */
+const COLLAPSED_BRIEF_LINES = 4;
+
 function createMarkdownSectionRenderer(text: string, theme: Theme): AssignmentSectionRenderer {
 	const markdown = new Markdown(text, 0, 0, getMarkdownTheme(), {
 		color: line => theme.fg("muted", line),
 	});
-	return width => ({ content: markdown.render(Math.max(1, width - ASSIGNMENT_FRAME_INSET)) });
+	return (width, expanded) => {
+		const lines = markdown.render(Math.max(1, width - ASSIGNMENT_FRAME_INSET));
+		// Collapsed cards keep briefs to a short preview so a long Markdown
+		// context/task does not push the agent rows off screen.
+		if (expanded) return { content: lines };
+		// Count only non-blank rows: Markdown spaces blocks with blank rows,
+		// which would otherwise eat the preview budget.
+		let kept = 0;
+		let end = 0;
+		while (end < lines.length && kept < COLLAPSED_BRIEF_LINES) {
+			if (Bun.stripANSI(lines[end]!).trim()) kept++;
+			end++;
+		}
+		const hidden = lines.slice(end).filter(line => Bun.stripANSI(line).trim()).length;
+		if (hidden <= 1) return { content: lines };
+		const hint = formatExpandHint(theme, expanded, true);
+		return {
+			content: [
+				...lines.slice(0, end),
+				`${theme.fg("dim", formatMoreItems(hidden, "line"))}${hint ? ` ${hint}` : ""}`,
+			],
+		};
+	};
 }
 
 /**
@@ -608,8 +623,8 @@ export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: 
 			// streams before `tasks`), so the streaming preview grows
 			// append-only instead of inserting agent rows above the
 			// already-rendered markdown and pushing it down on every item.
-			if (contextSection) sections.push(contextSection(width));
-			if (assignmentSection) sections.push(assignmentSection(width));
+			if (contextSection) sections.push(contextSection(width, options.expanded === true));
+			if (assignmentSection) sections.push(assignmentSection(width, options.expanded === true));
 			const callLines = renderTaskCallLines(args, theme);
 			// Guarded: an empty trailing section would still draw its divider.
 			if (callLines.length > 0) sections.push({ separator: true, content: callLines });
@@ -691,7 +706,7 @@ function renderAgentProgress(
 			description: fullDescription,
 			preview:
 				progress.status === "running" && !fullDescription
-					? ` ${theme.fg("muted", previewLine(sanitizeText(progress.assignment ?? progress.task), 40))}`
+					? ` ${theme.fg("muted", previewLine(taskSummaryLine(progress.assignment ?? progress.task), 40))}`
 					: undefined,
 			stats: progress.status === "running" || progress.status === "completed" ? progress : undefined,
 		},
@@ -1295,8 +1310,8 @@ export function renderResult(
 		return framedToolCard(theme, ({ width }) => ({
 			header,
 			sections: [
-				...(contextSection ? [contextSection(width)] : []),
-				...(assignmentSection ? [assignmentSection(width)] : []),
+				...(contextSection ? [contextSection(width, options.expanded === true)] : []),
+				...(assignmentSection ? [assignmentSection(width, options.expanded === true)] : []),
 				...(text ? [{ separator: true, content: [theme.fg("dim", truncateToWidth(text, width))] }] : []),
 			],
 			phase: errored ? "error" : "success",
@@ -1454,8 +1469,8 @@ export function renderResult(
 			return {
 				header,
 				sections: [
-					...(contextSection ? [contextSection(width)] : []),
-					...(assignmentSection ? [assignmentSection(width)] : []),
+					...(contextSection ? [contextSection(width, options.expanded === true)] : []),
+					...(assignmentSection ? [assignmentSection(width, options.expanded === true)] : []),
 					{ separator: true, content: [theme.fg("dim", truncateToWidth(text, width))] },
 				],
 				phase,
@@ -1484,8 +1499,8 @@ export function renderResult(
 		return {
 			header,
 			sections: [
-				...(contextSection ? [contextSection(width)] : []),
-				...(assignmentSection ? [assignmentSection(width)] : []),
+				...(contextSection ? [contextSection(width, options.expanded === true)] : []),
+				...(assignmentSection ? [assignmentSection(width, options.expanded === true)] : []),
 				...(lines.length > 0 ? [{ separator: true, content: lines }] : []),
 			],
 			phase,

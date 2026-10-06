@@ -23,6 +23,7 @@ import {
 	shortenEmbeddedPaths,
 	shortenPath,
 	TRUNCATE_LENGTHS,
+	taskSummaryLine,
 	truncateDiffByHunk,
 } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
@@ -499,5 +500,29 @@ describe("sanitizeDisplayWarnings", () => {
 		const displayed = sanitizeDisplayWarnings(["warning ".repeat(TRUNCATE_LENGTHS.LONG)]);
 
 		expect(Bun.stringWidth(displayed[0])).toBeLessThanOrEqual(TRUNCATE_LENGTHS.LONG);
+	});
+});
+
+describe("taskSummaryLine", () => {
+	it("summarizes a Markdown brief by its first non-heading line", () => {
+		expect(taskSummaryLine("# Target\nNo files.\n# Change\n1. Run sleep")).toBe("No files.");
+	});
+	it("keeps a plain one-line task", () => {
+		expect(taskSummaryLine("Fix the flaky login test")).toBe("Fix the flaky login test");
+	});
+	it("falls back to the heading text when only headings exist", () => {
+		expect(taskSummaryLine("# Target")).toBe("Target");
+	});
+	it("strips a leading list marker", () => {
+		expect(taskSummaryLine("- fix foo\n- fix bar")).toBe("fix foo");
+	});
+	it("skips a lead-in line ending in a colon", () => {
+		expect(taskSummaryLine("Complete assignment thoroughly:\n\n# Target\nFiles: src/foo.ts")).toBe(
+			"Files: src/foo.ts",
+		);
+		expect(taskSummaryLine("Do this:\n# Target")).toBe("Do this:");
+	});
+	it("handles CRLF line endings", () => {
+		expect(taskSummaryLine("## Target\r\n\r\n  src/a.ts  \r\n# Change\r\n")).toBe("src/a.ts");
 	});
 });
