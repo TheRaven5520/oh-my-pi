@@ -1291,11 +1291,6 @@ export function renderSubagentDockLines(
 			const waitingFork = session.status !== "active" && isForkAgentId(session.id);
 			const glyph = waitingFork ? theme.fg("dim", "⑂") : theme.fg("accent", "●");
 			const displayId = formatTaskId(session.id);
-			const description =
-				session.description?.trim() ||
-				session.progress?.description?.trim() ||
-				(session.progress?.task ? taskSummaryLine(session.progress.task) : undefined) ||
-				(isForkAgentId(session.id) ? session.label.trim() : undefined);
 			const progress = session.progress;
 			const identity = progress?.resolvedModelIdentity ?? progress?.resolvedModel;
 			const fallbackProvider =
@@ -1306,21 +1301,15 @@ export function renderSubagentDockLines(
 			const model = identity
 				? `${formatModelLabel(identity, progress?.resolvedThinkingLevel, { ref: progress?.resolvedModelIdentity !== undefined ? "identity" : "selector" })}${fallbackProvider}`
 				: progress?.modelRole;
-			const detail = [description, model].filter((value): value is string => Boolean(value)).join(" · ");
 			const statsText = formatAgentRunStats(statsFor(session, now) ?? {});
 			const stats = statsText ? theme.fg("dim", ` · ${statsText}`) : "";
 			const budget = columns - visibleWidth(`${pointer} ${glyph} ${displayId} · `) - visibleWidth(stats) - 4;
-			const label = theme.fg(selected ? "accent" : "toolTitle", selected ? theme.bold(displayId) : displayId);
-			// Narrow terminals drop the description before the stats.
-			const detailText =
-				detail && budget >= 8
-					? theme.fg("dim", ` · ${previewLine(sanitizeText(detail).replace(/\s*[\r\n]+\s*/g, " ↵ "), budget)}`)
+			const modelText =
+				model && budget >= 8
+					? theme.fg("dim", ` · ${previewLine(sanitizeText(model).replace(/\s*[\r\n]+\s*/g, " ↵ "), budget)}`)
 					: "";
-			const head = truncateToWidth(
-				`${pointer} ${glyph} ${label}${detailText}${stats}`,
-				Math.max(1, columns - 2),
-				"",
-			);
+			const label = theme.fg(selected ? "accent" : "toolTitle", selected ? theme.bold(displayId) : displayId);
+			const head = truncateToWidth(`${pointer} ${glyph} ${label}${modelText}${stats}`, Math.max(1, columns - 2), "");
 			const preview = options.livePreview ? renderSubagentToolPreview(session, Math.max(1, columns - 4)) : undefined;
 			return preview ? `${head}\n ${preview}` : head;
 		}),
