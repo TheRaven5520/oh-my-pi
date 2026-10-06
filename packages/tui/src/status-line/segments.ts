@@ -359,7 +359,8 @@ const modelSegment: StatusLineSegment = {
 		// theme.fg resets only the fg, so the spans are concatenated (not
 		// nested) to keep each color intact.
 		let tail = "";
-		if (ctx.session.isFastModeActive() && theme.icon.fast) {
+		// The speed label below names fast mode itself; the icon stands in only without it.
+		if (!ctx.session.speedStatus && ctx.session.isFastModeActive() && theme.icon.fast) {
 			tail += ` ${theme.icon.fast}`;
 		}
 		if (!compact && thinkingDisplay) {
