@@ -4,12 +4,14 @@
  * soft opening cap — no frame, rules, or corners — above an unboxed prompt
  * anchored by a single curved `╰─ ` cue.
  */
-import { truncateToWidth } from "../../utils";
+import { padding } from "../../utils";
+import { renderComposerTopLine } from "./top-line";
 import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from "./types";
 
 export const bandComposerStyle: ComposerStyle = {
 	id: "band",
 	sideBorders: false,
+	titleSlot: true,
 	verticalChrome: 1,
 	statusAttachment: "top-band",
 	bottomBar: "none",
@@ -30,10 +32,8 @@ export const bandComposerStyle: ComposerStyle = {
 		// reserved while the status line has nothing to show yet — the startup
 		// prepaint mounts the editor before the session-aware status line
 		// attaches — so the band fills in later without shifting the layout.
-		if (!topBorder?.content) return "";
-		// The band builder already sizes its groups + gauge to the full width;
-		// truncation only guards against a stale provider during resize.
-		return topBorder.width > width ? truncateToWidth(topBorder.content, width) : topBorder.content;
+		if (!topBorder?.content && !topBorder?.title) return "";
+		return renderComposerTopLine(topBorder, width, padding);
 	},
 
 	renderRow(ctx: ComposerRowContext): string[] {

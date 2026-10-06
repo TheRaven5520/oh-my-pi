@@ -26,6 +26,8 @@ import type {
 	StatusLineSession,
 } from "./host";
 import type { Editor } from "../components/editor";
+import type { EditorTopBorder } from "../components/composer/types";
+import { composerTitleSlot, renderComposerTopLine } from "../components/composer/top-line";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../theme/session-color";
 import { sanitizeStatusText } from "../chrome/shared";
 import { getThemeEpoch, theme } from "../theme";
@@ -399,6 +401,9 @@ class StatusLineExternalInputs {
 	skillsLength = 0;
 	sessionName: string | undefined = undefined;
 	sessionId: string | undefined = undefined;
+	goalEnabled = false;
+	goalStatus: string | undefined = undefined;
+	goalMode: string | undefined = undefined;
 	isStreaming: boolean | undefined = undefined;
 	isAutoThinking: boolean | undefined = undefined;
 	isFastModeActive = false;
@@ -415,6 +420,7 @@ interface CachedStatusLine {
 	renderRevision: number;
 	inputRevision: number;
 	previewTitle: string | undefined;
+	hideTitle: boolean;
 	externalInputs: StatusLineExternalInputs;
 }
 
@@ -564,6 +570,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 {
 	#standalone: false | "full" | "left-only" = false;
 	#topAttachment: ComposerStyle["statusAttachment"] = "top-border";
+	#titleSlot = false;
 	#standaloneGap = false;
 	#autocompleteActiveProbe: (() => boolean) | undefined;
 	#renderRevision = 0;
@@ -2626,6 +2633,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		target.skillsLength = skills?.length ?? 0;
 		target.sessionName = this.session.sessionManager?.getSessionName?.();
 		target.sessionId = this.session.sessionManager?.getSessionId?.();
+		const goalState = this.session.getGoalModeState?.();
+		target.goalEnabled = goalState?.enabled ?? this.#goalModeStatus?.enabled ?? false;
+		target.goalStatus = goalState?.goal?.status;
+		target.goalMode = goalState?.mode;
 		target.isStreaming = this.session.isStreaming;
 		target.isAutoThinking = this.session.isAutoThinking;
 		target.isFastModeActive =
@@ -2686,6 +2697,9 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			left.skillsLength === right.skillsLength &&
 			left.sessionName === right.sessionName &&
 			left.sessionId === right.sessionId &&
+			left.goalEnabled === right.goalEnabled &&
+			left.goalStatus === right.goalStatus &&
+			left.goalMode === right.goalMode &&
 			left.isStreaming === right.isStreaming &&
 			left.isAutoThinking === right.isAutoThinking &&
 			left.isFastModeActive === right.isFastModeActive &&
@@ -2730,7 +2744,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		return 0;
 	}
 
-	#buildStatusLine(width: number, layout: StatusLineLayout = "box", previewTitle?: string): CachedStatusLine {
+	#buildStatusLine(
+		width: number,
+		layout: StatusLineLayout = "box",
+		previewTitle?: string,
+		hideTitle = this.#titleSlot,
+	): CachedStatusLine {
 		const effectiveSettings = this.#resolveSettings();
 		const externalInputs = this.#externalInputsProbe;
 		this.#readStatusLineExternalInputs(externalInputs);
@@ -2748,6 +2767,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			cached.renderRevision === this.#renderRevision &&
 			cached.inputRevision === this.#statusLineInputRevision &&
 			cached.previewTitle === previewTitle &&
+			cached.hideTitle === hideTitle &&
 			this.#sameStatusLineExternalInputs(cached.externalInputs, externalInputs)
 		) {
 			return cached;
@@ -2755,7 +2775,20 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 
 		// The probe now belongs to the new cache entry; later probes need their own buffer.
 		this.#externalInputsProbe = new StatusLineExternalInputs();
-		const content = this.#renderStatusLine(width, layout, previewTitle, nowMs);
+		const goalActive =
+			layout !== "plain-right" &&
+			externalInputs.goalEnabled &&
+			externalInputs.goalStatus === "active" &&
+			externalInputs.goalMode !== "exiting" &&
+			!this.#goalModeStatus?.paused;
+		const indicator = goalActive && width >= 14 ? theme.fg("accent", "(goal active)") : "";
+		const indicatorWidth = indicator ? visibleWidth(indicator) + 1 : 0;
+		const statusWidth = Math.max(0, width - indicatorWidth);
+		let content = this.#renderStatusLine(statusWidth, layout, previewTitle, nowMs, hideTitle);
+		if (indicator) {
+			content = truncateToWidth(content, statusWidth);
+			content += padding(width - visibleWidth(content) - indicatorWidth) + " " + indicator;
+		}
 		const result = {
 			content,
 			dimmedContent: this.#dimWhileFocusProxied(content),
@@ -2764,6 +2797,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			renderRevision: this.#renderRevision,
 			inputRevision: this.#statusLineInputRevision,
 			previewTitle,
+			hideTitle,
 			externalInputs,
 		};
 		this.#statusLineRenderCache[layout] = result;
@@ -2785,7 +2819,13 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * `previewTitle` is a stand-in session title for composer previews; the
 	 * `session_name` segment renders it when the session is unnamed.
 	 */
-	#renderStatusLine(width: number, layout: StatusLineLayout, previewTitle: string | undefined, nowMs: number): string {
+	#renderStatusLine(
+		width: number,
+		layout: StatusLineLayout,
+		previewTitle: string | undefined,
+		nowMs: number,
+		hideTitle: boolean,
+	): string {
 		const effectiveSettings = this.#resolveSettings();
 		this.#syncPricingTimer();
 		const plain = layout !== "box" && layout !== "band";
@@ -2842,8 +2882,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const leftSegmentIds = layout === "plain-right" ? [] : effectiveSettings.leftSegments;
 		for (const segId of leftSegmentIds) {
 			if (subagentBadge && segId === "subagents") continue;
-			// The band composer relocates the title to the working row's trailer.
-			if (layout === "band" && segId === "session_name") continue;
+			if (hideTitle && segId === "session_name") continue;
 			const rendered = renderSegment(segId, ctx);
 			if (rendered.visible && rendered.content) {
 				leftParts.push(rendered.content);
@@ -2856,7 +2895,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const rightSegmentIds = layout === "plain-left" ? [] : effectiveSettings.rightSegments;
 		for (const segId of rightSegmentIds) {
 			if (subagentBadge && segId === "subagents") continue;
-			if (layout === "band" && segId === "session_name") continue;
+			if (hideTitle && segId === "session_name") continue;
 			const rendered = renderSegment(segId, ctx);
 			if (rendered.visible && rendered.content) {
 				rightParts.push(rendered.content);
@@ -3239,45 +3278,74 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		editor: Pick<Editor, "isAutocompleteActive" | "setTopBorderProvider" | "setTopBorder"> & {
 			composerFacts: ComposerFactsSource | undefined;
 		},
-		style: Pick<ComposerStyle, "statusAttachment" | "bottomBar" | "bottomBarGap">,
+		style: Pick<ComposerStyle, "statusAttachment" | "bottomBar" | "bottomBarGap" | "titleSlot">,
 	): void {
 		editor.composerFacts = this;
 		this.setAutocompleteActiveProbe(() => editor.isAutocompleteActive());
-		switch (style.statusAttachment) {
-			case "top-border":
-				editor.setTopBorderProvider(availableWidth => this.getTopBorder(availableWidth));
-				break;
-			case "top-band":
-				editor.setTopBorderProvider(availableWidth => this.getBandTopBorder(availableWidth));
-				break;
-			case "top-rule-chip":
-				editor.setTopBorderProvider(availableWidth => this.getStandaloneTopBorder(availableWidth));
-				break;
-			case "none":
-				editor.setTopBorderProvider(undefined);
-				editor.setTopBorder(undefined);
-				break;
+		if (style.statusAttachment !== "none" || style.titleSlot) {
+			editor.setTopBorderProvider(availableWidth => this.getComposerTopBorder(availableWidth, style));
+		} else {
+			editor.setTopBorderProvider(undefined);
+			editor.setTopBorder(undefined);
 		}
 		this.setComposerStyle(style);
 	}
 
-	getTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
-		const statusLine = this.#buildStatusLine(width, "box", previewTitle);
+	/** Shared production/preview provider; title eligibility is independent of status placement. */
+	getComposerTopBorder(
+		width: number,
+		style: Pick<ComposerStyle, "statusAttachment" | "titleSlot">,
+		previewTitle?: string,
+	): EditorTopBorder {
+		const layout =
+			style.statusAttachment === "top-border"
+				? "box"
+				: style.statusAttachment === "top-band"
+					? "band"
+					: style.statusAttachment === "top-rule-chip"
+						? "plain-right"
+						: undefined;
+		const interiorWidth = Math.max(0, width - (style.statusAttachment === "top-rule-chip" ? 2 : 0));
+		return this.#editorTopBorder(interiorWidth, layout, previewTitle, style.titleSlot === true);
+	}
+
+	#editorTopBorder(
+		width: number,
+		layout: StatusLineLayout | undefined,
+		previewTitle: string | undefined,
+		titleSlot: boolean,
+	): EditorTopBorder {
+		const settings = this.#resolveSettings();
+		const titleEnabled =
+			titleSlot &&
+			(settings.leftSegments.includes("session_name") || settings.rightSegments.includes("session_name"));
+		const name = titleEnabled ? this.session.sessionManager?.getSessionName() || previewTitle : undefined;
+		const text = name ? sanitizeStatusText(name) : undefined;
+		const accent =
+			settings.sessionAccent !== false && name
+				? getSessionAccentAnsi(getSessionAccentHex(name, theme.sessionAccentInputs))
+				: undefined;
+		const title = text
+			? this.#dimWhileFocusProxied(accent ? `${accent}${text}\x1b[39m` : theme.fg("accent", text))
+			: undefined;
+		const slot = composerTitleSlot(title, width);
+		const statusWidth = Math.max(0, width - visibleWidth(slot) - (slot ? 1 : 0));
+		const statusLine = layout ? this.#buildStatusLine(statusWidth, layout, previewTitle, titleSlot) : undefined;
 		return {
-			content: statusLine.dimmedContent,
-			width: statusLine.width,
+			content: statusLine?.dimmedContent ?? "",
+			width: statusLine?.width ?? 0,
+			title,
 			revision: this.#renderRevision,
 		};
 	}
 
+	getTopBorder(width: number, previewTitle?: string): EditorTopBorder {
+		return this.#editorTopBorder(width, "box", previewTitle, this.#titleSlot);
+	}
+
 	/** Flush-left soft-capped powerline band (the band composer's top row). */
-	getBandTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
-		const statusLine = this.#buildStatusLine(width, "band", previewTitle);
-		return {
-			content: statusLine.dimmedContent,
-			width: statusLine.width,
-			revision: this.#renderRevision,
-		};
+	getBandTopBorder(width: number, previewTitle?: string): EditorTopBorder {
+		return this.#editorTopBorder(width, "band", previewTitle, this.#titleSlot);
 	}
 
 	/** Dim the whole bar while focus-proxied. Group/cap terminators emit full
@@ -3295,10 +3363,11 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * `bottomBarGap` inserts a blank spacer row above the bar for styles whose
 	 * editor has no bottom chrome.
 	 */
-	setComposerStyle(style: Pick<ComposerStyle, "statusAttachment" | "bottomBar" | "bottomBarGap">): void {
+	setComposerStyle(style: Pick<ComposerStyle, "statusAttachment" | "bottomBar" | "bottomBarGap" | "titleSlot">): void {
 		this.#standalone = style.bottomBar === "none" ? false : style.bottomBar === "left" ? "left-only" : "full";
 		this.#topAttachment = style.statusAttachment;
 		this.#standaloneGap = style.bottomBarGap;
+		this.#titleSlot = style.titleSlot === true;
 		this.#syncPricingTimer();
 	}
 
@@ -3308,13 +3377,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	}
 
 	/** Plain right-group content for the claude composer's top rule. */
-	getStandaloneTopBorder(width: number, previewTitle?: string): { content: string; width: number; revision: number } {
-		const statusLine = this.#buildStatusLine(width, "plain-right", previewTitle);
-		return {
-			content: statusLine.dimmedContent,
-			width: statusLine.width,
-			revision: this.#renderRevision,
-		};
+	getStandaloneTopBorder(width: number, previewTitle?: string): EditorTopBorder {
+		return this.#editorTopBorder(width, "plain-right", previewTitle, this.#titleSlot);
 	}
 
 	/**
@@ -3323,8 +3387,9 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * loop and by composer previews (which inject a candidate layout instead of
 	 * the active one).
 	 */
-	renderBottomBar(width: number, groups: "left" | "full", previewTitle?: string): string {
-		return this.#buildStatusLine(width, groups === "left" ? "plain-left" : "plain-full", previewTitle).dimmedContent;
+	renderBottomBar(width: number, groups: "left" | "full", previewTitle?: string, titleSlot = this.#titleSlot): string {
+		return this.#buildStatusLine(width, groups === "left" ? "plain-left" : "plain-full", previewTitle, titleSlot)
+			.dimmedContent;
 	}
 	/**
 	 * Status bar lines for a composer layout, rendered through the real
@@ -3333,18 +3398,27 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * active layout is used. Ignores the autocomplete probe: previews always
 	 * render.
 	 */
-	getPreviewLines(width: number, style?: Pick<ComposerStyle, "statusAttachment" | "bottomBar">): string[] {
+	getPreviewLines(
+		width: number,
+		style?: Pick<ComposerStyle, "statusAttachment" | "bottomBar" | "titleSlot">,
+	): string[] {
 		const attachment = style?.statusAttachment ?? this.#topAttachment;
 		const bottomBar =
 			style?.bottomBar ?? (this.#standalone === false ? "none" : this.#standalone === "left-only" ? "left" : "full");
+		const titleSlot = style ? style.titleSlot === true : this.#titleSlot;
+		const topBorder = this.getComposerTopBorder(width, { statusAttachment: attachment, titleSlot });
 		const lines: string[] = [];
-		if (attachment === "top-border") {
-			const border = this.getTopBorder(width);
-			if (border.content) lines.push(border.content);
-		} else if (attachment === "top-band") {
-			const band = this.getBandTopBorder(width);
-			if (band.content) lines.push(band.content);
-		} else if (attachment === "top-rule-chip") {
+		if (attachment === "top-border" || attachment === "top-band") {
+			if (topBorder.content || topBorder.title) {
+				lines.push(
+					renderComposerTopLine(topBorder, width, cells =>
+						attachment === "top-band"
+							? padding(cells)
+							: theme.fg("border", theme.boxRound.horizontal.repeat(cells)),
+					),
+				);
+			}
+		} else if (attachment === "top-rule-chip" || titleSlot) {
 			// Render the chip on its rule exactly as the claude composer does.
 			const rule = claudeComposerStyle.renderTop({
 				width,
@@ -3353,12 +3427,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 				accentColor: str => theme.fg("accent", str),
 				surfaceColor: str => theme.bgFill("userMessageBg", theme.fgOnBg("userMessageText", "userMessageBg", str)),
 				box: theme.boxRound,
-				topBorder: this.getStandaloneTopBorder(width),
+				topBorder,
 			});
 			if (rule !== undefined) lines.push(rule);
 		}
 		if (bottomBar !== "none") {
-			const main = this.renderBottomBar(width, bottomBar);
+			const main = this.renderBottomBar(width, bottomBar, undefined, titleSlot);
 			if (main) lines.push(main);
 		}
 		return lines;

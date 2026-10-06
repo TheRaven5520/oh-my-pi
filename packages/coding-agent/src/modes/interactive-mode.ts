@@ -301,7 +301,6 @@ import {
 	SessionObserverRegistry,
 } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 import { createSessionTeardown, type SessionTeardown } from "./session-teardown";
-import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
 import { initializeMathJaxRenderer } from "@oh-my-pi/pi-tui/theme/mathjax-cache";
 import { clearMermaidCache } from "@oh-my-pi/pi-tui/theme/mermaid-cache";
@@ -1478,14 +1477,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	#workingMessageAccentCacheKey?: WorkingMessageAccentCacheKey;
 	#workingMessageAccentCacheValue?: WorkingMessageAccent;
 	#workingMessageAccentCacheHasValue = false;
-	/** Band composer: the status band hides `session_name`, so the title docks
-	 * onto the working row instead — right-aligned, dim, italic. */
-	#workingTitleTrailer(): string | undefined {
-		if (cfgComposerShape.get(settings) !== "band") return undefined;
-		const name = this.sessionManager.getSessionName();
-		if (!name) return undefined;
-		return `\x1b[2;3m${sanitizeStatusText(name)}\x1b[23;22m`;
-	}
 	/** Live gen tok/s for the working row: the viewed session's own meter, so a
 	 * focused subagent shows its own reading and the main session's survives
 	 * focus round-trips. */
@@ -1500,18 +1491,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (rate === null) return undefined;
 		return theme.fg("dim", `${theme.icon.throughput} ${rate.toFixed(1)} tok/s`);
 	}
-	/** Right-docked suffix of the working row: the tok/s readout, then the band-mode title. */
-	#workingRowTrailer(): string | undefined {
-		const rate = this.#tokenRateLabel();
-		const title = this.#workingTitleTrailer();
-		if (rate && title) return `${rate}  ${title}`;
-		return rate ?? title;
-	}
-	/** Idle stand-in for the working row: the last tok/s reading and the
-	 * band-mode title stay readable between turns, docked where the loader's
-	 * trailer was. */
+	/** Idle stand-in for the working row: the last tok/s reading stays docked
+	 * where the loader's trailer was. Session titles live on composer chrome. */
 	renderIdleStatusHud(width: number): readonly string[] | undefined {
-		const trailer = this.#workingRowTrailer();
+		const trailer = this.#tokenRateLabel();
 		if (!trailer) return undefined;
 		return ["", " ".repeat(Math.max(0, width - visibleWidth(trailer))) + trailer];
 	}
@@ -7775,7 +7758,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				// status rows so the interrupt glyph reads as indented.
 				[` ${appKey(this.keybindings, "app.interrupt")}`],
 			);
-			this.loadingAnimation.setTrailer(() => this.#workingRowTrailer());
+			this.loadingAnimation.setTrailer(() => this.#tokenRateLabel());
 			this.loadingAnimation.setWorkingRow(
 				() => this.#workingRowSpec(),
 				() => this.interruptFromPointer(),

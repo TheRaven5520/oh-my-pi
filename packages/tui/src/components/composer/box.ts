@@ -3,11 +3,13 @@
  * border, and the last content row merged into the bottom border
  * (`╰─ text … ─╯`), keeping a one-line prompt at two rows total.
  */
-import { padding, truncateToWidth, visibleWidth } from "../../utils";
+import { padding } from "../../utils";
+import { renderComposerTopLine } from "./top-line";
 import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from "./types";
 
 export const boxComposerStyle: ComposerStyle = {
 	id: "box",
+	titleSlot: true,
 	sideBorders: true,
 	verticalChrome: 2,
 	statusAttachment: "top-border",
@@ -28,20 +30,11 @@ export const boxComposerStyle: ComposerStyle = {
 		const topLeft = borderColor(`${box.topLeft}${box.horizontal.repeat(paddingX)}`);
 		const topRight = borderColor(`${box.horizontal.repeat(paddingX)}${box.topRight}`);
 		const topFillWidth = Math.max(0, width - this.sideChromeWidth(paddingX) * 2);
-		if (!topBorder) {
-			return topLeft + borderColor(box.horizontal.repeat(topFillWidth)) + topRight;
-		}
-		const { content, width: statusWidth } = topBorder;
-		if (statusWidth <= topFillWidth) {
-			// Status fits - add fill after it
-			const fillWidth = topFillWidth - statusWidth;
-			return topLeft + content + borderColor(box.horizontal.repeat(fillWidth)) + topRight;
-		}
-		// Status too long - truncate it
-		const truncated = truncateToWidth(content, Math.max(0, topFillWidth - 1));
-		const truncatedWidth = visibleWidth(truncated);
-		const fillWidth = Math.max(0, topFillWidth - truncatedWidth);
-		return topLeft + truncated + borderColor(box.horizontal.repeat(fillWidth)) + topRight;
+		return (
+			topLeft +
+			renderComposerTopLine(topBorder, topFillWidth, cells => borderColor(box.horizontal.repeat(cells))) +
+			topRight
+		);
 	},
 
 	renderRow(ctx: ComposerRowContext): string[] {

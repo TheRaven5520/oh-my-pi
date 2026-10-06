@@ -90,4 +90,14 @@ describe("Editor lazy top-border provider (#4145)", () => {
 		expect(widths[0]).toBe(editor.getTopBorderAvailableWidth(80));
 		expect(widths[1]).toBe(editor.getTopBorderAvailableWidth(120));
 	});
+
+	it("updates eager title-only content even when the status text and width are unchanged", () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setBorderStyle("pi");
+		editor.setTopBorder({ content: "", width: 0, title: "Old title" });
+		expect(editor.render(80)[0]).toContain("Old title");
+		editor.setTopBorder({ content: "", width: 0, title: "New title" });
+		expect(editor.render(80)[0]).toContain("New title");
+		expect(editor.render(80)[0]).not.toContain("Old title");
+	});
 });

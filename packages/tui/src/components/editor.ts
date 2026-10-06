@@ -830,7 +830,11 @@ export class Editor implements Component, Focusable {
 	 * per-event rebuilds to one per painted frame.
 	 */
 	setTopBorder(content: EditorTopBorder | undefined): void {
-		if (this.#topBorderContent?.content === content?.content && this.#topBorderContent?.width === content?.width)
+		if (
+			this.#topBorderContent?.content === content?.content &&
+			this.#topBorderContent?.width === content?.width &&
+			this.#topBorderContent?.title === content?.title
+		)
 			return;
 		this.#topBorderContent = content;
 	}
@@ -1366,7 +1370,7 @@ export class Editor implements Component, Focusable {
 		// coalescing per-event rebuilds to one per painted frame.
 		const topFillWidth = Math.max(0, width - borderWidth * 2);
 		let topBorder: EditorTopBorder | undefined;
-		if (style.statusAttachment !== "none") {
+		if (style.statusAttachment !== "none" || style.titleSlot) {
 			if (this.#topBorderProvider) {
 				topBorder = this.#topBorderProvider(topFillWidth);
 			} else {
