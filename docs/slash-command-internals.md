@@ -429,8 +429,9 @@ session's model, tools, MCP proxies, and extensions. Its transcript is
 unchanged.
 
 - With a request, the fork starts working on it in the background; select it with
-  `↓`/`↑` and `Enter` to watch or talk to it. Without one, the view switches into
-  the fork immediately so you can type to it.
+ `↓`/`↑` and `Enter` to watch or talk to it. Without one, the view switches into
+ the fork immediately so you can type to it.
+- The compact row in the agents panel shows the agent id, model identity, tool/token counts, and elapsed time; task descriptions are intentionally omitted so the pane stays scannable.
 - While viewing a fork, submitted text goes to the fork. `Esc` returns to the main
   session; slash commands run only in the main session.
 - The fork gets a `hand_back` tool. `done: false` posts an update to the main

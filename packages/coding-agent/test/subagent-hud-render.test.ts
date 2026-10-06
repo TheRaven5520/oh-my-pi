@@ -798,16 +798,25 @@ describe("subagent dock lines", () => {
 	const renderDock = (sessions: ObservableSession[], columns = 120, selectedId?: string): string =>
 		Bun.stripANSI(renderSubagentDockLines(sessions, columns, selectedId).join("\n"));
 
-	it("renders running subagents in the compact agents dock", () => {
+	it("renders running agents with identity and no task descriptions", () => {
 		const out = renderDock([
-			makeSession({ id: "AuthLoader", description: "Refactoring the auth flow" }),
+			makeSession({
+				id: "AuthLoader",
+				description: "Refactoring the auth flow",
+				progress: makeProgress({
+					id: "AuthLoader",
+					resolvedModelIdentity: "sprilicred-anthropic/claude-opus-5-5",
+					resolvedThinkingLevel: "high",
+				}),
+			}),
 			makeSession({ id: "SchemaMigrator", description: "Migrating the users table" }),
 		]);
 		expect(out).toContain("agents · main");
-		expect(out).toContain("AuthLoader · Refactoring the auth flow");
-		expect(out).toContain("SchemaMigrator · Migrating the users table");
+		expect(out).toContain("AuthLoader · Opus 5.5 (high)");
+		expect(out).toContain("SchemaMigrator");
+		expect(out).not.toContain("Refactoring the auth flow");
+		expect(out).not.toContain("Migrating the users table");
 	});
-
 	it("ends a running row with Claude Code-style stats whose time ticks from the run start", () => {
 		const startedAtMs = 1_000_000;
 		const session = makeSession({
@@ -819,7 +828,7 @@ describe("subagent dock lines", () => {
 			Bun.stripANSI(
 				renderSubagentDockLines([session], 120, undefined, false, { now: startedAtMs + elapsedMs }).join("\n"),
 			);
-		expect(at(83_400)).toContain("Indexer · Indexing the repo · 12 tool uses · 34.5k tokens · 1m 23s");
+		expect(at(83_400)).toContain("Indexer · 12 tool uses · 34.5k tokens · 1m 23s");
 		// Between progress snapshots the time keeps counting from the start, not the last snapshot.
 		expect(at(84_600)).toContain("· 1m 24s");
 	});
@@ -834,34 +843,33 @@ describe("subagent dock lines", () => {
 				progress: makeProgress({ id: "fork-1", toolCount: 1, tokens: 950, durationMs: 45_000, startedAtMs: 1 }),
 			}),
 		]);
-		expect(out).toMatch(/Fresh · just spawned\s*$/m);
+		expect(out).toContain("Fresh");
+		expect(out).not.toContain("just spawned");
 		expect(out).not.toContain("0 tool uses");
 	});
 
-	it("summarizes a Markdown task brief into one row when there is no description", () => {
+	it("does not add a task brief to compact agent rows", () => {
 		const session = makeSession({
 			id: "Briefed",
-			progress: makeProgress({
-				id: "Briefed",
-				task: "# Target\nsrc/foo.ts\n# Change\n1. Rename bar\n2. Update callers",
-			}),
+			progress: makeProgress({ id: "Briefed", task: "# Target\nsrc/foo.ts\n# Change\n1. Rename bar" }),
 		});
 		const lines = Bun.stripANSI(renderSubagentDockLines([session], 120).join("\n")).split("\n");
-		const rows = lines.filter(line => line.includes("Briefed") || line.includes("Change") || line.includes("Rename"));
-		expect(rows).toHaveLength(1);
-		expect(rows[0]).toContain("Briefed · src/foo.ts");
-		expect(rows[0]).not.toContain("#");
+		const row = lines.find(line => line.includes("Briefed"));
+		expect(row).toContain("Briefed");
+		expect(row).not.toContain("src/foo.ts");
+		expect(row).not.toContain("Rename bar");
 	});
 
-	it("folds a multi-line description into one width-capped row", () => {
+	it("keeps a compact row width without task descriptions", () => {
 		const out = renderDock([makeSession({ id: "Multi", description: "first line\nsecond line\n\nthird" })], 60);
-		const row = out.split("\n").find(line => line.includes("Multi"));
-		expect(row).toContain("first line ↵ second line ↵ third");
-		expect(out).not.toMatch(/^second/m);
+		expect(out).toContain("Multi");
+		expect(out).not.toContain("first line");
+		expect(out).not.toContain("second line");
+		expect(out).not.toContain("third");
 		for (const line of out.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
 	});
 
-	it("keeps the stats and drops the description on a narrow terminal", () => {
+	it("keeps the stats on a narrow terminal", () => {
 		const session = makeSession({
 			id: "Worker",
 			description: "A very long description of the work this agent is doing right now",
@@ -878,7 +886,8 @@ describe("subagent dock lines", () => {
 				statsFor: () => ({ tools: 1, tokens: 2_000_000 }),
 			}).join("\n"),
 		);
-		expect(out).toContain("Plain · no progress · 1 tool use · 2m tokens");
+		expect(out).toContain("Plain · 1 tool use · 2m tokens");
+		expect(out).not.toContain("no progress");
 	});
 
 	it("shows only active subagents and hides the dock once none are working", () => {
@@ -887,8 +896,9 @@ describe("subagent dock lines", () => {
 			makeSession({ id: "Done", status: "completed", description: "finished work" }),
 			makeSession({ id: "Aborted", status: "aborted", description: "cancelled work" }),
 		]);
-		expect(out).toContain("Running · live work");
+		expect(out).toContain("Running");
 		expect(out).toContain("1 active");
+		expect(out).not.toContain("live work");
 		expect(out).not.toContain("Done");
 		expect(out).not.toContain("Aborted");
 		expect(renderDock([makeSession({ id: "Done", status: "completed" })])).toBe("");
@@ -900,7 +910,8 @@ describe("subagent dock lines", () => {
 			makeSession({ id: "Done", status: "completed", description: "finished work" }),
 		]);
 		expect(out).toContain("⑂");
-		expect(out).toContain("look into the flaky test");
+		expect(out).toContain("Fork-0001");
+		expect(out).not.toContain("look into the flaky test");
 		expect(out).toContain("0 active · 1 fork");
 		expect(out).not.toContain("Done");
 		expect(renderDock([makeSession({ id: "Fork-0001", status: "aborted" })])).toBe("");
@@ -910,15 +921,13 @@ describe("subagent dock lines", () => {
 		const active = Array.from({ length: 10 }, (_, index) =>
 			makeSession({ id: `Worker${index}`, description: `job ${index}` }),
 		);
-
 		const out = renderDock(active, 120, "Worker8");
-
-		expect(out).toContain("Worker5 · job 5");
-		expect(out).toContain("Worker8 · job 8");
-		expect(out).not.toContain("Worker4 · job 4");
+		expect(out).toContain("Worker5");
+		expect(out).toContain("Worker8");
+		expect(out).not.toContain("Worker4");
+		expect(out).not.toContain("job 5");
 		expect(out).toContain("… 5 above");
 		expect(out).toContain("… 1 more — expand");
-		// A selected row shows the navigation hint.
 		expect(out).toContain("Enter open");
 	});
 });
@@ -1094,9 +1103,9 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 
 		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-		expect(hud).toContain("BurstAgent0 · Burst job 0");
-		expect(hud).toContain("BurstAgent3 · Burst job 3");
-		expect(hud).not.toContain("BurstAgent4 · Burst job 4");
+		expect(hud).toContain("BurstAgent0");
+		expect(hud).toContain("BurstAgent3");
+		expect(hud).not.toContain("BurstAgent4");
 		expect(hud).toContain("2 more — expand");
 		expect(mountHud.mock.calls.length + updateHud.mock.calls.length).toBe(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
@@ -1114,7 +1123,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 		vi.advanceTimersByTime(100);
 		const dock = () => Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-		expect(dock()).toContain("TickingAgent · Counting · 2 tool uses · 1.5k tokens · 0s");
+		expect(dock()).toContain("TickingAgent · 2 tool uses · 1.5k tokens · 0s");
 
 		requestComponentRender.mockClear();
 		vi.advanceTimersByTime(2_000);
