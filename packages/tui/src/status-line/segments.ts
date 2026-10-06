@@ -984,7 +984,10 @@ const usageSegment: StatusLineSegment = {
 			const week = u?.sevenDay?.percent ?? u?.monthly?.percent;
 			const provider = ctx.session.model?.provider;
 			if (provider !== undefined && pooledProviderMatches(provider, "openai-codex")) {
-				return { content: claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week), visible: true };
+				let content = claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week);
+				if (u?.modelWeekly)
+					content += ` ${CLAUDE_DIM_ANSI}|\x1b[39m ${claudeGauge(ctx, CLAUDE_COLORS.fable, "ultrafast", u.modelWeekly.percent)}`;
+				return { content, visible: true };
 			}
 			const fiveHour = u?.fiveHour?.percent ?? u?.daily?.percent;
 			const sep = ` ${CLAUDE_DIM_ANSI}|\x1b[39m `;

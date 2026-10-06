@@ -201,7 +201,8 @@ export interface SegmentContext {
 		monthly?: { percent: number; resetHours?: number };
 		/**
 		 * Model-scoped weekly window for the active model family (Claude's
-		 * `7d:fable`), as the *tighter* of the shared 7d and the scoped cap.
+		 * `7d:fable`, as the *tighter* of the shared 7d and the scoped cap; for
+		 * Sprilicred's OpenAI pool, the Pro 500 accounts' Ultrafast weekly).
 		 * Only the `claude` preset renders it; absent when the provider does not
 		 * report one.
 		 */

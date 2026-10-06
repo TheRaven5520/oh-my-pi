@@ -76,6 +76,33 @@ describe("summarizePooledUsage", () => {
 		expect(codex?.fableWeekly).toBeUndefined();
 	});
 
+	it("averages Sprilicred's Ultrafast rows over the Pro 500 accounts only, apart from the weekly", () => {
+		const ultrafast = (account: string, weekly: number, used: number) => {
+			const report = pooledReport("openai-codex", account, [
+				["chat:secondary", weekly, "Weekly"],
+				["ultrafast", used, "Weekly"],
+			]);
+			report.limits[1]!.label = "Ultrafast (GPT-6 Astra)";
+			report.limits[1]!.scope = { provider: "openai-codex", windowId: "chat:secondary" };
+			Object.assign(report.limits[1]!.scope, { tier: "ultrafast" });
+			return report;
+		};
+		const summary = summarizePooledUsage([
+			ultrafast("max-a", 0.2, 0.2),
+			ultrafast("max-b", 0.6, 0.6),
+			pooledReport("openai-codex", "pro", [["chat:secondary", 1, "Weekly"]]),
+		]);
+		const codex = summary?.get("openai-codex");
+		// Weekly over all three accounts; Ultrafast over the two that report it.
+		expect(codex?.weekly?.usedPercent).toBeCloseTo(60);
+		expect(codex?.ultrafastWeekly?.usedPercent).toBeCloseTo(40);
+	});
+
+	it("reports no Ultrafast figure for an OpenAI pool without Pro 500 accounts", () => {
+		const summary = summarizePooledUsage([pooledReport("openai-codex", "pro", [["chat:secondary", 0.5, "Weekly"]])]);
+		expect(summary?.get("openai-codex")?.ultrafastWeekly).toBeUndefined();
+	});
+
 	it("identifies weekly quota by duration or label, not primary/secondary position", () => {
 		const report = pooledReport("openai-codex", "a", [
 			["chat:primary", 0.8, "Weekly"],

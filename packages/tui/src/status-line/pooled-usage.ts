@@ -23,6 +23,8 @@ export interface PooledProviderUsage {
 	weekly?: PooledUsageWindow;
 	/** Anthropic only: the provider's pooled `7d:fable` average. */
 	fableWeekly?: PooledUsageWindow;
+	/** OpenAI only: Sprilicred's pooled Ultrafast rows (`scope.tier` "ultrafast", Pro 500 accounts). */
+	ultrafastWeekly?: PooledUsageWindow;
 }
 
 /** Keyed by report provider (`anthropic`, `openai-codex`, …). */
@@ -248,11 +250,17 @@ export function summarizePooledUsage(reports: unknown): PooledUsageSummary | nul
 		if (stat.durationMs !== undefined) return Math.abs(stat.durationMs - 7 * 86_400_000) <= 60_000;
 		return stat.window.toLowerCase() === "weekly" || stat.window === "7d";
 	});
-	if (weekly) {
-		summary.set("openai-codex", {
-			accounts: weekly.accounts,
-			weekly: { usedPercent: (weekly.usedAccounts / weekly.accounts) * 100 },
-		});
+	// Sprilicred reports what each Pro 500 account has left for Ultrafast as
+	// its own meter; averaged over those accounts, like Claude's 7d:fable.
+	const ultrafast = computeProviderWindowStats(codexReports)
+		.filter(stat => stat.meter === "ultrafast" && stat.accounts > 0)
+		.map(stat => (stat.usedAccounts / stat.accounts) * 100)
+		.reduce<number | undefined>((max, used) => (max === undefined || used > max ? used : max), undefined);
+	if (weekly || ultrafast !== undefined) {
+		const entry: PooledProviderUsage = { accounts: weekly?.accounts ?? 0 };
+		if (weekly) entry.weekly = { usedPercent: (weekly.usedAccounts / weekly.accounts) * 100 };
+		if (ultrafast !== undefined) entry.ultrafastWeekly = { usedPercent: ultrafast };
+		summary.set("openai-codex", entry);
 	}
 	return summary.size === 0 ? null : summary;
 }

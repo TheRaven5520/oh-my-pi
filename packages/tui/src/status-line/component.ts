@@ -2091,6 +2091,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			if (usage.fiveHour) result.fiveHour = { percent: usage.fiveHour.usedPercent };
 			if (usage.weekly) result.sevenDay = { percent: usage.weekly.usedPercent };
 			if (usage.fableWeekly) result.modelWeekly = { percent: usage.fableWeekly.usedPercent };
+			if (usage.ultrafastWeekly) result.modelWeekly = { percent: usage.ultrafastWeekly.usedPercent };
 			return result.fiveHour || result.sevenDay || result.modelWeekly ? result : null;
 		}
 		return null;

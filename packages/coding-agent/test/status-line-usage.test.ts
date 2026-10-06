@@ -113,6 +113,19 @@ describe("usage status-line segment", () => {
 		expect(content).toContain("60%");
 	});
 
+	it("shows the OpenAI pool's Ultrafast weekly beside its weekly, like Claude's fable", () => {
+		const render = (modelWeekly?: { percent: number }) =>
+			stripVTControlCharacters(
+				renderSegment("usage", {
+					claudeStyle: true,
+					session: { model: { provider: "sprilicred-openai" } },
+					usage: { sevenDay: { percent: 40 }, modelWeekly },
+				} as unknown as SegmentContext).content,
+			);
+		expect(render({ percent: 70 })).toMatch(/wk 60% \| ultrafast 30%/);
+		expect(render()).not.toContain("ultrafast");
+	});
+
 	it("renders tiered usage fetched from provider reports", async () => {
 		const now = Date.now();
 		const component = makeComponent([
