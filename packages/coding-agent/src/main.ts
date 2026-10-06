@@ -39,7 +39,7 @@ import { buildInitialMessage } from "./cli/initial-message";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { SessionPickerOptions } from "@oh-my-pi/pi-tui/apps/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
-import { getLatestRelease } from "./cli/update-cli";
+import { getLatestRelease, installedBinaryMatchesRelease } from "./cli/update-cli";
 import { findConfigFile } from "./config";
 import { ModelRegistry } from "./config/model-registry";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
@@ -233,16 +233,25 @@ export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string)
 
 /**
  * Startup update check. Opt-in (`startup.checkUpdate`): while the setting is
- * off this returns before any registry request is made.
+ * off this returns before any release request is made.
  */
-export async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
+export async function checkForNewVersion(
+	currentVersion: string,
+	binaryPath = process.execPath,
+): Promise<string | undefined> {
 	if (!cfgStartupCheckUpdate.get(settings)) {
 		return;
 	}
 	try {
 		const channel = cfgUpdateChannel.get(settings);
 		const release = await getLatestRelease({ timeoutMs: 5_000, channel });
-		return Bun.semver.order(release.version, currentVersion) > 0 ? release.version : undefined;
+		const comparison = Bun.semver.order(release.version, currentVersion);
+		if (
+			comparison > 0 ||
+			(comparison === 0 && release.asset && !(await installedBinaryMatchesRelease(release.asset, binaryPath)))
+		) {
+			return release.tag.replace(/^v/, "");
+		}
 	} catch {
 		return undefined;
 	}
