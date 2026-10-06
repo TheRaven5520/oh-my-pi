@@ -11,6 +11,7 @@ import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
+import { ultrafastRefusalText } from "../session/speed-notice";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
@@ -85,7 +86,11 @@ function formatUltrafastModeStatus(session: AgentSession): string {
  * argument. The two are one choice: turning one on turns the other off, and
  * the feedback says so.
  */
-function applySpeedCommand(session: AgentSession, mode: "fast" | "ultrafast", args: string): string | undefined {
+async function applySpeedCommand(
+	session: AgentSession,
+	mode: "fast" | "ultrafast",
+	args: string,
+): Promise<string | undefined> {
 	const arg = args.trim().toLowerCase();
 	const ultrafast = mode === "ultrafast";
 	const name = ultrafast ? "Ultrafast" : "Fast mode";
@@ -99,6 +104,10 @@ function applySpeedCommand(session: AgentSession, mode: "fast" | "ultrafast", ar
 		if (ultrafast) session.setUltrafastMode(false);
 		else session.setFastMode(false);
 		return `${name} disabled.`;
+	}
+	// Sprilicred refuses Ultrafast to someone it is off for; say so now.
+	if (ultrafast && session.isUltrafastAvailable() && (await session.isUltrafastPermitted()) === false) {
+		return `${ultrafastRefusalText("not_permitted")} Nothing changed.`;
 	}
 	const otherWasOn = ultrafast
 		? Object.values(session.serviceTierByFamily).includes("priority")
@@ -469,13 +478,13 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.session)}`,
 		handle: async (command, runtime) => {
-			const feedback = applySpeedCommand(runtime.session, "fast", command.args);
+			const feedback = await applySpeedCommand(runtime.session, "fast", command.args);
 			if (feedback === undefined) return usage("Usage: /fast [on|off|toggle|status]", runtime);
 			await runtime.output(feedback);
 			return commandConsumed();
 		},
-		handleTui: (command, runtime) => {
-			const feedback = applySpeedCommand(runtime.ctx.session, "fast", command.args);
+		handleTui: async (command, runtime) => {
+			const feedback = await applySpeedCommand(runtime.ctx.session, "fast", command.args);
 			refreshStatusLine(runtime.ctx);
 			runtime.ctx.showStatus(feedback ?? "Usage: /fast [on|off|toggle|status]");
 			runtime.ctx.editor.setText("");
@@ -496,13 +505,13 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => `Ultrafast: ${formatUltrafastModeStatus(runtime.ctx.session)}`,
 		handle: async (command, runtime) => {
-			const feedback = applySpeedCommand(runtime.session, "ultrafast", command.args);
+			const feedback = await applySpeedCommand(runtime.session, "ultrafast", command.args);
 			if (feedback === undefined) return usage("Usage: /ultrafast [on|off|toggle|status]", runtime);
 			await runtime.output(feedback);
 			return commandConsumed();
 		},
-		handleTui: (command, runtime) => {
-			const feedback = applySpeedCommand(runtime.ctx.session, "ultrafast", command.args);
+		handleTui: async (command, runtime) => {
+			const feedback = await applySpeedCommand(runtime.ctx.session, "ultrafast", command.args);
 			refreshStatusLine(runtime.ctx);
 			runtime.ctx.showStatus(feedback ?? "Usage: /ultrafast [on|off|toggle|status]");
 			runtime.ctx.editor.setText("");

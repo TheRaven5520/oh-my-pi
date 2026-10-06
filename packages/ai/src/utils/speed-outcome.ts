@@ -5,8 +5,9 @@
  * `x-sprilicred-speed-requested` (what was asked), `x-sprilicred-speed` (the
  * tier it forwarded upstream: `fast`/`ultrafast`/`standard`) and
  * `x-sprilicred-speed-reason` (`forwarded`, `not_permitted`, …), on errors
- * too. Ultrafast it can't run goes at fast or standard, fast at standard; an
- * older server refused instead (HTTP 409 `speed_refused`). Over WebSocket
+ * too. Fast it can't run goes at standard; Ultrafast it can't run is refused
+ * (HTTP 400 with an `ultrafast_*` code, never served slower); an older
+ * server refused fast too (HTTP 409 `speed_refused`). Over WebSocket
  * the same values ride inside the error frame's error object as
  * `speed_requested` / `speed` / `speed_reason`. What the provider then served
  * comes from its own report: OpenAI's echoed `service_tier`, Anthropic's
@@ -22,7 +23,7 @@ export const SPEED_REASON_HEADER = "x-sprilicred-speed-reason";
 /**
  * Error codes that refuse the faster tier itself, with the reason each
  * implies when no speed header or field names one. `speed_refused` always
- * carries its reason; the others are older Sprilicred codes for Ultrafast.
+ * carries its reason; the others are Sprilicred's Ultrafast refusals.
  */
 const REFUSAL_CODE_REASONS: Readonly<Record<string, string | undefined>> = {
 	speed_refused: undefined,

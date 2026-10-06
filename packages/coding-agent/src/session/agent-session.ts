@@ -8985,6 +8985,35 @@ export class AgentSession {
 		return this.#models.setUltrafastMode(enabled);
 	}
 
+	/**
+	 * Whether Sprilicred offers this person Ultrafast: its Codex catalog
+	 * (`/openai/models` on the active model's host) lists the `ultrafast`
+	 * service tier only to a person it is on for. `undefined` when the active
+	 * model can't carry ultrafast or the catalog can't be read.
+	 */
+	async isUltrafastPermitted(): Promise<boolean | undefined> {
+		const model = this.model;
+		if (!model || !this.isUltrafastAvailable() || !model.baseUrl) return undefined;
+		try {
+			const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+			const response = await fetch(new URL("/openai/models", model.baseUrl), {
+				headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+				signal: AbortSignal.timeout(10_000),
+			});
+			if (!response.ok) return undefined;
+			const catalog: unknown = await response.json();
+			const models = catalog && typeof catalog === "object" && "models" in catalog ? catalog.models : undefined;
+			if (!Array.isArray(models)) return undefined;
+			return models.some(
+				entry =>
+					Array.isArray(entry?.service_tiers) &&
+					entry.service_tiers.some((tier: { id?: unknown }) => tier?.id === "ultrafast"),
+			);
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** Toggles ultrafast; returns whether it is now on. */
 	toggleUltrafastMode(): boolean {
 		return this.#models.toggleUltrafastMode();

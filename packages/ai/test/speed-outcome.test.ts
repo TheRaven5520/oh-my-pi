@@ -182,6 +182,39 @@ describe("speed outcome from Sprilicred's headers and errors (OpenAI Responses)"
 		});
 	});
 
+	it("marks Sprilicred's 400 Ultrafast refusal as refused with its reason", async () => {
+		const { message } = await runResponses(
+			openaiModel("sprilicred-openai"),
+			"ultrafast",
+			() =>
+				new Response(
+					JSON.stringify({
+						error: {
+							type: "ultrafast_unavailable",
+							code: "ultrafast_unavailable",
+							message: "Ultrafast unavailable: no Pro 500 account has room right now. Use /fast.",
+							param: null,
+						},
+					}),
+					{
+						status: 400,
+						headers: {
+							"content-type": "application/json",
+							...SPEED("ultrafast", "standard", "no_pro500_capacity"),
+						},
+					},
+				),
+		);
+		expect(message.stopReason).toBe("error");
+		expect(message.errorMessage).toContain("no Pro 500 account has room right now");
+		expect(message.speed).toEqual({
+			requested: "ultrafast",
+			forwarded: "standard",
+			reason: "no_pro500_capacity",
+			refused: true,
+		});
+	});
+
 	it("reads the speed fields of a WebSocket-style error frame", async () => {
 		const { message } = await runResponses(openaiModel("sprilicred-openai"), "ultrafast", () =>
 			sse([

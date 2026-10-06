@@ -1115,9 +1115,10 @@ export interface SpeedOutcome {
 	/** Gateway reason code (`forwarded`, `not_permitted`, `no_pro500_capacity`, …). */
 	reason?: string;
 	/**
-	 * The request failed over its faster tier: an older Sprilicred's 409
-	 * `speed_refused`, or an upstream refusal of Ultrafast mid-stream. Current
-	 * Sprilicred never refuses; it forwards a slower tier and says why.
+	 * The request failed over its faster tier: Sprilicred refusing Ultrafast it
+	 * can't run (a 400 `ultrafast_not_allowed` / `ultrafast_unsupported_model`
+	 * / `ultrafast_unavailable`), an upstream refusal of Ultrafast mid-stream,
+	 * or an older Sprilicred's 409 `speed_refused`.
 	 */
 	refused?: boolean;
 }

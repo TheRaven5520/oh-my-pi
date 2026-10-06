@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { Api, AssistantMessage, Model, ModelSpec, SpeedOutcome } from "@oh-my-pi/pi-ai";
@@ -61,7 +61,16 @@ describe("/fast and /ultrafast", () => {
 		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 	});
 
+	// /ultrafast on asks Sprilicred's catalog; never the network: by default it offers ultrafast.
+	const realFetch = globalThis.fetch;
+	let catalog: unknown;
+	beforeEach(() => {
+		catalog = { models: [{ slug: "gpt-6-astra", service_tiers: [{ id: "ultrafast" }] }] };
+		globalThis.fetch = (async () => Response.json(catalog)) as unknown as typeof fetch;
+	});
+
 	afterEach(async () => {
+		globalThis.fetch = realFetch;
 		await session?.dispose();
 		session = undefined;
 	});
@@ -129,6 +138,23 @@ describe("/fast and /ultrafast", () => {
 		expect(current.serviceTierByFamily).toEqual({ openai: "priority" });
 	});
 
+	it("says ultrafast isn't enabled for someone Sprilicred's catalog doesn't offer it to, and changes nothing", async () => {
+		const current = createSession(openaiModel("sprilicred-openai"));
+		const asked: string[] = [];
+		catalog = { models: [{ slug: "gpt-6-astra", service_tiers: [{ id: "priority" }] }] };
+		globalThis.fetch = (async (url: URL | string) => {
+			asked.push(String(url));
+			return Response.json(catalog);
+		}) as unknown as typeof fetch;
+		expect(await run(current, "/ultrafast on")).toEqual([
+			"Ultrafast isn't enabled for you. Ask an admin, or use /fast. Nothing changed.",
+		]);
+		expect(current.isUltrafastModeEnabled()).toBe(false);
+		expect(asked).toEqual(["https://gateway.example/openai/models"]);
+		catalog = { models: [{ slug: "gpt-6-astra", service_tiers: [{ id: "ultrafast" }] }] };
+		expect(await run(current, "/ultrafast on")).toEqual(["Ultrafast enabled."]);
+	});
+
 	it("keeps ultrafast across a session save and reload", async () => {
 		const sessionManager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "sessions"));
 		const current = createSession(openaiModel("sprilicred-openai"), sessionManager);
@@ -150,27 +176,23 @@ describe("/fast and /ultrafast", () => {
 			if (event.type === "notice") notices.push(event.message);
 		});
 		const forwarded: SpeedOutcome = { requested: "ultrafast", forwarded: "ultrafast", reason: "forwarded" };
-		const atFast: SpeedOutcome = { requested: "ultrafast", forwarded: "fast", reason: "no_pro500_capacity" };
-		// An older Sprilicred refused the turn outright; that always shows.
+		// Sprilicred refuses Ultrafast it can't run; every refused turn says why.
 		const refused: SpeedOutcome = { requested: "ultrafast", reason: "no_pro500_capacity", refused: true };
 		for (const message of [
 			turn(forwarded),
 			turn(forwarded),
-			turn(atFast),
-			turn(atFast),
+			turn(refused, "error"),
+			turn(refused, "error"),
 			turn(forwarded),
-			turn(refused, "error"),
-			turn(refused, "error"),
 		]) {
 			current.agent.emitExternalEvent({ type: "message_end", message });
 		}
 		await current.waitForIdle();
 		expect(notices).toEqual([
 			"Ultrafast mode on.",
-			"Ultrafast unavailable (no Pro 500 account has room); using fast mode.",
+			"Ultrafast unavailable: no Pro 500 account has room right now. Use /fast.",
+			"Ultrafast unavailable: no Pro 500 account has room right now. Use /fast.",
 			"Ultrafast mode on.",
-			"Ultrafast refused: no Pro 500 account has room.",
-			"Ultrafast refused: no Pro 500 account has room.",
 		]);
 	});
 });
@@ -190,10 +212,34 @@ describe("speed outcome messages", () => {
 			"Ultrafast mode on.",
 		],
 		[
-			"ultrafast with no Pro 500 room falls back to fast",
+			"ultrafast refused: no Pro 500 room",
+			{ requested: "ultrafast", forwarded: "standard", reason: "no_pro500_capacity", refused: true },
+			"error",
+			"Ultrafast unavailable: no Pro 500 account has room right now. Use /fast.",
+		],
+		[
+			"ultrafast refused: not permitted",
+			{ requested: "ultrafast", forwarded: "standard", reason: "not_permitted", refused: true },
+			"error",
+			"Ultrafast isn't enabled for you. Ask an admin, or use /fast.",
+		],
+		[
+			"ultrafast refused: model unsupported",
+			{ requested: "ultrafast", forwarded: "standard", reason: "model_unsupported", refused: true },
+			"error",
+			"Ultrafast isn't available on this model. Use /fast.",
+		],
+		[
+			"ultrafast refused mid-stream by the account",
+			{ requested: "ultrafast", forwarded: "ultrafast", reason: "account_refuses", refused: true },
+			"error",
+			"Ultrafast refused by the serving account. Use /fast.",
+		],
+		[
+			"an older Sprilicred served ultrafast at fast",
 			{ requested: "ultrafast", forwarded: "fast", reason: "no_pro500_capacity" },
 			"stop",
-			"Ultrafast unavailable (no Pro 500 account has room); using fast mode.",
+			"Ultrafast unavailable: no Pro 500 account has room right now. Use /fast.",
 		],
 		[
 			"fast on a subscription account",
@@ -206,12 +252,6 @@ describe("speed outcome messages", () => {
 			{ requested: "fast", forwarded: "standard", reason: "api_fallback_refused" },
 			"stop",
 			"Refused fallback to API pricing; using standard.",
-		],
-		[
-			"ultrafast not permitted, fast not either",
-			{ requested: "ultrafast", forwarded: "standard", reason: "not_permitted" },
-			"stop",
-			"Ultrafast unavailable (not enabled for you); using standard.",
 		],
 		[
 			"no headers, provider served standard",
