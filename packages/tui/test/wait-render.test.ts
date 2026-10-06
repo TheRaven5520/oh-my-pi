@@ -8,7 +8,8 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { prompt } from "@oh-my-pi/pi-utils";
 import taskSummaryTemplate from "../../coding-agent/src/prompts/tools/task-summary.md" with { type: "text" };
-import { waitToolRenderer } from "@oh-my-pi/pi-tui/tools/wait";
+import { createIrcMessageCard, waitToolRenderer } from "@oh-my-pi/pi-tui/tools/wait";
+import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 
 function renderLines(resultText: string): string {
 	const result = {
@@ -55,6 +56,47 @@ describe("job renderer task-result preview", () => {
 		const output = Bun.stripANSI(component.render(120).join("\n"));
 		expect(output).toContain("Worker");
 		expect(output).toContain("file unlocked");
+	});
+
+	it("renders a waited /fork report as a fork card with the whole report wrapped", () => {
+		const body = `${"The fork checked every caller and found the leak in the session cache. ".repeat(3)}zebra`;
+		const [report = "", ordinary = ""] = [{ done: true }, undefined].map(forkReport =>
+			Bun.stripANSI(
+				waitToolRenderer
+					.renderResult(
+						{
+							content: [],
+							details: {
+								op: "wait",
+								from: "Main",
+								waited: { id: "m1", from: "Fork-1", to: "Main", body, ts: Date.now(), forkReport },
+							},
+						},
+						{ expanded: false, isPartial: false },
+						theme,
+					)
+					.render(60)
+					.join("\n"),
+			),
+		);
+
+		expect(report).toContain("Fork report");
+		expect(report).toContain("zebra");
+		expect(ordinary).toContain(`IRC ${theme.nav.back} Fork-1`);
+		expect(ordinary).not.toContain("Fork report");
+	});
+
+	it("wraps a /fork report on a narrow card without dropping characters", () => {
+		const card = createIrcMessageCard(
+			{ kind: "incoming", from: "Fork-1", body: "abcdefghij klmnopqrst", forkReport: { done: true } },
+			() => true,
+			theme,
+		);
+		const lines = card.render(12) as readonly string[];
+		// The title occupies the first line; the body must wrap to whole words.
+		const body = lines.slice(1).map(line => Bun.stripANSI(line).trim());
+		expect(body).toEqual(["abcdefghij", "klmnopqrst"]);
+		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(12);
 	});
 
 	it("previews the envelope body, not the wrapper markup", () => {

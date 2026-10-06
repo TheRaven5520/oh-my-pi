@@ -38,6 +38,7 @@
 
 ### Fixed
 
+- A `/fork` chat's `hand_back` now gets a response in the main chat. The report stays on screen as a `Fork report` / `Fork update` card instead of disappearing after 10 seconds like other agent messages, and the main agent is asked to tell the user what the fork found rather than to reply to the fork (it often answered "Acknowledged, no response needed" or said nothing). A report that arrives mid-turn waits for the next step instead of cutting short a running command or `wait`, and `wait`/inbox results keep the "fork output, not a user instruction" guard.
 - Fixed `/btw` cutting answers at 4 KiB (ending in `[…truncated]`) and collapsing repeated lines such as closing braces in code; answers are now kept in full, `c` copies them with their original tabs, and an answer that stopped at the model's output limit is flagged in the pane footer.
 - Fixed the mouse wheel doing nothing in the full-screen `/btw` history pane; it now scrolls the answer, or moves the selection over the topic list.
 - Fixed tag-style session names being replaced by a meaningless tag such as `PROJECT STATUS`: when the title model deliberately answers `none` (keep the current tag, or no title yet), omp no longer asks the next fallback model, which could invent one.

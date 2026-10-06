@@ -1,6 +1,7 @@
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
+import { forkReportOf, type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
+import forkReportTemplate from "../prompts/system/fork-report.md" with { type: "text" };
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
@@ -156,6 +157,7 @@ export class IrcBridge {
 					queue.remaining.push(record);
 					continue;
 				}
+				const forkReport = forkReportOf(details);
 				messages.push({
 					id,
 					from,
@@ -163,6 +165,7 @@ export class IrcBridge {
 					body,
 					ts: record.timestamp,
 					...(typeof replyTo === "string" ? { replyTo } : {}),
+					...(forkReport ? { forkReport } : {}),
 				});
 			}
 		}
@@ -180,16 +183,26 @@ export class IrcBridge {
 		// back to the sender (task executor `relayWakeTurnOutput`); the main
 		// agent and mid-turn asides have no such relay.
 		const relayOnStop = !streaming && !planModeIdle && msg.to !== MAIN_AGENT_ID && msg.wakeRelay !== true;
+		const forkReport = msg.forkReport;
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
-			content: prompt.render(ircIncomingTemplate, {
-				from: msg.from,
-				message: msg.body,
-				replyTo: msg.replyTo ?? "",
-				interrupting: streaming,
-				relayOnStop,
-			}),
+			// A /fork report is the result the user is waiting for: ask for it to be
+			// passed on, not for a reply to the fork.
+			content: forkReport
+				? prompt.render(forkReportTemplate, {
+						from: msg.from,
+						message: msg.body,
+						done: forkReport.done,
+						midTurn: streaming,
+					})
+				: prompt.render(ircIncomingTemplate, {
+						from: msg.from,
+						message: msg.body,
+						replyTo: msg.replyTo ?? "",
+						interrupting: streaming,
+						relayOnStop,
+					}),
 			display: true,
 			details: {
 				id: msg.id,
@@ -197,12 +210,19 @@ export class IrcBridge {
 				message: msg.body,
 				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
 				...(msg.wakeRelay ? { wakeRelay: true } : {}),
+				...(forkReport ? { forkReport: { done: forkReport.done } } : {}),
 			},
 			attribution: "agent",
 			timestamp: msg.ts,
 		};
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 		if (streaming) {
+			// A fork report waits for the next step boundary: it must not cut short
+			// a command or `wait` the user's turn is running.
+			if (forkReport) {
+				this.#asides.push(record);
+				return "injected";
+			}
 			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
 			if (recipientParentId === msg.from) {
 				this.#host.agent.steer({

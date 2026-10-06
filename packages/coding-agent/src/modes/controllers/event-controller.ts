@@ -22,6 +22,7 @@ import { createUsageRowBlock, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/us
 import { getSymbolTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { forkReportOf } from "@oh-my-pi/pi-tui/tools/irc";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
 import {
@@ -1093,8 +1094,12 @@ export class EventController {
 		this.#renderedCustomMessages.add(signature);
 		this.#resetReadGroup();
 		const components = this.ctx.addMessageToChat(event.message);
-		this.#scheduleIrcExpiry(signature, components);
-		this.#enforceIrcCardCap(signature);
+		// A /fork report is the result the user asked for, so it stays. Peer chatter
+		// retires after a few seconds and is capped in the live region.
+		if (!forkReportOf(event.message.details)) {
+			this.#scheduleIrcExpiry(signature, components);
+			this.#enforceIrcCardCap(signature);
+		}
 		this.ctx.ui.requestRender();
 	}
 

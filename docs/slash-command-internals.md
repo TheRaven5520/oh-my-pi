@@ -415,8 +415,13 @@ unchanged.
   session; slash commands run only in the main session.
 - The fork gets a `hand_back` tool. `done: false` posts an update to the main
   session; `done: true` delivers its final report, and the fork closes once that
-  turn ends. Both arrive in the main chat as incoming agent messages, framed as
-  fork output rather than user instructions, and wake an idle main agent.
+  turn ends. Each one appears in the main chat as a `Fork update` or `Fork report`
+  card that stays on screen (ordinary agent messages retire after a few seconds),
+  with the whole report wrapped (`Ctrl+O` expands a long one).
+- The main agent is asked to tell you the fork's result, not to reply to the fork,
+  and the report is marked as fork output rather than a user instruction on every
+  path (wake, `wait`, inbox). An idle main agent wakes to do so; a busy one gets the
+  report at its next step without cutting short a running command or `wait`.
 - A fork stays in the panel (`⑂` while waiting for you) until it hands back its
   final report. Pressing `x` on a selected idle fork closes it without a report.
   Switching, duplicating, or leaving the main session closes all of its forks.
