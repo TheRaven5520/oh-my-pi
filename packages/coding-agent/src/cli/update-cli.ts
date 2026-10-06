@@ -2140,7 +2140,7 @@ export async function runUpdateCommand(opts: {
 				}
 			} catch (err) {
 				if (!(err instanceof Error) || !/ENOENT|EACCES|permission|not found/i.test(err.message)) throw err;
-				digestMatches = true;
+				digestMatches = false;
 			}
 		}
 		if (digestMatches) {

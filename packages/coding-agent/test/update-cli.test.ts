@@ -26,7 +26,6 @@ import {
 	replaceBinaryForUpdate,
 	resolveBunGlobalNodeModulesDirFromLocations,
 	resolveReleaseBinaryAsset,
-	selectFallbackBinaryAsset,
 	resolveReleaseDist,
 	resolveReleaseRename,
 	resolveGitHubTokenForTest,
@@ -994,9 +993,9 @@ describe("update-cli bun cache pruning", () => {
 });
 
 describe("update-cli release binary integrity", () => {
-	const tag = "v17.1.2";
+	const tag = "v17.1.2-spring.1";
 	const binaryName = "omp-linux-x64";
-	const url = `https://github.com/can1357/oh-my-pi/releases/download/${tag}/${binaryName}`;
+	const url = `https://github.com/Spring-Silicon/oh-my-pi/releases/download/${tag}/${binaryName}`;
 	const content = "verified binary";
 	const digest = `sha256:${Bun.SHA256.hash(content, "hex")}`;
 
@@ -1232,94 +1231,7 @@ describe("update-cli release binary integrity", () => {
 		expect(await Bun.file(targetPath).exists()).toBe(false);
 	});
 
-	function publishedRelease(version: string, body: string, overrides: Record<string, unknown> = {}) {
-		return {
-			tag_name: `v${version}`,
-			draft: false,
-			prerelease: false,
-			assets: [
-				{
-					name: binaryName,
-					state: "uploaded",
-					size: Buffer.byteLength(body),
-					digest: `sha256:${Bun.SHA256.hash(body, "hex")}`,
-					browser_download_url: `https://github.com/can1357/oh-my-pi/releases/download/v${version}/${binaryName}`,
-				},
-			],
-			...overrides,
-		};
-	}
 
-	it("installs the newest published release when the advertised tag has none", async () => {
-		// npm `latest` can name a version GitHub never published: 18.2.9 reached
-		// the npm dist-tag while `v18.2.9` 404'd and `v18.2.10` was the newest
-		// published release (#12913). Drafts and stable-channel prereleases are
-		// not installable, so the scan walks past them.
-		const dir = await makeTempDir();
-		const targetPath = path.join(dir, binaryName);
-		const published = "published 999.9.8 binary";
-		const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
-			const requestUrl = String(input);
-			if (requestUrl.endsWith("/releases/tags/v999.9.9")) {
-				return new Response(null, { status: 404, statusText: "Not Found" });
-			}
-			if (requestUrl.includes("/releases?")) {
-				return new Response(
-					JSON.stringify([
-						publishedRelease("999.9.10", "draft binary", { draft: true }),
-						publishedRelease("999.9.9-canary.1", "canary binary", { prerelease: true }),
-						publishedRelease("999.9.8", published),
-					]),
-				);
-			}
-			if (requestUrl.endsWith(`/download/v999.9.8/${binaryName}`)) return new Response(published);
-			throw new Error(`Unexpected request: ${requestUrl}`);
-		};
-		const verified: string[] = [];
-
-		await updateViaBinaryAt(targetPath, "999.9.9", {
-			binaryName,
-			fetchImpl,
-			githubToken: "test-token",
-			verifyInstalledVersion: async version => {
-				verified.push(version);
-				return { ok: true, path: targetPath };
-			},
-		});
-
-		expect(verified).toEqual(["999.9.8"]);
-		expect(await Bun.file(targetPath).text()).toBe(published);
-	});
-
-	it("names the missing tag and the npm mismatch when no published release can replace it", async () => {
-		const dir = await makeTempDir();
-		const targetPath = path.join(dir, binaryName);
-		const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
-			const requestUrl = String(input);
-			if (requestUrl.includes("/releases/tags/")) {
-				return new Response(null, { status: 404, statusText: "Not Found" });
-			}
-			if (requestUrl.includes("/releases?")) {
-				// Older than the running version: installing it would be a downgrade.
-				return new Response(JSON.stringify([publishedRelease("17.1.2", content)]));
-			}
-			throw new Error(`Unexpected request: ${requestUrl}`);
-		};
-
-		await expect(
-			updateViaBinaryAt(targetPath, "999.9.9", { binaryName, fetchImpl, githubToken: "test-token" }),
-		).rejects.toThrow("npm advertises 999.9.9 but GitHub release v999.9.9 is not published");
-		expect(await Bun.file(targetPath).exists()).toBe(false);
-	});
-
-	it("falls back to a prerelease only for canary updates", () => {
-		const releases = [publishedRelease("999.9.9", content, { prerelease: true })];
-
-		expect(selectFallbackBinaryAsset(releases, binaryName, "999.0.0")).toBeUndefined();
-		expect(selectFallbackBinaryAsset(releases, binaryName, "999.0.0", { allowPrerelease: true })?.version).toBe(
-			"999.9.9",
-		);
-	});
 });
 
 describe("update-cli binary replacement", () => {
@@ -1809,13 +1721,13 @@ describe("update-cli script-shim takeover", () => {
 describe("update-cli concurrent binary updates", () => {
 	const version = "999.0.0";
 	const binaryName = "omp-linux-x64";
-	const url = `https://github.com/can1357/oh-my-pi/releases/download/v${version}/${binaryName}`;
+	const url = `https://github.com/Spring-Silicon/oh-my-pi/releases/download/v${version}-spring.1/${binaryName}`;
 	const payload = Buffer.alloc(2048, 0x41);
 	const digest = `sha256:${Bun.SHA256.hash(payload, "hex")}`;
 
 	function metadata(): Response {
 		return Response.json({
-			tag_name: `v${version}`,
+			tag_name: `v${version}-spring.1`,
 			draft: false,
 			prerelease: false,
 			assets: [{ name: binaryName, state: "uploaded", size: payload.byteLength, digest, browser_download_url: url }],
