@@ -3,7 +3,7 @@
  * right status group rides the rule while the left group remains below the
  * editor, preserving the compact status split without a closing rule.
  */
-import { truncateToWidth, visibleWidth } from "../../utils";
+import { renderComposerTopLine } from "./top-line";
 import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from "./types";
 
 /** Draw a full-width rule with status content docked at its right edge.
@@ -11,21 +11,19 @@ import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from ".
  * than dropped, so the chip survives narrow terminals and previews. */
 export function renderTopRule(ctx: ComposerChromeContext): string {
 	const { box, width, borderColor, topBorder } = ctx;
-	if (topBorder && topBorder.width > 0 && width > 2) {
-		let { content, width: chipWidth } = topBorder;
-		if (chipWidth > width - 2) {
-			content = truncateToWidth(content, width - 2);
-			chipWidth = visibleWidth(content);
-		}
-		const leftFill = Math.max(0, width - chipWidth - 1);
-		return borderColor(box.horizontal.repeat(leftFill)) + content + borderColor(box.horizontal);
-	}
-	return borderColor(box.horizontal.repeat(width));
+	if (width <= 2) return borderColor(box.horizontal.repeat(Math.max(0, width)));
+	const edge = borderColor(box.horizontal);
+	return (
+		edge +
+		renderComposerTopLine(topBorder, width - 2, cells => borderColor(box.horizontal.repeat(cells)), true) +
+		edge
+	);
 }
 
 /** Composer style with one status-bearing top rule and no bottom chrome. */
 export const ruleComposerStyle: ComposerStyle = {
 	id: "rule",
+	titleSlot: true,
 	sideBorders: false,
 	verticalChrome: 1,
 	statusAttachment: "top-rule-chip",

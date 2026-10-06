@@ -29,7 +29,7 @@ export type BuiltinEditorBorderStyle = (typeof BUILTIN_EDITOR_BORDER_STYLES)[num
 /** Composer shape identifier; extensions may register additional strings. */
 export type EditorBorderStyle = string;
 
-/** Pre-rendered status content injected into the top chrome. */
+/** Independently laid-out status and session title injected into the top chrome. */
 export interface EditorTopBorder {
 	/** The status content (already styled) */
 	content: string;
@@ -37,6 +37,8 @@ export interface EditorTopBorder {
 	width: number;
 	/** Optional logical revision that changes independently of available width. */
 	revision?: number;
+	/** Independently styled session title, docked in a bounded right-side gap. */
+	title?: string;
 }
 
 /** Inputs shared by every chrome row. */
@@ -77,6 +79,10 @@ export interface ComposerRowContext extends ComposerChromeContext {
 
 export interface ComposerStyle {
 	readonly id: EditorBorderStyle;
+	/** Opt in to the top-line title slot. Omitted by older extensions; their
+	 * configured session_name segment stays in the status bar. Styles without
+	 * a top row (borderless, field, rail) leave this false/undefined. */
+	readonly titleSlot?: boolean;
 	/**
 	 * True when rows paint their own foreground through `surfaceColor`.
 	 * Built-ins default to transparent; registered extensions that omit this

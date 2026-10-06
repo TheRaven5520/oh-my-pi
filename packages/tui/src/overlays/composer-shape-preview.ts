@@ -4,12 +4,13 @@
  * real editor uses, and status rows come from the live
  * {@link ComposerPreviewStatusSource} (the session's StatusLineComponent) —
  * nothing about the preview is a re-implementation. Prompt text is a preview
- * stand-in, and the `session_name` segment falls back to a stand-in title
- * (passed via `previewTitle`) when the session is unnamed.
+ * stand-in. The title slot (or session_name segment on chrome-free shapes)
+ * falls back to a stand-in title when the session is unnamed.
  */
 import {
 	type Component,
 	type ComposerChromeContext,
+	type ComposerStyle,
 	type EditorTopBorder,
 	getComposerStyle,
 	isFilledComposerStyle,
@@ -28,6 +29,12 @@ import { col, node, span, text } from "../native/describe";
  * render a candidate shape's placement instead of the active one.
  */
 export interface ComposerPreviewStatusSource {
+	/** Production title/status layout, including title-only top rules (pi). */
+	getComposerTopBorder?(
+		width: number,
+		style: Pick<ComposerStyle, "statusAttachment" | "titleSlot">,
+		previewTitle?: string,
+	): EditorTopBorder;
 	/** Powerline bar with the context gauge (box top border content). */
 	getTopBorder(width: number, previewTitle?: string): { content: string; width: number };
 	/** Flush soft-capped powerline band (band composer top row). */
@@ -35,7 +42,7 @@ export interface ComposerPreviewStatusSource {
 	/** Plain right-group chip (claude top rule content). */
 	getStandaloneTopBorder(width: number, previewTitle?: string): { content: string; width: number };
 	/** Plain standalone bottom bar carrying the given segment groups. */
-	renderBottomBar(width: number, groups: "left" | "full", previewTitle?: string): string;
+	renderBottomBar(width: number, groups: "left" | "full", previewTitle?: string, titleSlot?: boolean): string;
 }
 
 export interface ComposerShapePreviewOptions {
@@ -60,7 +67,9 @@ export function renderComposerShapePreview(
 
 	let topBorder: EditorTopBorder | undefined;
 	if (status) {
-		if (style.statusAttachment === "top-border") {
+		if (status.getComposerTopBorder) {
+			topBorder = status.getComposerTopBorder(Math.max(0, previewWidth - chromeWidth * 2), style, PREVIEW_TITLE);
+		} else if (style.statusAttachment === "top-border") {
 			topBorder = status.getTopBorder(Math.max(1, previewWidth - chromeWidth * 2), PREVIEW_TITLE);
 		} else if (style.statusAttachment === "top-band") {
 			topBorder = status.getBandTopBorder(previewWidth, PREVIEW_TITLE);
@@ -110,7 +119,7 @@ export function renderComposerShapePreview(
 	if (bottom !== undefined) lines.push(bottom);
 
 	if (style.bottomBar !== "none" && status) {
-		const bar = status.renderBottomBar(previewWidth, style.bottomBar, PREVIEW_TITLE);
+		const bar = status.renderBottomBar(previewWidth, style.bottomBar, PREVIEW_TITLE, style.titleSlot === true);
 		if (bar) {
 			if (style.bottomBarGap) lines.push("");
 			lines.push(bar);

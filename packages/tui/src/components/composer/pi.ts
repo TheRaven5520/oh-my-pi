@@ -1,13 +1,15 @@
 /**
  * Upstream-pi composer: full-width horizontal rules above and below plain
- * padded text — no side borders, no prompt gutter. The status bar renders as
- * a plain standalone bottom bar with both segment groups.
+ * padded text — no side borders, no prompt gutter. The session title docks
+ * on the upper rule; both status groups remain in the standalone bottom bar.
  */
 import { padding } from "../../utils";
+import { renderTopRule } from "./rule";
 import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from "./types";
 
 export const piComposerStyle: ComposerStyle = {
 	id: "pi",
+	titleSlot: true,
 	sideBorders: false,
 	verticalChrome: 2,
 	statusAttachment: "none",
@@ -24,7 +26,7 @@ export const piComposerStyle: ComposerStyle = {
 	},
 
 	renderTop(ctx: ComposerChromeContext): string {
-		return ctx.borderColor(ctx.box.horizontal.repeat(ctx.width));
+		return renderTopRule(ctx);
 	},
 
 	renderRow(ctx: ComposerRowContext): string[] {

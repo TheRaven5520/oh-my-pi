@@ -19,6 +19,13 @@ export interface ActiveRepoContext {
 	source: "single-direct-child-repo";
 }
 
+/** Display-only goal state; optional control fields preserve replica/extension sessions. */
+export interface StatusLineGoalState {
+	enabled?: boolean;
+	mode?: string;
+	goal?: { status: string; tokensUsed: number; tokenBudget?: number };
+}
+
 export interface StatusLineSession {
 	state: { model?: Model; thinkingLevel?: ThinkingLevel; messages: readonly AgentMessage[] };
 	model?: Model;
@@ -61,7 +68,7 @@ export interface StatusLineSession {
 	getAnthropicSlowModeLabel?(): string | undefined;
 	getPrewalkState?(): unknown;
 	getAsyncJobSnapshot(): { running: readonly { type: string; agentId?: string }[] } | null | undefined;
-	getGoalModeState(): { goal?: { status: string; tokensUsed: number; tokenBudget?: number } } | undefined;
+	getGoalModeState(): StatusLineGoalState | undefined;
 	getAdvisorStatusOverview?(): { configured: boolean; advisors: readonly { status: string; yielded: boolean }[] };
 	getAdvisorCost?(): number;
 	isAdvisorUsingSubscription?(): boolean;

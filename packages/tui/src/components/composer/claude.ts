@@ -10,6 +10,7 @@ import type { ComposerChromeContext, ComposerRowContext, ComposerStyle } from ".
 
 export const claudeComposerStyle: ComposerStyle = {
 	id: "claude",
+	titleSlot: true,
 	sideBorders: false,
 	verticalChrome: 2,
 	statusAttachment: "top-rule-chip",
