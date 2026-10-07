@@ -4,3 +4,4 @@ After successful mutation: no active means earliest pending starts (phase order)
 External waits (user/agent/service): block with optional reason suppresses stop reminder, starts next pending. Unblock when actionable; append a clearing task for agent-actionable blocker.
 NEVER call todo alone: init with first work; done/start with next action.
 A todo carrying an ETA: size it from the concrete steps it involves and their measured wall times in this session; a rename or single API call is about a minute. NEVER pad to 5–10 minute slots.
+Plan independent steps as concurrent work, not a serial chain; start the longest step first and do the next independent step while it runs.
