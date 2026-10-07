@@ -154,7 +154,7 @@ export const cfgStatusLinePreset = register({
 	id: "statusLine.preset",
 	type: "enum",
 	values: STATUS_LINE_PRESET_VALUES,
-	default: "default",
+	default: "claude",
 	ui: {
 		tab: "appearance",
 		group: "Status Line",

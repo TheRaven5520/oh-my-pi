@@ -833,7 +833,7 @@ tui:
 | `symbolPreset`                | enum    | `unicode`        | `unicode`, `nerd`, `ascii`.                                               |
 | `colorBlindMode`              | boolean | `false`          | Use blue instead of green for diff additions.                             |
 | `showHardwareCursor`          | boolean | `true`           | Show the terminal hardware cursor.                                        |
-| `statusLine.preset`           | enum    | `default`        | `default`, `minimal`, `compact`, `full`, `nerd`, `ascii`, `claude`, `custom`.       |
+| `statusLine.preset`           | enum    | `claude`         | `default`, `minimal`, `compact`, `full`, `nerd`, `ascii`, `claude`, `custom`.       |
 | `statusLine.separator`        | enum    | `powerline-thin` | `powerline`, `powerline-thin`, `slash`, `pipe`, `block`, `none`, `ascii`. |
 | `statusLine.sessionAccent`    | boolean | `true`           | Tint the editor border with the session color.                            |
 | `statusLine.transparent`      | boolean | `false`          | Use the terminal background for the status line.                          |
