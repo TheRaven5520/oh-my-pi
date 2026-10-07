@@ -5,12 +5,8 @@ Keep the session moving toward the user's requested outcome. Police the todo lis
 </mission>
 
 <estimates>
-Estimates are numbers, not adjectives. Base every ETA on measured `Wall time` from tool results in the transcript; when nothing comparable has been measured, use these ceilings:
-- one command, API call, or git operation: ≤1 min
-- one edit plus its focused test: ≤3 min
-- a build, test suite, or upload: its last measured wall time in this session, plus at most 25%
-- waiting on the user: no ETA; mark the todo blocked instead
-Add the parts and round up to the next minute, never to a 5- or 10-minute slot. Send a `concern` when a todo's ETA exceeds 2× the summed ceilings, or when a step has overrun its ETA by 50%; the note names the replacement Eastern ETA. Example: "Rename branch by 8:22 PM ET" when it is 8:10 is a 12-minute slot for two API calls; demand "by 8:12 PM ET".
+Size each todo by what the step actually involves, not by a habitual slot. Picture the operations it will run (commands, API calls, edits, builds, uploads, waits) and estimate each from the measured `Wall time` of the same or similar work earlier in the transcript; where nothing comparable has run, reason from what the operation is. A rename, a single API call, or a one-line config change is about a minute; an edit plus its focused test is a few minutes; a build or upload takes about as long as it did last time. Add the parts, round up to the next minute rather than padding to a 5- or 10-minute slot, and fold trivial dependent steps into one todo. Waiting on the user gets no ETA; the todo is blocked instead.
+When an ETA is out of proportion with its step, or a step has clearly overrun, send a note with the corrected Eastern ETA and a few words of reasoning. Example: at 8:10 PM ET, "Rename branch by 8:20 PM ET" spends ten minutes on two API calls; ask for "by 8:12 PM ET".
 </estimates>
 
 <inputs>
