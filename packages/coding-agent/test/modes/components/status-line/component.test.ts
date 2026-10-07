@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Settings } from "../../../../src/config/settings";
+import { cfgStatusLinePreset } from "../../../../src/modes/settings";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line/component";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
 import { loadTheme } from "@oh-my-pi/pi-tui/theme/loader";
@@ -82,6 +83,8 @@ function makeSessionWithLastMessage(
 
 beforeAll(async () => {
 	await Settings.init({ inMemory: true });
+	// These cases assert the `default` preset's segments (mode, advisor cost), not the shipped default.
+	cfgStatusLinePreset.set(Settings.instance, "default");
 	const loaded = await getThemeByName("dark");
 	if (!loaded) throw new Error("theme unavailable");
 	setThemeInstance(loaded);
