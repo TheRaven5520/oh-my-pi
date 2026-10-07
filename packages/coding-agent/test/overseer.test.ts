@@ -12,6 +12,7 @@ import overseerSystemPrompt from "../src/prompts/advisor/overseer.md" with { typ
 import { AgentSession } from "../src/session/agent-session";
 import type { AuthStorage } from "../src/session/auth-storage";
 import { convertToLlm, USER_INTERRUPT_LABEL } from "../src/session/messages";
+import { formatOverseerTodoSnapshot } from "../src/session/session-advisors";
 import { SessionManager } from "../src/session/session-manager";
 import { createAssistantMessage, createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -240,6 +241,35 @@ describe("built-in Overseer", () => {
 			releaseHook.resolve();
 		}
 		await session.waitForIdle();
+	});
+
+	it("shows the Overseer whether a todo list exists and what each task's state is", () => {
+		expect(formatOverseerTodoSnapshot([])).toBe("Todos: none");
+		expect(formatOverseerTodoSnapshot([{ name: "Empty", tasks: [] }])).toBe("Todos: none");
+		expect(
+			formatOverseerTodoSnapshot([
+				{
+					name: "Release",
+					tasks: [
+						{ content: "Build binaries", status: "completed" },
+						{ content: "Sign Darwin", status: "in_progress" },
+						{ content: "Publish", status: "blocked", blocker: "user approval" },
+						{ content: "Old plan", status: "abandoned" },
+						{ content: "Install", status: "pending" },
+					],
+				},
+			]),
+		).toBe(
+			[
+				"Todos:",
+				"Release:",
+				"  [done] Build binaries",
+				"  [active] Sign Darwin",
+				"  [blocked] Publish (waiting on: user approval)",
+				"  [dropped] Old plan",
+				"  [pending] Install",
+			].join("\n"),
+		);
 	});
 
 	it("opens every update with the host's batch prefix so the Overseer can measure todo slots", async () => {

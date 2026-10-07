@@ -143,6 +143,28 @@ function formatEastern(date: Date): string {
 	}).format(date);
 }
 
+const TODO_STATUS_LABEL: Record<TodoPhase["tasks"][number]["status"], string> = {
+	pending: "pending",
+	in_progress: "active",
+	completed: "done",
+	abandoned: "dropped",
+	blocked: "blocked",
+};
+
+/** Labels and status only, one task per line: sent with every Overseer update. */
+export function formatOverseerTodoSnapshot(phases: readonly TodoPhase[]): string {
+	const lines: string[] = [];
+	for (const phase of phases) {
+		if (phase.tasks.length === 0) continue;
+		lines.push(`${phase.name}:`);
+		for (const task of phase.tasks) {
+			const blocker = task.status === "blocked" && task.blocker ? ` (waiting on: ${task.blocker})` : "";
+			lines.push(`  [${TODO_STATUS_LABEL[task.status]}] ${task.content}${blocker}`);
+		}
+	}
+	return lines.length > 0 ? `Todos:\n${lines.join("\n")}` : "Todos: none";
+}
+
 const OVERSEER_NAME = "Overseer";
 const OVERSEER_MODEL = "claude-opus-5-5:high";
 const OVERSEER_SLOW_TOOL_MS = 20_000;
@@ -664,10 +686,8 @@ export class SessionAdvisors {
 			tickCount++;
 			const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
 			const easternNow = formatEastern(new Date());
-			const todos = JSON.stringify(this.#host.todoPhases(), null, 2);
 			overseer.runtime.enqueueSynthetic(
-				`Overseer wall-clock tick: tool "${toolName}" has been running for ${elapsedSeconds}s at ${easternNow} ET.\n` +
-					`Todo snapshot (primary owns durable edits):\n${todos}`,
+				`Overseer wall-clock tick: tool "${toolName}" has been running for ${elapsedSeconds}s at ${easternNow} ET.`,
 			);
 			if (tickCount >= 5) return;
 			const delay = [60_000, 120_000, 300_000, 300_000][tickCount - 1] ?? 300_000;
@@ -1669,7 +1689,9 @@ export class SessionAdvisors {
 				maintainContext: (incoming, signal) => this.#maintainAdvisorContext(advisorRef, incoming, signal),
 				obfuscator: this.#host.obfuscator(),
 				getModelIdentity: () => formatModelString(advisorRef.agent.state.model),
-				batchPrefix: isOverseer ? () => `Now: ${formatEastern(new Date())} ET` : undefined,
+				batchPrefix: isOverseer
+					? () => `Now: ${formatEastern(new Date())} ET\n${formatOverseerTodoSnapshot(this.#host.todoPhases())}`
+					: undefined,
 				beginAdvisorUpdate: inProgress => {
 					advisorRef.recorder.beginTurn();
 					// Flushes the deferred backlog on the in-progress→completed
