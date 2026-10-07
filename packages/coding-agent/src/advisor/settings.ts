@@ -26,7 +26,7 @@ export const cfgAdvisorOverseer = register({
 	id: "advisor.overseer",
 	protocolDefault: ["rpc", "acp"],
 	type: "boolean",
-	default: true,
+	default: false,
 	ui: {
 		tab: "model",
 		group: "Advisor",

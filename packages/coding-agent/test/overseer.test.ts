@@ -19,6 +19,8 @@ import { createAssistantMessage, createInMemoryAuthStorage } from "./helpers/age
 interface OverseerSessionOptions {
 	overseer?: boolean;
 	advisorConfigs?: AdvisorConfig[];
+	/** Leave `advisor.overseer` unset so the built-in default applies. */
+	settingDefault?: boolean;
 	syncBacklogOff?: boolean;
 	streamFn?: StreamFn;
 	advisorStreamFn?: StreamFn;
@@ -84,6 +86,8 @@ describe("built-in Overseer", () => {
 			"retry.enabled": false,
 			...(options.syncBacklogOff ? { "advisor.syncBacklog": "off" as const } : {}),
 		});
+		// Set through the same layer the live toggle writes; isolated overrides would mask it.
+		if (!options.settingDefault) cfgAdvisorOverseer.set(settings, true);
 		settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -142,6 +146,10 @@ describe("built-in Overseer", () => {
 
 		const ordinary = createSession({ overseer: false });
 		expect(rosterNames(ordinary)).toEqual(["default"]);
+	});
+
+	it("leaves Overseer off when advisor.overseer is not set", () => {
+		expect(rosterNames(createSession({ settingDefault: true }))).toEqual(["default"]);
 	});
 
 	it("keeps a WATCHDOG overseer entry as an ordinary advisor while the built-in toggle is off", async () => {
