@@ -64,6 +64,11 @@ export interface AdvisorRuntimeHost {
 	 */
 	beginAdvisorUpdate?(inProgress: boolean): void;
 	/**
+	 * Optional line prepended to every advisor update (e.g. the Overseer's
+	 * current Eastern time, so it can measure todo slots between ticks).
+	 */
+	batchPrefix?(): string | undefined;
+	/**
 	 * Called with the error of every failed advisor turn, before the retry sleep
 	 * or the dropped-after-3 path. Lets the host apply credential-level remedies
 	 * and configured model fallback that the advisor loop cannot perform itself.
@@ -1370,7 +1375,15 @@ export class AdvisorRuntime {
 					// byte-equivalent to the old single-block render (equivalence
 					// tested), so the advisor sees identical context.
 					const splitMessages = this.#formatRawDeltaMessageChunks(preparedMessages, wip);
-					const promptInput: string | AgentMessage[] = splitMessages ?? batch;
+					const prefix = this.host.batchPrefix?.();
+					const promptInput: string | AgentMessage[] = !prefix
+						? (splitMessages ?? batch)
+						: splitMessages
+							? [
+									{ role: "user", content: [{ type: "text", text: prefix }], timestamp: Date.now() },
+									...splitMessages,
+								]
+							: `${prefix}\n\n${batch}`;
 					const prompt = this.agent.prompt(promptInput);
 					this.#promptInFlight = prompt;
 					try {

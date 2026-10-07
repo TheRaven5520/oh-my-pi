@@ -134,6 +134,15 @@ import { cfgRetry, cfgTierAdvisor } from "./settings";
 
 const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
 
+/** Eastern wall-clock time shared by Overseer ticks and update headers. */
+function formatEastern(date: Date): string {
+	return new Intl.DateTimeFormat("en-US", {
+		timeZone: "America/New_York",
+		dateStyle: "short",
+		timeStyle: "medium",
+	}).format(date);
+}
+
 const OVERSEER_NAME = "Overseer";
 const OVERSEER_MODEL = "claude-opus-5-5:high";
 const OVERSEER_SLOW_TOOL_MS = 20_000;
@@ -654,11 +663,7 @@ export class SessionAdvisors {
 			if (this.#host.isDisposed() || !this.#overseerToolProgress.has(toolCallId)) return;
 			tickCount++;
 			const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-			const easternNow = new Intl.DateTimeFormat("en-US", {
-				timeZone: "America/New_York",
-				dateStyle: "short",
-				timeStyle: "medium",
-			}).format(new Date());
+			const easternNow = formatEastern(new Date());
 			const todos = JSON.stringify(this.#host.todoPhases(), null, 2);
 			overseer.runtime.enqueueSynthetic(
 				`Overseer wall-clock tick: tool "${toolName}" has been running for ${elapsedSeconds}s at ${easternNow} ET.\n` +
@@ -1664,6 +1669,7 @@ export class SessionAdvisors {
 				maintainContext: (incoming, signal) => this.#maintainAdvisorContext(advisorRef, incoming, signal),
 				obfuscator: this.#host.obfuscator(),
 				getModelIdentity: () => formatModelString(advisorRef.agent.state.model),
+				batchPrefix: isOverseer ? () => `Now: ${formatEastern(new Date())} ET` : undefined,
 				beginAdvisorUpdate: inProgress => {
 					advisorRef.recorder.beginTurn();
 					// Flushes the deferred backlog on the in-progress→completed

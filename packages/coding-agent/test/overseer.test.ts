@@ -242,6 +242,32 @@ describe("built-in Overseer", () => {
 		await session.waitForIdle();
 	});
 
+	it("opens every update with the host's batch prefix so the Overseer can measure todo slots", async () => {
+		const promptInputs: Array<string | AgentMessage[]> = [];
+		const agent: AdvisorAgent = {
+			prompt: async input => {
+				promptInputs.push(input);
+			},
+			abort: () => {},
+			reset: () => {},
+			state: { messages: [] },
+		};
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "PRIMARY_REQUEST_MARKER", timestamp: 1 } as AgentMessage,
+			createAssistantMessage("working"),
+		];
+		const runtime = new AdvisorRuntime(
+			agent,
+			{ snapshotMessages: () => messages, batchPrefix: () => "Now: 10/6/26, 8:10:00 PM ET" },
+			0,
+		);
+		runtime.onTurnEnd(messages);
+		expect(await runtime.waitForCatchup(1_000, 1)).toBe(true);
+		const text = promptText(promptInputs[0]!);
+		expect(text.startsWith("Now: 10/6/26, 8:10:00 PM ET")).toBe(true);
+		expect(text).toContain("PRIMARY_REQUEST_MARKER");
+	});
+
 	it("gives the first wall-clock tick the pending primary request without replaying it later", async () => {
 		const promptInputs: Array<string | AgentMessage[]> = [];
 		const agent: AdvisorAgent = {
