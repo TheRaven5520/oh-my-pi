@@ -24,6 +24,7 @@ function mockForkRelease() {
 						size: Buffer.byteLength(content),
 						digest: `sha256:${Bun.SHA256.hash(content, "hex")}`,
 						browser_download_url: `https://github.com/Spring-Silicon/oh-my-pi/releases/download/${tag}/${name}`,
+						url: "https://api.github.com/repos/Spring-Silicon/oh-my-pi/releases/assets/1",
 					},
 				],
 			}),

@@ -94,7 +94,10 @@ export interface ReleaseInfo {
 export interface ReleaseBinaryAsset {
 	tag: string;
 	version: string;
+	/** Public `browser_download_url`, kept as the asset's identity. */
 	url: string;
+	/** REST asset endpoint; the only download URL that works for a private repo. */
+	apiUrl: string;
 	size: number;
 	digest: string;
 }
@@ -268,6 +271,10 @@ export function resolveReleaseBinaryAsset(
 	if (asset.browser_download_url !== expectedUrl) {
 		throw new Error(`GitHub release asset ${binaryName} has an unexpected download URL`);
 	}
+	const apiUrl = asset.url;
+	if (typeof apiUrl !== "string" || !new RegExp(`^${GITHUB_API}/repos/${REPO}/releases/assets/\\d+$`).test(apiUrl)) {
+		throw new Error(`GitHub release asset ${binaryName} has an unexpected API URL`);
+	}
 
 	const versionMatch = expectedTag.match(/^v(\d+\.\d+\.\d+)-spring\.\d+$/);
 	if (!versionMatch) throw new Error(`Unsupported fork release tag ${expectedTag}`);
@@ -275,6 +282,7 @@ export function resolveReleaseBinaryAsset(
 		tag: expectedTag,
 		version: versionMatch[1],
 		url: expectedUrl,
+		apiUrl,
 		size: asset.size,
 		digest: `sha256:${digest.toLowerCase()}`,
 	};
@@ -334,32 +342,47 @@ async function getReleaseBinaryAsset(
 }
 
 export interface VerifiedBinaryDownloadOptions {
+	/** REST asset endpoint (`/repos/{repo}/releases/assets/{id}`). */
 	url: string;
 	targetPath: string;
 	expectedSize: number;
 	expectedDigest: string;
+	/** Required while the release repository is private. */
+	githubToken?: string;
 	fetchImpl?: Fetch;
 }
 
 /**
  * Download a binary and verify its GitHub-reported size and SHA-256 digest.
+ *
+ * Private release assets are only reachable through the REST asset endpoint
+ * with `Accept: application/octet-stream` and a token. GitHub answers with a
+ * redirect to a pre-signed storage URL that rejects an Authorization header,
+ * so the redirect is followed manually without credentials.
  */
 export async function downloadVerifiedBinary(options: VerifiedBinaryDownloadOptions): Promise<void> {
 	const fetchImpl = options.fetchImpl ?? fetch;
 	await unlinkIfExists(options.targetPath);
 
+	const headers: Record<string, string> = { Accept: "application/octet-stream" };
+	if (options.githubToken) headers.Authorization = `Bearer ${options.githubToken}`;
 	let response: Response;
 	try {
-		response = await fetchImpl(options.url, {
-			redirect: "follow",
-			signal: withTimeoutSignal(BINARY_DOWNLOAD_TIMEOUT_MS),
-		});
+		const signal = withTimeoutSignal(BINARY_DOWNLOAD_TIMEOUT_MS);
+		response = await fetchImpl(options.url, { headers, redirect: "manual", signal });
+		const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+		if (location) response = await fetchImpl(location, { redirect: "follow", signal });
 	} catch (err) {
 		if (isTimeoutError(err)) {
 			throw new Error("Timed out downloading release binary after 15 minutes", { cause: err });
 		}
 		if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
 		throw err;
+	}
+	if ((response.status === 404 || response.status === 401) && !options.githubToken) {
+		throw new Error(
+			`Download failed: ${response.status}. ${REPO} is private; run \`gh auth login\` with access to it, or set GITHUB_TOKEN`,
+		);
 	}
 	if (!response.ok || !response.body) {
 		throw new Error(`Download failed: ${response.statusText}`);
@@ -1836,10 +1859,11 @@ export async function updateViaBinaryAt(
 		));
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 	await downloadVerifiedBinary({
-		url: asset.url,
+		url: asset.apiUrl,
 		targetPath: tempPath,
 		expectedSize: asset.size,
 		expectedDigest: asset.digest,
+		githubToken: options.githubToken ?? (await resolveGitHubToken()),
 		fetchImpl: options.fetchImpl,
 	});
 	console.log(chalk.dim(`Verified ${asset.digest}`));
@@ -1929,10 +1953,11 @@ export async function updateViaShimTakeover(
 	);
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 	await downloadVerifiedBinary({
-		url: asset.url,
+		url: asset.apiUrl,
 		targetPath: tempPath,
 		expectedSize: asset.size,
 		expectedDigest: asset.digest,
+		githubToken: options.githubToken ?? (await resolveGitHubToken()),
 		fetchImpl: options.fetchImpl,
 	});
 	console.log(chalk.dim(`Verified ${asset.digest}`));

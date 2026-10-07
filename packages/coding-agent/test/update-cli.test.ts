@@ -42,6 +42,8 @@ import { $which, removeWithRetries } from "@oh-my-pi/pi-utils";
 import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 
+const ASSET_API_URL = "https://api.github.com/repos/Spring-Silicon/oh-my-pi/releases/assets/1";
+
 const miseBinary = Bun.env.MISE_BIN ?? $which("mise");
 
 const tempDirs: string[] = [];
@@ -986,6 +988,7 @@ describe("update-cli release binary integrity", () => {
 					size: Buffer.byteLength(content),
 					digest,
 					browser_download_url: url,
+					url: ASSET_API_URL,
 					...overrides,
 				},
 			],
@@ -997,6 +1000,7 @@ describe("update-cli release binary integrity", () => {
 			tag,
 			version: "17.1.2",
 			url,
+			apiUrl: ASSET_API_URL,
 			size: Buffer.byteLength(content),
 			digest,
 		});
@@ -1041,7 +1045,7 @@ describe("update-cli release binary integrity", () => {
 		// rejected even then.
 		expect(
 			resolveReleaseBinaryAsset({ ...releaseAsset(), prerelease: true }, tag, binaryName, { allowPrerelease: true }),
-		).toEqual({ tag, version: "17.1.2", url, size: Buffer.byteLength(content), digest });
+		).toEqual({ tag, version: "17.1.2", url, apiUrl: ASSET_API_URL, size: Buffer.byteLength(content), digest });
 		expect(() =>
 			resolveReleaseBinaryAsset({ ...releaseAsset(), draft: true }, tag, binaryName, { allowPrerelease: true }),
 		).toThrow("is a draft");
@@ -1062,6 +1066,45 @@ describe("update-cli release binary integrity", () => {
 		expect(await Bun.file(targetPath).text()).toBe(content);
 		// Windows has no POSIX mode bits; the executable bit is only observable elsewhere.
 		if (process.platform !== "win32") expect((await fs.stat(targetPath)).mode & 0o777).toBe(0o755);
+	});
+
+	it("authenticates the private asset request but never forwards the token to the storage redirect", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+		const storage = "https://objects.githubusercontent.com/signed/omp-linux-x64?sig=1";
+		const requests: Array<{ url: string; headers: Headers; redirect?: RequestRedirect }> = [];
+		await downloadVerifiedBinary({
+			url: ASSET_API_URL,
+			targetPath,
+			expectedSize: Buffer.byteLength(content),
+			expectedDigest: digest,
+			githubToken: "secret-token",
+			fetchImpl: async (input, init) => {
+				requests.push({ url: String(input), headers: new Headers(init?.headers), redirect: init?.redirect });
+				return String(input) === ASSET_API_URL
+					? new Response(null, { status: 302, headers: { location: storage } })
+					: new Response(content);
+			},
+		});
+		expect(await Bun.file(targetPath).text()).toBe(content);
+		expect(requests.map(request => request.url)).toEqual([ASSET_API_URL, storage]);
+		expect(requests[0].headers.get("authorization")).toBe("Bearer secret-token");
+		expect(requests[0].headers.get("accept")).toBe("application/octet-stream");
+		expect(requests[0].redirect).toBe("manual");
+		expect(requests[1].headers.get("authorization")).toBeNull();
+	});
+
+	it("explains that the release repository is private when an unauthenticated download is refused", async () => {
+		const dir = await makeTempDir();
+		await expect(
+			downloadVerifiedBinary({
+				url: ASSET_API_URL,
+				targetPath: path.join(dir, binaryName),
+				expectedSize: 1,
+				expectedDigest: digest,
+				fetchImpl: async () => new Response("Not Found", { status: 404 }),
+			}),
+		).rejects.toThrow("is private; run `gh auth login`");
 	});
 
 	it("aborts the response stream as soon as it exceeds the expected size", async () => {
@@ -1157,7 +1200,7 @@ describe("update-cli release binary integrity", () => {
 		const metadataAuthorizations: Array<string | null> = [];
 		const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 			const requestUrl = String(input);
-			if (requestUrl.startsWith("https://api.github.com/")) {
+			if (requestUrl.startsWith("https://api.github.com/") && requestUrl !== ASSET_API_URL) {
 				metadataAuthorizations.push(new Headers(init?.headers).get("Authorization"));
 				return new Response(
 					JSON.stringify(
@@ -1168,7 +1211,7 @@ describe("update-cli release binary integrity", () => {
 					),
 				);
 			}
-			if (requestUrl === url) return new Response(altered);
+			if (requestUrl === ASSET_API_URL) return new Response(altered);
 			throw new Error(`Unexpected request: ${requestUrl}`);
 		};
 
@@ -1466,7 +1509,7 @@ describe("update-cli script-shim takeover", () => {
 		const digest = `sha256:${Bun.SHA256.hash(content, "hex")}`;
 		return async (input: string | URL | Request): Promise<Response> => {
 			const requestUrl = String(input);
-			if (requestUrl.startsWith("https://api.github.com/")) {
+			if (requestUrl.startsWith("https://api.github.com/") && requestUrl !== ASSET_API_URL) {
 				return new Response(
 					JSON.stringify({
 						tag_name: `v${version}-spring.1`,
@@ -1479,12 +1522,13 @@ describe("update-cli script-shim takeover", () => {
 								size: Buffer.byteLength(content),
 								digest,
 								browser_download_url: url,
+								url: ASSET_API_URL,
 							},
 						],
 					}),
 				);
 			}
-			if (requestUrl === url) return new Response(content);
+			if (requestUrl === ASSET_API_URL) return new Response(content);
 			throw new Error(`Unexpected request: ${requestUrl}`);
 		};
 	}
@@ -1704,14 +1748,23 @@ describe("update-cli concurrent binary updates", () => {
 			tag_name: `v${version}-spring.1`,
 			draft: false,
 			prerelease: false,
-			assets: [{ name: binaryName, state: "uploaded", size: payload.byteLength, digest, browser_download_url: url }],
+			assets: [
+				{
+					name: binaryName,
+					state: "uploaded",
+					size: payload.byteLength,
+					digest,
+					browser_download_url: url,
+					url: ASSET_API_URL,
+				},
+			],
 		});
 	}
 
 	const fastFetch = async (input: string | URL | Request): Promise<Response> => {
 		const requestUrl = String(input);
-		if (requestUrl.startsWith("https://api.github.com/")) return metadata();
-		if (requestUrl === url) return new Response(payload);
+		if (requestUrl.startsWith("https://api.github.com/") && requestUrl !== ASSET_API_URL) return metadata();
+		if (requestUrl === ASSET_API_URL) return new Response(payload);
 		throw new Error(`Unexpected request: ${requestUrl}`);
 	};
 
@@ -1740,8 +1793,8 @@ describe("update-cli concurrent binary updates", () => {
 		const letAFinish = Promise.withResolvers<void>();
 		const slowFetch = async (input: string | URL | Request): Promise<Response> => {
 			const requestUrl = String(input);
-			if (requestUrl.startsWith("https://api.github.com/")) return metadata();
-			if (requestUrl === url) {
+			if (requestUrl.startsWith("https://api.github.com/") && requestUrl !== ASSET_API_URL) return metadata();
+			if (requestUrl === ASSET_API_URL) {
 				return new Response(
 					new ReadableStream<Uint8Array>({
 						async start(controller) {
