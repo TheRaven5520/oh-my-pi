@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,9 +7,12 @@ import {
 	buildInstallerEnv,
 	getBinaryName,
 	getLatestRelease,
+	IS_SPRING_RELEASE_BUILD,
 	isUpdateAvailable,
 	parseChecksum,
 	parseReleaseTag,
+	runUpdateCommand,
+	sprilicredUrl,
 } from "../../src/cli/update-cli";
 
 const digest = (content: string) => Bun.SHA256.hash(content, "hex");
@@ -180,5 +183,97 @@ describe("omp update installer delegation", () => {
 			EMPTY: undefined,
 		});
 		expect(env).toEqual({ SPRILICRED_URL: "https://spr.test" });
+	});
+});
+
+describe("runUpdateCommand", () => {
+	let dir: string;
+	let out: string[];
+	let err: string[];
+	let previousUrl: string | undefined;
+	let previousPath: string | undefined;
+
+	beforeEach(async () => {
+		dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-update-run-"));
+		vi.spyOn(os, "homedir").mockReturnValue(dir);
+		await fs.mkdir(path.join(dir, ".sprilicred"));
+		await fs.writeFile(path.join(dir, ".sprilicred", "user.key"), "sk-spr-test\n");
+		// Fence: should a spawn spy ever miss, the installer download fails instead of installing.
+		await Bun.write(path.join(dir, "curl"), "#!/bin/sh\nexit 22\n");
+		await fs.chmod(path.join(dir, "curl"), 0o755);
+		previousUrl = process.env.SPRILICRED_URL;
+		previousPath = process.env.PATH;
+		process.env.SPRILICRED_URL = "http://127.0.0.1:9";
+		process.env.PATH = `${dir}:${previousPath ?? ""}`;
+		out = [];
+		err = [];
+		vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+			out.push(Bun.stripANSI(args.join(" ")));
+		});
+		vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+			err.push(Bun.stripANSI(args.join(" ")));
+		});
+		vi.spyOn(process, "exit").mockImplementation((code?: number | string | null) => {
+			throw new Error(`exit ${code}`);
+		});
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(
+				async (input: string | URL | Request, init?: RequestInit) => {
+					if (new Headers(init?.headers).get("authorization") !== "Bearer sk-spr-test") {
+						return new Response("", { status: 401 });
+					}
+					return String(input).endsWith("/VERSION")
+						? new Response("v999.0.0-spring.9\n")
+						: new Response("not found", { status: 404 });
+				},
+				{ preconnect: globalThis.fetch.preconnect },
+			),
+		);
+	});
+
+	afterEach(async () => {
+		vi.restoreAllMocks();
+		if (previousUrl === undefined) delete process.env.SPRILICRED_URL;
+		else process.env.SPRILICRED_URL = previousUrl;
+		process.env.PATH = previousPath;
+		await fs.rm(dir, { recursive: true, force: true });
+	});
+
+	it("treats every build without the release define as self-built", () => {
+		expect(IS_SPRING_RELEASE_BUILD).toBe(false);
+	});
+
+	it("refuses to replace a self-built omp and says how to update it", async () => {
+		const spawn = vi.spyOn(Bun, "spawn");
+		await expect(runUpdateCommand({ check: false, springRelease: false })).rejects.toThrow("exit 1");
+		expect(spawn).not.toHaveBeenCalled();
+		const message = err.join("\n");
+		expect(message).toContain("built from source (a personal fork)");
+		expect(message).toContain("merging Spring-Silicon/oh-my-pi main into your fork and rebuilding");
+		expect(message).toContain("curl -fsSL http://127.0.0.1:9/install.sh | sh -s -- --clients omp");
+	});
+
+	it("still reports the latest Spring release to a self-built omp with --check", async () => {
+		const spawn = vi.spyOn(Bun, "spawn");
+		await runUpdateCommand({ check: true, springRelease: false });
+		expect(spawn).not.toHaveBeenCalled();
+		expect(out).toContain("Latest Spring Silicon release: v999.0.0-spring.9");
+		expect(out.join("\n")).toContain("merging Spring-Silicon/oh-my-pi main into your fork");
+	});
+
+	it("runs the Sprilicred installer from an official release binary", async () => {
+		const spawn = vi
+			.spyOn(Bun, "spawn")
+			.mockImplementation((() => ({ exited: Promise.resolve(0) })) as unknown as typeof Bun.spawn);
+		await runUpdateCommand({ check: false, springRelease: true });
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn.mock.calls[0][0]).toEqual(buildInstallerCommand(sprilicredUrl()));
+		expect(spawn.mock.calls[0][0]).toContain("http://127.0.0.1:9");
+		expect(err).toEqual([]);
+	});
+
+	it("reports a newer release to an official release binary with --check", async () => {
+		await runUpdateCommand({ check: true, springRelease: true });
+		expect(out).toContain("New version available: v999.0.0-spring.9");
 	});
 });

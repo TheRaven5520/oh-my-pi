@@ -46,6 +46,10 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_COMPILED": JSON.stringify("true"),
 				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
+				// Official Spring Silicon release binaries only (`OMP_SPRING_RELEASE=1`). A bare
+				// identifier, not process.env, so no runtime environment can claim it; any other
+				// build is self-built and `omp update` will not replace it.
+				...(Bun.env.OMP_SPRING_RELEASE === "1" ? { __OMP_SPRING_RELEASE__: JSON.stringify("true") } : {}),
 			},
 			// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
 			// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).

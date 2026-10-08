@@ -39,7 +39,7 @@ import { buildInitialMessage } from "./cli/initial-message";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { SessionPickerOptions } from "@oh-my-pi/pi-tui/apps/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
-import { getLatestRelease, isUpdateAvailable } from "./cli/update-cli";
+import { getLatestRelease, IS_SPRING_RELEASE_BUILD, isUpdateAvailable } from "./cli/update-cli";
 import { findConfigFile } from "./config";
 import { ModelRegistry } from "./config/model-registry";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
@@ -232,13 +232,15 @@ export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string)
 
 /**
  * Startup update check. Opt-in (`startup.checkUpdate`): while the setting is
- * off this returns before any Sprilicred request is made.
+ * off this returns before any Sprilicred request is made. A self-built omp is
+ * never offered the Spring Silicon build (`omp update --check` still reports it).
  */
 export async function checkForNewVersion(
 	currentVersion: string,
 	binaryPath = process.execPath,
+	springRelease = IS_SPRING_RELEASE_BUILD,
 ): Promise<string | undefined> {
-	if (!cfgStartupCheckUpdate.get(settings)) {
+	if (!springRelease || !cfgStartupCheckUpdate.get(settings)) {
 		return;
 	}
 	try {

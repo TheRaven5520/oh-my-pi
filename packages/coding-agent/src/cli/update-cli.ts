@@ -34,6 +34,28 @@ const INSTALLER_SCRIPT =
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+/** Defined only by release builds; see {@link IS_SPRING_RELEASE_BUILD}. */
+declare const __OMP_SPRING_RELEASE__: string | undefined;
+
+/**
+ * Whether this is an official Spring Silicon release binary: compiled with
+ * `OMP_SPRING_RELEASE=1`, which defines `__OMP_SPRING_RELEASE__`
+ * (scripts/compile-binary.ts). Source runs and every other build are
+ * self-built (a personal fork), which `omp update` never replaces. A build-time
+ * identifier rather than an environment variable, so no environment can claim it.
+ */
+export const IS_SPRING_RELEASE_BUILD =
+	typeof __OMP_SPRING_RELEASE__ !== "undefined" && __OMP_SPRING_RELEASE__ === "true";
+
+/** How a self-built omp is updated, printed instead of running the installer. */
+export function selfBuiltUpdateHint(baseUrl: string = sprilicredUrl()): string {
+	return [
+		`This ${APP_NAME} was built from source (a personal fork), so \`${APP_NAME} update\` will not replace it.`,
+		"Update it by merging Spring-Silicon/oh-my-pi main into your fork and rebuilding,",
+		`or replace it with the Spring Silicon build: curl -fsSL ${baseUrl}/install.sh | sh -s -- --clients omp`,
+	].join("\n");
+}
+
 /** The Spring Silicon omp build Sprilicred currently publishes. */
 export interface PublishedRelease {
 	/** Release tag, e.g. `v18.6.1-spring.5`. */
@@ -197,10 +219,12 @@ export function buildInstallerEnv(env: Record<string, string | undefined> = proc
 
 /**
  * Run the update command: `--check` reports the published release; otherwise
- * the Sprilicred installer replaces omp.
+ * the Sprilicred installer replaces an official release binary. A self-built
+ * omp (`springRelease` false) is never replaced; it prints how to update instead.
  */
-export async function runUpdateCommand(opts: { check: boolean }): Promise<void> {
-	console.log(chalk.dim(`Current version: ${VERSION}`));
+export async function runUpdateCommand(opts: { check: boolean; springRelease?: boolean }): Promise<void> {
+	const springRelease = opts.springRelease ?? IS_SPRING_RELEASE_BUILD;
+	console.log(chalk.dim(`Current version: ${VERSION}${springRelease ? "" : " (self-built)"}`));
 	if (opts.check) {
 		let release: PublishedRelease;
 		try {
@@ -208,6 +232,11 @@ export async function runUpdateCommand(opts: { check: boolean }): Promise<void> 
 		} catch (err) {
 			console.error(chalk.red(`Failed to check for updates: ${err instanceof Error ? err.message : err}`));
 			process.exit(1);
+		}
+		if (!springRelease) {
+			console.log(chalk.cyan(`Latest Spring Silicon release: ${release.tag}`));
+			console.log(chalk.dim(selfBuiltUpdateHint()));
+			return;
 		}
 		const binaryPath = $which(APP_NAME) ?? process.execPath;
 		if (await isUpdateAvailable(release, binaryPath)) {
@@ -224,6 +253,10 @@ export async function runUpdateCommand(opts: { check: boolean }): Promise<void> 
 			console.log(chalk.green(`${icon} Already up to date (${release.tag})`));
 		}
 		return;
+	}
+	if (!springRelease) {
+		console.error(chalk.yellow(selfBuiltUpdateHint()));
+		process.exit(1);
 	}
 	console.log(chalk.dim(`Running the Sprilicred installer: ${sprilicredUrl()}/install.sh --clients omp --yes`));
 	const installer = Bun.spawn(buildInstallerCommand(), {

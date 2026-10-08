@@ -3,11 +3,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type * as readline from "node:readline";
+import { withAuth } from "@oh-my-pi/pi-ai/auth-retry";
 import { cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { clearConfigValueCache, resolveConfigValue } from "@oh-my-pi/pi-coding-agent/config/resolve-config-value";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runSprilicredLogin } from "@oh-my-pi/pi-coding-agent/cli/sprilicred-login";
 import { writeTokenFile } from "@oh-my-pi/pi-coding-agent/cli/token-file";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 
 // Every test supplies the key, so the login never prompts on this interface.
 const noPrompt = {} as unknown as readline.Interface;
@@ -177,5 +180,55 @@ describe("Sprilicred login", () => {
 		expect((await fs.lstat(tokenPath)).isSymbolicLink()).toBe(false);
 		expect(await fs.readFile(tokenPath, "utf8")).toBe("local-broker-token");
 		expect(await fs.readFile(path.join(root, ".sprilicred", "user.key"), "utf8")).toBe("sk-spr-kept\n");
+	});
+
+	test("a key rotated mid-session is used on the first 401, without a retry loop", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		// The shared fixture's bare `other` provider is not loadable by ModelRegistry; start from an empty file.
+		await fs.writeFile(path.join(agentDir, "models.yml"), "{}\n");
+		await runSprilicredLogin(noPrompt, settings, "sk-spr-old", { home: root, agentDir, tokenPath });
+		const keyPath = path.join(root, ".sprilicred", "user.key");
+		const unauthorized = () => Object.assign(new Error("401 authentication_error"), { status: 401 });
+		const authStorage = await AuthStorage.create(":memory:");
+		try {
+			const registry = new ModelRegistry(authStorage, path.join(agentDir, "models.yml"));
+			for (const [provider, id] of [
+				["sprilicred-anthropic", "claude-sonnet-5"],
+				["sprilicred-openai", "gpt-6-astra"],
+			]) {
+				const model = registry.find(provider, id);
+				if (!model) throw new Error(`Expected ${provider}/${id} from the login's models.yml`);
+				await fs.writeFile(keyPath, "sk-spr-old\n");
+				clearConfigValueCache();
+				expect(await registry.getApiKey(model)).toBe("sk-spr-old");
+
+				// `sprilicred-connect key` rewrites the file while the session runs; the cached key stays until a 401.
+				await fs.writeFile(keyPath, "sk-spr-new\n");
+				expect(await registry.getApiKey(model)).toBe("sk-spr-old");
+				const sent: string[] = [];
+				const result = await withAuth(registry.resolver(model), async key => {
+					sent.push(key);
+					if (key !== "sk-spr-new") throw unauthorized();
+					return "ok";
+				});
+				expect(result).toBe("ok");
+				expect(sent).toEqual(["sk-spr-old", "sk-spr-new"]);
+				expect((await registry.resolveModelHeaders(model))?.Authorization).toBe("Bearer sk-spr-new");
+			}
+
+			// A key Sprilicred keeps rejecting is re-read once and then the 401 surfaces.
+			const model = registry.find("sprilicred-openai", "gpt-6-astra");
+			if (!model) throw new Error("Expected sprilicred-openai/gpt-6-astra");
+			const sent: string[] = [];
+			await expect(
+				withAuth(registry.resolver(model), async key => {
+					sent.push(key);
+					throw unauthorized();
+				}),
+			).rejects.toThrow("401");
+			expect(sent).toEqual(["sk-spr-new"]);
+		} finally {
+			authStorage.close();
+		}
 	});
 });
