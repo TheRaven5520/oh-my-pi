@@ -24,6 +24,7 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
 	model_unsupported: "this model doesn't offer it",
 	no_pro500_capacity: "no Pro 500 account has room",
 	account_refuses: "the serving account refused it",
+	fast_daily_cap: "daily fast-mode spend cap reached",
 };
 
 /**

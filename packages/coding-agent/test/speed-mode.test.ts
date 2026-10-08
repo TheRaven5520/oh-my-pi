@@ -8,7 +8,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { describeSpeedOutcome } from "@oh-my-pi/pi-coding-agent/session/speed-notice";
+import { describeSpeedOutcome, servedSpeed, speedStatus } from "@oh-my-pi/pi-coding-agent/session/speed-notice";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -343,6 +343,18 @@ describe("speed outcome messages", () => {
 			"Refused fallback to API pricing; using standard.",
 		],
 		[
+			"fast past the daily fast spend cap",
+			{ requested: "fast", forwarded: "standard", reason: "fast_daily_cap" },
+			"stop",
+			"Fast mode unavailable (daily fast-mode spend cap reached); using standard.",
+		],
+		[
+			"a reason this omp doesn't know yet still names it",
+			{ requested: "fast", forwarded: "standard", reason: "brand_new_reason" },
+			"stop",
+			"Fast mode unavailable (reason brand_new_reason); using standard.",
+		],
+		[
 			"no headers, provider served standard",
 			{ requested: "fast", served: "standard" },
 			"stop",
@@ -372,5 +384,11 @@ describe("speed outcome messages", () => {
 		expect(describeSpeedOutcome(turn(undefined), "ultrafast", "personal-openai/gpt-6-astra")?.text).toBe(
 			"Ultrafast not sent: personal-openai/gpt-6-astra doesn't offer Ultrafast.",
 		);
+	});
+
+	it("shows a fast turn the daily cap sent at standard as Fast→Normal", () => {
+		const capped = turn({ requested: "fast", forwarded: "standard", reason: "fast_daily_cap" });
+		expect(speedStatus("fast", servedSpeed(capped, "fast"))).toEqual({ text: "Fast→Normal", level: "warning" });
+		expect(describeSpeedOutcome(capped, undefined, "m")?.key).toBe("downgraded:fast:standard:fast_daily_cap");
 	});
 });
