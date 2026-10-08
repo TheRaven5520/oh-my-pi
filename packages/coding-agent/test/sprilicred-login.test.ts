@@ -2,9 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type * as readline from "node:readline";
 import { cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
+import { clearConfigValueCache, resolveConfigValue } from "@oh-my-pi/pi-coding-agent/config/resolve-config-value";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runSprilicredLogin } from "@oh-my-pi/pi-coding-agent/cli/sprilicred-login";
+import { writeTokenFile } from "@oh-my-pi/pi-coding-agent/cli/token-file";
+
+// Every test supplies the key, so the login never prompts on this interface.
+const noPrompt = {} as unknown as readline.Interface;
 
 describe("Sprilicred login", () => {
 	let root: string;
@@ -93,7 +99,7 @@ describe("Sprilicred login", () => {
 	test("writes server metadata, preserves ownership, and refreshes owned prices", async () => {
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
 		const paths = { home: root, agentDir, tokenPath };
-		await runSprilicredLogin({} as any, settings, "test-key", paths);
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
 
 		const first = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
 		const anthropic = first.providers["sprilicred-anthropic"];
@@ -114,11 +120,62 @@ describe("Sprilicred login", () => {
 		await settings.flush();
 
 		price = 2000;
-		await runSprilicredLogin({} as any, settings, "test-key", paths);
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
 		const second = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
 		expect(second.providers["sprilicred-anthropic"].models[0].cost.input).toBe(2);
 		expect(second.providers["sprilicred-anthropic"].models[0].contextWindow).toBe(500000);
 		expect(cfgModelRoles.get(settings).smol).toBe("other/keep");
 		expect((await fs.readFile(tokenPath, "utf8")).trim()).toBe("test-key");
+	});
+
+	test("keeps the key only in ~/.sprilicred/user.key and links the broker token to it", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await fs.writeFile(tokenPath, "older-broker-token", { mode: 0o600 });
+		await runSprilicredLogin(noPrompt, settings, "sk-spr-first", { home: root, agentDir, tokenPath });
+
+		const keyPath = path.join(root, ".sprilicred", "user.key");
+		expect(await fs.readFile(keyPath, "utf8")).toBe("sk-spr-first\n");
+		expect((await fs.stat(keyPath)).mode & 0o777).toBe(0o600);
+		expect((await fs.stat(path.dirname(keyPath))).mode & 0o777).toBe(0o700);
+		expect((await fs.lstat(tokenPath)).isSymbolicLink()).toBe(true);
+		expect(await fs.readlink(tokenPath)).toBe(keyPath);
+		expect(await fs.readFile(`${tokenPath}.before-sprilicred`, "utf8")).toBe("older-broker-token");
+
+		const models = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
+		const apiKey = `!cat '${keyPath}'`;
+		expect(models.providers["sprilicred-anthropic"].apiKey).toBe(apiKey);
+		expect(models.providers["sprilicred-openai"].apiKey).toBe(apiKey);
+		expect(await fs.readFile(path.join(agentDir, "models.yml"), "utf8")).not.toContain("sk-spr-first");
+		clearConfigValueCache();
+		expect(await resolveConfigValue(apiKey)).toBe("sk-spr-first");
+
+		// Rotating the key rewrites only the key file; both omp readers see it.
+		await fs.writeFile(keyPath, "sk-spr-rotated\n");
+		expect((await fs.readFile(tokenPath, "utf8")).trim()).toBe("sk-spr-rotated");
+		clearConfigValueCache();
+		expect(await resolveConfigValue(apiKey)).toBe("sk-spr-rotated");
+
+		// A second login keeps the link and rewrites the key file in place.
+		await runSprilicredLogin(noPrompt, settings, "sk-spr-second", { home: root, agentDir, tokenPath });
+		expect(await fs.readlink(tokenPath)).toBe(keyPath);
+		expect(await fs.readFile(keyPath, "utf8")).toBe("sk-spr-second\n");
+		expect(await fs.readFile(`${tokenPath}.before-sprilicred`, "utf8")).toBe("older-broker-token");
+	});
+
+	test("rejects a key containing whitespace before writing anything", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await expect(
+			runSprilicredLogin(noPrompt, settings, "sk-spr-a b", { home: root, agentDir, tokenPath }),
+		).rejects.toThrow("whitespace");
+		expect(await fs.exists(path.join(root, ".sprilicred", "user.key"))).toBe(false);
+	});
+
+	test("a locally generated broker token replaces the link instead of overwriting the key", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await runSprilicredLogin(noPrompt, settings, "sk-spr-kept", { home: root, agentDir, tokenPath });
+		await writeTokenFile(tokenPath, "local-broker-token");
+		expect((await fs.lstat(tokenPath)).isSymbolicLink()).toBe(false);
+		expect(await fs.readFile(tokenPath, "utf8")).toBe("local-broker-token");
+		expect(await fs.readFile(path.join(root, ".sprilicred", "user.key"), "utf8")).toBe("sk-spr-kept\n");
 	});
 });

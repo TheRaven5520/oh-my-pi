@@ -18,9 +18,20 @@ export async function readTokenFile(file: string): Promise<string | null> {
 	}
 }
 
-/** Write a token file readable only by the current user. */
+/**
+ * Write a token file readable only by the current user.
+ *
+ * A symlinked token path is replaced, never written through: `omp login
+ * sprilicred` links `auth-broker.token` to `~/.sprilicred/user.key`, and a
+ * locally generated broker token must not overwrite the Sprilicred key.
+ */
 export async function writeTokenFile(file: string, token: string): Promise<void> {
 	await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+	const isSymlink = await fs
+		.lstat(file)
+		.then(stat => stat.isSymbolicLink())
+		.catch(() => false);
+	if (isSymlink) await fs.unlink(file);
 	await fs.writeFile(file, token, { mode: 0o600 });
 	try {
 		await fs.chmod(file, 0o600);

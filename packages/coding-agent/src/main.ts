@@ -39,7 +39,7 @@ import { buildInitialMessage } from "./cli/initial-message";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { SessionPickerOptions } from "@oh-my-pi/pi-tui/apps/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
-import { getLatestRelease, installedBinaryMatchesRelease } from "./cli/update-cli";
+import { getLatestRelease, isUpdateAvailable } from "./cli/update-cli";
 import { findConfigFile } from "./config";
 import { ModelRegistry } from "./config/model-registry";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
@@ -164,7 +164,6 @@ import {
 	cfgTuiImeSafeCursor,
 	cfgTuiMaxInlineImages,
 	cfgTuiResizeScrollback,
-	cfgUpdateChannel,
 } from "./modes/settings";
 import {
 	cfgDefaultThinkingLevel,
@@ -233,7 +232,7 @@ export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string)
 
 /**
  * Startup update check. Opt-in (`startup.checkUpdate`): while the setting is
- * off this returns before any release request is made.
+ * off this returns before any Sprilicred request is made.
  */
 export async function checkForNewVersion(
 	currentVersion: string,
@@ -243,15 +242,8 @@ export async function checkForNewVersion(
 		return;
 	}
 	try {
-		const channel = cfgUpdateChannel.get(settings);
-		const release = await getLatestRelease({ timeoutMs: 5_000, channel });
-		const comparison = Bun.semver.order(release.version, currentVersion);
-		if (
-			comparison > 0 ||
-			(comparison === 0 && release.asset && !(await installedBinaryMatchesRelease(release.asset, binaryPath)))
-		) {
-			return release.tag.replace(/^v/, "");
-		}
+		const release = await getLatestRelease({ timeoutMs: 5_000 });
+		if (await isUpdateAvailable(release, binaryPath, currentVersion)) return release.tag.replace(/^v/, "");
 	} catch {
 		return undefined;
 	}

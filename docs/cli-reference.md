@@ -280,7 +280,7 @@ Run `omp <command> --help` for each command's own flags and examples.
 | `ssh` | Manage SSH host configurations. | |
 | `stats` | View usage statistics. | |
 | `stream` | Broadcast local OMP session screens and chat to a public live channel. | |
-| `update` | Check for and install updates; `--canary`/`--stable` switch release channels. | |
+| `update` | Run the Sprilicred installer for omp (`--clients omp --yes`); `--check` reports the release Sprilicred publishes; `--plugins` upgrades plugins. | |
 | `usage` | Show provider usage limits for every authenticated account; `usage clients` breaks token burn down per client (with `--days`), `usage invalidate` drops cached reports. | |
 | `tiny-models` | Download tiny local models for session titles, memory, and word completion. | [local models](./local-models.md) |
 | `token` | Get the API key or OAuth token for a provider. | [secrets](./secrets.md) |

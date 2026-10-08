@@ -15,6 +15,7 @@ const ROLES_STATE = ".sprilicred/omp-roles.json";
 const CYCLE_STATE = ".sprilicred/omp-cycle.before-sprilicred.json";
 const BROKER_STATE = ".sprilicred/omp-broker.before-sprilicred.json";
 const CYCLE_MODELS = ["sprilicred-anthropic/*", "sprilicred-openai/*"];
+const KEY_FILE = ".sprilicred/user.key";
 
 type CatalogModel = {
 	id: string;
@@ -35,7 +36,12 @@ type WrittenModels = {
 	openai: string[];
 };
 
-export type SprilicredLoginPaths = { home: string; agentDir: string; tokenPath: string };
+/**
+ * `keyPath` is the single source of truth for the Sprilicred key, shared with
+ * the Sprilicred installer and `sprilicred-connect`. omp never stores a copy:
+ * models.yml reads it with `!cat`, and the auth-broker token is a symlink to it.
+ */
+export type SprilicredLoginPaths = { home: string; agentDir: string; tokenPath: string; keyPath: string };
 
 function resolvePaths(overrides?: Partial<SprilicredLoginPaths>): SprilicredLoginPaths {
 	const home = overrides?.home ?? os.homedir();
@@ -45,6 +51,7 @@ function resolvePaths(overrides?: Partial<SprilicredLoginPaths>): SprilicredLogi
 		tokenPath:
 			overrides?.tokenPath ??
 			(overrides?.home ? path.join(home, ".omp/auth-broker.token") : getAuthBrokerTokenFilePath()),
+		keyPath: path.resolve(overrides?.keyPath ?? path.join(home, KEY_FILE)),
 	};
 }
 
@@ -163,7 +170,7 @@ async function writeModels(
 	}
 
 	const providers = existing.providers ? { ...existing.providers } : {};
-	const tokenCommand = `!cat ${shellQuote(paths.tokenPath)}`;
+	const keyCommand = `!cat ${shellQuote(paths.keyPath)}`;
 	const statePath = path.join(paths.home, MODEL_STATE);
 	const state = (await readJson(statePath, {})) as ModelState;
 	const discovery = {
@@ -199,7 +206,7 @@ async function writeModels(
 		}
 		providers[provider] = {
 			baseUrl: `${endpoint()}${suffix}`,
-			apiKey: tokenCommand,
+			apiKey: keyCommand,
 			auth: family === "anthropic" ? "oauth" : "apiKey",
 			authHeader: true,
 			api,
@@ -238,16 +245,43 @@ function wantedRoles(models: WrittenModels): Record<string, string> {
 	};
 }
 
+/** Save the key as the single 0600 line in `keyPath`, inside a 0700 directory. */
+async function writeKeyFile(keyPath: string, key: string): Promise<void> {
+	await privateWrite(keyPath, `${key}\n`);
+	await fs.chmod(path.dirname(keyPath), 0o700);
+}
+
+/**
+ * Point the auth-broker token path at the key file. The broker reads the token
+ * with readFile, which follows the link, so key rotation needs no omp write.
+ * The link is swapped in with rename, replacing a regular-file copy left by an
+ * older login atomically.
+ */
+async function linkBrokerToken(tokenPath: string, keyPath: string): Promise<void> {
+	const current = await fs.readlink(tokenPath).catch(() => undefined);
+	if (current !== undefined && path.resolve(path.dirname(tokenPath), current) === keyPath) return;
+	await fs.mkdir(path.dirname(tokenPath), { recursive: true, mode: 0o700 });
+	const temporary = `${tokenPath}.tmp-${process.pid}`;
+	await fs.rm(temporary, { force: true });
+	await fs.symlink(keyPath, temporary);
+	await fs.rename(temporary, tokenPath);
+}
+
 async function prepareBroker(settings: Settings, key: string, paths: SprilicredLoginPaths): Promise<void> {
 	const statePath = path.join(paths.home, BROKER_STATE);
 	if (!(await exists(statePath))) {
 		const currentUrl = cfgAuthBrokerUrl.get(settings);
 		const before = currentUrl && !currentUrl.includes("sprilicred") ? currentUrl : undefined;
 		const backup = `${paths.tokenPath}.before-sprilicred`;
-		if ((await exists(paths.tokenPath)) && !(await exists(backup))) await fs.copyFile(paths.tokenPath, backup);
+		const isRegularFile = await fs
+			.lstat(paths.tokenPath)
+			.then(stat => stat.isFile())
+			.catch(() => false);
+		if (isRegularFile && !(await exists(backup))) await fs.copyFile(paths.tokenPath, backup);
 		await privateWrite(statePath, `${JSON.stringify({ url: before })}\n`);
 	}
-	await privateWrite(paths.tokenPath, key);
+	await writeKeyFile(paths.keyPath, key);
+	await linkBrokerToken(paths.tokenPath, paths.keyPath);
 	cfgAuthBrokerUrl.set(settings, endpoint());
 	cfgAuthBrokerToken.unset(settings);
 	await settings.flush();
@@ -293,6 +327,7 @@ export async function runSprilicredLogin(
 ): Promise<void> {
 	const key = (suppliedKey ?? (await promptLine(rl, "Paste your Sprilicred API key: "))).trim();
 	if (!key) throw new Error("Sprilicred API key is empty");
+	if (/\s/.test(key)) throw new Error("Sprilicred API key must be a single token without whitespace");
 	const baseUrl = endpoint();
 	const [openai, anthropic] = await Promise.all([
 		fetchCatalog(baseUrl, "/v1/models", key),
@@ -303,6 +338,6 @@ export async function runSprilicredLogin(
 	const models = await writeModels({ anthropic, openai }, paths);
 	await writeOwnedSettings(settings, models, paths);
 	process.stdout.write(
-		`\nLogged in to Sprilicred; configured ${models.anthropic.length + models.openai.length} models\n`,
+		`\nLogged in to Sprilicred; key saved to ${paths.keyPath}; configured ${models.anthropic.length + models.openai.length} models\n`,
 	);
 }

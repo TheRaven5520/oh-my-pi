@@ -157,7 +157,9 @@ export const ttsrHelp = {
 	description: "Inspect and test Time-Traveling Stream Rules (TTSR)",
 } satisfies CommandMetadata;
 
-export const updateHelp = { description: "Check for and install updates" } satisfies CommandMetadata;
+export const updateHelp = {
+	description: "Update omp by running the Sprilicred installer",
+} satisfies CommandMetadata;
 
 export const usageHelp = {
 	description: "Show provider usage limits for every authenticated account",
