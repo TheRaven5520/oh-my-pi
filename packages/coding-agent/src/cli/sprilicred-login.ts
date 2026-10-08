@@ -5,6 +5,7 @@ import type * as readline from "node:readline";
 import { getAuthBrokerTokenFilePath } from "@oh-my-pi/pi-ai/auth-broker/discover";
 import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
+import { advertisesAnthropicFastMode } from "../config/model-discovery";
 import { cfgAuthBrokerToken, cfgAuthBrokerUrl, cfgCycleModels, cfgModelRoles } from "../config/model-settings";
 import type { Settings } from "../config/settings";
 import { promptLine } from "./oauth-terminal";
@@ -130,7 +131,7 @@ function modelFields(model: CatalogModel, family: "anthropic" | "openai"): Recor
 		};
 		if (Object.values(cost).every(value => value !== undefined)) fields.cost = cost;
 	}
-	if (family === "anthropic" && pricing?.fast_mode !== null && typeof pricing?.fast_mode === "object") {
+	if (family === "anthropic" && advertisesAnthropicFastMode(model)) {
 		fields.compat = { supportsFastMode: true };
 	}
 	return fields;

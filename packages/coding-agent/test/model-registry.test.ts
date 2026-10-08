@@ -2938,6 +2938,7 @@ describe("ModelRegistry", () => {
 		let staticOnlySharedCatalogCache: ModelRegistry;
 		let litellmCurrentNamespaceCache: ModelRegistry;
 		let openaiModelsListStaleNamespaceCache: ModelRegistry;
+		let openaiModelsListPreFastNamespaceCache: ModelRegistry;
 		const vertexProjectModel = () =>
 			buildModel({
 				id: "zai-org/glm-4.7-maas",
@@ -3174,7 +3175,7 @@ describe("ModelRegistry", () => {
 				{
 					seedCache: dbPath =>
 						writeModelCache(
-							"cached-compact-proxy:openai-models-list-context-v3",
+							"cached-compact-proxy:openai-models-list-context-v4",
 							Date.now(),
 							[
 								buildModel({
@@ -3283,6 +3284,46 @@ describe("ModelRegistry", () => {
 						),
 				},
 			);
+			openaiModelsListPreFastNamespaceCache = readonlyRegistry(
+				{
+					providers: {
+						"stale-claude-gateway": {
+							baseUrl: "https://stale-gateway.example.com/anthropic",
+							apiKey: "TEST_KEY",
+							api: "anthropic-messages",
+							discovery: { type: "openai-models-list" },
+							models: [],
+						},
+					},
+				},
+				{
+					// Row under the retired pre-fast-mode namespace: it was cached
+					// before `pricing.fast_mode` set `compat.supportsFastMode`, so
+					// serving it would leave `/fast` unrealized on a fast model.
+					seedCache: dbPath =>
+						writeModelCache(
+							"stale-claude-gateway:openai-models-list-context-v3",
+							Date.now(),
+							[
+								buildModel({
+									id: "claude-opus-5-5",
+									name: "Stale Opus",
+									api: "anthropic-messages",
+									provider: "stale-claude-gateway",
+									baseUrl: "https://stale-gateway.example.com/anthropic",
+									reasoning: true,
+									input: ["text"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 1_000_000,
+									maxTokens: 128_000,
+								}),
+							],
+							true,
+							"",
+							dbPath,
+						),
+				},
+			);
 		});
 
 		test("legacy cached discovery sentinels are ignored after nullable limit cutover", () => {
@@ -3332,6 +3373,13 @@ describe("ModelRegistry", () => {
 			// pinned vision-capable ids at text-only and must not load.
 			expect(openaiModelsListStaleNamespaceCache.find("stale-openai-proxy", "stale-vlm")).toBeUndefined();
 			expect(getModelsForProvider(openaiModelsListStaleNamespaceCache, "stale-openai-proxy")).toHaveLength(0);
+		});
+
+		test("ignores openai-models-list rows cached under the retired context-v3 namespace", () => {
+			// v3 rows predate `pricing.fast_mode` → `compat.supportsFastMode`; a
+			// warm row must not keep `/fast` from reaching a fast Claude model.
+			expect(openaiModelsListPreFastNamespaceCache.find("stale-claude-gateway", "claude-opus-5-5")).toBeUndefined();
+			expect(getModelsForProvider(openaiModelsListPreFastNamespaceCache, "stale-claude-gateway")).toHaveLength(0);
 		});
 
 		test("replaces bundled google-vertex models with authoritative Vertex project discovery", () => {

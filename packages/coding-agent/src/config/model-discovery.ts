@@ -176,6 +176,18 @@ export function discoveryDefaultMaxTokens(api: Api | undefined): number {
 	return api === "anthropic-messages" ? DISCOVERY_DEFAULT_MAX_TOKENS_ANTHROPIC : DISCOVERY_DEFAULT_MAX_TOKENS;
 }
 
+/**
+ * Whether a `/models` row prices Claude fast mode: Sprilicred describes it as a
+ * `pricing.fast_mode` object on each Claude model that has it. Such a model on
+ * an `anthropic-messages` provider gets `compat.supportsFastMode`, so `/fast`
+ * sends `speed: "fast"` and the fast-mode beta to it.
+ */
+export function advertisesAnthropicFastMode(row: { pricing?: unknown }): boolean {
+	const pricing = row.pricing;
+	if (typeof pricing !== "object" || pricing === null || !("fast_mode" in pricing)) return false;
+	return typeof pricing.fast_mode === "object" && pricing.fast_mode !== null;
+}
+
 export interface DiscoveryProviderConfig {
 	provider: string;
 	api: Api;
@@ -909,6 +921,7 @@ export async function discoverOpenAIModelsList(
 						context_length?: unknown;
 						max_output_tokens?: unknown;
 						supports_reasoning?: unknown;
+						pricing?: unknown;
 						limits?: unknown;
 						input?: unknown;
 						input_modalities?: unknown;
@@ -1039,6 +1052,10 @@ export async function discoverOpenAIModelsList(
 						: {}),
 					...(referenceCompat?.omitReasoningEffort !== undefined
 						? { omitReasoningEffort: referenceCompat.omitReasoningEffort }
+						: {}),
+					// A gateway that prices fast mode for this Claude model accepts it.
+					...(api === "anthropic-messages" && advertisesAnthropicFastMode(item)
+						? { supportsFastMode: true }
 						: {}),
 				},
 			} as ModelSpec<Api>),
