@@ -60,7 +60,11 @@ describe("Sprilicred Claude fast mode on the wire", () => {
 						api: "anthropic-messages",
 						discovery: { type: "openai-models-list" },
 						models: [
-							{ id: "claude-opus-5-5", name: "claude-opus-5-5 via Sprilicred", compat: { supportsFastMode: true } },
+							{
+								id: "claude-opus-5-5",
+								name: "claude-opus-5-5 via Sprilicred",
+								compat: { supportsFastMode: true },
+							},
 							{ id: "claude-sonnet-5", name: "claude-sonnet-5 via Sprilicred" },
 						],
 					},
@@ -114,7 +118,7 @@ describe("Sprilicred Claude fast mode on the wire", () => {
 			expect(realizesPriorityServiceTier("priority", model)).toBe(true);
 
 			const request = await fastTurn(model);
-			expect(request.url).toBe("https://sprilicred.example/anthropic/v1/messages");
+			expect(request.url).toBe("https://sprilicred.example/anthropic/v1/messages?beta=true");
 			expect(request.authorization).toBe("Bearer sk-spr-test");
 			expect(request.body.model).toBe(id);
 			expect(request.body.speed).toBe("fast");

@@ -1054,9 +1054,7 @@ export async function discoverOpenAIModelsList(
 						? { omitReasoningEffort: referenceCompat.omitReasoningEffort }
 						: {}),
 					// A gateway that prices fast mode for this Claude model accepts it.
-					...(api === "anthropic-messages" && advertisesAnthropicFastMode(item)
-						? { supportsFastMode: true }
-						: {}),
+					...(api === "anthropic-messages" && advertisesAnthropicFastMode(item) ? { supportsFastMode: true } : {}),
 				},
 			} as ModelSpec<Api>),
 		);
