@@ -876,6 +876,16 @@ function renderedLine(text: string, literalCode?: boolean): RenderedLine {
 	return literalCode ? { text, literalCode: true } : { text };
 }
 
+/**
+ * Fenced code renders no delimiter rows. An info string that is more than a
+ * bare language tag (e.g. a `start:end:path` citation) carries navigation
+ * info, so it alone survives as a header row.
+ */
+function codeFenceInfoHeader(lang: string | undefined): string | undefined {
+	const info = lang?.trim() ?? "";
+	return /^[\w+#.-]*$/.test(info) ? undefined : info;
+}
+
 const renderCache = new LRUCache<string, readonly string[]>({
 	max: RENDER_CACHE_MAX,
 	maxSize: RENDER_CACHE_MAX_SIZE,
@@ -3440,11 +3450,11 @@ export class Markdown implements Component {
 				}
 
 				const codeIndent = padding(this.#codeBlockIndent);
-				lines.push(renderedLine(this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`)));
+				const infoHeader = codeFenceInfoHeader(token.lang);
+				if (infoHeader) lines.push(renderedLine(this.#theme.codeBlockBorder(infoHeader)));
 				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
 					lines.push(bodyLine);
 				}
-				lines.push(renderedLine(this.#theme.codeBlockBorder("```")));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(renderedLine("")); // Add spacing after code blocks (unless space token follows)
 				}
@@ -3878,13 +3888,12 @@ export class Markdown implements Component {
 					lines.push({ text: this.#renderInlineTokens(token.tokens || [], styleContext), nested: false });
 				}
 			} else if (token.type === "code") {
-				// Code block in list item
 				const codeIndent = padding(this.#codeBlockIndent);
-				lines.push({ text: this.#theme.codeBlockBorder(`\`\`\`${token.lang || ""}`), nested: false });
+				const infoHeader = codeFenceInfoHeader(token.lang);
+				if (infoHeader) lines.push({ text: this.#theme.codeBlockBorder(infoHeader), nested: false });
 				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
 					lines.push({ ...bodyLine, nested: false });
 				}
-				lines.push({ text: this.#theme.codeBlockBorder("```"), nested: false });
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.
 				const apply = styleContext?.applyText ?? ((t: string) => this.#applyDefaultStyle(t));

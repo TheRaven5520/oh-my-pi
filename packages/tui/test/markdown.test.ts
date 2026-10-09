@@ -848,15 +848,15 @@ again, hello world`,
 			const lines = markdown.render(80);
 			const plainLines = lines.map(line => stripVTControlCharacters(line).trimEnd());
 
-			const closingBackticksIndex = plainLines.indexOf("```");
-			expect(closingBackticksIndex !== -1, "Should have closing backticks").toBeTruthy();
+			const codeIndex = plainLines.findIndex(line => line.includes('const hello = "world";'));
+			expect(codeIndex !== -1, "Should render the code body").toBeTruthy();
 
-			const afterBackticks = plainLines.slice(closingBackticksIndex + 1);
-			const emptyLineCount = afterBackticks.findIndex(line => line !== "");
+			const afterCode = plainLines.slice(codeIndex + 1);
+			const emptyLineCount = afterCode.findIndex(line => line !== "");
 
 			expect(
 				emptyLineCount,
-				`Expected 1 empty line after code block, but found ${emptyLineCount}. Lines after backticks: ${JSON.stringify(afterBackticks.slice(0, 5))}`,
+				`Expected 1 empty line after code block, but found ${emptyLineCount}. Lines after code: ${JSON.stringify(afterCode.slice(0, 5))}`,
 			).toBe(1);
 		});
 
@@ -875,7 +875,7 @@ code block
 
 more text`,
 			];
-			const expectedLines = ["hello this is text", "", "```", "  code block", "```", "", "more text"];
+			const expectedLines = ["hello this is text", "", "  code block", "", "more text"];
 
 			for (const text of cases) {
 				const markdown = new Markdown(text, 0, 0, defaultMarkdownTheme);
@@ -891,7 +891,7 @@ more text`,
 
 			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
 
-			expect(plainLines).toEqual([" ```sh", "cat <<'EOF'", "EOF", " ```"]);
+			expect(plainLines).toEqual(["cat <<'EOF'", "EOF"]);
 		});
 
 		it("keeps literal code body rows unprefixed through nested container wrapping", () => {
@@ -989,7 +989,7 @@ more text`,
 			});
 
 			expect(seenSources).toEqual([invalidSource]);
-			expect(plainLines).toEqual(["```mermaid", "  flowchart TD", "    A --", "```"]);
+			expect(plainLines).toEqual(["  flowchart TD", "    A --"]);
 		});
 	});
 
@@ -1381,9 +1381,8 @@ bar`,
 			const output = lines.join("\n");
 			const plainOutput = quotedLines.join("\n");
 
-			expect(plainOutput.includes("```js")).toBeTruthy();
+			expect(plainOutput.includes("```")).toBeFalsy();
 			expect(plainOutput.includes("console.log(1)")).toBeTruthy();
-			expect(plainOutput.includes("```")).toBeTruthy();
 			expect(output.includes("\x1b[35m")).toBeFalsy();
 			expect(output.includes("\x1b[3m")).toBeTruthy();
 		});
@@ -2656,9 +2655,9 @@ describe("windowed lexing (documents past WINDOWED_LEX_MIN_BYTES)", () => {
 		expect(code.length).toBeGreaterThan(2 * 1024);
 
 		const rendered = plain(doc);
-		// Exactly one fence pair: a window cut inside the block would close and
-		// reopen it (or spill code lines into prose).
-		expect(rendered.filter(line => line.trimStart().startsWith("```"))).toHaveLength(2);
+		// No fence text and one contiguous body: a window cut inside the block
+		// would spill the fence as prose or split the code with a spacer row.
+		expect(rendered.filter(line => line.includes("```"))).toEqual([]);
 		const first = rendered.findIndex(line => line.includes("const value0 = 0;"));
 		expect(first).toBeGreaterThan(-1);
 		for (let i = 0; i < 200; i++) {
@@ -2724,7 +2723,7 @@ describe("windowed lexing (documents past WINDOWED_LEX_MIN_BYTES)", () => {
 		const doc = straddleFirstWindow("```", i => `code line ${i}`, "```", filler("outro", 400));
 		expect(doc.length).toBeGreaterThan(16 * 1024);
 		const rendered = plain(doc);
-		expect(rendered.filter(line => line.trimStart().startsWith("```"))).toHaveLength(2);
+		expect(rendered.filter(line => line.includes("```"))).toEqual([]);
 		expect(rendered).toEqual(onePass(doc));
 	});
 

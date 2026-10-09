@@ -121,15 +121,15 @@ describe("Markdown tree-guide hanging wrap", () => {
 		const raw = renderRaw(`\`\`\`\n${codeLine}\n\`\`\``);
 		const plain = raw.map(line => stripVTControlCharacters(line).trimEnd());
 
-		expect(plain[0]).toBe("```");
-		expect(plain[plain.length - 1]).toBe("```");
+		expect(plain.filter(line => line.includes("```"))).toEqual([]);
 
+		// No fence row: the code line opens the block.
 		const treeRow = plain.findIndex(line => line.includes("├──"));
-		expect(treeRow).toBeGreaterThan(0);
-		// The code line overflows, so a continuation row exists before the
-		// closing fence — and it starts flush at column 0, no hanging prefix.
+		expect(treeRow).toBe(0);
+		// The code line overflows, so a continuation row follows it — and it
+		// starts flush at column 0, no hanging prefix.
 		const continuation = plain[treeRow + 1]!;
-		expect(treeRow + 1).toBeLessThan(plain.length - 1);
+		expect(treeRow + 1).toBeLessThan(plain.length);
 		expect(continuation.length).toBeGreaterThan(0);
 		expect(continuation[0]).not.toBe(" ");
 		expect(continuation[0]).not.toBe("│");
