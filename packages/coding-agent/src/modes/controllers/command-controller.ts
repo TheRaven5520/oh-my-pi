@@ -1766,7 +1766,7 @@ export class CommandController {
 		shouldPersistCwd: boolean,
 	): Promise<boolean> {
 		this.ctx.bashComponent = new BashExecutionComponent(command, this.ctx.ui, excludeFromContext);
-		this.ctx.chatContainer.stampBlockTime(this.ctx.bashComponent, Date.now(), { running: true });
+		this.ctx.bashComponent.setExpanded(this.ctx.toolOutputExpanded);
 
 		if (isDeferred) {
 			this.ctx.pendingMessagesContainer.addChild(this.ctx.bashComponent);
@@ -1849,7 +1849,7 @@ export class CommandController {
 	async handlePythonCommand(code: string, excludeFromContext = false): Promise<void> {
 		const isDeferred = this.ctx.session.isStreaming;
 		this.ctx.pythonComponent = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
-		this.ctx.chatContainer.stampBlockTime(this.ctx.pythonComponent, Date.now(), { running: true });
+		this.ctx.pythonComponent.setExpanded(this.ctx.toolOutputExpanded);
 
 		if (isDeferred) {
 			this.ctx.pendingMessagesContainer.addChild(this.ctx.pythonComponent);

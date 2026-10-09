@@ -278,6 +278,7 @@ export class InputController {
 	#globalEditorActionsListenerInstalled = false;
 	#expandToolsListenerInstalled = false;
 	#inlineMouseListenerInstalled = false;
+	#inlineMouseBuffer = "";
 	#backgroundToolListenerInstalled = false;
 	#pendingStreamingSubmissions = new Set<Promise<void>>();
 
@@ -812,14 +813,27 @@ export class InputController {
 	 * the editor as typed input; clicks on chrome simply swallow.
 	 */
 	#handleInlineMouse(data: string): { consume?: boolean; data?: string } | undefined {
-		if (!data.startsWith("\x1b[<")) return undefined;
-		if (!cfgTuiMouse.get(this.ctx.settings)) return undefined;
-		if (this.ctx.ui.hasOverlay()) return undefined;
-		const event = parseSgrMouse(data);
-		if (!event) return undefined;
-		if (event.motion) this.#updateHoverHighlight(event.row);
-		else if (event.leftClick) this.#clickViewportTarget(event.row);
-		return { consume: true };
+		if (!data.startsWith("\x1b[<") && this.#inlineMouseBuffer.length === 0) return undefined;
+		if (!cfgTuiMouse.get(this.ctx.settings) || this.ctx.ui.hasOverlay()) return undefined;
+		this.#inlineMouseBuffer += data;
+		let consumed = false;
+		while (this.#inlineMouseBuffer.length > 0) {
+			const end = this.#inlineMouseBuffer.indexOf("m");
+			const upper = this.#inlineMouseBuffer.indexOf("M");
+			const reportEnd = end < 0 ? upper : upper < 0 ? end : Math.min(end, upper);
+			if (reportEnd < 0) break;
+			const report = this.#inlineMouseBuffer.slice(0, reportEnd + 1);
+			this.#inlineMouseBuffer = this.#inlineMouseBuffer.slice(reportEnd + 1);
+			const event = parseSgrMouse(report);
+			if (!event) {
+				this.#inlineMouseBuffer = "";
+				break;
+			}
+			consumed = true;
+			if (event.motion) this.#updateHoverHighlight(event.row);
+			else if (event.leftClick) this.#clickViewportTarget(event.row);
+		}
+		return consumed || this.#inlineMouseBuffer.length > 0 ? { consume: true } : undefined;
 	}
 
 	/**
@@ -2843,9 +2857,9 @@ export class InputController {
 
 	setToolsExpanded(expanded: boolean): void {
 		this.ctx.toolOutputExpanded = expanded;
-		for (const child of this.ctx.chatContainer.children) {
-			if (isExpandable(child)) {
-				child.setExpanded(expanded);
+		for (const root of [this.ctx.chatContainer, this.ctx.pendingMessagesContainer]) {
+			for (const child of root.children) {
+				if (isExpandable(child)) child.setExpanded(expanded);
 			}
 		}
 		// Toggling expansion mutates every live block; blocks already committed to

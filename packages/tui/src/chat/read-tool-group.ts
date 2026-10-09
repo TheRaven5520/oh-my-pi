@@ -384,12 +384,18 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
 		const lines = super.render(width);
-		if (lines.filter(line => /\S/.test(line)).length > 2) this.#hadExpandableContent = true;
+		if (lines.filter(line => Bun.stripANSI(line).trim().length > 0).length > 2) this.#hadExpandableContent = true;
 		if (!this.#expanded && this.#hadExpandableContent) {
 			const first = lines.find(line => Bun.stripANSI(line).trim().length > 0) ?? "Read";
-			return [first, theme.fg("dim", `${Math.max(1, lines.length - 1)} more lines`)].map(line =>
-				line.slice(0, width),
-			);
+			const failed = [...this.#entries.values()].find(entry => entry.status === "error");
+			const detail = failed
+				? `error: ${
+						plainText(failed.contentText ?? "")
+							.replace(/^Error:\s*/, "")
+							.trim() || "Read failed"
+					}`
+				: `${Math.max(1, lines.length - 1)} lines hidden`;
+			return [first, theme.fg("dim", `⎿ ${detail}`)].map(line => line.slice(0, width));
 		}
 		return lines;
 	}

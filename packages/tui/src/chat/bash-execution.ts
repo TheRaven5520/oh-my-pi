@@ -382,17 +382,21 @@ export class BashExecutionComponent extends Container {
 			this.#updateDisplay();
 		}
 		const lines = super.render(width);
-		if (lines.filter(line => /\S/.test(line)).length > 2) this.#hadExpandableContent = true;
-		if (!this.#expanded && this.#hadExpandableContent) {
+		const sixelOutput =
+			TERMINAL.imageProtocol === ImageProtocol.Sixel &&
+			isSixelPassthroughEnabled() &&
+			(getSixelLineMask(this.#outputLines)?.some(Boolean) ?? false);
+		if (this.#outputLines.some(line => line.trim()) || this.#images.length > 0) this.#hadExpandableContent = true;
+		if (!this.#expanded && this.#hadExpandableContent && !sixelOutput) {
 			const tail = this.#outputLines.filter(line => line.trim()).at(-1);
 			const detail =
 				this.#status === "running"
 					? (tail ?? "running")
 					: this.#status === "error"
-						? (this.#outputLines[0] ?? "error")
-						: `${this.#outputLines.length} more lines`;
-			const header = this.#headerText.render(width)[0] ?? `$ ${this.#command}`;
-			return [header, theme.fg("dim", detail)];
+						? (this.#outputLines.find(line => line.trim()) ?? "error")
+						: `${this.#outputLines.filter(line => line.trim()).length} lines hidden`;
+			const header = `$ ${this.#command}`;
+			return [header, theme.fg("dim", `⎿ ${detail}`)];
 		}
 		return lines;
 	}

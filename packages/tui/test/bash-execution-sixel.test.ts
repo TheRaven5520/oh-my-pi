@@ -165,7 +165,7 @@ describe("BashExecutionComponent expand footer", () => {
 
 	it("advertises hidden lines while collapsed", () => {
 		const rendered = makeComponent().render(120).join("\n");
-		expect(rendered).toContain("more lines");
+		expect(rendered).toContain("lines hidden");
 	});
 
 	it("drops the hidden-lines footer once expanded", () => {
@@ -183,6 +183,6 @@ describe("BashExecutionComponent expand footer", () => {
 		component.setExpanded(true);
 		component.setExpanded(false);
 		const rendered = component.render(120).join("\n");
-		expect(rendered).toContain("more lines");
+		expect(rendered).toContain("lines hidden");
 	});
 });

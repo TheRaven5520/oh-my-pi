@@ -153,6 +153,8 @@ export interface ViewportClickSpan {
  */
 export interface ViewportClickRowTarget {
 	getClickAgentAtRow(row: number): string | undefined;
+	getClickToolId?(): string | undefined;
+	toggleClickExpansion?(): boolean;
 }
 
 /**
@@ -196,6 +198,9 @@ function rowTargetCandidates(target: Component): ((local: number) => string[]) |
 	};
 }
 
+function rowTargetToolId(target: Component): string | undefined {
+	return (target as Partial<ViewportClickRowTarget>).getClickToolId?.();
+}
 /**
  * Canonical interactive composer, usable before session/settings exist and updatable in place.
  * It owns the terminal, welcome header, and editor; InteractiveMode later supplies authoritative
@@ -388,6 +393,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const afterRoots = roots.slice(transcriptIndex + 1);
 		const after: string[] = [];
 		const afterSpans: ViewportClickSpan[] = [];
+		this.#toolClickTargets.clear();
 		let transientRows = 0;
 		let displacingRows = 0;
 		let decisionPanelOpen = false;
@@ -439,7 +445,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// the `drop` slice below, which is what scrollback would have done.
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
 		const activeSpans: ViewportClickSpan[] = [];
-		this.#toolClickTargets.clear();
 		for (const span of transcript.getLastViewportSpans()) {
 			const target = span.component as Partial<{
 				getClickFocusAgentIds(): string[];
@@ -551,12 +556,27 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 * custom render keep the composed output as the source of truth and measure
 	 * up to the last target.
 	 */
+	#registerBelowTool(target: Component): string | undefined {
+		const toolId = rowTargetToolId(target);
+		const toggle = (target as Partial<ViewportClickRowTarget>).toggleClickExpansion;
+		if (toolId !== undefined && typeof toggle === "function") {
+			this.#toolClickTargets.set(toolId, {
+				target: target as unknown as { toggleClickExpansion(): boolean },
+				retired: false,
+			});
+		}
+		return toolId;
+	}
+
 	#renderBelowRoot(root: Component, width: number, after: string[], spans: ViewportClickSpan[]): void {
 		const start = after.length;
 		const plainContainer = root instanceof Container && root.render === Container.prototype.render;
 		const targets = root instanceof Container ? root.children : [root];
 		const resolves = targets.map(rowTargetCandidates);
-		const lastTarget = resolves.findLastIndex(resolve => resolve !== undefined);
+		const toolIds = targets.map(target => this.#registerBelowTool(target));
+		const lastTarget = resolves.findLastIndex(
+			(resolve, index) => resolve !== undefined || toolIds[index] !== undefined,
+		);
 		if (plainContainer) {
 			let offset = start;
 			for (let index = 0; index < targets.length; index++) {
@@ -564,8 +584,14 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				after.push(...childLines);
 				if (index > lastTarget) continue;
 				const resolve = resolves[index];
-				if (resolve !== undefined && childLines.length > 0) {
-					spans.push({ start: offset, end: offset + childLines.length, candidates: resolve });
+				const toolTarget = toolIds[index];
+				if ((resolve !== undefined || toolTarget !== undefined) && childLines.length > 0) {
+					spans.push({
+						start: offset,
+						end: offset + childLines.length,
+						candidates: resolve ?? (() => []),
+						toolTarget,
+					});
 				}
 				offset += childLines.length;
 			}
@@ -577,8 +603,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		for (let index = 0; index <= lastTarget; index++) {
 			const childLines = targets[index] === root ? after.length - start : targets[index]!.render(width).length;
 			const resolve = resolves[index];
-			if (resolve !== undefined && childLines > 0) {
-				spans.push({ start: offset, end: offset + childLines, candidates: resolve });
+			const toolTarget = toolIds[index];
+			if ((resolve !== undefined || toolTarget !== undefined) && childLines > 0) {
+				spans.push({ start: offset, end: offset + childLines, candidates: resolve ?? (() => []), toolTarget });
 			}
 			offset += childLines;
 		}

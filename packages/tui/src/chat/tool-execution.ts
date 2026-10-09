@@ -1268,7 +1268,7 @@ export class ToolExecutionComponent extends Container {
 		}
 		let lines = super.render(width);
 		const trimmed = trimBlankEdges(lines);
-		if (trimmed.length > 2) this.#hadExpandableContent = true;
+		if (this.#isExpandableState() || trimmed.length > 2) this.#hadExpandableContent = true;
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
 		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
 		if (!this.#expanded && this.#hadExpandableContent) return this.#renderCompact(width, trimmed);
@@ -1285,21 +1285,39 @@ export class ToolExecutionComponent extends Container {
 	}
 	#renderCompact(width: number, fullLines?: readonly string[]): readonly string[] {
 		const summary = this.#activitySummary();
+		const status =
+			this.#result !== undefined && !this.#isPartial
+				? this.#result.isError
+					? "error"
+					: "success"
+				: this.#isRunning()
+					? "running"
+					: "pending";
+		const icon = formatStatusIcon(status, theme, this.#spinnerFrame);
+		const headerText = `${icon} ${this.#toolLabel}${summary.detail ? ` · ${summary.detail}` : ""}`;
 		const error = this.#result?.isError ? this.#getTextOutput().split("\n", 1)[0]?.trim() : undefined;
-		const detailText =
+		const outputTail = this.#isRunning()
+			? this.#getTextOutput()
+					.split("\n")
+					.filter(line => line.trim())
+					.at(-1)
+			: undefined;
+		const hidden =
 			error ||
-			summary.detail ||
-			(fullLines && fullLines.length > 2 ? `${fullLines.length - 2} more lines` : undefined);
-		const detail = detailText ? detailText.replace(/\s+/g, " ") : "";
-		const header =
-			fullLines?.find(line => Bun.stripANSI(line).trim().length > 0) ??
-			theme.fg("toolTitle", theme.bold(summary.label));
-		const elapsed =
-			this.#isRunning() && this.#executionStartedAtNow !== undefined
-				? ` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`
-				: "";
-		const summaryRow = detail || elapsed ? theme.fg("dim", `${detail}${elapsed}`) : theme.fg("dim", "");
-		return [truncateToWidth(header, width), truncateToWidth(summaryRow, width)];
+			outputTail ||
+			(fullLines && fullLines.length > 2 ? `${fullLines.length - 2} lines hidden` : undefined) ||
+			(this.#isExpandableState() ? "arguments hidden" : undefined);
+		const detail = hidden ? hidden.replace(/\s+/g, " ") : "";
+		return [
+			truncateToWidth(headerText, width),
+			...(detail ? [truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)] : []),
+		];
+	}
+
+	#isExpandableState(): boolean {
+		if (this.#result !== undefined) return true;
+		if (this.#tool?.renderCall || this.#renderer?.renderCall) return true;
+		return isRecord(this.#args) && Object.keys(this.#args).length > 0;
 	}
 
 	#activitySummary(): ToolActivitySummary {

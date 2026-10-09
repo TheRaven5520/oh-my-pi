@@ -32,7 +32,7 @@ describe("native streaming edit previews", () => {
 				files: [{ path: "/tmp/mod.ts", diff: "@@ -1 +1 @@\n-const a = 1;\n+const a = 2;", firstChangedLine: 1 }],
 			});
 			const collapsed = Bun.stripANSI(component.render(100).join("\n"));
-			expect(collapsed).toContain("Edit");
+			expect(collapsed.toLowerCase()).toContain("edit");
 			expect(collapsed).not.toContain("const a = 2;");
 			component.setExpanded(true);
 			const first = Bun.stripANSI(component.render(100).join("\n"));
