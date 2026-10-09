@@ -1295,17 +1295,15 @@ export class ToolExecutionComponent extends Container {
 					: "pending";
 		const icon = formatStatusIcon(status, theme, this.#spinnerFrame);
 		const headerText = `${icon} ${this.#toolLabel}${summary.detail ? ` · ${summary.detail}` : ""}`;
-		const error = this.#result?.isError ? this.#getTextOutput().split("\n", 1)[0]?.trim() : undefined;
-		const outputTail = this.#isRunning()
-			? this.#getTextOutput()
-					.split("\n")
-					.filter(line => line.trim())
-					.at(-1)
-			: undefined;
+		const outputLines = this.#getTextOutput()
+			.split("\n")
+			.filter(line => line.trim());
+		const error = this.#result?.isError ? outputLines[0]?.trim() : undefined;
+		const outputTail = this.#isRunning() ? outputLines.at(-1) : undefined;
 		const hidden =
 			error ||
 			outputTail ||
-			(fullLines && fullLines.length > 2 ? `${fullLines.length - 2} lines hidden` : undefined) ||
+			(outputLines.length > 1 ? `${outputLines.length} lines hidden` : undefined) ||
 			(this.#isExpandableState() ? "arguments hidden" : undefined);
 		const detail = hidden ? hidden.replace(/\s+/g, " ") : "";
 		return [

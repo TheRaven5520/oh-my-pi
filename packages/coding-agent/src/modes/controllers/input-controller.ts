@@ -2864,9 +2864,10 @@ export class InputController {
 		}
 		// Toggling expansion mutates every live block; blocks already committed to
 		// terminal history stay at their committed presentation.
-		this.ctx.ui.requestRender(true);
+		// A global toggle can change blocks already committed to terminal history;
+		// replay the ledger so collapsed/expanded rows cannot be left stale.
+		this.ctx.ui.resetDisplay();
 	}
-
 	toggleThinkingBlockVisibility(): void {
 		// When thinking is "off" and the session has not produced reasoning
 		// content, thinking blocks stay auto-hidden; the toggle would only corrupt
