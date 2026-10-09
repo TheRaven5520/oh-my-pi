@@ -491,9 +491,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		for (const span of transcript.getLastViewportSpans()) {
 			const ids = blockAgentIds(span.component);
 			const toolId = blockToolId(span.component, ids);
-			if (toolId !== undefined) {
+			const toggle = (span.component as ClickBlock).toggleClickExpansion;
+			if (toolId !== undefined && toggle !== undefined) {
+				const component = span.component;
 				this.#toolClickTargets.set(toolId, {
-					target: span.component as { toggleClickExpansion(): boolean },
+					target: { toggleClickExpansion: () => toggle.call(component) },
 					retired: false,
 				});
 			}

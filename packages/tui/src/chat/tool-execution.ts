@@ -46,6 +46,7 @@ import {
 	resolveImageOptions,
 } from "../render/render-utils";
 import type { XdevMountedState } from "../tools/xdev";
+import { parseXdUrl } from "../tools/xd-url";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../render/index";
 import { cachedPngConversion, convertImageToPngShared, imagePayloadKey } from "./image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
@@ -1323,7 +1324,13 @@ export class ToolExecutionComponent extends Container {
 					? "running"
 					: "pending";
 		const icon = formatStatusIcon(status, theme, this.#spinnerFrame);
-		const headerText = `${icon} ${this.#toolLabel}${summary.detail ? ` · ${summary.detail}` : ""}`;
+		// Custom renderers own their headline: while an extension/custom
+		// `renderCall` is on the card, its first rendered row is the collapsed
+		// header. Every input that call reads is in the compact key.
+		const customHeader = this.#usesCustomCallRenderer()
+			? super.render(width).find(row => Bun.stripANSI(row).trim().length > 0)
+			: undefined;
+		const headerText = customHeader ?? `${icon} ${this.#toolLabel}${summary.detail ? ` · ${summary.detail}` : ""}`;
 		const output = this.#summarizeOutput();
 		const error = this.#result?.isError ? output.first?.trim() : undefined;
 		const outputTail = this.#isRunning() ? output.last : undefined;
@@ -1341,6 +1348,27 @@ export class ToolExecutionComponent extends Container {
 		return this.#compactRows;
 	}
 
+	/** Whether the card's call row comes from an extension/custom `renderCall` (built-in renderers keep the standard header). */
+	#usesCustomCallRenderer(): boolean {
+		const tool = this.#tool;
+		if (tool?.renderCall) {
+			const merge = "mergeCallAndResult" in tool && tool.mergeCallAndResult === true;
+			return !this.#result || !merge;
+		}
+		// A `write xd://<tool>` card delegates its call row to the mounted tool's
+		// own renderer once execution starts and until the result lands.
+		if (this.#toolName !== "write" || this.#result || !this.#executionStarted || !this.#renderer) return false;
+		if (!isRecord(this.#args) || this.#args.content === undefined) return false;
+		const rawPath = this.#args.path ?? this.#args.file_path;
+		const name = typeof rawPath === "string" ? parseXdUrl(rawPath)?.name : undefined;
+		if (!name || !tool || !("session" in tool) || !isRecord(tool.session)) return false;
+		const xdev = tool.session.xdev;
+		if (!isRecord(xdev) || typeof xdev.resolve !== "function") return false;
+		// Narrowed to a function above; the host wires resolveXdevTool here.
+		const resolve = xdev.resolve as NonNullable<XdevMountedState["resolve"]>;
+		return Boolean(resolve(name)?.renderCall);
+	}
+
 	/** Count of non-blank output lines with the first and last, for the collapsed summary. */
 	#summarizeOutput(): OutputSummary {
 		const output = this.#getTextOutput();
@@ -1348,7 +1376,9 @@ export class ToolExecutionComponent extends Container {
 		let count = 0;
 		let first: string | undefined;
 		let last: string | undefined;
-		for (const line of output.split("\n")) {
+		// Notices the renderer hides (bash wall time, exit code) are not output rows.
+		const visible = this.#renderer?.visibleOutput?.(output, this.#result?.details) ?? output;
+		for (const line of visible.split("\n")) {
 			if (!line.trim()) continue;
 			count++;
 			first ??= line;

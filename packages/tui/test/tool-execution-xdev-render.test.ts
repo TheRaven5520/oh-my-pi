@@ -73,7 +73,9 @@ describe("write xd:// device card renderer resolution", () => {
 		const component = deviceWrite(() => probeTool);
 		expect(component.render(80).join("\n")).toContain("PROBE-CALL");
 
+		// The result body sits behind the collapsed-by-default card.
 		component.updateResult(dispatchResult, false);
+		component.setExpanded(true);
 		expect(component.render(80).join("\n")).toContain("PROBE-RESULT");
 	});
 

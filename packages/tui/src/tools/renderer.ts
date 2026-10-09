@@ -140,6 +140,8 @@ export interface ToolRenderer<TArgs = unknown, TDetails = unknown> {
 	mergeCallAndResult?: boolean;
 	/** Describes current activity without coupling a renderer to terminal layout. */
 	activitySummary?(args: TArgs, context: ToolActivityContext): ToolActivitySummary;
+	/** Text output with model-facing notices removed, as counted by the collapsed card's summary row. */
+	visibleOutput?(output: string, details: TDetails | undefined): string;
 	/** Render without background box, inline in the response flow */
 	inline?: boolean;
 	/**

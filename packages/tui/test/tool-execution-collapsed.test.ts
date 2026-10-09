@@ -39,7 +39,13 @@ describe("collapsed tool cards", () => {
 			["ls /usr/bin | head -60", 60],
 		] as const) {
 			const card = new ToolExecutionComponent("bash", { command }, {}, undefined, ui, "/tmp");
-			card.updateResult(textResult(Array.from({ length: lines }, (_, index) => `out ${index + 1}`).join("\n")), false);
+			// Real bash results end with the model-facing wall-time notice, which the
+			// card hides and must not count.
+			const output = Array.from({ length: lines }, (_, index) => `out ${index + 1}`).join("\n");
+			card.updateResult(
+				{ content: [{ type: "text", text: `${output}\n\nWall time: 0.02 seconds` }], details: { wallTimeMs: 20 } },
+				false,
+			);
 			card.seal();
 			const rows = plain(card.render(120));
 			expect(rows).toHaveLength(2);
