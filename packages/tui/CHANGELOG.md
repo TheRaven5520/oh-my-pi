@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Markdown: a fenced block with no known grammar (```` ```text ````, a bare ```` ``` ````, `plaintext`, `console`) keeps the theme's code-block color once its fence closes, as it already had while streaming; finished replies showed its body in the plain prose color, so Codex's ```` ```text ```` blocks read as unrendered Markdown.
 - Task card: agent rows summarize a Markdown task brief instead of showing `# Target`; a collapsed card caps long `context`/`task` briefs to their first lines plus `… N more lines`.
 - Model names: a raw `provider/claude-opus-5-5:xhigh` selector reaching any surface (agents dock, Agent Hub, job rows) reads `Opus 5.5 (xhigh)`; the status line keeps where the model comes from (`Opus 5.5 via Sprilicred`, `Opus 5.5 (personal)`) so a fallback off the pool shows.
 
