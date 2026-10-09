@@ -306,6 +306,7 @@ export class ToolExecutionComponent extends Container {
 	#toolLabel: string;
 	#args: unknown;
 	#expanded = false;
+	#hadExpandableContent = false;
 	#allocation = Number.POSITIVE_INFINITY;
 	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
 	#toolActivityVisible = true;
@@ -784,6 +785,17 @@ export class ToolExecutionComponent extends Container {
 		return taskCardAgentIds(this.#result?.details);
 	}
 
+	/** Stable target id for ANSI click-to-expand; task cards expose agent ids separately. */
+	getClickToolId(): string | undefined {
+		return this.#hadExpandableContent ? `tool:${this.#instanceId}` : undefined;
+	}
+
+	toggleClickExpansion(): boolean {
+		if (!this.#hadExpandableContent) return false;
+		this.setExpanded(!this.#expanded);
+		return true;
+	}
+
 	getTranscriptBlockVersion(): number {
 		return this.#blockVersion;
 	}
@@ -1255,43 +1267,39 @@ export class ToolExecutionComponent extends Container {
 			return [];
 		}
 		let lines = super.render(width);
+		const trimmed = trimBlankEdges(lines);
+		if (trimmed.length > 2) this.#hadExpandableContent = true;
+		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
+		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
+		if (!this.#expanded && this.#hadExpandableContent) return this.#renderCompact(width, trimmed);
 		if (this.#allocation < 3) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
 			// The allocator measures blocks by trimmed height and never squeezes one
 			// below that, so inline tools whose real content is 1-2 rows (wait
 			// results, one-line receipts) keep that content instead of an equally
 			// tall but contentless frame.
-			const trimmed = trimBlankEdges(lines);
 			if (trimmed.length > this.#allocation) return this.#renderCompact(width);
 			lines = trimmed;
 		}
-		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
-		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
 		return lines;
 	}
-
-	#renderCompact(width: number): readonly string[] {
+	#renderCompact(width: number, fullLines?: readonly string[]): readonly string[] {
 		const summary = this.#activitySummary();
-		const detail = summary.detail ? theme.fg("muted", ` · ${summary.detail.replace(/\s+/g, " ")}`) : "";
-		// Elapsed ticks only while the call is genuinely running; a settled
-		// placeholder row must not read as live ("Todo · running 0s").
+		const error = this.#result?.isError ? this.#getTextOutput().split("\n", 1)[0]?.trim() : undefined;
+		const detailText =
+			error ||
+			summary.detail ||
+			(fullLines && fullLines.length > 2 ? `${fullLines.length - 2} more lines` : undefined);
+		const detail = detailText ? detailText.replace(/\s+/g, " ") : "";
+		const header =
+			fullLines?.find(line => Bun.stripANSI(line).trim().length > 0) ??
+			theme.fg("toolTitle", theme.bold(summary.label));
 		const elapsed =
 			this.#isRunning() && this.#executionStartedAtNow !== undefined
-				? theme.fg(
-						"dim",
-						` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
-					)
+				? ` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`
 				: "";
-		const text = truncateToWidth(
-			`${theme.fg("toolTitle", theme.bold(summary.label))}${detail}${elapsed}`,
-			Math.max(1, width - 4),
-		);
-		if (this.#allocation === 1) {
-			const glyph = this.#spinnerFrame === undefined ? "•" : (theme.spinnerFrames[this.#spinnerFrame] ?? "•");
-			const styledGlyph = theme.fg(this.#spinnerFrame === undefined ? "dim" : "muted", glyph);
-			return [truncateToWidth(`${styledGlyph} ${text}`, width)];
-		}
-		return [truncateToWidth(`${theme.fg("dim", "╭─")} ${text}`, width), theme.fg("dim", "╰")];
+		const summaryRow = detail || elapsed ? theme.fg("dim", `${detail}${elapsed}`) : theme.fg("dim", "");
+		return [truncateToWidth(header, width), truncateToWidth(summaryRow, width)];
 	}
 
 	#activitySummary(): ToolActivitySummary {

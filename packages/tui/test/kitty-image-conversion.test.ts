@@ -78,6 +78,7 @@ describe("Tool image rendering", () => {
 			false,
 		);
 
+		component.setExpanded(true);
 		expect(component.render(80).join("\n")).toContain("\x1b_G");
 	});
 });
@@ -225,6 +226,7 @@ describe("Kitty PNG conversion cache", () => {
 		const rebuilt = new ToolExecutionComponent("read", { path: "shot.webp" }, { showImages: true }, undefined, ui);
 		rebuilt.updateResult({ content: [liveImage] }, false);
 		expect(encodes).toBe(1);
+		rebuilt.setExpanded(true);
 		expect(rebuilt.render(80).join("\n")).toContain("\x1b_G");
 	});
 });

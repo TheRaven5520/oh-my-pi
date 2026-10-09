@@ -74,7 +74,9 @@ describe("ToolExecutionComponent tool-result render memoization", () => {
 		expect(shapeSpy).toHaveBeenCalledTimes(1);
 		for (let i = 0; i < 12; i++) component.invalidate();
 		expect(shapeSpy).toHaveBeenCalledTimes(1);
-		expect(stripVTControlCharacters(component.render(80).join("\n"))).toContain("shaped:ALPHA");
+		const collapsed = stripVTControlCharacters(component.render(80).join("\n"));
+		expect(collapsed).toContain("Custom");
+		expect(collapsed).not.toContain("shaped:ALPHA");
 
 		// Phase 2 — a state change that alters output forces exactly one more
 		// shaping pass; further invalidate()s and a redundant same-value set do
@@ -84,6 +86,7 @@ describe("ToolExecutionComponent tool-result render memoization", () => {
 		for (let i = 0; i < 12; i++) component.invalidate();
 		component.setExpanded(true);
 		expect(shapeSpy).toHaveBeenCalledTimes(2);
+		expect(stripVTControlCharacters(component.render(80).join("\n"))).toContain("shaped:ALPHA");
 
 		// Phase 3 — a NEW result (bumped version) forces exactly one more pass,
 		// and the rendered output reflects the new result, not the stale one.
@@ -120,6 +123,7 @@ describe("ToolExecutionComponent tool-result render memoization", () => {
 		);
 
 		// Constructor shaped the call preview once with the initial args.
+		component.setExpanded(true);
 		expect(stripVTControlCharacters(component.render(80).join("\n"))).toContain("call:A");
 		const afterCtor = callSpy.mock.calls.length;
 

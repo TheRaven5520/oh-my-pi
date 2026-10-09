@@ -26,6 +26,7 @@ import { code, span } from "../native/describe";
 import { type DescribeContext, type NativeNode, type NativeUiEvent, rootToggleExpanded } from "../native/node";
 import { Memo } from "../native/memo";
 
+let nextEvalExecutionId = 0;
 export type EvalExecutionLanguage = "python" | "js";
 
 export class EvalExecutionComponent extends Container {
@@ -35,6 +36,8 @@ export class EvalExecutionComponent extends Container {
 	#truncation?: TruncationMeta;
 	#artifactError?: OutputArtifactError;
 	#expanded = false;
+	readonly #instanceId = nextEvalExecutionId++;
+	#hadExpandableContent = false;
 	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
 	// a completed cell's block still mutates on expansion toggles, and the
 	// transcript's width-epoch resolution and committed-render bypass must
@@ -103,6 +106,16 @@ export class EvalExecutionComponent extends Container {
 
 	getTranscriptBlockVersion(): number {
 		return this.#blockVersion;
+	}
+
+	getClickToolId(): string | undefined {
+		return this.#hadExpandableContent ? `eval:${this.#instanceId}` : undefined;
+	}
+
+	toggleClickExpansion(): boolean {
+		if (!this.#hadExpandableContent) return false;
+		this.setExpanded(!this.#expanded);
+		return true;
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -186,6 +199,27 @@ export class EvalExecutionComponent extends Container {
 
 		this.#loader.stop();
 		this.#updateDisplay();
+	}
+
+	override render(width: number): readonly string[] {
+		const lines = super.render(width);
+		if (lines.filter(line => /\S/.test(line)).length > 2) this.#hadExpandableContent = true;
+		if (!this.#expanded && this.#hadExpandableContent) {
+			const output = this.#outputPane
+				.getText()
+				.split("\n")
+				.filter(line => line.trim());
+			const detail =
+				this.#status === "running"
+					? (output.at(-1) ?? "running")
+					: this.#status === "error"
+						? (output[0] ?? "error")
+						: `${output.length} more lines`;
+			const colorKey: ExecutionColorKey = this.#excludeFromContext ? "dim" : "pythonMode";
+			const header = this.#formatHeader(colorKey).render(width)[0] ?? ">>>";
+			return [header, theme.fg("dim", detail)];
+		}
+		return lines;
 	}
 
 	#updateDisplay(): void {

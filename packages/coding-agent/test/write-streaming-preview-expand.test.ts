@@ -52,11 +52,9 @@ describe("write streaming preview honors Ctrl+O expansion", () => {
 		const comp = await makePendingWrite(40);
 
 		const collapsed = comp.render(80);
-		// Tail-anchored: the streaming edge (last lines) is visible...
-		expect(hasLine(collapsed, 40)).toBe(true);
-		// ...but the head is capped away with an "earlier lines" marker.
+		expect(stripAnsi(collapsed.join("\n"))).toContain("Write");
+		expect(hasLine(collapsed, 40)).toBe(false);
 		expect(hasLine(collapsed, 1)).toBe(false);
-		expect(stripAnsi(collapsed.join("\n"))).toContain("earlier line");
 
 		comp.setExpanded(true);
 		const expanded = comp.render(80);
@@ -72,9 +70,13 @@ describe("write streaming preview honors Ctrl+O expansion", () => {
 	it("does not cap a short streaming write that already fits the window", async () => {
 		const comp = await makePendingWrite(4);
 		const collapsed = comp.render(80);
-		expect(hasLine(collapsed, 1)).toBe(true);
-		expect(hasLine(collapsed, 4)).toBe(true);
-		expect(stripAnsi(collapsed.join("\n"))).not.toContain("earlier line");
+		expect(stripAnsi(collapsed.join("\n"))).toContain("Write");
+		expect(hasLine(collapsed, 1)).toBe(false);
+		comp.setExpanded(true);
+		const expanded = comp.render(80);
+		expect(hasLine(expanded, 1)).toBe(true);
+		expect(hasLine(expanded, 4)).toBe(true);
+		expect(stripAnsi(expanded.join("\n"))).not.toContain("earlier line");
 	});
 	it("keeps code rows unchanged when the spinner advances", async () => {
 		if (!initialized) {
@@ -204,6 +206,7 @@ describe("write streaming preview honors Ctrl+O expansion", () => {
 		// that reads args.content.
 		const comp = new ToolExecutionComponent("write", renderArgs, {}, undefined, uiStub);
 
+		comp.setExpanded(true);
 		const rendered = stripAnsi(comp.render(100).join("\n"));
 		expect(rendered).toContain("GROWN_TAIL_SENTINEL");
 	});

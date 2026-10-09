@@ -343,10 +343,13 @@ function formatMergedSelectorParts(selectors: string[]): string {
 	return `${first},${second},…,${last}`;
 }
 
+let nextReadGroupId = 0;
 export class ReadToolGroupComponent extends Container implements ToolExecutionHandle {
 	#entries = new Map<string, ReadEntry>();
 	#usageRows = new Map<string, ReadUsageRow>();
 	#usageBatchByToolCallId = new Map<string, string>();
+	readonly #instanceId = nextReadGroupId++;
+	#hadExpandableContent = false;
 	#text: Text;
 	#expanded = false;
 	#toolActivityVisible = true;
@@ -380,7 +383,15 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
-		return super.render(width);
+		const lines = super.render(width);
+		if (lines.filter(line => /\S/.test(line)).length > 2) this.#hadExpandableContent = true;
+		if (!this.#expanded && this.#hadExpandableContent) {
+			const first = lines.find(line => Bun.stripANSI(line).trim().length > 0) ?? "Read";
+			return [first, theme.fg("dim", `${Math.max(1, lines.length - 1)} more lines`)].map(line =>
+				line.slice(0, width),
+			);
+		}
+		return lines;
 	}
 	isTranscriptBlockFinalized(): boolean {
 		if (this.#sealed) return true;
@@ -545,6 +556,16 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#expanded = expanded;
 		this.#previewCollapsed.clear();
 		this.#updateDisplay();
+	}
+
+	getClickToolId(): string | undefined {
+		return this.#hadExpandableContent ? `read:${this.#instanceId}` : undefined;
+	}
+
+	toggleClickExpansion(): boolean {
+		if (!this.#hadExpandableContent) return false;
+		this.setExpanded(!this.#expanded);
+		return true;
 	}
 
 	setToolActivityVisible(visible: boolean): void {

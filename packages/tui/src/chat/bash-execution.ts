@@ -60,6 +60,7 @@ export class BashExecutionComponent extends Container {
 	#truncation?: TruncationMeta;
 	#artifactError?: OutputArtifactError;
 	#expanded = false;
+	#hadExpandableContent = false;
 	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
 	// a completed command's block still mutates on expansion toggles, and the
 	// transcript's width-epoch resolution and committed-render bypass must
@@ -135,6 +136,15 @@ export class BashExecutionComponent extends Container {
 		return this.#blockVersion;
 	}
 
+	getClickToolId(): string | undefined {
+		return this.#hadExpandableContent ? `bash:${this.#instanceId}` : undefined;
+	}
+
+	toggleClickExpansion(): boolean {
+		if (!this.#hadExpandableContent) return false;
+		this.setExpanded(!this.#expanded);
+		return true;
+	}
 	/**
 	 * Set whether the output is expanded (shows full output) or collapsed (preview only).
 	 */
@@ -371,7 +381,20 @@ export class BashExecutionComponent extends Container {
 			this.#displayDirty = false;
 			this.#updateDisplay();
 		}
-		return super.render(width);
+		const lines = super.render(width);
+		if (lines.filter(line => /\S/.test(line)).length > 2) this.#hadExpandableContent = true;
+		if (!this.#expanded && this.#hadExpandableContent) {
+			const tail = this.#outputLines.filter(line => line.trim()).at(-1);
+			const detail =
+				this.#status === "running"
+					? (tail ?? "running")
+					: this.#status === "error"
+						? (this.#outputLines[0] ?? "error")
+						: `${this.#outputLines.length} more lines`;
+			const header = this.#headerText.render(width)[0] ?? `$ ${this.#command}`;
+			return [header, theme.fg("dim", detail)];
+		}
+		return lines;
 	}
 
 	#updateDisplay(): void {

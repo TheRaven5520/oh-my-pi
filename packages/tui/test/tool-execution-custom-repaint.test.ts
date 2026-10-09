@@ -165,6 +165,7 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 			await drain(scheduler, term);
 
 			component.updateResult(toolResult("partial output"), true);
+			component.setExpanded(true);
 			tui.requestRender();
 			await drain(scheduler, term);
 
@@ -197,6 +198,9 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 			tui.start();
 			await drain(scheduler, term);
 			component.updateResult(toolResult("partial output"), true);
+			tui.requestRender();
+			await drain(scheduler, term);
+			component.setExpanded(true);
 			tui.requestRender();
 			await drain(scheduler, term);
 			const partialRows = plainBuffer(term);

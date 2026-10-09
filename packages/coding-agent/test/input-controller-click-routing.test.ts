@@ -11,9 +11,9 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { cfgTuiMouse } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 const ESC = String.fromCharCode(27);
-// SGR click on viewport row 2 (1-based y=3): the pinned expander row when the
-// candidates below resolve it to the toggle sentinel.
+// SGR click/motion reports on viewport rows.
 const EXPANDER_CLICK = `${ESC}[<0;5;3M`;
+const VIEWPORT_MOTION = `${ESC}[<35;5;3M`;
 
 function makeHarness() {
 	const listeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
@@ -58,9 +58,8 @@ function makeHarness() {
 	const controller = new InputController(ctx);
 	controller.setupKeyHandlers();
 	return {
-		click: () => {
-			for (const listener of listeners) listener(EXPANDER_CLICK);
-		},
+		click: () => listeners.map(listener => listener(EXPANDER_CLICK)).find(result => result?.consume),
+		motion: () => listeners.map(listener => listener(VIEWPORT_MOTION)).find(result => result?.consume),
 		focused,
 		toggled: () => toggled,
 	};
@@ -97,5 +96,11 @@ describe("InputController click routing", () => {
 		h.click();
 		expect(h.toggled()).toBe(1);
 		expect(h.focused).toEqual([]);
+	});
+
+	it("consumes inline SGR click and motion reports", () => {
+		const h = makeHarness();
+		expect(h.click()).toEqual({ consume: true });
+		expect(h.motion()).toEqual({ consume: true });
 	});
 });

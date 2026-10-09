@@ -143,6 +143,8 @@ export interface ViewportClickSpan {
 	end: number;
 	/** Candidate subagent ids for a span-local row. */
 	candidates: (local: number) => string[];
+	/** Separate tool-block target, used only when no agent candidate applies. */
+	toolTarget?: string;
 }
 
 /**
@@ -250,6 +252,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#retiredHeaderRows: readonly string[] | undefined;
 	/** Click spans of the last `renderFrame` viewport, in viewport coordinates. */
 	#lastClickSpans: ViewportClickSpan[] = [];
+	/** Tool-block ids and whether their top rows were retired from the mutable viewport. */
+	#toolClickTargets = new Map<string, { target: { toggleClickExpansion(): boolean }; retired: boolean }>();
 	/** Click-candidate id under the pointer, painted with the hover band. Id-anchored so it follows streaming rows. */
 	#hoveredClickId: string | undefined;
 	// Hard-row prefix currently above the native viewport. The first resize
@@ -435,10 +439,28 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// the `drop` slice below, which is what scrollback would have done.
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
 		const activeSpans: ViewportClickSpan[] = [];
+		this.#toolClickTargets.clear();
 		for (const span of transcript.getLastViewportSpans()) {
-			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
-			if (!ids || ids.length === 0) continue;
-			activeSpans.push({ start: span.start, end: span.end, candidates: () => ids });
+			const target = span.component as Partial<{
+				getClickFocusAgentIds(): string[];
+				getClickToolId(): string | undefined;
+				toggleClickExpansion(): boolean;
+			}>;
+			const ids = target.getClickFocusAgentIds?.() ?? [];
+			const toolId = target.getClickToolId?.();
+			if (ids.length === 0 && toolId !== undefined && typeof target.toggleClickExpansion === "function") {
+				this.#toolClickTargets.set(toolId, {
+					target: target as { toggleClickExpansion(): boolean },
+					retired: false,
+				});
+			}
+			if (ids.length === 0 && toolId === undefined) continue;
+			activeSpans.push({
+				start: span.start,
+				end: span.end,
+				candidates: () => ids,
+				toolTarget: ids.length === 0 ? toolId : undefined,
+			});
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
 		const mutable = [...before, ...active, ...after].slice(drop);
@@ -455,11 +477,20 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			const start = span.start + base;
 			const end = Math.min(span.end + base, viewportLength);
 			const clamped = Math.max(0, start);
+			if (span.toolTarget !== undefined && clamped > start) {
+				const target = this.#toolClickTargets.get(span.toolTarget);
+				if (target !== undefined) target.retired = true;
+			}
 			if (end > clamped) {
 				// A clipped head must offset the callback: without the skew the
 				// first visible row would hit-test as span-local row 0.
 				const skew = clamped - start;
-				spans.push({ start: clamped, end, candidates: (local: number) => span.candidates(local + skew) });
+				spans.push({
+					start: clamped,
+					end,
+					candidates: (local: number) => span.candidates(local + skew),
+					toolTarget: span.toolTarget,
+				});
 			}
 		};
 		for (const span of activeSpans) shift(span, topPadding + before.length - drop);
@@ -566,12 +597,13 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const painted = viewport.map((line, index) => {
 			for (const span of spans) {
 				if (index < span.start || index >= span.end) continue;
-				if (!span.candidates(index - span.start).includes(hovered)) continue;
-				banded = true;
+				const candidates = span.candidates(index - span.start);
+				if (!candidates.includes(hovered) && span.toolTarget !== hovered) continue;
 				// A wrapping band loses to background opens nested inside the row
 				// (live card rows carry the pending-tint bg, which would paint over
 				// the band for every cell it covers), so drop nested bg opens
 				// first; their closes stay and become band resumes via bgFill.
+				banded = true;
 				return theme.bgFill("selectedBg", line.replace(NESTED_BG_OPEN_PATTERN, ""));
 			}
 			return line;
@@ -586,6 +618,26 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 */
 	viewportClickCandidates(index: number): string[] {
 		return routeViewportClick(this.#lastClickSpans, index);
+	}
+
+	/** Tool target under a row, after agent-card candidates have precedence. */
+	viewportClickToolId(index: number): string | undefined {
+		if (!Number.isInteger(index) || index < 0) return undefined;
+		for (const span of this.#lastClickSpans) {
+			if (index < span.start || index >= span.end || span.toolTarget === undefined) continue;
+			if (span.candidates(index - span.start).length > 0) return undefined;
+			return span.toolTarget;
+		}
+		return undefined;
+	}
+
+	/** Toggle a visible tool block and replay only when its rows were retired. */
+	toggleViewportTool(id: string): boolean {
+		const entry = this.#toolClickTargets.get(id);
+		if (entry === undefined || !entry.target.toggleClickExpansion()) return false;
+		if (entry.retired) this.ui.resetDisplay();
+		else this.ui.requestRender(true);
+		return true;
 	}
 
 	/**

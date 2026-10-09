@@ -29,6 +29,7 @@ describe("BashExecutionComponent PTY rendering", () => {
 	it("replays raw PTY bytes with safe color preserved through completion", async () => {
 		const component = new BashExecutionComponent("lg", ui, false);
 		component.appendPtyChunk("\u001b[31mred\u001b[0m plain\r\nsecond\r\n");
+		component.setExpanded(true);
 
 		const streaming = await renderUntil(component, text => text.includes("second"));
 		// SGR 31 survives the vterm replay as a palette style instead of being stripped.
@@ -45,7 +46,7 @@ describe("BashExecutionComponent PTY rendering", () => {
 	it("collapses carriage-return progress overwrites to the final frame", async () => {
 		const component = new BashExecutionComponent("progress", ui, false);
 		component.appendPtyChunk("10%\r50%\r100%\r\ndone\r\n");
-		component.setComplete(0, false);
+		component.setExpanded(true);
 
 		const text = await renderUntil(component, t => t.includes("done"));
 		expect(text).toContain("100%");
@@ -58,6 +59,7 @@ describe("BashExecutionComponent PTY rendering", () => {
 			const transcript = new TranscriptContainer();
 			transcript.addChild(component);
 			component.appendPtyChunk("OUT-MARKER\r\nERR-MARKER\r\n");
+			component.setExpanded(true);
 			component.setComplete(exitCode, false);
 
 			expect(component.isTranscriptBlockFinalized()).toBe(false);

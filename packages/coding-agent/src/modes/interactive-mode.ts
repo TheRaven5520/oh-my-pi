@@ -1769,6 +1769,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	resolveViewportClickCandidates(index: number): string[] {
 		return this.composer.viewportClickCandidates(index);
 	}
+	resolveViewportClickTool(index: number): string | undefined {
+		return this.composer.viewportClickToolId(index);
+	}
+	toggleViewportTool(id: string): boolean {
+		return this.composer.toggleViewportTool(id);
+	}
 
 	/** Flip the pinned jump list between its collapsed few and the full list, overriding the setting. */
 	togglePinnedHudExpanded(): void {

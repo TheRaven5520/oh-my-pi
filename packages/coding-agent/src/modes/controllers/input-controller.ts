@@ -818,7 +818,7 @@ export class InputController {
 		const event = parseSgrMouse(data);
 		if (!event) return undefined;
 		if (event.motion) this.#updateHoverHighlight(event.row);
-		else if (event.leftClick) this.#focusClickedAgent(event.row);
+		else if (event.leftClick) this.#clickViewportTarget(event.row);
 		return { consume: true };
 	}
 
@@ -828,7 +828,7 @@ export class InputController {
 	 * while streaming; pointing at chrome clears it.
 	 */
 	#updateHoverHighlight(screenRow: number): void {
-		const hovered = this.#viewportCandidates(screenRow)[0];
+		const hovered = this.#viewportCandidates(screenRow)[0] ?? this.#viewportTool(screenRow);
 		if (hovered === this.#lastHoverClickId) return;
 		this.#lastHoverClickId = hovered;
 		this.ctx.setClickHoverId(hovered);
@@ -843,6 +843,23 @@ export class InputController {
 		const local = screenRow - viewport.top;
 		if (viewport.length === 0 || local < 0 || local >= viewport.length) return [];
 		return this.ctx.resolveViewportClickCandidates(local);
+	}
+
+	#viewportTool(screenRow: number): string | undefined {
+		const viewport = this.ctx.ui.getMutableViewport();
+		const local = screenRow - viewport.top;
+		if (viewport.length === 0 || local < 0 || local >= viewport.length) return undefined;
+		return this.ctx.resolveViewportClickTool(local);
+	}
+
+	#clickViewportTarget(screenRow: number): void {
+		const candidates = this.#viewportCandidates(screenRow);
+		if (candidates.length > 0) {
+			this.#focusClickedAgent(screenRow);
+			return;
+		}
+		const tool = this.#viewportTool(screenRow);
+		if (tool !== undefined) this.ctx.toggleViewportTool(tool);
 	}
 
 	/**
