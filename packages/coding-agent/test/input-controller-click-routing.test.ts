@@ -15,16 +15,17 @@ const ESC = String.fromCharCode(27);
 const EXPANDER_CLICK = `${ESC}[<0;5;3M`;
 const VIEWPORT_MOTION = `${ESC}[<35;5;3M`;
 
-function makeHarness() {
+function makeHarness(options: { top?: number; tool?: (index: number) => string | undefined } = {}) {
 	const listeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const focused: string[] = [];
+	const toolToggles: string[] = [];
 	let toggled = 0;
 	const ctx = {
 		ui: {
 			addInputListener: (fn: (data: string) => { consume?: boolean; data?: string } | undefined) => {
 				listeners.push(fn);
 			},
-			getMutableViewport: () => ({ top: 0, length: 5 }),
+			getMutableViewport: () => ({ top: options.top ?? 0, length: 5 }),
 			hasOverlay: () => false,
 			requestRender: () => {},
 			addStartListener: () => {},
@@ -45,6 +46,11 @@ function makeHarness() {
 			extensionRunner: undefined,
 		},
 		resolveViewportClickCandidates: (index: number) => (index === 2 ? [PINNED_HUD_TOGGLE_ID] : []),
+		resolveViewportClickTool: (index: number) => options.tool?.(index),
+		toggleViewportTool: (id: string) => {
+			toolToggles.push(id);
+			return true;
+		},
 		focusedAgentId: undefined,
 		focusAgentSession: async (id: string) => {
 			focused.push(id);
@@ -62,6 +68,7 @@ function makeHarness() {
 		motion: () => listeners.map(listener => listener(VIEWPORT_MOTION)).find(result => result?.consume),
 		focused,
 		toggled: () => toggled,
+		toolToggles,
 	};
 }
 
@@ -102,5 +109,13 @@ describe("InputController click routing", () => {
 		const h = makeHarness();
 		expect(h.click()).toEqual({ consume: true });
 		expect(h.motion()).toEqual({ consume: true });
+	});
+
+	it("routes a retired row above the viewport to its tool block", () => {
+		// Screen row 2 sits two rows above a viewport that starts at row 4.
+		const h = makeHarness({ top: 4, tool: index => (index === -2 ? "tool-1" : undefined) });
+		expect(h.click()).toEqual({ consume: true });
+		expect(h.toolToggles).toEqual(["tool-1"]);
+		expect(h.toggled()).toBe(0);
 	});
 });

@@ -8,6 +8,8 @@ import { ProcessTerminal, type Terminal } from "../terminal";
 import {
 	type Component,
 	Container,
+	type HistoryBatch,
+	type HistoryRowBand,
 	type ResizeScrollbackMode,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
@@ -201,6 +203,44 @@ function rowTargetCandidates(target: Component): ((local: number) => string[]) |
 function rowTargetToolId(target: Component): string | undefined {
 	return (target as Partial<ViewportClickRowTarget>).getClickToolId?.();
 }
+
+/** Click surface of a transcript block (tool cards; task cards also name subagents). */
+type ClickBlock = Partial<{
+	getClickFocusAgentIds(): string[];
+	getClickToolId(): string | undefined;
+	toggleClickExpansion(): boolean;
+}>;
+
+/** Subagent ids a transcript block focuses on click; they win over its tool toggle. */
+function blockAgentIds(block: object): string[] {
+	return (block as ClickBlock).getClickFocusAgentIds?.() ?? [];
+}
+
+/** Tool id a transcript block toggles on click: only when it names no subagent and can toggle. */
+function blockToolId(block: object, agents: readonly string[]): string | undefined {
+	const target = block as ClickBlock;
+	if (agents.length > 0 || typeof target.toggleClickExpansion !== "function") return undefined;
+	return target.getClickToolId?.();
+}
+
+/**
+ * Hover band over one row. A wrapping band loses to background opens nested
+ * inside the row (live card rows carry the pending-tint bg, which would paint
+ * over the band for every cell it covers), so nested bg opens go first; their
+ * closes stay and become band resumes via bgFill.
+ */
+function bandRow(line: string): string {
+	return theme.bgFill("selectedBg", line.replace(NESTED_BG_OPEN_PATTERN, ""));
+}
+
+/** Header rows (no owner) followed by a transcript batch's row owners, parallel to the combined rows. */
+function headerPrefixedOwners(headerRows: readonly string[], batch: HistoryBatch | undefined): (object | undefined)[] {
+	const owners: (object | undefined)[] = Array.from(headerRows, () => undefined);
+	if (batch !== undefined) {
+		for (let index = 0; index < batch.rows.length; index++) owners.push(batch.owners?.[index]);
+	}
+	return owners;
+}
 /**
  * Canonical interactive composer, usable before session/settings exist and updatable in place.
  * It owns the terminal, welcome header, and editor; InteractiveMode later supplies authoritative
@@ -232,6 +272,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		| {
 				id: number;
 				rows: readonly string[];
+				owners?: readonly (object | undefined)[];
 				kind: "append" | "replay";
 				source:
 					| "header"
@@ -261,6 +302,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#toolClickTargets = new Map<string, { target: { toggleClickExpansion(): boolean }; retired: boolean }>();
 	/** Click-candidate id under the pointer, painted with the hover band. Id-anchored so it follows streaming rows. */
 	#hoveredClickId: string | undefined;
+	/** The hover band for retired rows still on screen; set with {@link #hoveredClickId}. */
+	#historyBand: HistoryRowBand | undefined;
 	// Hard-row prefix currently above the native viewport. The first resize
 	// frame may pull part of it down before the normal buffer is borrowed.
 	#retiredHeaderStart = 0;
@@ -446,16 +489,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
-			const target = span.component as Partial<{
-				getClickFocusAgentIds(): string[];
-				getClickToolId(): string | undefined;
-				toggleClickExpansion(): boolean;
-			}>;
-			const ids = target.getClickFocusAgentIds?.() ?? [];
-			const toolId = target.getClickToolId?.();
-			if (ids.length === 0 && toolId !== undefined && typeof target.toggleClickExpansion === "function") {
+			const ids = blockAgentIds(span.component);
+			const toolId = blockToolId(span.component, ids);
+			if (toolId !== undefined) {
 				this.#toolClickTargets.set(toolId, {
-					target: target as { toggleClickExpansion(): boolean },
+					target: span.component as { toggleClickExpansion(): boolean },
 					retired: false,
 				});
 			}
@@ -464,7 +502,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				start: span.start,
 				end: span.end,
 				candidates: () => ids,
-				toolTarget: ids.length === 0 ? toolId : undefined,
+				toolTarget: toolId,
 			});
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
@@ -505,7 +543,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			const visibleHeaderRows = Math.max(0, rows - (mutable.length + drop));
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
-		return { history, viewport: this.#paintHoverBand(mutable, spans) };
+		return { history, viewport: this.#paintHoverBand(mutable, spans), historyBand: this.#historyBand };
 	}
 
 	/**
@@ -626,12 +664,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				if (index < span.start || index >= span.end) continue;
 				const candidates = span.candidates(index - span.start);
 				if (!candidates.includes(hovered) && span.toolTarget !== hovered) continue;
-				// A wrapping band loses to background opens nested inside the row
-				// (live card rows carry the pending-tint bg, which would paint over
-				// the band for every cell it covers), so drop nested bg opens
-				// first; their closes stay and become band resumes via bgFill.
 				banded = true;
-				return theme.bgFill("selectedBg", line.replace(NESTED_BG_OPEN_PATTERN, ""));
+				return bandRow(line);
 			}
 			return line;
 		});
@@ -647,15 +681,34 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		return routeViewportClick(this.#lastClickSpans, index);
 	}
 
-	/** Tool target under a row, after agent-card candidates have precedence. */
+	/**
+	 * Tool target under a row, after agent-card candidates have precedence.
+	 * Negative indexes address retired rows still on screen above the mutable
+	 * viewport (`-1` is the row directly above it): they resolve through the
+	 * terminal's record of which block wrote each accepted history row.
+	 */
 	viewportClickToolId(index: number): string | undefined {
-		if (!Number.isInteger(index) || index < 0) return undefined;
+		if (!Number.isInteger(index)) return undefined;
+		if (index < 0) return this.#retiredClickToolId(index);
 		for (const span of this.#lastClickSpans) {
 			if (index < span.start || index >= span.end || span.toolTarget === undefined) continue;
 			if (span.candidates(index - span.start).length > 0) return undefined;
 			return span.toolTarget;
 		}
 		return undefined;
+	}
+
+	/** Tool block that wrote the retired row `-index` rows above the mutable viewport, registered as retired. */
+	#retiredClickToolId(index: number): string | undefined {
+		const viewport = this.ui.getMutableViewport();
+		if (viewport.length === 0) return undefined;
+		const owner = this.ui.getScreenHistoryOwner(viewport.top + index);
+		if (owner === undefined) return undefined;
+		const toolId = blockToolId(owner, blockAgentIds(owner));
+		if (toolId === undefined) return undefined;
+		// Its rows are in native history now: a toggle must replay it.
+		this.#toolClickTargets.set(toolId, { target: owner as { toggleClickExpansion(): boolean }, retired: true });
+		return toolId;
 	}
 
 	/** Toggle a visible tool block and replay only when its rows were retired. */
@@ -670,9 +723,15 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	/**
 	 * Point the hover band at a click-candidate id (or clear it). Takes effect
 	 * on the next frame; callers repaint only when the target actually changes.
+	 * A tool id also bands that block's retired rows still on screen.
 	 */
 	setHoveredClickId(id: string | undefined): void {
+		if (id === this.#hoveredClickId) return;
 		this.#hoveredClickId = id;
+		this.#historyBand =
+			id === undefined
+				? undefined
+				: { matches: owner => blockToolId(owner, blockAgentIds(owner)) === id, paint: bandRow };
 	}
 
 	/** Acknowledges one accepted header, replay, or transcript batch. */
@@ -757,14 +816,10 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		width: number,
 		rows: number,
 		chromeRows: number,
-	): { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined {
+	): HistoryBatch | undefined {
 		if (this.#offeredHistory !== undefined) {
 			this.#rerenderOfferedHistory(width);
-			return {
-				id: this.#offeredHistory.id,
-				rows: this.#offeredHistory.rows,
-				kind: this.#offeredHistory.kind,
-			};
+			return this.#offeredBatch();
 		}
 		if (this.#headerReplayPending) {
 			const transcriptReplay = transcript.peekReplayBatch(width);
@@ -777,6 +832,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#offeredHistory = {
 				id: this.#nextHistoryId++,
 				rows: [...headerRows, ...(transcriptReplay?.rows ?? [])],
+				owners: headerPrefixedOwners(headerRows, transcriptReplay),
 				kind: "replay",
 				source: {
 					transcript,
@@ -785,11 +841,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 					headerRows,
 				},
 			};
-			return {
-				id: this.#offeredHistory.id,
-				rows: this.#offeredHistory.rows,
-				kind: this.#offeredHistory.kind,
-			};
+			return this.#offeredBatch();
 		}
 		if (!this.#headerRetired) {
 			const welcome = this.#welcome;
@@ -808,11 +860,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 					kind: "append",
 					source: "header",
 				};
-				return {
-					id: this.#offeredHistory.id,
-					rows: this.#offeredHistory.rows,
-					kind: this.#offeredHistory.kind,
-				};
+				return this.#offeredBatch();
 			}
 			this.#headerRetired = true;
 			this.#retiredHeaderRows = [];
@@ -824,14 +872,18 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,
 			rows: batch.rows,
+			owners: batch.owners,
 			kind: batch.kind ?? "append",
 			source: { transcript, transcriptId: batch.id, header: "none" },
 		};
-		return {
-			id: this.#offeredHistory.id,
-			rows: this.#offeredHistory.rows,
-			kind: this.#offeredHistory.kind,
-		};
+		return this.#offeredBatch();
+	}
+
+	/** The pending offer in terminal terms: composer id, rows, row owners, kind. */
+	#offeredBatch(): HistoryBatch | undefined {
+		const offered = this.#offeredHistory;
+		if (offered === undefined) return undefined;
+		return { id: offered.id, rows: offered.rows, owners: offered.owners, kind: offered.kind };
 	}
 
 	#rerenderOfferedHistory(width: number): void {
@@ -844,13 +896,17 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		}
 		const transcript = offered.source.transcript.rerenderOfferedBatch(width);
 		if (offered.source.header === "none") {
-			if (transcript !== undefined) offered.rows = transcript.rows;
+			if (transcript !== undefined) {
+				offered.rows = transcript.rows;
+				offered.owners = transcript.owners;
+			}
 			return;
 		}
 		const recomposed = this.#header.render(width);
 		const headerRows = recomposed.length > 0 ? [...recomposed, ""] : this.#reflowRetiredHeader(width, 0);
 		offered.source.headerRows = headerRows;
 		offered.rows = [...headerRows, ...(transcript?.rows ?? [])];
+		offered.owners = headerPrefixedOwners(headerRows, transcript);
 	}
 
 	#renderRoots(roots: readonly Component[], width: number): string[] {

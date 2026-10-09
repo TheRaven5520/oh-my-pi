@@ -4,6 +4,7 @@
 
 ### Fixed
 - Tool and script execution components render collapsed headers with at most one dim summary row when output is hidden; ANSI callers can expose per-block click targets while preserving agent-card focus routing.
+- A tool block whose rows already retired to terminal history but are still on screen above the prompt area (e.g. after a resize) can be hovered and clicked: `HistoryBatch.owners` tags each retired row with its block, `TUI.getScreenHistoryOwner(row)` resolves on-screen history rows, `TerminalFramePlan.historyBand` bands them in place (restored before they can scroll into scrollback), and the toggle replays history. A collapsed `ToolExecutionComponent` memoizes its header/summary rows instead of rendering its full child tree every frame.
 
 - Markdown: a fenced block with no known grammar (```` ```text ````, a bare ```` ``` ````, `plaintext`, `console`) keeps the theme's code-block color once its fence closes, as it already had while streaming; finished replies showed its body in the plain prose color, so Codex's ```` ```text ```` blocks read as unrendered Markdown.
 - Markdown: fenced code blocks no longer draw their ```` ```text ```` / ```` ```yaml ```` opening row or ```` ``` ```` closing row, streaming or finished, so a block takes only its code lines. An info string that is more than a language tag (a ```` ```12:30:src/app.ts ```` citation) still shows as a header row, without the backticks.

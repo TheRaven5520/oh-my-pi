@@ -151,7 +151,11 @@ export interface InteractiveModeContext {
 	invalidatePendingFocus(): void;
 	/** Candidate subagent ids under a mutable-viewport line, for click-to-focus. Empty when the line has no target. */
 	resolveViewportClickCandidates(index: number): string[];
-	/** Separate tool target under a row, after agent-card precedence. */
+	/**
+	 * Separate tool target under a mutable-viewport row, after agent-card
+	 * precedence. Negative indexes address retired rows still on screen above
+	 * the viewport (`-1` is the row directly above it).
+	 */
 	resolveViewportClickTool(index: number): string | undefined;
 	/** Toggle a visible tool block by click target id. */
 	toggleViewportTool(id: string): boolean;

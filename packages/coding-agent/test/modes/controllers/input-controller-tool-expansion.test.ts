@@ -6,15 +6,19 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import { cfgDisplayHideToolActivity } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 describe("InputController tool output expansion", () => {
-	it("expands children and forces a full repaint so every live block re-renders", () => {
+	it("expands children and forces a full repaint when no block has retired rows", () => {
 		const expandable = { setExpanded: vi.fn() };
+		const pending = { setExpanded: vi.fn() };
 		const inert = { render: vi.fn(() => []) };
+		const canRemoveBlock = vi.fn(() => true);
 		const requestRender = vi.fn();
+		const resetDisplay = vi.fn();
 		const showStatus = vi.fn();
 		const ctx = {
 			toolOutputExpanded: false,
-			chatContainer: { children: [expandable, inert] },
-			ui: { requestRender },
+			chatContainer: { children: [expandable, inert], canRemoveBlock },
+			pendingMessagesContainer: { children: [pending] },
+			ui: { requestRender, resetDisplay },
 			showStatus,
 		} as unknown as InteractiveModeContext;
 
@@ -22,11 +26,38 @@ describe("InputController tool output expansion", () => {
 
 		expect(ctx.toolOutputExpanded).toBe(true);
 		expect(expandable.setExpanded).toHaveBeenCalledWith(true);
-		// Expansion mutates every live block; the forced repaint re-renders them
-		// at their new heights in the same frame.
+		expect(pending.setExpanded).toHaveBeenCalledWith(true);
+		expect(canRemoveBlock).toHaveBeenCalledWith(expandable);
+		// Every affected block is still live, so the forced repaint re-renders
+		// them at their new heights in the same frame; nothing to replay.
 		expect(requestRender).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledWith(true);
+		expect(resetDisplay).not.toHaveBeenCalled();
 		expect(showStatus).toHaveBeenCalledWith("Tool output expansion: enabled");
+	});
+
+	it("replays history when an affected block has retired rows", () => {
+		const retired = { setExpanded: vi.fn() };
+		const live = { setExpanded: vi.fn() };
+		const canRemoveBlock = vi.fn((block: unknown) => block === live);
+		const requestRender = vi.fn();
+		const resetDisplay = vi.fn();
+		const ctx = {
+			toolOutputExpanded: true,
+			chatContainer: { children: [retired, live], canRemoveBlock },
+			pendingMessagesContainer: { children: [] },
+			ui: { requestRender, resetDisplay },
+			showStatus: vi.fn(),
+		} as unknown as InteractiveModeContext;
+
+		new InputController(ctx).toggleToolOutputExpansion();
+
+		expect(ctx.toolOutputExpanded).toBe(false);
+		expect(retired.setExpanded).toHaveBeenCalledWith(false);
+		expect(live.setExpanded).toHaveBeenCalledWith(false);
+		// Collapsing a block already in terminal history must rewrite it there.
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+		expect(requestRender).not.toHaveBeenCalled();
 	});
 
 	it("does not expand hidden tool activity and explains why", () => {

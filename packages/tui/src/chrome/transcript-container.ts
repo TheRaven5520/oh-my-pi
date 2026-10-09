@@ -135,6 +135,12 @@ interface AppendBatch {
 	emittedEnd: number;
 }
 
+/** Retirement rows plus each row's block, `undefined` for inter-block separators. */
+interface OwnedRows {
+	rows: string[];
+	owners: (Component | undefined)[];
+}
+
 const MAX_LIVE_BLOCKS = 256;
 /** Grace before a pressure-blocked frontier is reported; a streaming block may legitimately hold it briefly. */
 const PINNED_FRONTIER_WARN_MS = 30_000;
@@ -733,15 +739,15 @@ export class TranscriptContainer extends Container {
 		// The one path that must compose the whole ledger in a single frame; the
 		// phase label attributes any watchdog block here instead of "unknown".
 		pushLoopPhase("ui.transcript-replay");
-		let rows: readonly string[];
+		let replay: OwnedRows;
 		try {
-			rows = this.#renderReplay(width);
+			replay = this.#renderReplay(width);
 		} finally {
 			popLoopPhase();
 		}
 		this.#replayPending = false;
-		if (rows.length === 0) return undefined;
-		const batch: HistoryBatch = { id: this.#nextBatchId++, rows, kind: "replay" };
+		if (replay.rows.length === 0) return undefined;
+		const batch: HistoryBatch = { id: this.#nextBatchId++, rows: replay.rows, owners: replay.owners, kind: "replay" };
 		this.#offered = { batch, kind: "replay" };
 		return batch;
 	}
@@ -755,19 +761,20 @@ export class TranscriptContainer extends Container {
 	rerenderOfferedBatch(width: number): HistoryBatch | undefined {
 		const offered = this.#offered;
 		if (offered === undefined) return undefined;
-		let rows: readonly string[];
+		let owned: { rows: readonly string[]; owners: readonly (Component | undefined)[] };
 		if (offered.kind === "append") {
 			const entry = this.#entries[offered.entry];
 			if (entry === undefined) return undefined;
 			const before = this.#renderStablePrefix(entry, entry.emitted, width);
 			const after = this.#renderStablePrefix(entry, offered.emittedEnd, width);
-			rows = after.slice(before.length);
+			const rows = after.slice(before.length);
+			owned = { rows, owners: rows.map(() => entry.component) };
 		} else if (offered.kind === "commit") {
-			rows = this.#renderRange(this.#frontier, offered.end, width, true).rows;
+			owned = this.#renderRange(this.#frontier, offered.end, width, true);
 		} else {
-			rows = this.#renderReplay(width);
+			owned = this.#renderReplay(width);
 		}
-		offered.batch = { id: offered.batch.id, rows, kind: offered.batch.kind };
+		offered.batch = { id: offered.batch.id, rows: owned.rows, owners: owned.owners, kind: offered.batch.kind };
 		return offered.batch;
 	}
 
@@ -839,9 +846,11 @@ export class TranscriptContainer extends Container {
 				this.#measuredAppendBatch(appendHead, width, overflow) ??
 				this.#renderedAppendBatch(appendHead, width, overflow);
 			if (emittedEnd > appendHead.emitted) {
+				const owner = appendHead.component;
 				const batch: HistoryBatch = {
 					id: this.#nextBatchId++,
 					rows,
+					owners: rows.map(() => owner),
 					kind: "append",
 				};
 				this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
@@ -865,7 +874,7 @@ export class TranscriptContainer extends Container {
 		}
 		this.#pinnedFrontier = undefined;
 		pushLoopPhase("ui.transcript-retire");
-		let retirement: { rows: readonly string[]; end: number };
+		let retirement: OwnedRows & { end: number };
 		try {
 			// Shutdown must hand over the full prefix; a live frame stops at the
 			// budget and offers the rest on the next frames.
@@ -882,6 +891,7 @@ export class TranscriptContainer extends Container {
 		const batch: HistoryBatch = {
 			id: this.#nextBatchId++,
 			rows: retirement.rows,
+			owners: retirement.owners,
 			kind: "append",
 		};
 		this.#offered = { batch, end: retirement.end, kind: "commit" };
@@ -1162,8 +1172,9 @@ export class TranscriptContainer extends Container {
 		width: number,
 		trailingBlank: boolean,
 		budgetMs?: number,
-	): { rows: readonly string[]; end: number } {
+	): OwnedRows & { end: number } {
 		const rows: string[] = [];
+		const owners: (Component | undefined)[] = [];
 		const startedAt = budgetMs === undefined ? 0 : performance.now();
 		let reached = start;
 		for (let index = start; index < end; index++) {
@@ -1178,24 +1189,33 @@ export class TranscriptContainer extends Container {
 			const block = rendered.slice(emittedRows);
 			reached = index + 1;
 			if (block.length > 0) {
-				if (rows.length > 0) rows.push("");
+				if (rows.length > 0) {
+					rows.push("");
+					owners.push(undefined);
+				}
 				rows.push(...block);
+				for (let row = 0; row < block.length; row++) owners.push(entry.component);
 			}
 			if (budgetMs !== undefined && performance.now() - startedAt >= budgetMs) break;
 		}
-		if (trailingBlank && rows.length > 0) rows.push("");
-		return { rows, end: reached };
+		if (trailingBlank && rows.length > 0) {
+			rows.push("");
+			owners.push(undefined);
+		}
+		return { rows, owners, end: reached };
 	}
 
-	#renderReplay(width: number): readonly string[] {
-		const rows = Array.from(this.#renderRange(0, this.#frontier, width, true).rows);
+	#renderReplay(width: number): OwnedRows {
+		const replay = this.#renderRange(0, this.#frontier, width, true);
 		const head = this.#entries[this.#frontier];
 		if (head?.mode === "appendOnly" && head.emitted > 0) {
 			this.#setAllocation(head.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			this.#renderEntry(head, width);
-			rows.push(...this.#renderStablePrefix(head, head.emitted, width));
+			const emitted = this.#renderStablePrefix(head, head.emitted, width);
+			replay.rows.push(...emitted);
+			for (let row = 0; row < emitted.length; row++) replay.owners.push(head.component);
 		}
-		return rows;
+		return replay;
 	}
 
 	#completeFullyEmittedHeads(width: number): void {

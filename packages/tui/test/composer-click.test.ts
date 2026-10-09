@@ -2,8 +2,10 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import { Container, type Component } from "@oh-my-pi/pi-tui";
+import { Container, type Component, Text } from "@oh-my-pi/pi-tui";
+import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { VirtualTerminal } from "./virtual-terminal";
+import { withoutTerminalMultiplexer } from "./terminal-multiplexer-environment";
 import { routeViewportClick, type ViewportClickSpan } from "@oh-my-pi/pi-tui/prompt/composer";
 
 function span(start: number, end: number, ids: string[]): ViewportClickSpan {
@@ -217,6 +219,159 @@ describe("composer chrome span recording", () => {
 			expect(first.renders).toBe(1);
 		} finally {
 			composer.stop();
+		}
+	});
+});
+
+/** Tool card that collapses to a header plus one summary row, like tool-execution. */
+class ToolBlock implements Component {
+	expanded = false;
+	constructor(
+		readonly id: string,
+		readonly lines: number,
+		readonly finalized: boolean,
+	) {}
+	isTranscriptBlockFinalized(): boolean {
+		return this.finalized;
+	}
+	render(): readonly string[] {
+		if (!this.expanded) return [`${this.id} header`, `${this.id} hidden ${this.lines}`];
+		return [`${this.id} header`, ...Array.from({ length: this.lines }, (_, row) => `${this.id} line ${row}`)];
+	}
+	getClickToolId(): string {
+		return this.id;
+	}
+	toggleClickExpansion(): boolean {
+		this.expanded = !this.expanded;
+		return true;
+	}
+}
+
+describe("composer tool clicks on clipped and retired rows", () => {
+	withoutTerminalMultiplexer();
+	beforeAll(() => {
+		initTheme();
+	});
+
+	async function mount(tool: ToolBlock) {
+		const terminal = new VirtualTerminal(100, 40);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			tuiOptions: { renderScheduler: scheduler },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+		});
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Text("user prompt", 0, 0));
+		transcript.addChild(tool);
+		transcript.addChild(new Text("assistant reply", 0, 0));
+		const editor = new Container();
+		editor.addChild(new Text("EDITOR", 0, 0));
+		composer.setRuntimeChildren([transcript, editor]);
+		composer.start({ playWelcomeIntro: false });
+		await scheduler.settle(terminal);
+		let resets = 0;
+		const resetDisplay = composer.ui.resetDisplay.bind(composer.ui);
+		composer.ui.resetDisplay = () => {
+			resets++;
+			resetDisplay();
+		};
+		/** Click-handler hit-test: screen row to mutable-viewport index, negative above it. */
+		const toolAt = (screenRow: number) => composer.viewportClickToolId(screenRow - composer.ui.getMutableViewport().top);
+		const rowsMatching = (text: string) =>
+			terminal
+				.getViewport()
+				.map((line, row) => (line.includes(text) ? row : -1))
+				.filter(row => row >= 0);
+		const banded = (row: number) => terminal.getViewportRowBackgroundColumns(row).length > 0;
+		return { terminal, scheduler, composer, transcript, resets: () => resets, toolAt, rowsMatching, banded };
+	}
+
+	it("toggles a running block whose header is clipped above the viewport", async () => {
+		const tool = new ToolBlock("live", 60, false);
+		const h = await mount(tool);
+		try {
+			expect(h.composer.toggleViewportTool("live")).toBe(true);
+			await h.scheduler.settle(h.terminal);
+			// A running block cannot retire: the viewport keeps its newest rows
+			// and clips the header and early rows off the top.
+			expect(h.rowsMatching("live header")).toEqual([]);
+			const visible = h.rowsMatching("live line");
+			expect(visible[0]).toBe(0);
+			expect(h.composer.ui.getMutableViewport().top).toBe(0);
+			expect(h.transcript.canRemoveBlock(tool)).toBe(true);
+			for (const row of visible) expect(h.toolAt(row)).toBe("live");
+
+			h.composer.setHoveredClickId("live");
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			expect(visible.every(h.banded)).toBe(true);
+			h.composer.setHoveredClickId(undefined);
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			expect(visible.some(h.banded)).toBe(false);
+
+			expect(h.toolAt(0)).toBe("live");
+			expect(h.composer.toggleViewportTool("live")).toBe(true);
+			await h.scheduler.settle(h.terminal);
+			expect(tool.expanded).toBe(false);
+			// Nothing was retired, so the plain repaint is consistent: the
+			// collapsed card is whole and no expanded row survives anywhere.
+			expect(h.resets()).toBe(0);
+			const buffer = h.terminal.getScrollBuffer();
+			expect(buffer.filter(line => line.includes("live line"))).toEqual([]);
+			expect(buffer.filter(line => line.includes("live header"))).toHaveLength(1);
+			expect(buffer.filter(line => line.includes("live hidden 60"))).toHaveLength(1);
+		} finally {
+			h.composer.stop();
+		}
+	});
+
+	it("toggles and replays a finished block whose visible rows already retired", async () => {
+		const tool = new ToolBlock("done", 60, true);
+		const h = await mount(tool);
+		try {
+			expect(h.composer.toggleViewportTool("done")).toBe(true);
+			await h.scheduler.settle(h.terminal);
+			// The expanded block no longer fits, so it retired whole: its last
+			// rows are on screen but above the mutable viewport.
+			const top = h.composer.ui.getMutableViewport().top;
+			const visible = h.rowsMatching("done line");
+			expect(visible.length).toBeGreaterThan(0);
+			expect(visible.every(row => row < top)).toBe(true);
+			// The transcript reports the block as retired: Ctrl+O's replay predicate.
+			expect(h.transcript.canRemoveBlock(tool)).toBe(false);
+			for (const row of visible) expect(h.toolAt(row)).toBe("done");
+			expect(h.toolAt(h.rowsMatching("user prompt")[0] ?? top)).toBeUndefined();
+
+			// Hover bands the retired rows in place and restores their accepted bytes.
+			const before = visible.map(row => h.terminal.getViewport()[row]);
+			h.composer.setHoveredClickId("done");
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			expect(visible.every(h.banded)).toBe(true);
+			h.composer.setHoveredClickId(undefined);
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			expect(visible.some(h.banded)).toBe(false);
+			expect(visible.map(row => h.terminal.getViewport()[row])).toEqual(before);
+
+			expect(h.toolAt(visible.at(-1)!)).toBe("done");
+			expect(h.composer.toggleViewportTool("done")).toBe(true);
+			await h.scheduler.settle(h.terminal);
+			expect(tool.expanded).toBe(false);
+			// The retired rows sit in native history, so the toggle replays it.
+			expect(h.resets()).toBe(1);
+			const buffer = h.terminal.getScrollBuffer();
+			expect(buffer.filter(line => line.includes("done line"))).toEqual([]);
+			expect(buffer.filter(line => line.includes("done header"))).toHaveLength(1);
+			expect(buffer.filter(line => line.includes("done hidden 60"))).toHaveLength(1);
+			expect(buffer.filter(line => line.includes("user prompt"))).toHaveLength(1);
+			// The replayed card is live again and still toggles from its rows.
+			const header = h.rowsMatching("done header")[0]!;
+			expect(h.toolAt(header)).toBe("done");
+		} finally {
+			h.composer.stop();
 		}
 	});
 });

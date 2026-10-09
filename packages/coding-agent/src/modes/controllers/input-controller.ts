@@ -859,10 +859,12 @@ export class InputController {
 		return this.ctx.resolveViewportClickCandidates(local);
 	}
 
+	// Tool blocks also own retired rows still on screen above the viewport;
+	// those resolve through negative indexes (see `resolveViewportClickTool`).
 	#viewportTool(screenRow: number): string | undefined {
 		const viewport = this.ctx.ui.getMutableViewport();
 		const local = screenRow - viewport.top;
-		if (viewport.length === 0 || local < 0 || local >= viewport.length) return undefined;
+		if (viewport.length === 0 || local >= viewport.length) return undefined;
 		return this.ctx.resolveViewportClickTool(local);
 	}
 
@@ -2857,17 +2859,21 @@ export class InputController {
 
 	setToolsExpanded(expanded: boolean): void {
 		this.ctx.toolOutputExpanded = expanded;
-		for (const root of [this.ctx.chatContainer, this.ctx.pendingMessagesContainer]) {
+		const chat = this.ctx.chatContainer;
+		let retired = false;
+		for (const root of [chat, this.ctx.pendingMessagesContainer]) {
 			for (const child of root.children) {
-				if (isExpandable(child)) child.setExpanded(expanded);
+				if (!isExpandable(child)) continue;
+				child.setExpanded(expanded);
+				// A block that already left rows in terminal history keeps them at
+				// their committed presentation unless the ledger is replayed.
+				if (!retired && root === chat && !chat.canRemoveBlock(child)) retired = true;
 			}
 		}
-		// Toggling expansion mutates every live block; blocks already committed to
-		// terminal history stay at their committed presentation.
-		// A global toggle can change blocks already committed to terminal history;
-		// replay the ledger so collapsed/expanded rows cannot be left stale.
-		this.ctx.ui.resetDisplay();
+		if (retired) this.ctx.ui.resetDisplay();
+		else this.ctx.ui.requestRender(true);
 	}
+
 	toggleThinkingBlockVisibility(): void {
 		// When thinking is "off" and the session has not produced reasoning
 		// content, thinking blocks stay auto-hidden; the toggle would only corrupt

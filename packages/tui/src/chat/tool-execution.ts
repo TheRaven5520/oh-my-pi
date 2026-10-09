@@ -289,6 +289,13 @@ export function stopSharedSpinnerTicker(): void {
 // graphics id that survives child re-creation (the image budget keys off it).
 let toolExecutionInstanceSeq = 0;
 
+/** Non-blank result output lines behind a collapsed card's summary row. */
+interface OutputSummary {
+	count: number;
+	first: string | undefined;
+	last: string | undefined;
+}
+
 /**
  * Component that renders a tool call with its result (updateable)
  */
@@ -345,6 +352,15 @@ export class ToolExecutionComponent extends Container {
 	// (versioned by #resultVersion), #showImages, and the image protocol.
 	#textOutput = "";
 	#textOutputKey: string | undefined;
+	// Collapsed card rows, memoized under every input they read (#compactKey),
+	// so a collapsed block never renders its child tree on an unchanged frame.
+	#compactRows: readonly string[] = [];
+	#compactKey: string | undefined;
+	// Non-blank output lines behind the collapsed summary, recounted only when
+	// the memoized #getTextOutput() string changes (a running block's spinner
+	// re-keys the card every tick without new output).
+	#outputSummarySource: string | undefined;
+	#outputSummary: OutputSummary = { count: 0, first: undefined, last: undefined };
 	#tool?: AgentTool;
 	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
@@ -1266,12 +1282,18 @@ export class ToolExecutionComponent extends Container {
 		if (!this.#toolActivityVisible || this.#allocation === 0 || (this.#toolName === "wait" && this.#isBenignSkip())) {
 			return [];
 		}
+		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
+		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
+		// A collapsed card that hides content shows only its header and summary
+		// row; the full child tree is rendered only to discover hidden content.
+		if (!this.#expanded && (this.#hadExpandableContent || this.#isExpandableState())) {
+			this.#hadExpandableContent = true;
+			return this.#renderCompact(width);
+		}
 		let lines = super.render(width);
 		const trimmed = trimBlankEdges(lines);
 		if (this.#isExpandableState() || trimmed.length > 2) this.#hadExpandableContent = true;
-		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
-		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
-		if (!this.#expanded && this.#hadExpandableContent) return this.#renderCompact(width, trimmed);
+		if (!this.#expanded && this.#hadExpandableContent) return this.#renderCompact(width);
 		if (this.#allocation < 3) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
 			// The allocator measures blocks by trimmed height and never squeezes one
@@ -1283,7 +1305,14 @@ export class ToolExecutionComponent extends Container {
 		}
 		return lines;
 	}
-	#renderCompact(width: number, fullLines?: readonly string[]): readonly string[] {
+
+	/** Header plus one dim summary row, memoized until an input it reads changes. */
+	#renderCompact(width: number): readonly string[] {
+		// The display key covers args, result, expansion and partial state (the
+		// summary's render context is rebuilt with the display); spinner ticks
+		// and sealing change the card without a display rebuild.
+		const key = `${width}|${this.#lastDisplayKey}|${this.#sealed ? 1 : 0}|${this.#spinnerFrame ?? "-"}|${getThemeEpoch()}|${TERMINAL.imageProtocol ?? "-"}`;
+		if (key === this.#compactKey) return this.#compactRows;
 		const summary = this.#activitySummary();
 		const status =
 			this.#result !== undefined && !this.#isPartial
@@ -1295,21 +1324,39 @@ export class ToolExecutionComponent extends Container {
 					: "pending";
 		const icon = formatStatusIcon(status, theme, this.#spinnerFrame);
 		const headerText = `${icon} ${this.#toolLabel}${summary.detail ? ` · ${summary.detail}` : ""}`;
-		const outputLines = this.#getTextOutput()
-			.split("\n")
-			.filter(line => line.trim());
-		const error = this.#result?.isError ? outputLines[0]?.trim() : undefined;
-		const outputTail = this.#isRunning() ? outputLines.at(-1) : undefined;
+		const output = this.#summarizeOutput();
+		const error = this.#result?.isError ? output.first?.trim() : undefined;
+		const outputTail = this.#isRunning() ? output.last : undefined;
 		const hidden =
 			error ||
 			outputTail ||
-			(outputLines.length > 1 ? `${outputLines.length} lines hidden` : undefined) ||
+			(output.count > 1 ? `${output.count} lines hidden` : undefined) ||
 			(this.#isExpandableState() ? "arguments hidden" : undefined);
 		const detail = hidden ? hidden.replace(/\s+/g, " ") : "";
-		return [
+		this.#compactKey = key;
+		this.#compactRows = [
 			truncateToWidth(headerText, width),
 			...(detail ? [truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)] : []),
 		];
+		return this.#compactRows;
+	}
+
+	/** Count of non-blank output lines with the first and last, for the collapsed summary. */
+	#summarizeOutput(): OutputSummary {
+		const output = this.#getTextOutput();
+		if (output === this.#outputSummarySource) return this.#outputSummary;
+		let count = 0;
+		let first: string | undefined;
+		let last: string | undefined;
+		for (const line of output.split("\n")) {
+			if (!line.trim()) continue;
+			count++;
+			first ??= line;
+			last = line;
+		}
+		this.#outputSummarySource = output;
+		this.#outputSummary = { count, first, last };
+		return this.#outputSummary;
 	}
 
 	#isExpandableState(): boolean {
