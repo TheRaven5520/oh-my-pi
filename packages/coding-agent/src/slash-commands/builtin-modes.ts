@@ -480,7 +480,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		description: "Switch model for this session",
 		acpDescription: "Show current model selection",
 		getTuiAutocompleteDescription: runtime => {
-			const model = runtime.ctx.session.model;
+			const model = runtime.ctx.viewSession.model;
 			return model ? `Model: ${model.provider}/${model.id}` : "Model: none selected";
 		},
 		handle: async (command, runtime) => {
@@ -528,7 +528,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		inlineHint: "[model]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
-			const model = runtime.ctx.session.model;
+			const model = runtime.ctx.viewSession.model;
 			return model ? `Model: ${model.provider}/${model.id}` : "Model: none selected";
 		},
 		handle: async (command, runtime) => {
@@ -559,7 +559,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				runtime.ctx.showModelSelector({ temporaryOnly: true });
 				return;
 			}
-			const resolved = resolveSessionModelSelector(selector, runtime.ctx.session, runtime.ctx.settings);
+			const resolved = resolveSessionModelSelector(selector, runtime.ctx.viewSession, runtime.ctx.settings);
 			if (!resolved.model) {
 				runtime.ctx.showError(`Unknown model: ${selector}`);
 				return;
@@ -583,7 +583,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "status", description: "Show fast mode status" },
 		],
 		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.session)}`,
+		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.viewSession)}`,
 		handle: async (command, runtime) => {
 			const feedback = await applySpeedCommand(runtime.session, "fast", command.args);
 			if (feedback === undefined) return usage("Usage: /fast [on|ultra|off|toggle|status]", runtime);
@@ -591,7 +591,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			const feedback = await applySpeedCommand(runtime.ctx.session, "fast", command.args);
+			const feedback = await applySpeedCommand(runtime.ctx.viewSession, "fast", command.args);
 			refreshStatusLine(runtime.ctx);
 			runtime.ctx.showStatus(feedback ?? "Usage: /fast [on|ultra|off|toggle|status]");
 			clearSubmittedText(runtime);
@@ -610,7 +610,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "status", description: "Show ultrafast status" },
 		],
 		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => `Ultrafast: ${formatUltrafastModeStatus(runtime.ctx.session)}`,
+		getTuiAutocompleteDescription: runtime => `Ultrafast: ${formatUltrafastModeStatus(runtime.ctx.viewSession)}`,
 		handle: async (command, runtime) => {
 			const feedback = await applySpeedCommand(runtime.session, "ultrafast", command.args);
 			if (feedback === undefined) return usage("Usage: /ultrafast [on|off|toggle|status]", runtime);
@@ -618,7 +618,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			const feedback = await applySpeedCommand(runtime.ctx.session, "ultrafast", command.args);
+			const feedback = await applySpeedCommand(runtime.ctx.viewSession, "ultrafast", command.args);
 			refreshStatusLine(runtime.ctx);
 			runtime.ctx.showStatus(feedback ?? "Usage: /ultrafast [on|off|toggle|status]");
 			clearSubmittedText(runtime);
@@ -672,7 +672,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
-			runtime.ctx.session.isSlowModeEnabled() ? "Slow mode: on" : "Slow mode: off",
+			runtime.ctx.viewSession.isSlowModeEnabled() ? "Slow mode: on" : "Slow mode: off",
 		handle: async (command, runtime) => {
 			const message = runSlowCommand(command.args.trim().toLowerCase(), runtime.session);
 			if (message === undefined) return usage("Usage: /slow [on|off|status]", runtime);
@@ -680,7 +680,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: (command, runtime) => {
-			const message = runSlowCommand(command.args.trim().toLowerCase(), runtime.ctx.session);
+			const message = runSlowCommand(command.args.trim().toLowerCase(), runtime.ctx.viewSession);
 			refreshStatusLine(runtime.ctx);
 			runtime.ctx.showStatus(message ?? "Usage: /slow [on|off|status]");
 			clearSubmittedText(runtime);
@@ -963,7 +963,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			description: getConfiguredThinkingLevelMetadata(level).description,
 		})),
 		getTuiAutocompleteDescription: runtime =>
-			`Thinking: ${runtime.ctx.session.configuredThinkingLevel() ?? "model default"}`,
+			`Thinking: ${runtime.ctx.viewSession.configuredThinkingLevel() ?? "model default"}`,
 		handle: async (command, runtime) => {
 			const session = runtime.session;
 			if (!command.args.trim()) {
@@ -986,18 +986,19 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: (command, runtime) => {
 			clearSubmittedText(runtime);
 			const { ctx } = runtime;
+			const session = ctx.viewSession;
 			if (!command.args.trim()) {
-				if (ctx.session.model?.reasoning) ctx.showThinkingSelector();
-				else ctx.showStatus(noThinkingMessage(ctx.session));
+				if (session.model?.reasoning) ctx.showThinkingSelector();
+				else ctx.showStatus(noThinkingMessage(session));
 				return;
 			}
-			const resolved = resolveThinkingArgument(ctx.session, command.args);
+			const resolved = resolveThinkingArgument(session, command.args);
 			if ("error" in resolved) {
 				ctx.showError(resolved.error);
 				return;
 			}
 			// thinking_level_changed refreshes the status line and editor border.
-			ctx.session.setThinkingLevel(resolved.level);
+			session.setThinkingLevel(resolved.level);
 			ctx.showStatus(`Thinking set to ${resolved.level}.`);
 		},
 	},

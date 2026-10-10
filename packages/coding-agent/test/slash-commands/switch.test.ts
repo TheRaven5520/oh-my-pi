@@ -16,6 +16,10 @@ function createRuntime() {
 	const showStatus = vi.fn();
 	const setText = vi.fn();
 	const settings = Settings.isolated();
+	const session = {
+		scopedModels: [],
+		modelRegistry: { getAll: () => MODELS, getAvailable: () => MODELS },
+	};
 	return {
 		showModelSelector,
 		switchSessionModel,
@@ -26,10 +30,9 @@ function createRuntime() {
 			ctx: {
 				editor: { setText } as unknown as InteractiveModeContext["editor"],
 				settings,
-				session: {
-					scopedModels: [],
-					modelRegistry: { getAll: () => MODELS, getAvailable: () => MODELS },
-				},
+				// Unfocused: the viewed session is the main session.
+				session,
+				viewSession: session,
 				showModelSelector,
 				switchSessionModel,
 				showError,

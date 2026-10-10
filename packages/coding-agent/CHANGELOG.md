@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Focused subagent views now route `/model`, `/switch`, `/effort`, `/thinking`, `/fast`, `/ultrafast`, `/slow`, and model/thinking keyboard cycles to that agent's session without changing the main session.
+
 ### Added
 
 - Personal fork installers and `omp update` now use only `TheRaven5520/oh-my-pi` releases (`v18.6.1-personal.N`), with SHA-256 verification and atomic replacement. Updates and opt-in startup notices detect fork revisions sharing a native version by executable digest. Published targets are Linux x64/glibc and Apple Silicon; no upstream or Spring Silicon fallback. Managed installs are refused rather than silently upgraded through an upstream package manager.
@@ -30,6 +32,7 @@
 - Added `omp login sprilicred [key]`: validates the proxy key against both model catalogs, writes server context/output/reasoning/modality/pricing and Anthropic fast-mode metadata into owned `sprilicred-*` model rows, preserves user edits, configures the broker token, roles and cycle patterns with connector-compatible ownership state, and supports live discovery for both providers.
 
 ### Changed
+
 - Tool and script-run transcript blocks now default to a compact collapsed header with a one-line summary; click a block to expand or collapse it when `tui.mouse` is enabled (now the default), while Ctrl+O still toggles all blocks. Agent-card click-to-focus remains unchanged.
 
 - Models are named the friendly way everywhere they are shown: the status line, agents dock, subagent and task rows, background-job rows, Agent Hub, welcome box, Ctrl+P notices and the model picker read `Opus 5.5 (low)` or `GPT-6 Astra (high)` instead of `…/claude-opus-5-5:low`. The picker keeps a models.yml `via Sprilicred` suffix and still matches searches against the raw `provider/id`. A retry fallback still shows which account served it (`Opus 5.5 (low) · personal-anthropic`; Agent Hub fallback rows keep the exact `provider/id`).
@@ -59,6 +62,7 @@
 - Fixed models of an `auth: oauth` provider with `discovery` losing the OAuth (Claude Code) request shape: discovered models were sent without it, and so were listed ones once discovery found them too (including from the model cache).
 - Fixed skill-hint compression asking the model again on every prompt rebuild, in every session and process, when the hint came back over 12 words or 160 characters: the hint is now cut to its first 12 words (and 160 characters) and cached under the same key, and the rejected text is logged.
 - A chat made private with Sprilicred private mode (a typed `` `private` `` answered "OK") no longer shows up where a model can read it: `history://` (index, completions, and lookup by id or from disk) leaves out every agent transcript of another private chat — a private chat still sees its own — and `omp __complete sessions` no longer prints private sessions, so they are also gone from shell TAB completion. The `/resume` picker, the welcome screen, and ACP session lists still show them to you. A session file on disk is still readable by any tool that opens it directly (`read`, `grep`, `bash`, `eval`).
+
 ## [18.6.1] - 2026-10-04
 
 ### Fixed
@@ -1736,7 +1740,8 @@
 
 ### Fixed
 
-	- Fixed GPT-6 Astra extended-context support and preserved maximum context windows reported by OpenAI Codex discovery ([#10980](https://github.com/can1357/oh-my-pi/pull/10980) by [@H4vC](https://github.com/H4vC)).
+    - Fixed GPT-6 Astra extended-context support and preserved maximum context windows reported by OpenAI Codex discovery ([#10980](https://github.com/can1357/oh-my-pi/pull/10980) by [@H4vC](https://github.com/H4vC)).
+
 - Subagent `yield` no longer rejects a valid `data` payload because a non-strict OpenAI-compatible backend filled the optional `error` field with `""`; previously the worker retried the identical call until the invalid-yield cap and the parent received nothing.
 - Fixed fullscreen `/copy` outlining only a lazily created grouped Read card, so Enter copies the assistant yield instead of tool output.
 - `memory://` now resolves against the session that issued it: a caller's own memory backend answers `memory://<id>`, so co-located sessions no longer read each other's memory rows, and a caller whose session is no longer live fails closed instead of being answered by a peer. Prompt completion binds to the same caller, so `memory://<memory-id>` stays on offer while a subagent shares the working directory. Advisors retain their owning session's memory access even without a session file.
@@ -1972,7 +1977,7 @@
 - Fixed vibe mode becoming un-exitable after branching a session (including via `/btw`), which previously failed with "Vibe parent session changed before mode exit could be persisted." ([#10468](https://github.com/can1357/oh-my-pi/issues/10468)).
 - Fixed HTML session exports reordering interleaved assistant text, thinking, images, and tool calls in the transcript, and split matching text/tool sidebar rows with block-accurate navigation. ([#10253](https://github.com/can1357/oh-my-pi/pull/10253) by [@realcoderandom](https://github.com/realcoderandom))
 - Fixed the built-in `grep` and `sed` treating a basic regular expression as an extended one: a bare `+` is now the literal and `\+` the operator, patterns like `^+` or `s/^\+/` no longer match every line, `^` anchors inside `\(…\)` and after `\|`, and a repetition operator with nothing to repeat is reported instead of silently selecting the whole file ([#10298](https://github.com/can1357/oh-my-pi/pull/10298) by [@mruangutai](https://github.com/mruangutai)).
-- Fixed RPC `prompt` responses for `/skill:*` commands arriving only after the entire prompt-dispatch pipeline finished (usage preflight, compaction, provider calls): under provider stress that outlasts any client prompt timeout, so hosts reported the prompt as rejected while the turn was in fact running. The skill branch now builds the skill prompt eagerly (preserving the immediate error for an unreadable skill file) and dispatches the expensive pipeline asynchronously after answering, matching plain prompts; when the dispatch is cancelled before a turn starts (e.g. an abort overtakes usage preflight), the session now reports it through the non-invoked  completion frame instead of leaving hosts waiting for an  that never comes ([#10249](https://github.com/can1357/oh-my-pi/pull/10249) by [@cwr250](https://github.com/cwr250)).
+- Fixed RPC `prompt` responses for `/skill:*` commands arriving only after the entire prompt-dispatch pipeline finished (usage preflight, compaction, provider calls): under provider stress that outlasts any client prompt timeout, so hosts reported the prompt as rejected while the turn was in fact running. The skill branch now builds the skill prompt eagerly (preserving the immediate error for an unreadable skill file) and dispatches the expensive pipeline asynchronously after answering, matching plain prompts; when the dispatch is cancelled before a turn starts (e.g. an abort overtakes usage preflight), the session now reports it through the non-invoked completion frame instead of leaving hosts waiting for an that never comes ([#10249](https://github.com/can1357/oh-my-pi/pull/10249) by [@cwr250](https://github.com/cwr250)).
 - Fixed stale `omp-plugins.lock.json` entries loading leftover `node_modules` trees for plugins no longer declared in an existing `package.json` — the orphaned copy double-loaded its extensions. Lockfile-only plugins remain supported for manifest-less roots and symlinked packages (`omp plugin link`, marketplace runtime packages); stale entries are skipped with a warning.
 
 ## [18.1.2] - 2026-09-01

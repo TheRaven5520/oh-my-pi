@@ -50,8 +50,8 @@ export function buildEffortArgumentCompletions(
 	return (argumentPrefix: string) => {
 		if (argumentPrefix.includes(" ")) return null;
 		const lower = argumentPrefix.toLowerCase();
-		const current = runtime.ctx.session.configuredThinkingLevel();
-		const matches = runtime.ctx.session
+		const current = runtime.ctx.viewSession.configuredThinkingLevel();
+		const matches = runtime.ctx.viewSession
 			.getAvailableEffortSelectors()
 			.filter(level => level.startsWith(lower))
 			.map(level => {
@@ -74,7 +74,7 @@ export function buildEffortInlineHint(runtime: TuiSlashCommandRuntime): (argumen
 	return (argumentText: string) => {
 		const prefix = argumentText.trimStart().toLowerCase();
 		if (prefix.length === 0 || prefix.includes(" ")) return null;
-		const match = runtime.ctx.session.getAvailableEffortSelectors().find(level => level.startsWith(prefix));
+		const match = runtime.ctx.viewSession.getAvailableEffortSelectors().find(level => level.startsWith(prefix));
 		return match && match !== prefix ? match.slice(prefix.length) : null;
 	};
 }
@@ -275,7 +275,7 @@ export function buildModelSelectorCompletions(
 			rankModels ??= createModelMentionSource({
 				source: createModelBrowserSource(runtime.ctx.settings),
 				registry: runtime.ctx.session.modelRegistry,
-				scopedModels: () => runtime.ctx.session.scopedModels.map(entry => entry.model),
+				scopedModels: () => runtime.ctx.viewSession.scopedModels.map(entry => entry.model),
 			});
 			for (const { selector, model } of rankModels(query)) {
 				matches.push({ value: `${selector}${suffix} `, label: selector, description: model.name });

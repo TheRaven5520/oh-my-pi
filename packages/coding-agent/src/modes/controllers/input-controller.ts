@@ -161,10 +161,12 @@ const SHELL_PROMPT_OPERATOR_RE = /(?:^|\s)(?:&&|\|\||\||2>&1|[<>]{1,2})(?:\s|$)/
 const OMP_STATUS_LINE_RE = /^\s*in:\s+\d+\s+out:\s+\d+(?:\s+cache\s+\S+)?\s+t:\s+\S+\s+tok\/s:\s+\S+/m;
 
 /**
- * Read-only slash commands that also run from a focused subagent view, keyed by name to
- * a check on their arguments; every other command still needs the main session.
- * Bare `/usage`, `show`, and `clear` only pin or unpin the static usage snapshot; any
- * other argument (including the removed `reset`) stays gated.
+ * Slash commands that also run from a focused subagent view, keyed by canonical name
+ * to a check on their arguments; every other command still needs the main session.
+ * Read-only ones report on the viewer (`/btw`, `/export`, `/usage`); the model, effort
+ * and service-tier controls act on the viewed session. Bare `/usage`, `show`, and
+ * `clear` only pin or unpin the static usage snapshot; any other argument (including
+ * the removed `reset`) stays gated.
  */
 const FOCUSED_VIEW_COMMANDS: Record<string, (args: string) => boolean> = {
 	btw: () => true,
@@ -173,6 +175,12 @@ const FOCUSED_VIEW_COMMANDS: Record<string, (args: string) => boolean> = {
 		const { verb, rest } = parseSubcommand(args);
 		return !verb || ((verb === "show" || verb === "clear") && !rest);
 	},
+	model: () => true,
+	switch: () => true,
+	effort: () => true,
+	fast: () => true,
+	ultrafast: () => true,
+	slow: () => true,
 };
 const FOCUSED_VIEW_COMMAND_LIST = Object.keys(FOCUSED_VIEW_COMMANDS)
 	.map(name => `/${name}`)
@@ -1537,9 +1545,12 @@ export class InputController {
 		}
 		if (text?.startsWith("/")) {
 			const parsed = parseSlashCommand(text);
-			if (parsed && FOCUSED_VIEW_COMMANDS[parsed.name]?.(parsed.args)) {
+			const name = parsed && lookupBuiltinSlashCommand(parsed.name)?.name;
+			if (parsed && name && FOCUSED_VIEW_COMMANDS[name]?.(parsed.args)) {
 				// Viewer-scoped commands: /btw asks about the focused transcript, /export
-				// writes it (with its own subagents), /usage reports account-wide limits.
+				// writes it (with its own subagents), /usage reports account-wide limits;
+				// /model, /switch, /effort, /fast, /ultrafast and /slow set the focused
+				// session's own model, thinking level and service tier.
 				this.#recordSlashCommandUsage(text);
 				if ((await executeBuiltinSlashCommand(text, { ctx: this.ctx })) === true) {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
@@ -2709,8 +2720,8 @@ export class InputController {
 			commandUsage: name => commandUsage.get(name),
 			modelMentions: createModelMentionSource({
 				source: createModelBrowserSource(this.ctx.settings),
-				registry: this.ctx.session.modelRegistry,
-				scopedModels: () => this.ctx.session.scopedModels.map(s => s.model),
+				registry: this.ctx.viewSession.modelRegistry,
+				scopedModels: () => this.ctx.viewSession.scopedModels.map(s => s.model),
 			}),
 			// This TUI host uses the default registry; the receiving session can change with focus.
 			internalUrlCaller: () => {
