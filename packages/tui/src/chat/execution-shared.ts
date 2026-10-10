@@ -9,7 +9,7 @@
 
 import { Loader } from "../components/loader";
 import { Text } from "../components/text";
-import { Container, type TUI } from "../tui";
+import { Container, type Component, type TUI } from "../tui";
 import { getSymbolTheme, theme } from "../theme/theme";
 import type { OutputArtifactError } from "../tools/streaming-output";
 import { formatArtifactErrorNotice, formatTruncationMetaNotice, type TruncationMeta } from "../tools/output-meta";
@@ -20,6 +20,7 @@ import { DEFAULT_TERMINAL_PREVIEW_LINES, expandKeyHint } from "../render/render-
 import type { TspCardStatus, TspSpan, TspText, TspTone } from "@oh-my-pi/pi-wire";
 import { card, node, span, text } from "../native/describe";
 import type { NativeChild, NativeNode } from "../native/node";
+import { transcriptContent } from "./transcript-content";
 
 /** Output rows shown while an execution is collapsed. */
 export const PREVIEW_LINES = 20;
@@ -85,7 +86,7 @@ export function buildStatusFooter(opts: {
 	hiddenLineCount: number;
 	/** Suppress the "… N more lines" hint (used when sixel passthrough renders the full output). */
 	suppressHiddenCount?: boolean;
-}): Text | undefined {
+}): Component | undefined {
 	const parts: string[] = [];
 
 	if (opts.hiddenLineCount > 0 && !opts.suppressHiddenCount) {
@@ -104,7 +105,7 @@ export function buildStatusFooter(opts: {
 	}
 
 	if (parts.length === 0) return undefined;
-	return new Text(`\n${parts.join("\n")}`, 1, 0);
+	return transcriptContent(new Text(`\n${parts.join("\n")}`, 0, 0));
 }
 
 const EXECUTION_CARD_STATUS: Record<ExecutionStatus, TspCardStatus> = {

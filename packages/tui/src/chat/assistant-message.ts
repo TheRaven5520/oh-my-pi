@@ -2,7 +2,7 @@ import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-a
 import { type Component, Container } from "../tui";
 import { Image, type ImageBudget } from "../components/image";
 import { ImageProtocol, TERMINAL } from "../terminal-capabilities";
-import { Markdown, type MarkdownTheme } from "../components/markdown";
+import type { Markdown, MarkdownTheme } from "../components/markdown";
 import { Spacer } from "../components/spacer";
 import { Text } from "../components/text";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
@@ -27,6 +27,7 @@ import { type ServedModelMismatch, ServedModelMarkerComponent } from "./served-m
 import { isReactionTarget, type ReactionSplit, type ReactionTarget, splitReaction } from "./reaction";
 import { isRowPrefix, type TranscriptStableRow, trimBlankEdges } from "../chrome/transcript-container";
 import { formatTurnUsage, type TurnUsageSummary } from "../overlays/usage-row";
+import { TranscriptMarkdown, transcriptContent } from "./transcript-content";
 
 /**
  * Max wrapped rows of a turn-ending provider error rendered inline in the
@@ -1176,15 +1177,15 @@ export class AssistantMessageComponent extends Container {
 	/** Constructor args mirror the live child Markdown so stable rows prefix the block render. */
 	#createStableMarkdown(kind: StablePartKind, text: string): Markdown {
 		return kind === "text"
-			? new Markdown(
+			? new TranscriptMarkdown(
 					text,
-					1,
+					0,
 					0,
 					this.#getProseTheme(),
 					this.#textColorTransform ? { color: this.#textColorTransform } : undefined,
 					0,
 				)
-			: new Markdown(text, 1, 0, getMarkdownTheme(), {
+			: new TranscriptMarkdown(text, 0, 0, getMarkdownTheme(), {
 					color: (value: string) => theme.fg("thinkingText", value),
 					italic: true,
 				});
@@ -1289,13 +1290,19 @@ export class AssistantMessageComponent extends Container {
 	#appendErrorBlock(message: string): void {
 		const maxRows = this.#errorExpanded ? Number.POSITIVE_INFINITY : MAX_TRANSCRIPT_ERROR_ROWS;
 		this.#contentContainer.addChild(
-			new WidthAwareText(
-				contentWidth =>
-					formatErrorBlock(message, contentWidth, maxRows, (line, index) =>
-						theme.fg("error", index === 0 ? `Error: ${line}` : line),
-					),
-				1,
-				0,
+			transcriptContent(
+				new WidthAwareText(
+					contentWidth =>
+						formatErrorBlock(
+							message,
+							contentWidth,
+							maxRows,
+							(line, index) => theme.fg("error", index === 0 ? `Error: ${line}` : line),
+							"",
+						),
+					0,
+					0,
+				),
 			),
 		);
 	}
@@ -1380,7 +1387,9 @@ export class AssistantMessageComponent extends Container {
 				);
 				continue;
 			}
-			this.#contentContainer.addChild(new Text(theme.fg("toolOutput", `[Image: ${image.mimeType}]`), 1, 0));
+			this.#contentContainer.addChild(
+				transcriptContent(new Text(theme.fg("toolOutput", `[Image: ${image.mimeType}]`), 0, 0)),
+			);
 		}
 	}
 
@@ -1606,7 +1615,7 @@ export class AssistantMessageComponent extends Container {
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				const trimmed = content.text.trim();
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
-				const md = new Markdown(trimmed, 1, 0, this.#getProseTheme(), mdOptions, 0, this.#imageBudget);
+				const md = new TranscriptMarkdown(trimmed, 0, 0, this.#getProseTheme(), mdOptions, 0, this.#imageBudget);
 				this.#contentContainer.addChild(md);
 				this.#emergencyText = md;
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
@@ -1631,9 +1640,9 @@ export class AssistantMessageComponent extends Container {
 					);
 
 				// Thinking traces in thinkingText color, italic
-				const md = new Markdown(
+				const md = new TranscriptMarkdown(
 					thinkingText,
-					1,
+					0,
 					0,
 					getMarkdownTheme(),
 					{
@@ -1660,7 +1669,7 @@ export class AssistantMessageComponent extends Container {
 
 		if (this.#shouldAnimateThinking(message)) {
 			if (hasVisibleContent) this.#contentContainer.addChild(new Spacer(1));
-			this.#thinkingDots = new Text(this.#thinkingDotsLabel(), 1, 0);
+			this.#thinkingDots = new Text(this.#thinkingDotsLabel(), 0, 0);
 			this.#contentContainer.addChild(this.#thinkingDots);
 			this.#startThinkingAnimation();
 		} else {
@@ -1672,11 +1681,13 @@ export class AssistantMessageComponent extends Container {
 		const hasToolCalls = message.content.some(c => c.type === "toolCall");
 		if (errorPresentation.kind === "compact-recovered") {
 			this.#contentContainer.addChild(new Spacer(1));
-			this.#contentContainer.addChild(new Text(theme.fg("dim", errorPresentation.text), 1, 0));
+			this.#contentContainer.addChild(transcriptContent(new Text(theme.fg("dim", errorPresentation.text), 0, 0)));
 		} else if (!hasToolCalls && errorPresentation.kind === "full") {
 			if (message.stopReason === "aborted") {
 				this.#contentContainer.addChild(new Spacer(1));
-				this.#contentContainer.addChild(new Text(theme.fg("error", errorPresentation.text), 1, 0));
+				this.#contentContainer.addChild(
+					transcriptContent(new Text(theme.fg("error", errorPresentation.text), 0, 0)),
+				);
 			} else {
 				// Non-aborted provider error: a truncatable inline block. Mark it so
 				// setExpanded re-renders even while the same error is pinned above.

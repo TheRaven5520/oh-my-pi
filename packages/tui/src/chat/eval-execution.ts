@@ -12,6 +12,8 @@ import type { OutputArtifactError } from "../tools/streaming-output";
 import type { TruncationMeta } from "../tools/output-meta";
 import { OutputPane } from "../render/output-pane";
 import { expandedToolRows } from "../render/utils";
+import { transcriptContent } from "./transcript-content";
+import { truncateToWidth } from "../utils";
 import {
 	buildExecutionFrame,
 	buildStatusFooter,
@@ -72,7 +74,7 @@ export class EvalExecutionComponent extends Container {
 		const headerLines = codeLines.map((line, index) =>
 			index === 0 ? `${prompt} ${line}` : `${continuation}${line}`,
 		);
-		return new Text(headerLines.join("\n"), 1, 0);
+		return new Text(headerLines.join("\n"), 0, 0);
 	}
 
 	constructor(code: string, ui: TUI, excludeFromContext = false, language: EvalExecutionLanguage = "python") {
@@ -90,7 +92,7 @@ export class EvalExecutionComponent extends Container {
 			collapsedMaxLines: PREVIEW_LINES,
 			edge: "tail",
 			visual: true,
-			paddingX: 1,
+			paddingX: 0,
 			leadingBlank: true,
 			showHiddenMarker: false,
 			showExpandHint: false,
@@ -98,7 +100,7 @@ export class EvalExecutionComponent extends Container {
 			normalizeLine: clampDisplayLine,
 		});
 
-		this.#contentContainer.addChild(this.#formatHeader(colorKey));
+		this.#contentContainer.addChild(transcriptContent(this.#formatHeader(colorKey)));
 		this.#contentContainer.addChild(this.#loader);
 	}
 
@@ -225,8 +227,8 @@ export class EvalExecutionComponent extends Container {
 						? (output[0] ?? "error")
 						: `${output.length} lines`;
 			const colorKey: ExecutionColorKey = this.#excludeFromContext ? "dim" : "pythonMode";
-			const header = this.#formatHeader(colorKey).render(width)[0] ?? ">>>";
-			return [header, theme.fg("dim", detail)];
+			const header = transcriptContent(this.#formatHeader(colorKey)).render(width)[0] ?? "  >>>";
+			return [header, truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)];
 		}
 		if (this.#individuallyExpanded) {
 			return expandedToolRows(theme, lines, width, this.#allocation);
@@ -242,9 +244,9 @@ export class EvalExecutionComponent extends Container {
 		this.#contentContainer.clear();
 
 		const colorKey: ExecutionColorKey = this.#excludeFromContext ? "dim" : "pythonMode";
-		this.#contentContainer.addChild(this.#formatHeader(colorKey));
+		this.#contentContainer.addChild(transcriptContent(this.#formatHeader(colorKey)));
 
-		if (this.#outputPane.lineCount > 0) this.#contentContainer.addChild(this.#outputPane);
+		if (this.#outputPane.lineCount > 0) this.#contentContainer.addChild(transcriptContent(this.#outputPane));
 
 		if (this.#status === "running") {
 			this.#contentContainer.addChild(this.#loader);

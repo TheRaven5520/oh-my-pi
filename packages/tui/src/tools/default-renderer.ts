@@ -158,8 +158,11 @@ export function formatDefaultToolExecution(
 	contentWidth: number,
 	uiTheme: Theme,
 ): string {
-	const snapshot = buildDefaultToolSnapshot(input, uiTheme, contentWidth);
-	return [renderStatusLine(snapshot.status, uiTheme), ...snapshot.body].join("\n");
+	const snapshot = buildDefaultToolSnapshot(input, uiTheme, Math.max(1, contentWidth - 2));
+	return [
+		truncateToWidth(renderStatusLine(snapshot.status, uiTheme), contentWidth),
+		...snapshot.body.map(line => `  ${line}`),
+	].join("\n");
 }
 
 /** Inline args summary budget in characters (a data cap, not a width). */

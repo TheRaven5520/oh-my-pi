@@ -16,6 +16,8 @@ import type { TruncationMeta } from "../tools/output-meta";
 import { resolveImageOptions } from "../render/render-utils";
 import { OutputPane } from "../render/output-pane";
 import { expandedToolRows } from "../render/utils";
+import { TranscriptMarkerText, transcriptContent } from "./transcript-content";
+import { truncateToWidth } from "../utils";
 import { loadXtermTerminal, readTerminalRows, styleTerminalRow } from "../tools/terminal-output";
 import { getSixelLineMask, isSixelPassthroughEnabled, sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import {
@@ -117,7 +119,7 @@ export class BashExecutionComponent extends Container {
 			collapsedMaxLines: PREVIEW_LINES,
 			edge: "tail",
 			visual: true,
-			paddingX: 1,
+			paddingX: 0,
 			leadingBlank: true,
 			showHiddenMarker: false,
 			showExpandHint: false,
@@ -125,7 +127,11 @@ export class BashExecutionComponent extends Container {
 		});
 
 		// Command header
-		this.#headerText = new Text(theme.fg(colorKey, theme.bold(`$ ${command}`)), 1, 0);
+		this.#headerText = new TranscriptMarkerText(
+			theme.fg(colorKey, theme.bold(`$ ${command.replace(/\n/g, "\n  ")}`)),
+			0,
+			0,
+		);
 		this.#contentContainer.addChild(this.#headerText);
 		this.#contentContainer.addChild(this.#loader);
 	}
@@ -408,8 +414,8 @@ export class BashExecutionComponent extends Container {
 							: visible.length > 1
 								? `${visible.length} lines`
 								: "output hidden";
-			const header = `$ ${this.#command}`;
-			return [header, theme.fg("dim", `⎿ ${detail}`)];
+			const header = `$ ${this.#command.replace(/\s+/g, " ")}`;
+			return [truncateToWidth(header, width), truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)];
 		}
 		if (this.#individuallyExpanded) {
 			return expandedToolRows(theme, lines, width, this.#allocation);
@@ -441,7 +447,7 @@ export class BashExecutionComponent extends Container {
 		this.#contentContainer.addChild(this.#headerText);
 
 		// Output
-		if (availableLines.length > 0) this.#contentContainer.addChild(this.#outputPane);
+		if (availableLines.length > 0) this.#contentContainer.addChild(transcriptContent(this.#outputPane));
 
 		for (let index = 0; index < this.#images.length; index++) {
 			const image = this.#images[index]!;
@@ -461,7 +467,7 @@ export class BashExecutionComponent extends Container {
 			} else {
 				const dimensions = getImageDimensions(image.data, image.mimeType) ?? undefined;
 				this.#contentContainer.addChild(
-					new Text(theme.fg("muted", imageFallback(image.mimeType, dimensions)), 1, 0),
+					transcriptContent(new Text(theme.fg("muted", imageFallback(image.mimeType, dimensions)), 0, 0)),
 				);
 			}
 		}

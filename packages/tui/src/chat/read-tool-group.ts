@@ -16,6 +16,8 @@ import {
 import { PREVIEW_LIMITS, shortenPath } from "../render/render-utils";
 import { fileHyperlink, renderCodeCell } from "../render";
 import { expandedToolRows } from "../render/utils";
+import { TranscriptMarkerText } from "./transcript-content";
+import { truncateToWidth } from "../utils";
 import { canonicalizeMessage } from "./thinking-display";
 import { internalUrlSchemeSpec, splitUrlScheme } from "../tools/url-scheme-host";
 import type { ToolExecutionHandle } from "./tool-execution";
@@ -383,7 +385,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	constructor(options: ReadToolGroupOptions = {}) {
 		super();
 		this.#showContentPreview = options.showContentPreview ?? false;
-		this.#text = new Text("", 0, 0);
+		this.#text = new TranscriptMarkerText("", 0, 0);
 		this.addChild(this.#text);
 		this.#updateDisplay();
 	}
@@ -402,7 +404,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 							.trim() || "Read failed"
 					}`
 				: `${Math.max(1, lines.length - 1)} lines`;
-			return [first, theme.fg("dim", `⎿ ${detail}`)].map(line => line.slice(0, width));
+			return [first, theme.fg("dim", `⎿ ${detail.replace(/\s+/g, " ")}`)].map(line => truncateToWidth(line, width));
 		}
 		if (this.#individuallyExpanded) {
 			return expandedToolRows(theme, lines, width, this.#allocation);
@@ -901,10 +903,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 		// Clear previous children and rebuild the summary and preview blocks.
 		this.clear();
-		this.#text = new Text("", 0, 0);
+		this.#text = new TranscriptMarkerText("", 0, 0);
 
 		if (displayRows.length === 0) {
-			this.#text.setText(` ${theme.format.bullet} ${theme.fg("toolTitle", theme.bold("Read"))}`);
+			this.#text.setText(`${theme.format.bullet} ${theme.fg("toolTitle", theme.bold("Read"))}`);
 			this.addChild(this.#text);
 			return;
 		}
@@ -914,7 +916,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			if (!this.#shouldRenderPreviewRow(row)) {
 				const statusSymbol = this.#formatStatus(this.#statusForTargets(row.targets));
 				const pathDisplay = this.#formatRowPath(row);
-				const lines = [` ${statusSymbol} ${theme.fg("toolTitle", theme.bold("Read"))} ${pathDisplay}`.trimEnd()];
+				const lines = [`${statusSymbol} ${theme.fg("toolTitle", theme.bold("Read"))} ${pathDisplay}`.trimEnd()];
 				const usageRows = this.#usageRowsBySummaryRow(displayRows).get(0) ?? [];
 				this.#appendUsageRows(lines, usageRows, "   ");
 				this.#text.setText(lines.join("\n"));
@@ -928,7 +930,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		}
 
 		const header = `${theme.fg("toolTitle", theme.bold("Read"))}${theme.fg("dim", ` (${displayRows.length})`)}`;
-		const lines = [` ${theme.format.bullet} ${header}`];
+		const lines = [`${theme.format.bullet} ${header}`];
 		const entriesWithoutPreview = entries.filter(entry => !this.#shouldRenderPreview(entry));
 		const summaryTargets = this.#displayTargetsForEntries(entriesWithoutPreview);
 		const rows = this.#buildSummaryRows(summaryTargets);

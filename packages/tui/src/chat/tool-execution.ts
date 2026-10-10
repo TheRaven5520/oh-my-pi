@@ -463,7 +463,7 @@ export class ToolExecutionComponent extends Container {
 		// strips PLAIN-blank edges, so framed/minimal blocks (no bg set) drop these
 		// lines and keep their tight spacing — only tinted lines survive.
 		this.#contentBox = new Box(0, 1);
-		this.#contentText = new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 1, 1);
+		this.#contentText = new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 0, 1);
 
 		// Use Box for custom tools or built-in tools with rich renderers.
 		const hasCustomRenderer = !!(tool?.renderCall || tool?.renderResult);
@@ -1953,7 +1953,7 @@ export class ToolExecutionComponent extends Container {
 		this.#multiFileBoxes = [];
 		this.#contentBox.setBgFn(undefined);
 		this.#contentBox.clear();
-		this.#contentBox.setPaddingX(1);
+		this.#contentBox.setPaddingX(0);
 		this.#contentBox.setBgFn(stateBgFn);
 		this.#contentBox.addChild(new WidthAwareText(contentWidth => this.#renderDefaultCard(contentWidth), 0, 0));
 	}

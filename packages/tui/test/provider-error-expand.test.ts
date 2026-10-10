@@ -49,8 +49,9 @@ describe("provider error expand", () => {
 		const rows = Bun.stripANSI(component.render(80).join("\n"))
 			.split("\n")
 			.filter(row => row.trim().length > 0);
-		expect(rows[0]).toMatch(/^ Error: 400 /);
+		expect(rows[0]).toMatch(/^  Error: 400 /);
 		for (const row of rows) expect(Bun.stringWidth(row)).toBeLessThanOrEqual(80);
+		for (const row of rows) expect(row.search(/\S/)).toBe(2);
 		const joined = rows.map(row => row.trim()).join("");
 		expect(joined).toContain('"type":"invalid_request_error"}}');
 		expect(joined).toContain("raw-http-request=/home/user/.omp/logs/http-400-requests/1756800000000-abc123.json");

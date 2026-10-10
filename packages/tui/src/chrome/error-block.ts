@@ -36,17 +36,18 @@ export function formatErrorBlock(
 	contentWidth: number,
 	maxRows: number,
 	styleLine: (line: string, index: number) => string,
+	continuationIndent = CONTINUATION_INDENT,
 ): string {
 	const lines = replaceTabs(message)
 		.split("\n")
 		.map(line => line.trim())
 		.filter(line => line.length > 0);
 	if (lines.length === 0) lines.push("Unknown error");
-	const wrapWidth = Math.max(1, contentWidth - CONTINUATION_INDENT.length);
+	const wrapWidth = Math.max(1, contentWidth - continuationIndent.length);
 	const rows: string[] = [];
 	for (let index = 0; index < lines.length; index++) {
 		for (const row of wrapTextWithAnsi(styleLine(lines[index]!, index), wrapWidth)) {
-			rows.push(rows.length === 0 ? row : `${CONTINUATION_INDENT}${row}`);
+			rows.push(rows.length === 0 ? row : `${continuationIndent}${row}`);
 		}
 	}
 	if (rows.length > maxRows) {
@@ -55,7 +56,7 @@ export function formatErrorBlock(
 		rows.push(
 			theme.fg(
 				"dim",
-				`${CONTINUATION_INDENT}… +${hidden} more line${hidden === 1 ? "" : "s"} (${expandKeyHint()} to expand)`,
+				`${continuationIndent}… +${hidden} more line${hidden === 1 ? "" : "s"} (${expandKeyHint()} to expand)`,
 			),
 		);
 	}
