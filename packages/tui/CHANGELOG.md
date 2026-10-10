@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
-- Tool and script execution components render collapsed headers with at most one dim summary row when output is hidden; ANSI callers can expose per-block click targets while preserving agent-card focus routing.
+- Tool and script execution components render collapsed headers with at most one dim summary row when output is hidden (a one-line output shows whole, `⎿ hi`, instead of a count); with `/time` stamps off, a running call's header ticks its elapsed seconds (`⟳ Bash · sleep 6 4s`), and ANSI callers can expose per-block click targets while preserving agent-card focus routing.
 - A tool block whose rows already retired to terminal history but are still on screen above the prompt area (e.g. after a resize) can be hovered and clicked: `HistoryBatch.owners` tags each retired row with its block, `TUI.getScreenHistoryOwner(row)` resolves on-screen history rows, `TerminalFramePlan.historyBand` bands them in place (restored before they can scroll into scrollback), and the toggle replays history. A collapsed `ToolExecutionComponent` memoizes its header/summary rows instead of rendering its full child tree every frame.
 - Collapsed tool cards keep an extension/custom `renderCall`'s first row (including `write xd://<tool>` device calls) as the header while that call is on the card; built-in tools keep `icon Label · detail`. The `N lines hidden` count excludes notices the renderer hides (bash wall time/exit code) via the new optional `ToolRenderer.visibleOutput`, so `seq 1 40` reads `40 lines hidden`, not 41.
 

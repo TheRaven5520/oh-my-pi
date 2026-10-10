@@ -48,6 +48,7 @@ import {
 import type { XdevMountedState } from "../tools/xdev";
 import { parseXdUrl } from "../tools/xd-url";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../render/index";
+import { chatTranscriptDisplayPreferences } from "./display-preferences";
 import { cachedPngConversion, convertImageToPngShared, imagePayloadKey } from "./image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import { renderDiff } from "../chrome/diff";
@@ -316,6 +317,7 @@ export class ToolExecutionComponent extends Container {
 	#expanded = false;
 	#hadExpandableContent = false;
 	#allocation = Number.POSITIVE_INFINITY;
+	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
 	#toolActivityVisible = true;
 	#showImages: boolean;
 	#isPartial = true;
@@ -1213,8 +1215,9 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/** Apply the transcript allocator's current viewport reservation. */
-	setTranscriptAllocation(rows: number, _frame: AnimationFrame): void {
+	setTranscriptAllocation(rows: number, frame: AnimationFrame): void {
 		this.#allocation = Math.max(0, Math.trunc(rows));
+		this.#presentationFrame = frame;
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -1309,10 +1312,19 @@ export class ToolExecutionComponent extends Container {
 
 	/** Header plus one dim summary row (header only in a one-row allocation), memoized until an input it reads changes. */
 	#renderCompact(width: number): readonly string[] {
+		// Elapsed ticks only while the call is genuinely running; a settled card
+		// must not read as live ("Bash · running 0s"). With `/time` on, the
+		// block's right-aligned stamp already ticks the same duration.
+		const elapsed =
+			this.#isRunning() &&
+			this.#executionStartedAtNow !== undefined &&
+			!chatTranscriptDisplayPreferences.showTimestamps
+				? Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))
+				: undefined;
 		// The display key covers args, result, expansion and partial state (the
-		// summary's render context is rebuilt with the display); spinner ticks
-		// and sealing change the card without a display rebuild.
-		const key = `${width}|${this.#allocation === 1 ? 1 : 2}|${this.#lastDisplayKey}|${this.#sealed ? 1 : 0}|${this.#spinnerFrame ?? "-"}|${getThemeEpoch()}|${TERMINAL.imageProtocol ?? "-"}`;
+		// summary's render context is rebuilt with the display); spinner ticks,
+		// elapsed seconds and sealing change the card without a display rebuild.
+		const key = `${width}|${this.#allocation === 1 ? 1 : 2}|${this.#lastDisplayKey}|${this.#sealed ? 1 : 0}|${this.#spinnerFrame ?? "-"}|${elapsed ?? "-"}|${getThemeEpoch()}|${TERMINAL.imageProtocol ?? "-"}`;
 		if (key === this.#compactKey) return this.#compactRows;
 		const summary = this.#activitySummary();
 		const status =
@@ -1330,14 +1342,17 @@ export class ToolExecutionComponent extends Container {
 		const customHeader = this.#usesCustomCallRenderer()
 			? super.render(width).find(row => Bun.stripANSI(row).trim().length > 0)
 			: undefined;
-		const headerText = customHeader ?? `${icon} ${this.#toolLabel}${summary.detail ? ` · ${summary.detail}` : ""}`;
+		const elapsedText = elapsed === undefined ? "" : theme.fg("dim", ` ${elapsed}s`);
+		const headerText =
+			customHeader ?? `${icon} ${this.#toolLabel}${summary.detail ? ` · ${summary.detail}` : ""}${elapsedText}`;
 		const output = this.#summarizeOutput();
 		const error = this.#result?.isError ? output.first?.trim() : undefined;
 		const outputTail = this.#isRunning() ? output.last : undefined;
 		const hidden =
 			error ||
 			outputTail ||
-			(output.count > 1 ? `${output.count} lines hidden` : undefined) ||
+			// A one-line output is shown whole rather than counted.
+			(output.count === 1 ? output.first : output.count > 1 ? `${output.count} lines hidden` : undefined) ||
 			(this.#isExpandableState() ? "arguments hidden" : undefined);
 		const detail = hidden ? hidden.replace(/\s+/g, " ") : "";
 		this.#compactKey = key;

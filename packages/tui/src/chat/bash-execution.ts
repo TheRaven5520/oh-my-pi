@@ -388,13 +388,17 @@ export class BashExecutionComponent extends Container {
 			(getSixelLineMask(this.#outputLines)?.some(Boolean) ?? false);
 		if (this.#outputLines.some(line => line.trim()) || this.#images.length > 0) this.#hadExpandableContent = true;
 		if (!this.#expanded && this.#hadExpandableContent && !sixelOutput) {
-			const tail = this.#outputLines.filter(line => line.trim()).at(-1);
+			const visible = this.#outputLines.filter(line => line.trim());
 			const detail =
 				this.#status === "running"
-					? (tail ?? "running")
+					? (visible.at(-1) ?? "running")
 					: this.#status === "error"
-						? (this.#outputLines.find(line => line.trim()) ?? "error")
-						: `${this.#outputLines.filter(line => line.trim()).length} lines hidden`;
+						? (visible[0] ?? "error")
+						: visible.length === 1
+							? visible[0]
+							: visible.length > 1
+								? `${visible.length} lines hidden`
+								: "output hidden";
 			const header = `$ ${this.#command}`;
 			return [header, theme.fg("dim", `⎿ ${detail}`)];
 		}

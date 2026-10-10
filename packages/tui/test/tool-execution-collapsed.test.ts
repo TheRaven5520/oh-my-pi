@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { ToolExecutionComponent, type ToolExecutionUi } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Component } from "@oh-my-pi/pi-tui";
@@ -52,6 +53,16 @@ describe("collapsed tool cards", () => {
 			expect(rows[0]).toContain(command);
 			expect(rows[1]).toBe(`⎿ ${lines} lines hidden`);
 		}
+	});
+
+	it("shows a one-line output whole instead of counting it", () => {
+		const card = new ToolExecutionComponent("bash", { command: "echo hi" }, {}, undefined, ui, "/tmp");
+		card.updateResult(
+			{ content: [{ type: "text", text: "hi\n\nWall time: 0.01 seconds" }], details: { wallTimeMs: 10 } },
+			false,
+		);
+		card.seal();
+		expect(plain(card.render(120))[1]).toBe("⎿ hi");
 	});
 
 	it("recounts hidden lines when the same output gains notice details", () => {
@@ -120,5 +131,27 @@ describe("collapsed tool cards", () => {
 		card.updateResult(textResult("first\nsecond\nthird"), false);
 		card.seal();
 		expect(plain(card.render(80))[1]).toBe("⎿ 3 lines hidden");
+	});
+
+	it("ticks elapsed seconds on a running collapsed header and drops them once settled", () => {
+		const card = new ToolExecutionComponent("bash", { command: "sleep 6" }, {}, undefined, ui, "/tmp");
+		card.setExecutionStarted();
+		const started = performance.now();
+		card.setTranscriptAllocation(2, { tick: 1, now: started + 2500 });
+		expect(plain(card.render(80))[0]).toMatch(/sleep 6 2s$/);
+		card.setTranscriptAllocation(2, { tick: 2, now: started + 4100 });
+		expect(plain(card.render(80))[0]).toMatch(/sleep 6 4s$/);
+		// With `/time` on, the block stamp carries the duration instead.
+		setChatTranscriptDisplayPreferences({ showTimestamps: true });
+		try {
+			card.setTranscriptAllocation(2, { tick: 3, now: started + 5100 });
+			expect(plain(card.render(80))[0]).toMatch(/sleep 6$/);
+		} finally {
+			setChatTranscriptDisplayPreferences({ showTimestamps: false });
+		}
+		card.updateResult(textResult("done"), false);
+		card.seal();
+		card.setTranscriptAllocation(2, { tick: 4, now: started + 6000 });
+		expect(plain(card.render(80))[0]).not.toMatch(/\d+s$/);
 	});
 });
