@@ -44,7 +44,7 @@
 - Pending steering now says `Steering (queued)` and shows the existing empty-prompt Enter interrupt shortcut only while a live queue can be interrupted. Enter still accepts the draft once; it does not silently cancel a streaming response. Providers without live steering apply it at the next delivery boundary, while interruptible tool waits wake on the first submission.
 - Tool and script-run transcript blocks use a compact collapsed header with a one-line summary (`N lines`, not `N lines hidden`). Ctrl+O toggles expansion; opt-in `tui.mouse` enables per-block clicks and agent-card focus.
 - Mouse clicks activate only on a matching undragged release over the same target. Dragging, other input, overlays, capture changes and replaced targets cancel the pending click; tmux can own native drag-selection without an initial press expanding a block.
-- Collapsed `⎿ N lines` and output-summary rows are indented two columns further, without moving tool headers or overflowing narrow widths.
+- Collapsed `└ N lines` and output-summary rows are indented two columns further, without moving tool headers or overflowing narrow widths. The box-drawing corner raises its horizontal stroke to text mid-height without moving the summary text.
 - Main-transcript mouse capture is off by default so native scrolling, drag-selection, and clipboard gestures remain available. Opt-in capture no longer swallows ordinary typing coalesced with mouse reports.
 - Collapsed cards and hovered tool rows have no background. Individually click-expanded cards fill their content rows to the terminal width with `toolExpandedBg`, without an extra bottom padding row; global Ctrl+O expansion stays unpainted.
 

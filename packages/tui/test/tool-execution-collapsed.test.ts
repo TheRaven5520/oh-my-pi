@@ -141,7 +141,7 @@ describe("collapsed tool cards", () => {
 			const rows = plain(card.render(120));
 			expect(rows).toHaveLength(2);
 			expect(rows[0]).toContain(command);
-			expect(rows[1]?.trimStart()).toBe(`⎿ ${lines} lines`);
+			expect(rows[1]).toEndWith(` ${lines} lines`);
 		}
 	});
 
@@ -152,7 +152,7 @@ describe("collapsed tool cards", () => {
 			false,
 		);
 		card.seal();
-		expect(plain(card.render(120))[1]?.trimStart()).toBe("⎿ hi");
+		expect(plain(card.render(120))[1]).toEndWith(" hi");
 	});
 
 	it("recounts hidden lines when the same output gains notice details", () => {
@@ -160,10 +160,10 @@ describe("collapsed tool cards", () => {
 		const text = "a\nb\n\nWall time: 0.02 seconds";
 		card.updateResult({ content: [{ type: "text", text }], details: {} }, false);
 		card.seal();
-		expect(plain(card.render(120))[1]?.trimStart()).toBe("⎿ 3 lines");
+		expect(plain(card.render(120))[1]).toEndWith(" 3 lines");
 		// Same output string, new details: the notice is now known and hidden.
 		card.updateResult({ content: [{ type: "text", text }], details: { wallTimeMs: 20 } }, false);
-		expect(plain(card.render(120))[1]?.trimStart()).toBe("⎿ 2 lines");
+		expect(plain(card.render(120))[1]).toEndWith(" 2 lines");
 	});
 
 	it("keeps only the header in a one-row allocation", () => {
@@ -189,7 +189,7 @@ describe("collapsed tool cards", () => {
 		card.seal();
 
 		const first = card.render(80);
-		expect(plain(first)[1]?.trimStart()).toBe("⎿ 12 lines");
+		expect(plain(first)[1]).toEndWith(" 12 lines");
 		const second = card.render(80);
 		expect(body.renders).toBe(0);
 		expect(second).toBe(first);
@@ -208,19 +208,19 @@ describe("collapsed tool cards", () => {
 
 		// A new result invalidates the memo.
 		card.updateResult(textResult("only\nthree\nlines"), false);
-		expect(plain(card.render(80))[1]?.trimStart()).toBe("⎿ 3 lines");
+		expect(plain(card.render(80))[1]).toEndWith(" 3 lines");
 		expect(body.renders).toBe(1);
 	});
 
 	it("follows a running block's streamed tail while collapsed", () => {
 		const card = new ToolExecutionComponent("counted", { path: "x" }, {}, undefined, ui, "/tmp");
 		card.updateResult(textResult("first\nsecond"), true);
-		expect(plain(card.render(80))[1]?.trimStart()).toBe("⎿ second");
+		expect(plain(card.render(80))[1]).toEndWith(" second");
 		card.updateResult(textResult("first\nsecond\nthird"), true);
-		expect(plain(card.render(80))[1]?.trimStart()).toBe("⎿ third");
+		expect(plain(card.render(80))[1]).toEndWith(" third");
 		card.updateResult(textResult("first\nsecond\nthird"), false);
 		card.seal();
-		expect(plain(card.render(80))[1]?.trimStart()).toBe("⎿ 3 lines");
+		expect(plain(card.render(80))[1]).toEndWith(" 3 lines");
 	});
 
 	it("keeps every running task agent in spawn order across interleaved updates", () => {
@@ -258,7 +258,7 @@ describe("collapsed tool cards", () => {
 		try {
 			for (const index of [0, 2, 1]) {
 				update(index);
-				expect(plain(card.render(100))[1]?.trimStart()).toBe(`⎿ Running 3 agents: ${names.join(", ")}`);
+				expect(plain(card.render(100))[1]).toEndWith(` Running 3 agents: ${names.join(", ")}`);
 				// Native task cards already carry all agent nodes, not the text tail.
 				const nativeNames = card
 					.describe()
@@ -275,16 +275,16 @@ describe("collapsed tool cards", () => {
 			card.setExpanded(false);
 			progress[1]!.status = "completed";
 			update(2);
-			expect(plain(card.render(100))[1]?.trimStart()).toBe("⎿ Running 2 agents: AdvisorOneLine2, CardsReview");
+			expect(plain(card.render(100))[1]).toEndWith(" Running 2 agents: AdvisorOneLine2, CardsReview");
 			progress[0]!.status = "failed";
 			const lastUpdate = update(2);
-			expect(plain(card.render(100))[1]?.trimStart()).toBe("⎿ Running agent CardsReview");
+			expect(plain(card.render(100))[1]).toEndWith(" Running agent CardsReview");
 			// The same payload settling must invalidate the live-summary cache.
 			card.updateResult(lastUpdate, false);
-			expect(plain(card.render(100))[1]?.trimStart()).toBe("⎿ Running agent CardsReview...");
+			expect(plain(card.render(100))[1]).toEndWith(" Running agent CardsReview...");
 			progress[2]!.status = "completed";
 			card.updateResult(textResult("All agents complete"), false);
-			expect(plain(card.render(100))[1]?.trimStart()).toBe("⎿ All agents complete");
+			expect(plain(card.render(100))[1]).toEndWith(" All agents complete");
 		} finally {
 			card.seal();
 		}
