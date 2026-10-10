@@ -1521,7 +1521,11 @@ interface InlineStyleContext {
 	stylePrefix: string;
 }
 
-type ListToken = Token & { items: Array<{ tokens?: Token[] }>; ordered: boolean; start?: number };
+type ListToken = Token & {
+	items: Array<{ tokens?: Token[]; task?: boolean; checked?: boolean }>;
+	ordered: boolean;
+	start?: number | "";
+};
 type TableCellToken = { tokens?: Token[] };
 type TableToken = Token & { header: TableCellToken[]; rows: TableCellToken[][]; raw?: string };
 
@@ -2026,8 +2030,30 @@ export class Markdown implements Component {
 		this.#paddingY = paddingY;
 		this.#theme = theme;
 		this.#symbols = theme.symbols ?? getSymbolTheme();
-		const { quoteBorder, hrChar, colorSwatch, table } = this.#symbols;
-		this.#symbolsProbe = theme.symbols ? "" : [quoteBorder, hrChar, colorSwatch, ...Object.values(table)].join("");
+		const {
+			quoteBorder,
+			hrChar,
+			colorSwatch,
+			table,
+			listBullet,
+			nestedListBullet,
+			nestedListBulletTertiary,
+			taskChecked,
+			taskUnchecked,
+		} = this.#symbols;
+		this.#symbolsProbe = theme.symbols
+			? ""
+			: [
+					quoteBorder,
+					hrChar,
+					colorSwatch,
+					listBullet,
+					nestedListBullet,
+					nestedListBulletTertiary,
+					taskChecked,
+					taskUnchecked,
+					...Object.values(table),
+				].join("");
 		this.#defaultTextStyle = defaultTextStyle;
 		this.#codeBlockIndent = Math.max(0, Math.floor(codeBlockIndent));
 		this.#imageBudget = imageBudget;
@@ -3081,13 +3107,28 @@ export class Markdown implements Component {
 	#renderCodeBodyLines(token: Token, codeIndent: string): RenderedLine[] {
 		const literalCode = this.#codeBlockIndent === 0;
 		const bodyLines: RenderedLine[] = [];
-		const tokenText = "text" in token && typeof token.text === "string" ? token.text : "";
+		let tokenText = "text" in token && typeof token.text === "string" ? token.text : "";
 		const lang = "lang" in token && typeof token.lang === "string" ? token.lang : undefined;
 		const addBodyLine = (line: string): void => {
 			bodyLines.push(renderedLine(literalCode ? line : codeIndent + line, literalCode));
 		};
 
 		const streaming = this.transientRenderCache && !this.#renderingStablePrefix;
+		// A closing fence can arrive one character at a time. Delay its unfinished
+		// marker-only last line until it becomes either a fence or real code.
+		if (
+			streaming &&
+			!token.raw.endsWith("\n") &&
+			(tokenText.endsWith("`") || tokenText.endsWith("~")) &&
+			!this.#codeTokenHasClosingFence(token)
+		) {
+			const opener = /^ {0,3}(`{3,}|~{3,})/.exec(token.raw);
+			const lastLineStart = tokenText.lastIndexOf("\n") + 1;
+			const pending = /^ {0,3}(`+|~+)$/.exec(tokenText.slice(lastLineStart));
+			if (opener && pending && opener[1]!.startsWith(pending[1]!)) {
+				tokenText = tokenText.slice(0, Math.max(0, lastLineStart - 1));
+			}
+		}
 		if (this.#theme.highlightCode && (!streaming || this.#codeTokenHasClosingFence(token))) {
 			// Finalized content — or a fence that closed mid-stream, which
 			// highlights through the same whole-block call the finalized render
@@ -3371,7 +3412,6 @@ export class Markdown implements Component {
 		switch (token.type) {
 			case "heading": {
 				const headingLevel = token.depth;
-				const headingPrefix = `${"#".repeat(headingLevel)} `;
 				const headingText = this.#renderInlineTokens(token.tokens || [], styleContext);
 				const headingPlainText = plainInlineTokens(token.tokens || []);
 				let styledHeading: string;
@@ -3379,7 +3419,11 @@ export class Markdown implements Component {
 					const plainWidth = visibleWidth(headingPlainText);
 					if (plainWidth > 0 && 2 * plainWidth <= width) {
 						const sizedHeading = encodeTextSizedHeading(headingPlainText, 2);
-						lines.push(renderedLine(this.#theme.heading(this.#theme.bold(this.#theme.underline(sizedHeading)))));
+						lines.push(
+							renderedLine(
+								this.#theme.heading(this.#theme.bold(this.#theme.italic(this.#theme.underline(sizedHeading)))),
+							),
+						);
 						lines.push(renderedLine("")); // reserve the heading's second visual row
 						if (nextTokenType && nextTokenType !== "space") {
 							lines.push(renderedLine("")); // Add spacing after headings (unless space token follows)
@@ -3388,11 +3432,11 @@ export class Markdown implements Component {
 					}
 				}
 				if (headingLevel === 1) {
-					styledHeading = this.#theme.heading(this.#theme.bold(this.#theme.underline(headingText)));
-				} else if (headingLevel === 2) {
-					styledHeading = this.#theme.heading(this.#theme.bold(headingText));
+					styledHeading = this.#theme.heading(
+						this.#theme.bold(this.#theme.italic(this.#theme.underline(headingText))),
+					);
 				} else {
-					styledHeading = this.#theme.heading(this.#theme.bold(headingPrefix + headingText));
+					styledHeading = this.#theme.heading(this.#theme.bold(headingText));
 				}
 				lines.push(renderedLine(styledHeading));
 				if (nextTokenType && nextTokenType !== "space") {
@@ -3413,7 +3457,12 @@ export class Markdown implements Component {
 					if (nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") lines.push(renderedLine(""));
 					break;
 				}
-				const paragraphText = this.#renderInlineTokens(token.tokens || [], styleContext);
+				let inlineTokens = token.tokens || [];
+				if (this.transientRenderCache && !nextTokenType && !token.raw.endsWith("\n")) {
+					const pendingFence = /(?:^|\n) {0,3}(?:`{1,2}|~{1,2})$/.exec(token.text);
+					if (pendingFence) inlineTokens = lexInlineTokens(token.text.slice(0, pendingFence.index));
+				}
+				const paragraphText = this.#renderInlineTokens(inlineTokens, styleContext);
 				for (const paragraphLine of hangWrapTreeGuideLines(paragraphText, width) ?? [paragraphText]) {
 					lines.push(renderedLine(paragraphLine));
 				}
@@ -3665,6 +3714,12 @@ export class Markdown implements Component {
 					break;
 				}
 
+				case "checkbox": {
+					const glyph = token.checked ? (this.#symbols.taskChecked ?? "☑") : (this.#symbols.taskUnchecked ?? "☐");
+					result += `${glyph} `;
+					break;
+				}
+
 				case "paragraph":
 					// Paragraph tokens contain nested inline tokens
 					markHtmlItemWhenContent(plainInlineTokens(token.tokens || []));
@@ -3805,9 +3860,19 @@ export class Markdown implements Component {
 			}
 		};
 
+		const listBullet = this.#symbols.listBullet ?? "•";
 		for (let i = 0; i < token.items.length; i++) {
-			const item = token.items[i];
-			const bullet = token.ordered ? `${startNumber + i}. ` : "- ";
+			const item = token.items[i]!;
+			const listMarker =
+				depth === 0
+					? listBullet
+					: depth === 1
+						? (this.#symbols.nestedListBullet ?? listBullet)
+						: (this.#symbols.nestedListBulletTertiary ?? this.#symbols.nestedListBullet ?? listBullet);
+			const taskMarker = item.task
+				? `${item.checked ? (this.#symbols.taskChecked ?? "☑") : (this.#symbols.taskUnchecked ?? "☐")} `
+				: "";
+			const bullet = token.ordered ? `${Number(startNumber) + i}. ${taskMarker}` : `${listMarker} ${taskMarker}`;
 			const firstPrefix = indent + this.#theme.listBullet(bullet);
 			// Continuation rows align under the item text, so the hang matches the
 			// actual bullet width (`10. ` is 4 cells, not 2).
@@ -3856,6 +3921,8 @@ export class Markdown implements Component {
 		const lines: RenderedListItemLine[] = [];
 
 		for (const token of tokens) {
+			// The list prefix already carries task state, including its hang width.
+			if (token.type === "checkbox") continue;
 			if (token.type === "list") {
 				// Nested list - render with one additional indent level
 				// These lines carry their own indent, so tag them for pass-through

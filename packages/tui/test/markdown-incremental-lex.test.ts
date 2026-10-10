@@ -63,13 +63,13 @@ function assertIdenticalGrowthTransient(full: string, width = 60, step = 13): vo
 		clearRenderCache();
 		streaming.setText(slice);
 		const streamLines = streaming.render(width);
-		const oracle = renderCold(slice, width);
+		const oracle = renderColdTransient(slice, width);
 		expect(streamLines).toEqual(oracle);
 	}
 	clearRenderCache();
 	streaming.setText(full);
 	const streamLines = streaming.render(width);
-	expect(streamLines).toEqual(renderCold(full, width));
+	expect(streamLines).toEqual(renderColdTransient(full, width));
 }
 
 const PROSE =

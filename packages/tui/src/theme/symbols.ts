@@ -202,6 +202,10 @@ export type SymbolKey =
 	| "md.quoteBorder"
 	| "md.hrChar"
 	| "md.bullet"
+	| "md.bulletSecondary"
+	| "md.bulletTertiary"
+	| "md.taskChecked"
+	| "md.taskUnchecked"
 	| "md.colorSwatch"
 	// Advisor note rail
 	| "advisor.rail"
@@ -583,6 +587,10 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"md.quoteBorder": "▏",
 	"md.hrChar": "─",
 	"md.bullet": "•",
+	"md.bulletSecondary": "◦",
+	"md.bulletTertiary": "▪",
+	"md.taskChecked": "☑",
+	"md.taskUnchecked": "☐",
 	"md.colorSwatch": "■",
 	// Advisor note rail (heavier than md.quoteBorder so notes read as a distinct voice)
 	"advisor.rail": "▎",
@@ -1041,8 +1049,11 @@ const NERD_SYMBOLS: SymbolMap = {
 	"md.quoteBorder": "│",
 	// pick: ─ | alt: ━ ═
 	"md.hrChar": "─",
-	// pick:  | alt:  •
-	"md.bullet": "\uf111",
+	"md.bullet": "•",
+	"md.bulletSecondary": "◦",
+	"md.bulletTertiary": "▪",
+	"md.taskChecked": "☑",
+	"md.taskUnchecked": "☐",
 	// pick: ■ | alt:  (U+F096)
 	"md.colorSwatch": "■",
 	// pick: ▎ | alt: ┃ │
@@ -1353,7 +1364,11 @@ const ASCII_SYMBOLS: SymbolMap = {
 	// Markdown-specific
 	"md.quoteBorder": "|",
 	"md.hrChar": "-",
-	"md.bullet": "*",
+	"md.bullet": "-",
+	"md.bulletSecondary": "-",
+	"md.bulletTertiary": "-",
+	"md.taskChecked": "[x]",
+	"md.taskUnchecked": "[ ]",
 	"md.colorSwatch": "[]",
 	"advisor.rail": "|",
 	"skill.rail": "|",

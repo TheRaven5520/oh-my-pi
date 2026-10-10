@@ -764,6 +764,10 @@ export class Theme {
 			quoteBorder: this.#symbols["md.quoteBorder"],
 			hrChar: this.#symbols["md.hrChar"],
 			bullet: this.#symbols["md.bullet"],
+			bulletSecondary: this.#symbols["md.bulletSecondary"],
+			bulletTertiary: this.#symbols["md.bulletTertiary"],
+			taskChecked: this.#symbols["md.taskChecked"],
+			taskUnchecked: this.#symbols["md.taskUnchecked"],
 			colorSwatch: this.#symbols["md.colorSwatch"],
 		};
 	}

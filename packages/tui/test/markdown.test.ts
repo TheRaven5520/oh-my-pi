@@ -95,10 +95,10 @@ describe("Markdown component", () => {
 			const plainLines = lines.map(line => stripVTControlCharacters(line));
 
 			// Check structure
-			expect(plainLines.some(line => line.includes("- Item 1"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("  - Nested 1.1"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("  - Nested 1.2"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("- Item 2"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("• Item 1"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("  • Nested 1.1"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("  • Nested 1.2"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("• Item 2"))).toBeTruthy();
 		});
 
 		it("should render deeply nested list", () => {
@@ -116,10 +116,10 @@ describe("Markdown component", () => {
 			const plainLines = lines.map(line => stripVTControlCharacters(line));
 
 			// Check proper indentation
-			expect(plainLines.some(line => line.includes("- Level 1"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("  - Level 2"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("    - Level 3"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("      - Level 4"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("• Level 1"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("  • Level 2"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("    • Level 3"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("      • Level 4"))).toBeTruthy();
 		});
 
 		it("should render ordered nested list", () => {
@@ -158,7 +158,7 @@ describe("Markdown component", () => {
 			const plainLines = lines.map(line => stripVTControlCharacters(line));
 
 			expect(plainLines.some(line => line.includes("1. Ordered item"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("  - Unordered nested"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("  • Unordered nested"))).toBeTruthy();
 			expect(plainLines.some(line => line.includes("2. Second ordered"))).toBeTruthy();
 		});
 
@@ -167,7 +167,7 @@ describe("Markdown component", () => {
 
 			const plainLines = markdown.render(16).map(line => stripVTControlCharacters(line).trimEnd());
 
-			expect(plainLines).toEqual(["- Alpha beta", "  gamma delta", "  epsilon"]);
+			expect(plainLines).toEqual(["• Alpha beta", "  gamma delta", "  epsilon"]);
 			expect(plainLines.every(line => visibleWidth(line) <= 16)).toBe(true);
 		});
 
@@ -727,8 +727,8 @@ Average Latency: 1,240 ms
 			// Check heading
 			expect(plainLines.some(line => line.includes("Test Document"))).toBeTruthy();
 			// Check list
-			expect(plainLines.some(line => line.includes("- Item 1"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("  - Nested item"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("• Item 1"))).toBeTruthy();
+			expect(plainLines.some(line => line.includes("  • Nested item"))).toBeTruthy();
 			// Check table
 			expect(plainLines.some(line => line.includes("Col1"))).toBeTruthy();
 			expect(plainLines.some(line => line.includes("|"))).toBeTruthy();
@@ -1351,7 +1351,7 @@ bar`,
 			const quotedLines = plainLines.filter(line => line.startsWith("│ "));
 
 			expect(quotedLines.some(line => line.includes("1. bla bla"))).toBeTruthy();
-			expect(quotedLines.some(line => line.includes("- nested bullet"))).toBeTruthy();
+			expect(quotedLines.some(line => line.includes("• nested bullet"))).toBeTruthy();
 		});
 
 		it("should render table content inside blockquotes", () => {

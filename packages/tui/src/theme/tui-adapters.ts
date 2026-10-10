@@ -164,6 +164,11 @@ export function getSymbolTheme(): SymbolTheme {
 			quoteBorder: "|",
 			hrChar: "-",
 			colorSwatch: "[]",
+			listBullet: "-",
+			nestedListBullet: "-",
+			nestedListBulletTertiary: "-",
+			taskChecked: "[x]",
+			taskUnchecked: "[ ]",
 			spinnerFrames: ["-", "\\", "|", "/"],
 		};
 	}
@@ -178,6 +183,11 @@ export function getSymbolTheme(): SymbolTheme {
 		quoteBorder: theme.md.quoteBorder,
 		hrChar: theme.md.hrChar,
 		colorSwatch: theme.md.colorSwatch,
+		listBullet: theme.md.bullet,
+		nestedListBullet: theme.md.bulletSecondary ?? theme.md.bullet,
+		nestedListBulletTertiary: theme.md.bulletTertiary ?? theme.md.bulletSecondary ?? theme.md.bullet,
+		taskChecked: theme.md.taskChecked,
+		taskUnchecked: theme.md.taskUnchecked,
 		spinnerFrames: theme.getSpinnerFrames("activity"),
 	};
 }

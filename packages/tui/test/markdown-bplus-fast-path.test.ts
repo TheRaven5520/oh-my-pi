@@ -22,7 +22,9 @@ const THEME = defaultMarkdownTheme;
 
 function renderCold(text: string, width: number, defaultTextStyle?: DefaultTextStyle): readonly string[] {
 	clearRenderCache();
-	const out = new Markdown(text, 0, 0, THEME, defaultTextStyle).render(width);
+	const cold = new Markdown(text, 0, 0, THEME, defaultTextStyle);
+	cold.transientRenderCache = true;
+	const out = cold.render(width);
 	clearRenderCache();
 	return out;
 }

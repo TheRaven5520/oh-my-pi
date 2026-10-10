@@ -22,5 +22,11 @@ export interface SymbolTheme {
 	hrChar: string;
 	/** Chip glyph drawn (painted with the referenced color) before inline hex colors. */
 	colorSwatch?: string;
+	/** Markdown list marker glyphs and task-list state markers. */
+	listBullet?: string;
+	nestedListBullet?: string;
+	nestedListBulletTertiary?: string;
+	taskChecked?: string;
+	taskUnchecked?: string;
 	spinnerFrames: string[];
 }
