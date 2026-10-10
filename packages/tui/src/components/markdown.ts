@@ -1512,7 +1512,7 @@ export interface MarkdownTheme {
 		heightPx: number;
 		key: string;
 	} | null;
-	/** Glyphs for quote borders, rules, tables and color swatches. Optional so themes built to the upstream pi-tui MarkdownTheme shape (which has no symbols) still render; omitted symbols fall back to the active theme's set. */
+	/** Glyphs for quote borders, rules, list markers and color swatches. Optional so themes built to the upstream pi-tui MarkdownTheme shape (which has no symbols) still render; omitted symbols fall back to the active theme's set. */
 	symbols?: SymbolTheme;
 }
 
@@ -2034,7 +2034,6 @@ export class Markdown implements Component {
 			quoteBorder,
 			hrChar,
 			colorSwatch,
-			table,
 			listBullet,
 			nestedListBullet,
 			nestedListBulletTertiary,
@@ -2052,7 +2051,6 @@ export class Markdown implements Component {
 					nestedListBulletTertiary,
 					taskChecked,
 					taskUnchecked,
-					...Object.values(table),
 				].join("");
 		this.#defaultTextStyle = defaultTextStyle;
 		this.#codeBlockIndent = Math.max(0, Math.floor(codeBlockIndent));
@@ -4013,8 +4011,8 @@ export class Markdown implements Component {
 		}
 		// The native wrap deliberately leaves fg color and bold/italic open at
 		// line ends so continuation lines can re-open them. Table rows splice
-		// every cell line between unstyled border glyphs, so an open style
-		// (e.g. mdCode) would bleed into the "│" and the following cells.
+		// every cell line between unstyled gaps, so an open style
+		// (e.g. mdCode) would bleed into the following cells.
 		// Terminate each line at default fg, clearing bold/italic but keeping
 		// any ambient background (message-bg rendering) intact.
 		return wrapped.map(line => `${line}\x1b[22m\x1b[23m\x1b[39m`);
@@ -4037,17 +4035,24 @@ export class Markdown implements Component {
 			return lines;
 		}
 
-		// Calculate border overhead: "│ " + (n-1) * " │ " + " │"
-		// = 2 + (n-1) * 3 + 2 = 3n + 1
-		const borderOverhead = 3 * numCols + 1;
-		const availableForCells = availableWidth - borderOverhead;
+		const columnGap = "  ";
+		const gapWidth = columnGap.length * (numCols - 1);
+		const availableForCells = availableWidth - gapWidth;
 		if (availableForCells < numCols) {
-			// Too narrow to render a stable table. Fall back to raw markdown.
-			const fallbackLines = token.raw ? wrapTextWithAnsi(token.raw, availableWidth) : [];
-			if (nextTokenType && nextTokenType !== "space") {
-				fallbackLines.push("");
+			// When columns cannot fit, stack each record's labelled cells instead
+			// of exposing raw Markdown delimiters or dropping cell content.
+			const rows = token.rows.length > 0 ? token.rows : [token.header.map(() => ({ tokens: [] }))];
+			for (const row of rows) {
+				if (lines.length > 0) lines.push("");
+				for (let i = 0; i < numCols; i++) {
+					const header = this.#renderInlineTokens(token.header[i].tokens || [], styleContext);
+					lines.push(...this.#wrapCellText(header, availableWidth).map(line => this.#theme.bold(line)));
+					const text = this.#renderInlineTokens(row[i]?.tokens || [], styleContext);
+					if (text) lines.push(...this.#wrapCellText(text, availableWidth));
+				}
 			}
-			return fallbackLines;
+			if (nextTokenType && nextTokenType !== "space") lines.push("");
+			return lines;
 		}
 
 		const maxUnbrokenWordWidth = 30;
@@ -4058,7 +4063,7 @@ export class Markdown implements Component {
 		for (let i = 0; i < numCols; i++) {
 			const headerText = this.#renderInlineTokens(token.header[i].tokens || [], styleContext);
 			const headerLineWidths = this.#terminalLineWidths(headerText);
-			naturalWidths[i] = Math.max(...headerLineWidths, 0);
+			naturalWidths[i] = Math.max(...headerLineWidths, 1);
 			minWordWidths[i] = Math.max(1, this.#getLongestWordWidth(headerText, maxUnbrokenWordWidth));
 		}
 		for (const row of token.rows) {
@@ -4104,7 +4109,7 @@ export class Markdown implements Component {
 		}
 
 		// Calculate column widths that fit within available width
-		const totalNaturalWidth = naturalWidths.reduce((a, b) => a + b, 0) + borderOverhead;
+		const totalNaturalWidth = naturalWidths.reduce((a, b) => a + b, 0) + gapWidth;
 		let columnWidths: number[];
 
 		if (totalNaturalWidth <= availableWidth) {
@@ -4144,14 +4149,6 @@ export class Markdown implements Component {
 			}
 		}
 
-		const t = this.#symbols.table;
-		const h = t.horizontal;
-		const v = t.vertical;
-
-		// Render top border
-		const topBorderCells = columnWidths.map(w => h.repeat(w));
-		lines.push(`${t.topLeft}${h}${topBorderCells.join(`${h}${t.teeDown}${h}`)}${h}${t.topRight}`);
-
 		// Render header with wrapping
 		const headerCellLines: string[][] = token.header.map((cell, i) => {
 			const text = this.#renderInlineTokens(cell.tokens || [], styleContext);
@@ -4165,13 +4162,8 @@ export class Markdown implements Component {
 				const padded = text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
 				return this.#theme.bold(padded);
 			});
-			lines.push(`${v} ${rowParts.join(` ${v} `)} ${v}`);
+			lines.push(rowParts.join(columnGap));
 		}
-
-		// Render separator
-		const separatorCells = columnWidths.map(w => h.repeat(w));
-		const separatorLine = `${t.teeRight}${h}${separatorCells.join(`${h}${t.cross}${h}`)}${h}${t.teeLeft}`;
-		lines.push(separatorLine);
 
 		// Render rows with wrapping
 		for (let rowIndex = 0; rowIndex < token.rows.length; rowIndex++) {
@@ -4187,18 +4179,10 @@ export class Markdown implements Component {
 					const text = cellLines[lineIdx] || "";
 					return text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
 				});
-				lines.push(`${v} ${rowParts.join(` ${v} `)} ${v}`);
-			}
-
-			if (rowIndex < token.rows.length - 1) {
-				lines.push(separatorLine);
+				lines.push(rowParts.join(columnGap));
 			}
 		}
 
-		// Render bottom border
-		const bottomBorderCells = columnWidths.map(w => h.repeat(w));
-		const bottomBorder = `${t.bottomLeft}${h}${bottomBorderCells.join(`${h}${t.teeUp}${h}`)}${h}${t.bottomRight}`;
-		lines.push(bottomBorder);
 		if (nextTokenType && nextTokenType !== "space") {
 			lines.push(""); // Add spacing after table
 		}

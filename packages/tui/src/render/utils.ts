@@ -1,13 +1,40 @@
 /**
  * Shared helpers for tool-rendered UI components.
  */
+import { TERMINAL } from "../terminal-capabilities";
 import type { Theme, ThemeBg } from "../theme/theme";
 import { padding, truncateToWidth, visibleWidth } from "../utils";
 import type { State } from "./types";
 
-// Renderers emit standalone SGR background colors. Remove these before filling
-// an expanded card so nested framed/state surfaces cannot cover its background.
-const NESTED_BACKGROUND = /\x1b\[(?:4[0-7]|10[0-7]|48[;:][0-9;:]+)m/g;
+const SGR = /\x1b\[([0-9;:]*)m/g;
+
+/** Preserve combined PTY foreground/style parameters while removing nested fills. */
+function withoutBackground(sequence: string, parameters: string): string {
+	const tokens = parameters.split(";");
+	const retained: string[] = [];
+	let changed = false;
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index]!;
+		const colon = token.indexOf(":");
+		const code = Number(colon < 0 ? token : token.slice(0, colon));
+		let end = index;
+		// Semicolon extended colors consume their channels, which may themselves
+		// equal background opcodes. Colon forms are already one complete token.
+		if (colon < 0 && (code === 38 || code === 48 || code === 58)) {
+			const mode = tokens[index + 1];
+			if (mode !== "2" && mode !== "5") return sequence;
+			end += mode === "2" ? 4 : 2;
+			if (end >= tokens.length) return sequence;
+		}
+		if ((code >= 40 && code <= 49) || (code >= 100 && code <= 107)) {
+			changed = true;
+		} else {
+			for (let keep = index; keep <= end; keep++) retained.push(tokens[keep]!);
+		}
+		index = end;
+	}
+	return changed ? (retained.length > 0 ? `\x1b[${retained.join(";")}m` : "") : sequence;
+}
 
 /** Paint one expanded tool surface, discarding outer renderer padding first. */
 export function expandedToolRows(
@@ -18,11 +45,18 @@ export function expandedToolRows(
 ): string[] {
 	let start = 0;
 	let end = rows.length;
-	while (start < end && !Bun.stripANSI(rows[start]!).trim()) start++;
-	while (end > start && !Bun.stripANSI(rows[end - 1]!).trim()) end--;
+	while (start < end && !rows[start]!.trim()) start++;
+	while (end > start && !rows[end - 1]!.trim()) end--;
 	const painted: string[] = [];
 	for (let index = start; index < end; index++) {
-		painted.push(theme.bgFill("toolExpandedBg", padToWidth(rows[index]!.replace(NESTED_BACKGROUND, ""), width)));
+		const row = rows[index]!;
+		// Image.render reserves height with reset-only rows. Painting those or
+		// padding a placement line can overwrite direct-placement graphics.
+		painted.push(
+			row === "\x1b[0m" || TERMINAL.isImageLine(row)
+				? row
+				: theme.bgFill("toolExpandedBg", padToWidth(row.replace(SGR, withoutBackground), width)),
+		);
 	}
 	if (painted.length > 0 && painted.length < allocation) painted.push(theme.bgFill("toolExpandedBg", padding(width)));
 	return painted;

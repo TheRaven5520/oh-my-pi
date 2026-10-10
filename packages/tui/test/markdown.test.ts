@@ -267,14 +267,8 @@ describe("Markdown component", () => {
 			const lines = markdown.render(80);
 			const plainLines = lines.map(line => stripVTControlCharacters(line));
 
-			// Check table structure
-			expect(plainLines.some(line => line.includes("Name"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("Age"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("Alice"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("Bob"))).toBeTruthy();
-			// Check for table borders
-			expect(plainLines.some(line => line.includes("|"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("-"))).toBeTruthy();
+			expect(plainLines.map(line => line.trimEnd())).toEqual(["Name   Age", "Alice  30", "Bob    25"]);
+			expect(lines[0]).toContain("\x1b[1m");
 		});
 
 		it("recovers rich Markdown after a lone closing fence from Gemini", () => {
@@ -302,7 +296,6 @@ Average Latency: 1,240 ms
 			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
 
 			expect(plainLines.some(line => line.includes("| :--- | :--- |"))).toBe(false);
-			expect(plainLines.filter(line => line.includes("+")).length).toBeGreaterThanOrEqual(2);
 			expect(plainLines.some(line => line.includes("google-scraper") && line.includes("1/1 Running"))).toBe(true);
 		});
 
@@ -362,24 +355,6 @@ Average Latency: 1,240 ms
 			expect(plainLines.some(line => line.includes("### Still inside the unfinished block"))).toBe(true);
 		});
 
-		it("should render row dividers between data rows", () => {
-			const markdown = new Markdown(
-				`| Name | Age |
-| --- | --- |
-| Alice | 30 |
-| Bob | 25 |`,
-				0,
-				0,
-				defaultMarkdownTheme,
-			);
-
-			const lines = markdown.render(80);
-			const plainLines = lines.map(line => stripVTControlCharacters(line));
-			const dividerLines = plainLines.filter(line => line.includes("+"));
-
-			expect(dividerLines.length >= 2, "Expected header + row divider").toBeTruthy();
-		});
-
 		it("should keep column width at least the longest word", () => {
 			const longestWord = "superlongword";
 			const markdown = new Markdown(
@@ -397,10 +372,7 @@ Average Latency: 1,240 ms
 			const dataLine = plainLines.find(line => line.includes(longestWord));
 			expect(dataLine, "Expected data row containing longest word").toBeTruthy();
 
-			const segments = dataLine!.split("|").slice(1, -1);
-			const [firstSegment] = segments;
-			expect(firstSegment, "Expected first column segment").toBeTruthy();
-			const firstColumnWidth = firstSegment.length - 2;
+			const firstColumnWidth = dataLine!.indexOf("otherword") - 2;
 
 			expect(
 				firstColumnWidth >= longestWord.length,
@@ -491,8 +463,8 @@ Average Latency: 1,240 ms
 			const plainLines = lines.map(line => stripVTControlCharacters(line).trimEnd());
 
 			// Should have multiple data rows due to wrapping
-			const dataRows = plainLines.filter(line => line.startsWith("|") && !line.includes("-"));
-			expect(dataRows.length > 2, `Expected wrapped rows, got ${dataRows.length} rows`).toBeTruthy();
+			const dataRows = plainLines.slice(1);
+			expect(dataRows.length > 1, `Expected wrapped rows, got ${dataRows.length} rows`).toBeTruthy();
 
 			// All content should be preserved (may be split across lines)
 			const allText = plainLines.join(" ");
@@ -523,21 +495,13 @@ Average Latency: 1,240 ms
 				).toBeTruthy();
 			}
 
-			// Borders should stay intact (exactly 2 vertical borders for a 1-col table)
-			const tableLines = plainLines.filter(line => line.startsWith("|"));
-			for (const line of tableLines) {
-				const borderCount = line.split("|").length - 1;
-				expect(borderCount, `Expected 2 borders, got ${borderCount}: "${line}"`).toBe(2);
-			}
-
-			// Strip box drawing characters + whitespace so we can assert the URL is preserved
-			// even if it was split across multiple wrapped lines.
-			const extracted = plainLines.join("").replace(/[|+\-\s]/g, "");
+			// Ignore whitespace so content remains comparable across wrapping.
+			const extracted = plainLines.join("").replace(/\s/g, "");
 			expect(extracted.includes("prefix"), "Should preserve 'prefix'").toBeTruthy();
 			expect(extracted.includes(url), "Should preserve URL").toBeTruthy();
 		});
 
-		it("should wrap styled inline code inside table cells without breaking borders", () => {
+		it("should preserve styled inline code across wrapped table cells", () => {
 			const markdown = new Markdown(
 				`| Code |
 | --- |
@@ -560,14 +524,10 @@ Average Latency: 1,240 ms
 				).toBeTruthy();
 			}
 
-			const tableLines = plainLines.filter(line => line.startsWith("|"));
-			for (const line of tableLines) {
-				const borderCount = line.split("|").length - 1;
-				expect(borderCount, `Expected 2 borders, got ${borderCount}: "${line}"`).toBe(2);
-			}
+			expect(plainLines.join("").replace(/\s/g, "")).toContain("averyveryveryverylongidentifier");
 		});
 
-		it("does not leak inline-code color into table borders when cells wrap", () => {
+		it("does not leak inline-code color into adjacent cells when wrapping", () => {
 			const markdown = new Markdown(
 				`| Command | Notes |
 | --- | --- |
@@ -582,13 +542,14 @@ Average Latency: 1,240 ms
 			const lines = markdown.render(24);
 			const joinedOutput = lines.join("\n");
 			expect(joinedOutput.includes("\x1b[33m"), "Inline code should be styled (yellow)").toBeTruthy();
-			expect(lines.filter(line => line.includes("|")).length).toBeGreaterThan(3);
+			expect(lines.length).toBeGreaterThan(3);
 
-			// Walk SGR state through every table row: the "|" border glyphs (and
-			// everything after them on the line) must never be rendered under an
-			// open fg color or bold attribute.
+			// Inspect plain adjacent cells, including their preceding column gap.
 			for (const line of lines) {
-				if (!line.includes("|")) continue;
+				const plain = stripVTControlCharacters(line);
+				const adjacentColumn = Math.max(plain.indexOf("plain"), plain.indexOf("other"));
+				if (adjacentColumn < 0) continue;
+				let column = 0;
 				let bold = false;
 				let fgOpen = false;
 				let i = 0;
@@ -608,10 +569,11 @@ Average Latency: 1,240 ms
 						i += seq![0].length;
 						continue;
 					}
-					if (line[i] === "|") {
-						expect(fgOpen, `Border inherits fg color in: ${JSON.stringify(line)}`).toBe(false);
-						expect(bold, `Border inherits bold in: ${JSON.stringify(line)}`).toBe(false);
+					if (column >= adjacentColumn - 2 && column < adjacentColumn + 5) {
+						expect(fgOpen, `Adjacent cell inherits fg color in: ${JSON.stringify(line)}`).toBe(false);
+						expect(bold, `Adjacent cell inherits bold in: ${JSON.stringify(line)}`).toBe(false);
 					}
+					column++;
 					i++;
 				}
 			}
@@ -637,6 +599,25 @@ Average Latency: 1,240 ms
 			}
 		});
 
+		it("stacks labelled records without losing content below the column minimum", () => {
+			const source = "| Key | Value |\n| --- | --- |\n| abc | `1234` |\n| xyz | 5678 |";
+			const markdown = new Markdown(source, 0, 0, defaultMarkdownTheme);
+			const lines = markdown.render(3);
+			const plain = lines.map(line => stripVTControlCharacters(line).trimEnd());
+			expect(plain.join("")).toBe("KeyabcValue1234KeyxyzValue5678");
+			expect(plain).toContain("");
+			expect(lines.join("")).toContain("\x1b[33m");
+			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(3);
+			const streaming = new Markdown("", 0, 0, defaultMarkdownTheme);
+			streaming.transientRenderCache = true;
+			for (let end = 1; end <= source.length; end++) {
+				streaming.setText(source.slice(0, end));
+				streaming.render(3);
+			}
+			streaming.transientRenderCache = false;
+			expect(streaming.render(3)).toEqual(lines);
+		});
+
 		it("should render table correctly when it fits naturally", () => {
 			const markdown = new Markdown(
 				`| A | B |
@@ -654,10 +635,6 @@ Average Latency: 1,240 ms
 			// Should have proper table structure
 			const headerLine = plainLines.find(line => line.includes("A") && line.includes("B"));
 			expect(headerLine, "Should have header row").toBeTruthy();
-			expect(headerLine?.includes("|"), "Header should have borders").toBeTruthy();
-
-			const separatorLine = plainLines.find(line => line.includes("+") && line.includes("-"));
-			expect(separatorLine, "Should have separator row").toBeTruthy();
 
 			const dataLine = plainLines.find(line => line.includes("1") && line.includes("2"));
 			expect(dataLine, "Should have data row").toBeTruthy();
@@ -683,7 +660,7 @@ Average Latency: 1,240 ms
 			}
 
 			// Table rows should have left padding
-			const tableRow = plainLines.find(line => line.includes("|"));
+			const tableRow = plainLines.find(line => line.includes("Column One"));
 			expect(tableRow?.startsWith("  "), "Table should have left padding").toBeTruthy();
 		});
 
@@ -731,7 +708,7 @@ Average Latency: 1,240 ms
 			expect(plainLines.some(line => line.includes("  • Nested item"))).toBeTruthy();
 			// Check table
 			expect(plainLines.some(line => line.includes("Col1"))).toBeTruthy();
-			expect(plainLines.some(line => line.includes("|"))).toBeTruthy();
+			expect(plainLines.some(line => line.trimEnd() === "A     B")).toBeTruthy();
 		});
 	});
 
@@ -1366,8 +1343,7 @@ bar`,
 			expect(quotedOutput.includes("B")).toBeTruthy();
 			expect(quotedOutput.includes("1")).toBeTruthy();
 			expect(quotedOutput.includes("2")).toBeTruthy();
-			expect(quotedOutput.includes("+---+")).toBeTruthy();
-			expect(quotedOutput.includes("| A")).toBeTruthy();
+			expect(quotedLines.some(line => line === "│ A  B")).toBeTruthy();
 		});
 
 		it("should render fenced code blocks inside blockquotes without applying default text color", () => {
@@ -1492,14 +1468,13 @@ bar`,
 			expect(issueRow).toBeDefined();
 			if (!issueRow) throw new Error("Expected rendered issue row");
 
+			const titleColumn = lines[0].visible.indexOf("Title");
 			for (const line of lines) {
-				for (let i = 0; i < line.visible.length; i++) {
-					if (line.visible[i] === "|") expect(line.targets[i]).toBeNull();
-				}
+				expect(line.targets.slice(titleColumn - 2).every(target => target === null)).toBe(true);
 			}
 
 			const labelStart = issueRow.visible.indexOf("#5860");
-			const separator = issueRow.visible.indexOf("|", labelStart);
+			const separator = titleColumn;
 			expect(issueRow.targets.slice(labelStart, labelStart + "#5860".length)).toEqual(
 				Array.from({ length: "#5860".length }, () => issueUrl),
 			);
@@ -1540,11 +1515,10 @@ bar`,
 			expect(secondRow).toBeDefined();
 			if (!firstRow || !secondRow) throw new Error("Expected both wrapped label rows");
 
-			// No cell border or padding may carry the link on either physical row.
+			// Neither the inter-column gap nor the adjacent cell may carry the link.
+			const titleColumn = lines[0].visible.indexOf("Title");
 			for (const line of lines) {
-				for (let i = 0; i < line.visible.length; i++) {
-					if (line.visible[i] === "|") expect(line.targets[i]).toBeNull();
-				}
+				expect(line.targets.slice(titleColumn - 2).every(target => target === null)).toBe(true);
 			}
 
 			// Both label fragments split by <br> must still target the full URL.
@@ -1556,7 +1530,7 @@ bar`,
 				expect(row.targets.slice(start, start + label.length)).toEqual(
 					Array.from({ length: label.length }, () => issueUrl),
 				);
-				const separator = row.visible.indexOf("|", start);
+				const separator = titleColumn;
 				expect(row.targets.slice(start + label.length, separator)).toEqual(
 					Array.from({ length: separator - start - label.length }, () => null),
 				);
@@ -2240,18 +2214,14 @@ describe("Markdown.render reference stability", () => {
 		expect(ordered).toContain("3. Third");
 		expect(ordered).not.toContain("3.");
 		expect(ordered).not.toContain("Third");
-		expect(table).toContain("| • First |");
-		expect(table).not.toContain("| •       |");
+		expect(table).toContain("• First");
+		expect(table).not.toContain("•");
 	});
 
 	it("fits table columns to split HTML lines", () => {
 		const md = new Markdown("| Result |\n| --- |\n| <ul><li>Pass<br>OK</li></ul> |", 0, 0, defaultMarkdownTheme);
 		const lines = md.render(80).map(line => stripVTControlCharacters(line).trimEnd());
-		const topBorder = lines.find(line => line.startsWith("+"));
-
-		expect(topBorder).toBe("+--------+");
-		expect(lines).toContain("| • Pass |");
-		expect(lines).toContain("| OK     |");
+		expect(lines).toEqual(["Result", "• Pass", "OK"]);
 	});
 
 	it("preserves repeated HTML line breaks as intentional blank spacing", () => {
@@ -2271,11 +2241,11 @@ describe("Markdown.render reference stability", () => {
 	it("preserves repeated HTML line breaks inside table cells", () => {
 		const md = new Markdown("| Result |\n| --- |\n| First<br><br>Second |", 0, 0, defaultMarkdownTheme);
 		const lines = md.render(80).map(line => stripVTControlCharacters(line).trimEnd());
-		const firstLineIndex = lines.findIndex(line => line.includes("| First"));
+		const firstLineIndex = lines.indexOf("First");
 
 		expect(firstLineIndex).toBeGreaterThan(-1);
-		expect(lines[firstLineIndex + 1]).toContain("|        |");
-		expect(lines[firstLineIndex + 2]).toContain("| Second |");
+		expect(lines[firstLineIndex + 1]).toBe("");
+		expect(lines[firstLineIndex + 2]).toBe("Second");
 	});
 
 	it("indents nested HTML list items by list stack depth", () => {
@@ -2306,9 +2276,9 @@ describe("Markdown.render reference stability", () => {
 		);
 		const lines = md.render(80).map(line => stripVTControlCharacters(line).trimEnd());
 
-		expect(lines.some(line => line.includes("| • Parent"))).toBe(true);
-		expect(lines.some(line => line.includes("|   • Child"))).toBe(true);
-		expect(lines.some(line => line.includes("| • Child"))).toBe(false);
+		expect(lines).toContain("• Parent");
+		expect(lines).toContain("  • Child");
+		expect(lines).not.toContain("• Child");
 	});
 
 	it("does not emit ANSI-only lines for empty styled HTML replacements", () => {
@@ -2383,20 +2353,19 @@ describe("Inline and block HTML tag rendering", () => {
 		expect(lines).toContain("after");
 	});
 
-	it("styles inline <code> inside table cells without leaking tags or breaking the border", () => {
+	it("styles inline <code> inside table cells without leaking tags", () => {
 		const lines = plainLines("| Name | Note |\n| --- | --- |\n| <code>foo()</code> | <code>&amp;self</code> |", 60);
 		expect(lines.some(line => line.includes("foo()"))).toBe(true);
 		expect(lines.some(line => line.includes("&self"))).toBe(true);
 		expect(lines.join("\n")).not.toMatch(/<\/?code>/);
-		expect(lines.some(line => line.startsWith("+"))).toBe(true);
 	});
 
 	it("treats <hr> in a table cell as a line break, never a full-width rule", () => {
 		const lines = plainLines("| A | B |\n| --- | --- |\n| x<hr>y | z |", 50);
 		expect(lines.some(line => /^-{20,}$/.test(line))).toBe(false);
 		expect(lines.join("\n")).not.toContain("<hr>");
-		expect(lines.some(line => line.includes("| x"))).toBe(true);
-		expect(lines.some(line => line.includes("| y"))).toBe(true);
+		expect(lines.some(line => line.startsWith("x"))).toBe(true);
+		expect(lines.some(line => line.startsWith("y"))).toBe(true);
 	});
 
 	it("renders a single-line <blockquote> with the quote border", () => {
