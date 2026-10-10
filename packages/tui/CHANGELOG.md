@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Collapsed running task cards list all running agents together in spawn order, removing finished agents instead of flipping to whichever child most recently reported progress.
 - Collapsing a large expanded output keeps the input at the bottom of the viewport; short history replay places unused padding above the transcript instead of leaving stale blank space below the input.
 - Markdown headings hide all ATX markers and use terminal styling at every level; unordered lists use preset bullets, and task lists show checked/unchecked state in Unicode, Nerd Font, and ASCII themes. Completed inline emphasis, code, and strike spans hide delimiters; fenced bodies preserve literal marker-only lines while streaming and after completion.
 - Tool and script execution components render collapsed headers with at most one dim summary row when output is hidden (a one-line output shows whole, `⎿ hi`, instead of a count); with `/time` stamps off, a running call's header ticks its elapsed seconds (`⟳ Bash · sleep 6 4s`), and ANSI callers can expose per-block click targets while preserving agent-card focus routing.
@@ -16,7 +17,7 @@
 
 ### Added
 
-- Added `dark-claude`, a low-key Claude-inspired dark theme with muted sage success/diffs, slate and lavender links/status accents, gray selection and prompt borders, untinted collapsed tools, and Claude Code's gray user bubbles and expanded tool blocks.
+- Added `dark-claude`, a low-key Claude-inspired dark theme with muted sage success/diffs, slate and lavender links/status accents, gray selection and prompt borders, untinted collapsed tools, and Claude Code's gray user bubbles and expanded tool blocks. Success/error markers use solid dots in the existing muted green/red instead of checkmarks/crosses.
 - `render/render-utils` exports `taskSummaryLine(text)`: one summary line of a Markdown task brief (first non-heading line, list/quote markers stripped; heading text as fallback).
 - `IrcMessage.forkReport` (`{ done }`) marks a `/fork` chat's `hand_back` report; `forkReportOf(details)` reads it back from an `irc:incoming` record. `createIrcMessageCard` titles such a card `Fork report` / `Fork update` and shows the whole report wrapped (8 lines collapsed) instead of three 100-column lines.
 - `overlays/agent-run-stats` formats agent stats Claude Code-style (`formatAgentRunStats`); `AgentProgress.startedAtMs` records a run's start so live views can tick its elapsed time; `readSessionMetrics` is exported from the Agent Hub projection.

@@ -2107,6 +2107,19 @@ const taskResultMemo = new OwnerMemo<NativeToolView | undefined>();
 export const taskToolRenderer = {
 	renderCall,
 	renderResult,
+	visibleOutput(output: string, details: TaskToolDetails | undefined, options: RenderResultOptions): string {
+		if (!options.isPartial || !details?.progress) return output;
+		// The latest text belongs to whichever child just reported. The compact
+		// card needs the whole live roster, not that interleaved progress tail.
+		const running = details.progress
+			.filter(
+				progress => progress.status === "running" && !details.results.some(result => result.id === progress.id),
+			)
+			.sort((a, b) => a.index - b.index);
+		if (running.length === 0) return output;
+		const names = running.map(progress => progress.id).join(", ");
+		return running.length === 1 ? `Running agent ${names}` : `Running ${running.length} agents: ${names}`;
+	},
 	describeCall(args: TaskParams, options: RenderResultOptions): NativeToolView | undefined {
 		return taskCallMemo.get(args, [options.argsComplete], () => describeTaskCall(args));
 	},

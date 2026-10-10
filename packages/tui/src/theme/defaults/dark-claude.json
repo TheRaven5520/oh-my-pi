@@ -92,6 +92,12 @@
 		"statusLineSubagents": "lavender",
 		"pythonMode": "softAmber"
 	},
+	"symbols": {
+		"overrides": {
+			"status.success": "●",
+			"status.error": "●"
+		}
+	},
 	"export": {
 		"pageBg": "base",
 		"cardBg": "#262626",

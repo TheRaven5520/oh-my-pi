@@ -9,6 +9,7 @@ import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
+import type { AgentProgress, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 
 const ui: ToolExecutionUi = {
 	requestRender() {},
@@ -49,6 +50,9 @@ describe("collapsed tool cards", () => {
 			const tool = new ToolExecutionComponent("unknown", {}, {}, undefined, ui, "/tmp");
 			tool.updateResult(textResult(output), false);
 			tool.seal();
+			const framedBash = new ToolExecutionComponent("bash", { command: "printf lines" }, {}, undefined, ui, "/tmp");
+			framedBash.updateResult(textResult(output), false);
+			framedBash.seal();
 			const bash = new BashExecutionComponent("printf lines", ui as TUI);
 			bash.setComplete(0, false, { output });
 			const cell = new EvalExecutionComponent("print('lines')", ui as TUI);
@@ -64,13 +68,18 @@ describe("collapsed tool cards", () => {
 			const blank = theme.bgFill("toolExpandedBg", " ".repeat(width));
 			const background = theme.getBgAnsi("toolExpandedBg");
 			expect(background).toBe("\x1b[48;2;18;52;86m");
-			for (const card of [tool, bash, cell, read]) {
+			for (const card of [tool, framedBash, bash, cell, read]) {
 				const collapsed = card.render(width);
 				expect(collapsed.every(line => !line.includes(background))).toBe(true);
 				expect(card.toggleClickExpansion()).toBe(true);
 				const expanded = card.render(width);
 				expect(expanded.at(-1)).toBe(blank);
 				expect(expanded.every(line => line.startsWith(background) && visibleWidth(line) === width)).toBe(true);
+				expect(Bun.stripANSI(expanded[0]!).trim()).not.toBe("");
+				expect(Bun.stripANSI(expanded.at(-2)!).trim()).not.toBe("");
+				for (const row of expanded) {
+					expect(row.match(/\x1b\[(?:4[0-7]|10[0-7]|48[;:][0-9;:]+)m/g)?.every(open => open === background)).toBe(true);
+				}
 				card.setExpanded(true);
 				expect(card.render(width).every(line => !line.includes(background))).toBe(true);
 				card.setExpanded(false);
@@ -178,6 +187,73 @@ describe("collapsed tool cards", () => {
 		card.updateResult(textResult("first\nsecond\nthird"), false);
 		card.seal();
 		expect(plain(card.render(80))[1]).toBe("⎿ 3 lines");
+	});
+
+	it("keeps every running task agent in spawn order across interleaved updates", () => {
+		const names = ["AdvisorOneLine2", "ClaudeTheme", "CardsReview"];
+		const progress: AgentProgress[] = names.map((id, index) => ({
+			index,
+			id,
+			agent: "task",
+			agentSource: "bundled",
+			status: "running",
+			task: "Inspect rendering",
+			recentTools: [],
+			recentOutput: [],
+			toolCount: 0,
+			requests: 0,
+			tokens: 0,
+			cost: 0,
+			durationMs: 0,
+		}));
+		const args = { tasks: names.map(name => ({ name, task: "Inspect rendering" })) };
+		const card = new ToolExecutionComponent("task", args, {}, undefined, ui, "/tmp");
+		const update = (index: number) => {
+			progress[index]!.recentOutput = [`Update from ${names[index]}`];
+			const details: TaskToolDetails = {
+				projectAgentsDir: null,
+				results: [],
+				totalDurationMs: 0,
+				// Arrival order need not be dispatch order.
+				progress: [progress[2]!, progress[0]!, progress[1]!].map(entry => ({ ...entry })),
+			};
+			const result = { ...textResult(`Running agent ${names[index]}...`), details };
+			card.updateResult(result, true);
+			return result;
+		};
+		try {
+			for (const index of [0, 2, 1]) {
+				update(index);
+				expect(plain(card.render(100))[1]).toBe(`⎿ Running 3 agents: ${names.join(", ")}`);
+				// Native task cards already carry all agent nodes, not the text tail.
+				const nativeNames = card
+					.describe()
+					.c?.flatMap(child => ("k" in child && child.k === "agent" ? [child.p?.name] : []));
+				expect(nativeNames).toEqual([names[2], names[0], names[1]]);
+			}
+			const narrow = card.render(40);
+			expect(plain(narrow)[1]).toEndWith("…");
+			expect(narrow.every(row => visibleWidth(row) <= 40)).toBe(true);
+			card.setExpanded(true);
+			const expanded = plain(card.render(100)).join("\n");
+			for (const name of names) expect(expanded).toContain(name);
+			expect(expanded).not.toContain("Running 3 agents:");
+			card.setExpanded(false);
+			progress[1]!.status = "completed";
+			update(2);
+			expect(plain(card.render(100))[1]).toBe("⎿ Running 2 agents: AdvisorOneLine2, CardsReview");
+			progress[0]!.status = "failed";
+			const lastUpdate = update(2);
+			expect(plain(card.render(100))[1]).toBe("⎿ Running agent CardsReview");
+			// The same payload settling must invalidate the live-summary cache.
+			card.updateResult(lastUpdate, false);
+			expect(plain(card.render(100))[1]).toBe("⎿ Running agent CardsReview...");
+			progress[2]!.status = "completed";
+			card.updateResult(textResult("All agents complete"), false);
+			expect(plain(card.render(100))[1]).toBe("⎿ All agents complete");
+		} finally {
+			card.seal();
+		}
 	});
 
 	it("ticks elapsed seconds on a running collapsed header and drops them once settled", () => {

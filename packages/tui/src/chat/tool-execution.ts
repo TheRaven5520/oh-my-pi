@@ -8,7 +8,7 @@ import { Text } from "../components/text";
 import { getImageDimensions, ImageProtocol, imageFallback, TERMINAL } from "../terminal-capabilities";
 import { type Component, Container, type TUI } from "../tui";
 import { truncateToWidth } from "../utils";
-import { padToWidth } from "../render/utils";
+import { expandedToolRows } from "../render/utils";
 import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../theme/theme";
 import { ensureThemeSync, getThemeEpoch, theme } from "../theme/theme";
@@ -366,6 +366,7 @@ export class ToolExecutionComponent extends Container {
 	// every tick without new output).
 	#outputSummarySource: string | undefined;
 	#outputSummaryDetails: unknown;
+	#outputSummaryPartial: boolean | undefined;
 	#outputSummary: OutputSummary = { count: 0, first: undefined, last: undefined };
 	#tool?: AgentTool;
 	#renderer?: ToolRenderer;
@@ -1312,10 +1313,7 @@ export class ToolExecutionComponent extends Container {
 			lines = trimmed;
 		}
 		if (this.#individuallyExpanded) {
-			return [
-				...lines.map(line => theme.bgFill("toolExpandedBg", padToWidth(line, width))),
-				theme.bgFill("toolExpandedBg", " ".repeat(width)),
-			];
+			return expandedToolRows(theme, lines, width);
 		}
 		return lines;
 	}
@@ -1399,12 +1397,17 @@ export class ToolExecutionComponent extends Container {
 	#summarizeOutput(): OutputSummary {
 		const output = this.#getTextOutput();
 		const details = this.#result?.details;
-		if (output === this.#outputSummarySource && details === this.#outputSummaryDetails) return this.#outputSummary;
+		if (
+			output === this.#outputSummarySource &&
+			details === this.#outputSummaryDetails &&
+			this.#isPartial === this.#outputSummaryPartial
+		)
+			return this.#outputSummary;
 		let count = 0;
 		let first: string | undefined;
 		let last: string | undefined;
-		// Notices the renderer hides (bash wall time, exit code) are not output rows.
-		const visible = this.#renderer?.visibleOutput?.(output, details) ?? output;
+		// Renderers can hide model-facing notices or summarize structured progress.
+		const visible = this.#renderer?.visibleOutput?.(output, details, this.#renderState) ?? output;
 		for (const line of visible.split("\n")) {
 			if (!line.trim()) continue;
 			count++;
@@ -1413,6 +1416,7 @@ export class ToolExecutionComponent extends Container {
 		}
 		this.#outputSummarySource = output;
 		this.#outputSummaryDetails = details;
+		this.#outputSummaryPartial = this.#isPartial;
 		this.#outputSummary = { count, first, last };
 		return this.#outputSummary;
 	}
