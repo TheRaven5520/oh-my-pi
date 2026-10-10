@@ -146,6 +146,8 @@ export interface ViewportClickSpan {
 	candidates: (local: number) => string[];
 	/** Separate tool-block target, used only when no agent candidate applies. */
 	toolTarget?: string;
+	/** Original component identity for native-history snapshot routing. */
+	owner?: object;
 }
 
 /**
@@ -483,6 +485,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				end: span.end,
 				candidates: () => ids,
 				toolTarget: toolId,
+				owner: span.component,
 			});
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
@@ -513,6 +516,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 					end,
 					candidates: (local: number) => span.candidates(local + skew),
 					toolTarget: span.toolTarget,
+					owner: span.owner,
 				});
 			}
 		};
@@ -664,6 +668,22 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			return span.toolTarget;
 		}
 		return undefined;
+	}
+
+	/** Owner identity for the accepted mutable row, without a render-ephemeral id lookup. */
+	viewportHistoryOwner(index: number): object | undefined {
+		return this.#lastClickSpans.find(span => index >= span.start && index < span.end)?.owner;
+	}
+
+	/** A snapshot may outlive a session switch; only retained components can be toggled. */
+	toggleHistoryOwner(owner: object): boolean {
+		const retained = this.#runtimeChildren.some(
+			root => root instanceof TranscriptContainer && root.children.some(child => child === owner),
+		);
+		if (!retained || blockToolId(owner, blockAgentIds(owner)) === undefined) return false;
+		if (!(owner as ClickBlock).toggleClickExpansion?.()) return false;
+		this.ui.resetDisplay();
+		return true;
 	}
 
 	/** Block that wrote the accepted history row shown at mutable-viewport index `index`, if that row is history. */

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Tool blocks can expand/collapse in native tmux scrollback with the matching natural-scroll helper. A fenced row-owner snapshot prevents later output from retargeting clicks, and replay refreshes/reanchors the native view without replacing drag-selection. Stale mode, size and session identities are rejected.
 - Inline click consumers can track mouse-input generations across capture and overlay transitions, rejecting releases from stale gestures.
 - Collapsed tool, shell, Eval and grouped-read summaries inset `└` by two columns while keeping the existing width bound and header alignment. Its box-drawing horizontal stroke sits at text mid-height without shifting the summary text.
 - Individually expanded tool cards override nested renderer background colors with one uniform `toolExpandedBg` surface, remove redundant outer blank padding, and do not append a synthetic bottom row. Image placements and reserved rows remain intact.

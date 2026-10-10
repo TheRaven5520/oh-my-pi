@@ -459,4 +459,40 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			composer.stop();
 		}
 	});
+
+	it("expands a retained snapshot owner after later renders discard live click targets", async () => {
+		const tool = new ToolBlock("snapshot", 8, true);
+		const h = await mount(tool);
+		try {
+			for (let row = 0; row < 200; row++) h.transcript.addChild(new Text(`later ${row}`, 0, 0));
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			expect(h.composer.toggleViewportTool("snapshot")).toBe(false);
+			expect(h.composer.toggleHistoryOwner(tool)).toBe(true);
+			await h.scheduler.settle(h.terminal);
+			expect(h.terminal.getScrollBuffer().filter(line => line.includes("snapshot line"))).toHaveLength(8);
+			expect(h.resets()).toBe(1);
+		} finally {
+			h.composer.stop();
+		}
+	});
+
+	it("rejects snapshot owners from a replaced transcript even when their ids match", async () => {
+		const old = new ToolBlock("same-id", 8, true);
+		const h = await mount(old);
+		try {
+			const replacement = new ToolBlock("same-id", 8, true);
+			const transcript = new TranscriptContainer();
+			transcript.addChild(replacement);
+			h.composer.setRuntimeChildren([transcript]);
+			await h.scheduler.settle(h.terminal);
+			expect(h.composer.toggleHistoryOwner(old)).toBe(false);
+			expect(old.expanded).toBe(false);
+			expect(replacement.expanded).toBe(false);
+			expect(h.composer.toggleHistoryOwner(replacement)).toBe(true);
+			expect(replacement.expanded).toBe(true);
+		} finally {
+			h.composer.stop();
+		}
+	});
 });

@@ -45,6 +45,7 @@ import {
 	TERMINAL,
 } from "./terminal-capabilities";
 import { classifyTerminalMultiplexer } from "./terminal-multiplexer";
+import { TmuxHistoryBridge, type TmuxHistorySnapshot } from "./tmux-history";
 import {
 	Ellipsis,
 	extractSegments,
@@ -196,6 +197,10 @@ export interface TerminalFrameProvider {
 	beginHistoryReplay?(): void;
 	/** Force every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush?(): void;
+	/** Stable component identity for a mutable row used in a native-history snapshot. */
+	viewportHistoryOwner?(index: number): object | undefined;
+	/** Validate retained ownership and toggle with a complete history replay. */
+	toggleHistoryOwner?(owner: object): boolean;
 }
 
 export interface TUIStartOptions {
@@ -802,6 +807,13 @@ export class TUI extends Container {
 	// `#screenHistory[length - depth]`. Emptied when the grid can have rewrapped
 	// them (width change) and rebuilt by every destructive replay.
 	#screenHistory: (object | undefined)[] = [];
+	#historyLimit = SCREEN_HISTORY_MIN_ROWS;
+	#historyEpoch = 0;
+	#historyBridge: TmuxHistoryBridge | undefined;
+	#historyBridgeStarting = false;
+	#historyPaused = false;
+	#historyFence: ((accepted: boolean) => void) | undefined;
+	#historyFenceFailed = false;
 	// Viewport-relative row of the hardware cursor after the last normal paint
 	// (0 = parked at the viewport top). A resize reflows the normal buffer
 	// before the app hears about it; terminals keep the cursor attached to its
@@ -1374,11 +1386,101 @@ export class TUI extends Container {
 	 */
 	setInlineMouseTrackingProvider(provider: (() => boolean) | undefined): void {
 		this.#inlineMouseProvider = provider;
+		this.#startHistoryBridge();
 	}
 
 	/** Changes whenever mouse capture or visible-overlay ownership transitions. */
 	getMouseInputGeneration(): number {
 		return this.#mouseInputGeneration;
+	}
+
+	#startHistoryBridge(): void {
+		if (this.#stopped || this.#historyBridge || this.#historyBridgeStarting || !this.#inlineMouseProvider) return;
+		this.#historyBridgeStarting = true;
+		void TmuxHistoryBridge.create({
+			capture: owner => this.#captureHistory(owner),
+			setHistoryLimit: limit => {
+				this.#historyLimit = Math.max(SCREEN_HISTORY_MIN_ROWS, limit);
+			},
+		})
+			.then(bridge => {
+				if (this.#stopped) bridge?.stop();
+				else this.#historyBridge = bridge;
+			})
+			.catch(error => logger.debug("tmux history bridge unavailable", { error: String(error) }))
+			.finally(() => {
+				this.#historyBridgeStarting = false;
+			});
+	}
+
+	async #captureHistory(owner?: object): Promise<TmuxHistorySnapshot | undefined> {
+		if (
+			this.#historyPaused ||
+			this.#historyFenceFailed ||
+			this.#stopped ||
+			!this.#inlineMouseProvider?.() ||
+			this.hasOverlay() ||
+			!this.#paintedRowsAddressable() ||
+			this.#nativeLive
+		)
+			return undefined;
+		if (owner !== undefined && !this.#frameProvider?.toggleHistoryOwner?.(owner)) return undefined;
+		this.renderNow();
+		const epoch = this.#historyEpoch;
+		const columns = this.terminal.columns;
+		const rows = this.terminal.rows;
+		const valid = () =>
+			!this.#stopped &&
+			epoch === this.#historyEpoch &&
+			columns === this.terminal.columns &&
+			rows === this.terminal.rows &&
+			!this.hasOverlay() &&
+			this.#paintedRowsAddressable() &&
+			!!this.#inlineMouseProvider?.();
+		this.#historyPaused = true;
+		let released = false;
+		const release = () => {
+			if (released) return;
+			released = true;
+			this.#historyPaused = false;
+			if (!this.#stopped) {
+				this.#renderRequested = false;
+				this.requestRender();
+			}
+		};
+		// The reply travels through tmux's pane parser after every preceding
+		// paint byte. A command-channel query alone cannot provide this fence.
+		const accepted = await new Promise<boolean>(resolve => {
+			const timer = setTimeout(() => {
+				this.#historyFenceFailed = true;
+				this.#historyFence?.(false);
+			}, 10_000);
+			this.#historyFence = result => {
+				clearTimeout(timer);
+				this.#historyFence = undefined;
+				resolve(result);
+			};
+			try {
+				this.terminal.write("\x1b[5n");
+			} catch {
+				this.#historyFence?.(false);
+			}
+		});
+		if (!accepted || !valid()) {
+			release();
+			return undefined;
+		}
+		const owners = this.#screenHistory.slice();
+		const screenTop = owners.length - this.#providerViewportTop;
+		const viewport = this.getMutableViewport();
+		for (let row = this.#providerViewportTop; row < rows; row++) {
+			owners.push(
+				row < viewport.top + viewport.length
+					? this.#frameProvider?.viewportHistoryOwner?.(row - viewport.top)
+					: undefined,
+			);
+		}
+		return { owners, screenTop, columns, rows, valid, release };
 	}
 
 	/** Transition mouse reporting, emitting only the sequences a change needs. */
@@ -1455,6 +1557,7 @@ export class TUI extends Container {
 
 	start(options?: TUIStartOptions): void {
 		this.#stopped = false;
+		this.#startHistoryBridge();
 		this.#debugPaint = undefined;
 		this.#debugServer?.stop();
 		this.#debugServer = undefined;
@@ -2468,6 +2571,10 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
+		this.#historyBridge?.stop();
+		this.#historyBridge = undefined;
+		this.#historyFence?.(false);
+		this.#historyPaused = false;
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = undefined;
 		this.#debugServer?.stop();
@@ -2751,6 +2858,14 @@ export class TUI extends Container {
 	}
 
 	#handleInput(data: string): void {
+		if (this.#historyFence || this.#historyFenceFailed) {
+			const reply = data.indexOf("\x1b[0n");
+			if (reply >= 0) {
+				data = data.slice(0, reply) + data.slice(reply + 4);
+				this.#historyFence?.(true);
+				if (!data) return;
+			}
+		}
 		this.#inputRenderPending = true;
 		// Tern Surface Protocol events (acks, pointer actions, resize, theme)
 		// are terminal reports, never keystrokes.
@@ -3422,6 +3537,7 @@ export class TUI extends Container {
 			// Erased, or rewrapped by the terminal at the new width: either way the
 			// rows above the viewport no longer line up with what was written.
 			this.#screenHistory = [];
+			this.#historyEpoch++;
 		}
 		// The viewport stays anchored directly below whatever history remains on
 		// screen. Appending K history rows moves the anchor down by K; the write
@@ -3650,13 +3766,14 @@ export class TUI extends Container {
 		for (let index = 0; index < history.rows.length; index++) {
 			tail.push(owners?.[index]);
 		}
-		const keep = Math.max(SCREEN_HISTORY_MIN_ROWS, height * 2);
+		const keep = Math.max(this.#historyLimit, height * 2);
 		if (tail.length > keep * 2) tail.splice(0, tail.length - keep);
 	}
 
 	/** Render one frame: alt-screen modal, provider plan, or children fallback. */
 	#doRender(): void {
 		if (this.#stopped) return;
+		if (this.#historyPaused) return;
 		if (this.#nativeLive) {
 			this.#native!.render();
 			return;
