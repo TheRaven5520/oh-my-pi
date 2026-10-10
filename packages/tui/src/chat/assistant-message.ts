@@ -1062,7 +1062,8 @@ export class AssistantMessageComponent extends Container {
 	 * run of finished blocks, ending inside the streaming block at Markdown's
 	 * frozen boundary. Undefined whenever any prefix byte could still change
 	 * (finalized or non-transient renders, marker rows, extension components,
-	 * hidden thinking, or no frozen prefix yet).
+	 * thinking, or no frozen prefix yet). Visible thinking hides once a later
+	 * tool call starts, and rows already in native scrollback could not follow.
 	 */
 	#currentStableSnapshot(): readonly StablePart[] | undefined {
 		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return undefined;
@@ -1074,6 +1075,7 @@ export class AssistantMessageComponent extends Container {
 		for (const child of this.#contentContainer.children) {
 			const item = items[itemIndex];
 			if (item?.md === child) {
+				if (item.blockType === "thinking") break;
 				if (itemIndex === items.length - 1) {
 					// Streaming child: publish Markdown's frozen prefix, and only
 					// once non-blank content exists past it — the block's last
@@ -1592,6 +1594,9 @@ export class AssistantMessageComponent extends Container {
 					resolveThinkingDisplay(c, this.#proseOnlyThinking).visible),
 		);
 
+		// Thinking shows while it streams and hides once a later tool call starts:
+		// the model has moved on, and the tool card takes its place.
+		const lastToolCall = message.content.findLastIndex(c => c.type === "toolCall");
 		// Render content in order
 		let thinkingIndex = 0;
 		let hasRenderedContent = false;
@@ -1607,7 +1612,7 @@ export class AssistantMessageComponent extends Container {
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 				hasRenderedContent = true;
 			} else if (content.type === "thinking") {
-				if (this.#hideThinkingBlock) {
+				if (this.#hideThinkingBlock || i < lastToolCall) {
 					thinkingIndex += 1;
 					continue;
 				}

@@ -28,11 +28,12 @@ function stream(count: number): AssistantMessageComponent {
 		stopReason: "stop",
 		timestamp: 0,
 	};
-	let thinking = "";
+	// Visible thinking never publishes mid-stream (a later tool call hides it), so prose drives the ledger.
+	let text = "";
 	for (let step = 0; step < count; step++) {
-		thinking += `Paragraph ${step}: consider **correctness**, memory use, and terminal replay before selecting an implementation.\n\n`;
+		text += `Paragraph ${step}: consider **correctness**, memory use, and terminal replay before selecting an implementation.\n\n`;
 		component.updateContent(
-			{ ...message, content: [{ type: "thinking", thinking: `${thinking}Pending paragraph` }] },
+			{ ...message, content: [{ type: "text", text: `${text}Pending paragraph` }] },
 			{ transient: true },
 		);
 		component.render(100);

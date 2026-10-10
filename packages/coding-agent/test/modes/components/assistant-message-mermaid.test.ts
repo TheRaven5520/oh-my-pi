@@ -82,47 +82,47 @@ describe("AssistantMessageComponent transcript lifecycle", () => {
 		expect(Bun.stripANSI(batch?.rows.join("\n") ?? "")).toContain("Revised opening paragraph");
 	});
 
-	it("retires the frozen thinking prefix into history while still streaming", () => {
-		const thinkingMessage = (thinking: string): AssistantMessage => ({
+	it("keeps visible thinking out of history until a later tool call hides it", () => {
+		const thinking =
+			"Alpha reasoning paragraph.\n\nBeta reasoning paragraph.\n\nPartial tail keeps growing.\n\nNewer tail";
+		const message = (content: AssistantMessage["content"]): AssistantMessage => ({
 			...createAssistantMessage(""),
-			content: [{ type: "thinking", thinking }],
+			content,
 		});
 		const component = new AssistantMessageComponent();
 		const transcript = new TranscriptContainer();
 		transcript.addChild(component);
 
+		// Streaming thinking shows, and stays visible while an answer follows it.
 		component.updateContent(
-			thinkingMessage("Alpha reasoning paragraph.\n\nBeta reasoning paragraph.\n\nPartial tail"),
+			message([
+				{ type: "thinking", thinking },
+				{ type: "text", text: "Checking the config." },
+			]),
 			{ transient: true },
 		);
-		transcript.renderViewport(80, 20, { now: 0, tick: 0 });
-		component.updateContent(
-			thinkingMessage(
-				"Alpha reasoning paragraph.\n\nBeta reasoning paragraph.\n\nPartial tail keeps growing.\n\nNewer tail",
-			),
-			{ transient: true },
-		);
-		transcript.renderViewport(80, 20, { now: 1, tick: 1 });
+		const live = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 0, tick: 0 }).join("\n"));
+		expect(live).toContain("Alpha reasoning paragraph.");
+		expect(live).toContain("Checking the config.");
+		// Nothing retires under pressure: rows in native history could not be hidden later.
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
 
-		// Under pressure the frozen thinking prefix retires while streaming.
-		const first = transcript.peekFinalizedBatch(80, 0);
-		expect(first).toBeDefined();
-		const firstText = Bun.stripANSI(first!.rows.join("\n"));
-		expect(firstText).toContain("Alpha reasoning paragraph.");
-		expect(firstText).not.toContain("Newer tail");
-		transcript.acknowledgeFinalizedBatch(first!.id);
+		// A tool call hides the thinking; the text before it stays.
+		const withTool = message([
+			{ type: "thinking", thinking },
+			{ type: "text", text: "Checking the config." },
+			{ type: "toolCall", id: "t1", name: "read", arguments: { path: "x" } },
+		]);
+		component.updateContent(withTool, { transient: true });
+		const hidden = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 1, tick: 1 }).join("\n"));
+		expect(hidden).not.toContain("reasoning paragraph");
+		expect(hidden).toContain("Checking the config.");
 
-		// Emitted rows leave the mutable viewport; the streaming tail stays live.
-		const live = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 2, tick: 2 }).join("\n"));
-		expect(live).not.toContain("Alpha reasoning paragraph.");
-		expect(live).toContain("Newer tail");
-
-		// Finalization retires exactly the un-emitted remainder — no duplicates.
+		component.updateContent(withTool);
 		component.markTranscriptBlockFinalized();
-		const flush = transcript.peekFlushBatch(80);
-		const flushText = Bun.stripANSI(flush?.rows.join("\n") ?? "");
-		expect(flushText).not.toContain("Alpha reasoning paragraph.");
-		expect(flushText).toContain("Newer tail");
+		const flushText = Bun.stripANSI(transcript.peekFlushBatch(80)?.rows.join("\n") ?? "");
+		expect(flushText).not.toContain("reasoning paragraph");
+		expect(flushText).toContain("Checking the config.");
 	});
 
 	it("retires frozen prose into history while an append-only wire is still streaming", () => {
@@ -144,25 +144,18 @@ describe("AssistantMessageComponent transcript lifecycle", () => {
 	});
 
 	it("withholds mid-stream retirement when the wire may revise streamed text", () => {
-		const thinkingMessage = (thinking: string): AssistantMessage => ({
-			...createAssistantMessage(""),
-			content: [{ type: "thinking", thinking }],
-		});
 		const component = new AssistantMessageComponent();
 		const transcript = new TranscriptContainer();
 		transcript.addChild(component);
 		// `stream-revision "possible"`: bytes may be revised after they stream.
 		component.setMidStreamPublication(false);
 
-		component.updateContent(
-			thinkingMessage("Alpha reasoning paragraph.\n\nBeta reasoning paragraph.\n\nPartial tail"),
-			{ transient: true },
-		);
+		component.updateContent(createAssistantMessage("Alpha completed paragraph.\n\nBeta paragraph.\n\nPartial tail"), {
+			transient: true,
+		});
 		transcript.renderViewport(80, 20, { now: 0, tick: 0 });
 		component.updateContent(
-			thinkingMessage(
-				"Alpha reasoning paragraph.\n\nBeta reasoning paragraph.\n\nPartial tail keeps growing.\n\nNewer tail",
-			),
+			createAssistantMessage("Alpha completed paragraph.\n\nBeta paragraph.\n\nPartial tail grows.\n\nNewer tail"),
 			{ transient: true },
 		);
 		transcript.renderViewport(80, 20, { now: 1, tick: 1 });
@@ -174,7 +167,7 @@ describe("AssistantMessageComponent transcript lifecycle", () => {
 		// Withholding costs reachability only — finalization still retires the whole block.
 		component.markTranscriptBlockFinalized();
 		const flushText = Bun.stripANSI(transcript.peekFlushBatch(80)?.rows.join("\n") ?? "");
-		expect(flushText).toContain("Alpha reasoning paragraph.");
+		expect(flushText).toContain("Alpha completed paragraph.");
 		expect(flushText).toContain("Newer tail");
 	});
 

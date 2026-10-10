@@ -700,13 +700,14 @@ describe("TranscriptContainer progressive assistant retirement", () => {
 	const ROOM = 4;
 	const paragraph = (label: string, index: number): string =>
 		`${label} ${index} weighs **retirement** against native scrollback, with enough words to wrap.\n\n`;
-	// Thinking streams first, then an answer after it: every update freezes one
-	// more paragraph, and the answer turns the thinking into a closed part.
+	// An answer streams as two text blocks: every update freezes one more
+	// paragraph, and the second block turns the first into a closed part.
+	// (Visible thinking never publishes mid-stream: a later tool call hides it.)
 	const steps: AssistantMessage[] = [];
-	let reasoning = "";
+	let opening = "";
 	for (let index = 0; index < 8; index++) {
-		reasoning += paragraph("Thought", index);
-		steps.push({ ...finalAnswer, content: [{ type: "thinking", thinking: `${reasoning}Pending` }] });
+		opening += paragraph("Opening", index);
+		steps.push({ ...finalAnswer, content: [{ type: "text", text: `${opening}Pending` }] });
 	}
 	let answer = "";
 	for (let index = 0; index < 8; index++) {
@@ -714,7 +715,7 @@ describe("TranscriptContainer progressive assistant retirement", () => {
 		steps.push({
 			...finalAnswer,
 			content: [
-				{ type: "thinking", thinking: reasoning.trim() },
+				{ type: "text", text: opening.trim() },
 				{ type: "text", text: `${answer}Pending` },
 			],
 		});
