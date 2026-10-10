@@ -103,17 +103,23 @@ export function describeSpeedOutcome(
 	// Sprilicred forwarded a slower tier than asked: say why, and what it used instead.
 	if (speed.forwarded !== undefined && speed.forwarded !== speed.requested) {
 		const using = speed.forwarded === "fast" ? "fast mode" : "standard";
+		// "Subscription account" is Claude Opus's wall only. GPT (e.g. Astra) on
+		// paid credits gets `paid_credits`; older Sprilicreds sent it as
+		// `subscription_extra_usage`, so that code says it only for Opus.
+		const opus = /opus/i.test(message.model);
 		return {
 			key: `downgraded:${speed.requested}:${speed.forwarded}:${reason ?? ""}`,
 			level: "warning",
 			text:
 				reason === "api_fallback_refused"
 					? `Refused fallback to API pricing; using ${using}.`
-					: reason === "subscription_extra_usage"
+					: reason === "subscription_extra_usage" && opus
 						? `${name} unavailable on a subscription account (would bill API-priced extra usage); using ${using}.`
-						: why
-							? `${name} unavailable (${why}); using ${using}.`
-							: `${name} unavailable; using ${using}.`,
+						: reason === "paid_credits" || reason === "subscription_extra_usage"
+							? `${name} unavailable while this account runs on paid credits; using ${using}.`
+							: why
+								? `${name} unavailable (${why}); using ${using}.`
+								: `${name} unavailable; using ${using}.`,
 			always: false,
 		};
 	}
