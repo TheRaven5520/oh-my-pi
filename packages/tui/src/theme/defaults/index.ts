@@ -8,6 +8,7 @@ import dark_arctic from "./dark-arctic.json" with { type: "json" };
 import dark_aurora from "./dark-aurora.json" with { type: "json" };
 import dark_catppuccin from "./dark-catppuccin.json" with { type: "json" };
 import dark_cavern from "./dark-cavern.json" with { type: "json" };
+import dark_claude from "./dark-claude.json" with { type: "json" };
 import dark_celestial from "./dark-celestial.json" with { type: "json" };
 import dark_copper from "./dark-copper.json" with { type: "json" };
 import dark_cosmos from "./dark-cosmos.json" with { type: "json" };
@@ -110,6 +111,7 @@ export const defaultThemes = {
 	"dark-aurora": dark_aurora,
 	"dark-catppuccin": dark_catppuccin,
 	"dark-cavern": dark_cavern,
+	"dark-claude": dark_claude,
 	"dark-celestial": dark_celestial,
 	"dark-copper": dark_copper,
 	"dark-cosmos": dark_cosmos,
