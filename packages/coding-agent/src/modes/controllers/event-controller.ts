@@ -721,7 +721,7 @@ export class EventController {
 		linkTargets?: ReadonlyMap<string, string>,
 		opts?: { transient?: boolean },
 	): AssistantMessageComponent | undefined {
-		if (!segment || !assistantHasVisibleContent(segment)) return undefined;
+		if (!segment) return undefined;
 		const existing = this.#postToolAssistantComponents.get(toolCallId);
 		if (existing) {
 			if (linkTargets) existing.setLinkTargets(linkTargets);
@@ -730,6 +730,7 @@ export class EventController {
 			existing.updateContent(segment, opts);
 			return existing;
 		}
+		if (!assistantHasVisibleContent(segment)) return undefined;
 		const component = createAssistantMessageComponent(this.ctx, undefined, linkTargets);
 		component.updateContent(segment, opts);
 		this.#postToolAssistantComponents.set(toolCallId, component);

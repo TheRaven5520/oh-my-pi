@@ -14,6 +14,8 @@ import { type Component, TERMINAL } from "@oh-my-pi/pi-tui";
 import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { formatClockTime } from "@oh-my-pi/pi-tui/render/clock";
 import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
+import { splitAssistantMessageToolTimeline } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
+import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 
 import { cfgTerminalShowImages } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
@@ -95,7 +97,119 @@ describe("EventController mixed assistant text/tool rendering", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		setNativeRendering(false);
 		resetSettingsForTest();
+	});
+
+	it("retires no live thinking and hides only tool-closed reasoning in live and rebuilt transcripts", async () => {
+		const { controller, chatContainer } = createFixture();
+		const firstThought = "INITIAL REASONING BEFORE BASH";
+		const middleThought = "REASONING BETWEEN TOOL CALLS";
+		const finalThought = "FINAL REASONING BEFORE ANSWER";
+		const thinking = { type: "thinking" as const, thinking: `${firstThought}\n\n${"More reasoning.\n\n".repeat(50)}` };
+		const firstTool: ToolCall = {
+			type: "toolCall", id: TOOL_CALL_A_ID, name: "bash", arguments: { command: "seq 1 12" },
+		};
+		const secondTool: ToolCall = {
+			type: "toolCall", id: TOOL_CALL_B_ID, name: "bash", arguments: { command: "echo done" },
+		};
+		const update = async (
+			content: AssistantMessage["content"],
+			type: "thinking_delta" | "text_delta" | "toolcall_start",
+		) => {
+			const message = assistantMessage([...content]);
+			await controller.handleEvent({
+				type: "message_update",
+				message,
+				assistantMessageEvent: { type, contentIndex: content.length - 1, delta: "", partial: message },
+			} as Extract<AgentSessionEvent, { type: "message_update" }>);
+		};
+		await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+		await update([thinking], "thinking_delta");
+		expect(Bun.stripANSI(chatContainer.render(80).join("\n"))).toContain(firstThought);
+		// A tiny viewport would pressure this long block into terminal scrollback
+		// if reasoning were erroneously published as an append-only stable prefix.
+		expect(chatContainer.peekFinalizedBatch(80, 3)).toBeUndefined();
+		const prefix: AssistantMessage["content"] = [thinking, { type: "text", text: INTRO_MARKER }];
+		await update(prefix, "text_delta");
+		expect(Bun.stripANSI(chatContainer.render(80).join("\n"))).toContain(firstThought);
+		expect(chatContainer.peekFinalizedBatch(80, 3)).toBeUndefined();
+		prefix.push(firstTool);
+		await update(prefix, "toolcall_start");
+		let rows = Bun.stripANSI(chatContainer.render(80).join("\n"));
+		expect(rows).not.toContain(firstThought);
+		expect(rows).toContain(INTRO_MARKER);
+		expect(rows).toContain("seq 1 12");
+		const batch = chatContainer.peekFinalizedBatch(80, 3);
+		expect(batch).toBeDefined();
+		expect(Bun.stripANSI(batch!.rows.join("\n"))).not.toContain(firstThought);
+		chatContainer.acknowledgeFinalizedBatch(batch!.id);
+		await controller.handleEvent({
+			type: "tool_execution_start", toolCallId: firstTool.id, toolName: firstTool.name, args: firstTool.arguments,
+		});
+		await controller.handleEvent({
+			type: "tool_execution_end", toolCallId: firstTool.id, toolName: firstTool.name,
+			result: { content: [{ type: "text", text: TOOL_RESULT_A_MARKER }] }, isError: false,
+		});
+		expect(Bun.stripANSI(chatContainer.render(80).join("\n"))).toContain(TOOL_RESULT_A_MARKER);
+		prefix.push({ type: "thinking", thinking: middleThought });
+		await update(prefix, "thinking_delta");
+		expect(Bun.stripANSI(chatContainer.render(80).join("\n"))).toContain(middleThought);
+		prefix.push(secondTool);
+		await update(prefix, "toolcall_start");
+		rows = Bun.stripANSI(chatContainer.render(80).join("\n"));
+		expect(rows).not.toContain(middleThought);
+		expect(rows).toContain("echo done");
+		prefix.push({ type: "thinking", thinking: finalThought });
+		await update(prefix, "thinking_delta");
+		expect(Bun.stripANSI(chatContainer.render(80).join("\n"))).toContain(finalThought);
+		prefix.push({ type: "text", text: FINAL_MARKER });
+		await update(prefix, "text_delta");
+		await controller.handleEvent({ type: "message_end", message: assistantMessage(prefix) });
+		rows = Bun.stripANSI(chatContainer.render(80).join("\n"));
+		expect(rows).not.toContain(firstThought);
+		expect(rows).not.toContain(middleThought);
+		expect(rows).toContain(finalThought);
+		expect(rows).toContain(FINAL_MARKER);
+
+		const rebuilt = createFixture();
+		const helpers = new UiHelpers(rebuilt.ctx);
+		rebuilt.ctx.addMessageToChat = (message, options) => helpers.addMessageToChat(message, options);
+		helpers.renderSessionContext({
+			messages: [assistantMessage(prefix)], models: {}, injectedTtsrRules: [], mode: "none",
+		});
+		rows = Bun.stripANSI(rebuilt.chatContainer.render(80).join("\n"));
+		expect(rows).not.toContain(firstThought);
+		expect(rows).not.toContain(middleThought);
+		expect(rows).toContain(INTRO_MARKER);
+		expect(rows).toContain("seq 1 12");
+		expect(rows).toContain("echo done");
+		expect(rows).toContain(finalThought);
+		expect(rows).toContain(FINAL_MARKER);
+	});
+
+	it("keeps reasoning visible when an assistant finishes with only an answer", async () => {
+		const { controller, chatContainer } = createFixture();
+		const thinking = assistantMessage([{ type: "thinking", thinking: "ANSWER ONLY REASONING" }]);
+		await controller.handleEvent({ type: "message_start", message: thinking });
+		expect(Bun.stripANSI(chatContainer.render(80).join("\n"))).toContain("ANSWER ONLY REASONING");
+		const finished = assistantMessage([...thinking.content, { type: "text", text: FINAL_MARKER }]);
+		await controller.handleEvent({ type: "message_end", message: finished });
+		const rows = Bun.stripANSI(chatContainer.render(80).join("\n"));
+		expect(rows).toContain("ANSWER ONLY REASONING");
+		expect(rows).toContain(FINAL_MARKER);
+	});
+
+	it("preserves native thinking content on both sides of tool boundaries", () => {
+		setNativeRendering(true);
+		const thinking = { type: "thinking" as const, thinking: "NATIVE FOLDED REASONING" };
+		const call: ToolCall = { type: "toolCall", id: TOOL_CALL_A_ID, name: "bash", arguments: {} };
+		const timeline = splitAssistantMessageToolTimeline(assistantMessage([
+			thinking, call, thinking, { ...call, id: TOOL_CALL_B_ID }, thinking,
+		]));
+		expect(timeline.beforeTools.content).toEqual([thinking]);
+		expect(timeline.afterToolCalls.get(TOOL_CALL_A_ID)?.content).toEqual([thinking]);
+		expect(timeline.afterToolCalls.get(TOOL_CALL_B_ID)?.content).toEqual([thinking]);
 	});
 
 	it("finalizes and removes an orphaned streaming component on the next message_start", async () => {

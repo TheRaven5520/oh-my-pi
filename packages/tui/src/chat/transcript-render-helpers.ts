@@ -19,6 +19,7 @@ import { ToolActivityContainer } from "../chrome/tool-activity";
 import { type TranscriptBlock } from "../chrome/transcript-container";
 import { TranscriptStatusBlock, type TranscriptStatusRow } from "../chrome/transcript-status";
 import { theme } from "../theme";
+import { isNativeRendering } from "../native/state";
 
 type CustomOrHookMessage = Extract<AgentMessage, { role: "custom" | "hookMessage" }>;
 type AssistantAgentMessage = Extract<AgentMessage, { role: "assistant" }>;
@@ -223,23 +224,26 @@ export function splitAssistantMessageToolTimeline(message: AssistantAgentMessage
 	let lastToolCallId: string | undefined;
 	let sawToolCall = false;
 
-	const displaySegment = (content: AssistantAgentMessage["content"]): AssistantAgentMessage => ({
+	// Tool calls are stripped from display segments, so hide superseded terminal
+	// thinking here, before that boundary is lost. Native keeps its folded cards.
+	const hideClosedThinking = !isNativeRendering();
+	const displaySegment = (content: AssistantAgentMessage["content"], closed: boolean): AssistantAgentMessage => ({
 		...message,
-		content,
+		content: closed && hideClosedThinking ? content.filter(block => block.type !== "thinking") : content,
 		stopReason: "stop",
 		errorMessage: undefined,
 		retryRecovery: undefined,
 	});
 
-	const flushPendingAfterTool = () => {
+	const flushPendingAfterTool = (closed: boolean) => {
 		if (!lastToolCallId || pendingAfterTool.length === 0) return;
-		afterToolCalls.set(lastToolCallId, displaySegment(pendingAfterTool));
+		afterToolCalls.set(lastToolCallId, displaySegment(pendingAfterTool, closed));
 		pendingAfterTool = [];
 	};
 
 	for (const content of message.content) {
 		if (content.type === "toolCall") {
-			flushPendingAfterTool();
+			flushPendingAfterTool(true);
 			sawToolCall = true;
 			lastToolCallId = content.id;
 			continue;
@@ -250,13 +254,13 @@ export function splitAssistantMessageToolTimeline(message: AssistantAgentMessage
 			beforeTools.push(content);
 		}
 	}
-	flushPendingAfterTool();
+	flushPendingAfterTool(false);
 
 	if (!sawToolCall) {
 		return { beforeTools: message, afterToolCalls, hasToolCalls: false };
 	}
 
-	return { beforeTools: displaySegment(beforeTools), afterToolCalls, hasToolCalls: true, lastToolCallId };
+	return { beforeTools: displaySegment(beforeTools, true), afterToolCalls, hasToolCalls: true, lastToolCallId };
 }
 
 /**
