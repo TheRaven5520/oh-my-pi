@@ -90,9 +90,9 @@ The list stays short: it shows a few rows plus an expander (`display.pinnedAgent
 
 Set `display.subagentLivePreview: true` to add a second line under each row showing what that agent is doing: its current tool call (or, between calls, the most recent one) with a one-line detail, plus the elapsed time once a call runs longer than five seconds. Off by default.
 
-Enable `tui.mouse` to click live subagent cards and jump-list rows directly in the main session, without opening the Hub first. A click focuses that card's most recent agent (a jump-list row focuses its exact agent); focusing a parked agent revives it. Hovering a live target lights it up first, so you can see what a click will open.
+Enable `tui.mouse` to click live subagent cards and jump-list rows directly in the main session, without opening the Hub first. A click focuses that card's most recent agent (a jump-list row focuses its exact agent); focusing a parked agent revives it. Tool-card clicks toggle expansion.
 
-Only rows currently in the live viewport are clickable — retired transcript rows live in terminal scrollback, where clicks cannot map back to content. Enabling capture changes terminal gestures while on: text selection becomes Shift+drag and wheel scroll becomes Shift+wheel. Off by default.
+Mouse capture is off by default, preserving native wheel scrolling, drag-selection, and clipboard gestures. Use Ctrl+O to toggle tool expansion without capture. Opting in changes terminal gestures: native selection and scrolling require the terminal's override modifier (usually Shift). Agent focus targets must be in the live viewport; retired tool rows still visible on screen can also be toggled, but off-screen terminal scrollback is not an app click target.
 
 ## Persisted agents and advisors
 

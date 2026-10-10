@@ -40,6 +40,23 @@ describe("collapsed tool cards", () => {
 		await initTheme();
 	});
 
+	it("retains the Eval title or code excerpt after expansion and collapse", () => {
+		const code = "print('first visible line')\nprint('second line')";
+		const card = new ToolExecutionComponent("eval", { code }, {}, undefined, ui, "/tmp");
+		card.updateResult(textResult("first visible line\nsecond line"), false);
+		card.seal();
+		expect(plain(card.render(100))[0]).toContain(" · print('first visible line')");
+		card.toggleClickExpansion();
+		card.render(100);
+		card.toggleClickExpansion();
+		expect(plain(card.render(100))[0]).toContain(" · print('first visible line')");
+		card.updateArgs({ code, title: "Summarizing the output of both printed lines" });
+		expect(plain(card.render(100))[0]).toContain(" · Summarizing the output of both printed lines");
+		const cropped = plain(card.render(24))[0]!;
+		expect(cropped).toContain(" · Summarizing");
+		expect(visibleWidth(cropped)).toBeLessThanOrEqual(24);
+	});
+
 	it("paints individual expansions full-width, not collapsed or globally expanded cards", () => {
 		const previousTheme = theme;
 		const json = structuredClone(getBuiltinThemes().dark!);
@@ -65,7 +82,6 @@ describe("collapsed tool cards", () => {
 				"read",
 			);
 			const width = 60;
-			const blank = theme.bgFill("toolExpandedBg", " ".repeat(width));
 			const background = theme.getBgAnsi("toolExpandedBg");
 			expect(background).toBe("\x1b[48;2;18;52;86m");
 			for (const card of [tool, framedBash, bash, cell, read]) {
@@ -73,18 +89,14 @@ describe("collapsed tool cards", () => {
 				expect(collapsed.every(line => !line.includes(background))).toBe(true);
 				expect(card.toggleClickExpansion()).toBe(true);
 				const expanded = card.render(width);
-				expect(expanded.at(-1)).toBe(blank);
+				expect(Bun.stripANSI(expanded.at(-1)!).trim()).not.toBe("");
 				expect(expanded.every(line => line.startsWith(background) && visibleWidth(line) === width)).toBe(true);
 				expect(Bun.stripANSI(expanded[0]!).trim()).not.toBe("");
-				expect(Bun.stripANSI(expanded.at(-2)!).trim()).not.toBe("");
 				for (const row of expanded) {
 					expect(row.match(/\x1b\[(?:4[0-7]|10[0-7]|48[;:][0-9;:]+)m/g)?.every(open => open === background)).toBe(
 						true,
 					);
 				}
-				card.setTranscriptAllocation(2, { tick: 0, now: 0 });
-				expect(Bun.stripANSI(card.render(width).at(-1)!).trim()).not.toBe("");
-				card.setTranscriptAllocation(Number.POSITIVE_INFINITY, { tick: 0, now: 0 });
 				card.setExpanded(true);
 				expect(card.render(width).every(line => !line.includes(background))).toBe(true);
 				card.setExpanded(false);

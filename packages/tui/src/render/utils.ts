@@ -37,12 +37,7 @@ function withoutBackground(sequence: string, parameters: string): string {
 }
 
 /** Paint one expanded tool surface, discarding outer renderer padding first. */
-export function expandedToolRows(
-	theme: Theme,
-	rows: readonly string[],
-	width: number,
-	allocation = Number.POSITIVE_INFINITY,
-): string[] {
+export function expandedToolRows(theme: Theme, rows: readonly string[], width: number): string[] {
 	let start = 0;
 	let end = rows.length;
 	while (start < end && !rows[start]!.trim()) start++;
@@ -58,7 +53,6 @@ export function expandedToolRows(
 				: theme.bgFill("toolExpandedBg", padToWidth(row.replace(SGR, withoutBackground), width)),
 		);
 	}
-	if (painted.length > 0 && painted.length < allocation) painted.push(theme.bgFill("toolExpandedBg", padding(width)));
 	return painted;
 }
 

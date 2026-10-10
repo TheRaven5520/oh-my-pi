@@ -811,32 +811,54 @@ export class InputController {
 	}
 
 	/**
-	 * Inline click-to-focus (`tui.mouse`): left-clicks on live subagent cards
-	 * and HUD rows focus that agent in one action. Every SGR report is consumed
-	 * while inline tracking owns the terminal so button/wheel bytes never reach
-	 * the editor as typed input; clicks on chrome simply swallow.
+	 * Inline click-to-focus (`tui.mouse`). Strip only complete SGR reports;
+	 * preserve coalesced typing and retain only a syntactically valid partial
+	 * report. StdinBuffer owns ambiguous ESC / CSI prefixes and paste framing.
+	 *
+	 * Captured wheel reports cannot scroll native terminal history: there is no
+	 * terminal output sequence for that operation. Keep their protocol bytes out
+	 * of the editor without pretending that consuming them implements scrolling.
 	 */
 	#handleInlineMouse(data: string): { consume?: boolean; data?: string } | undefined {
-		if (!data.startsWith("\x1b[<") && this.#inlineMouseBuffer.length === 0) return undefined;
-		if (!cfgTuiMouse.get(this.ctx.settings) || this.ctx.ui.hasOverlay()) return undefined;
-		this.#inlineMouseBuffer += data;
-		let consumed = false;
-		while (this.#inlineMouseBuffer.length > 0) {
-			const end = this.#inlineMouseBuffer.indexOf("m");
-			const upper = this.#inlineMouseBuffer.indexOf("M");
-			const reportEnd = end < 0 ? upper : upper < 0 ? end : Math.min(end, upper);
-			if (reportEnd < 0) break;
-			const report = this.#inlineMouseBuffer.slice(0, reportEnd + 1);
-			this.#inlineMouseBuffer = this.#inlineMouseBuffer.slice(reportEnd + 1);
-			const event = parseSgrMouse(report);
-			if (!event) {
-				this.#inlineMouseBuffer = "";
+		if (!cfgTuiMouse.get(this.ctx.settings) || this.ctx.ui.hasOverlay()) {
+			this.#inlineMouseBuffer = "";
+			return undefined;
+		}
+		// Pasted mouse-looking text is content, never a pointer action. A paste
+		// also interrupts any unfinished report left by a slow terminal read.
+		if (data.startsWith("\x1b[200~")) {
+			this.#inlineMouseBuffer = "";
+			return undefined;
+		}
+		if (this.#inlineMouseBuffer.length === 0 && !data.includes("\x1b[<")) return undefined;
+		const input = this.#inlineMouseBuffer + data;
+		this.#inlineMouseBuffer = "";
+		let text = "";
+		let offset = 0;
+		while (offset < input.length) {
+			const start = input.indexOf("\x1b[<", offset);
+			if (start < 0) {
+				text += input.slice(offset);
 				break;
 			}
-			consumed = true;
-			if (event.leftClick) this.#clickViewportTarget(event.row);
+			text += input.slice(offset, start);
+			const tail = input.slice(start);
+			const report = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(tail)?.[0];
+			if (report) {
+				const event = parseSgrMouse(report)!;
+				if (event.leftClick) this.#clickViewportTarget(event.row);
+				offset = start + report.length;
+			} else if (/^\x1b\[<(?:\d*|\d+;\d*|\d+;\d+;\d*)$/.test(tail)) {
+				this.#inlineMouseBuffer = tail;
+				break;
+			} else {
+				// Not a mouse report: return it unchanged instead of searching for
+				// an arbitrary m/M in subsequent typing and swallowing that text.
+				text += "\x1b[<";
+				offset = start + 3;
+			}
 		}
-		return consumed || this.#inlineMouseBuffer.length > 0 ? { consume: true } : undefined;
+		return text.length > 0 ? { data: text } : { consume: true };
 	}
 
 	// Candidates under a screen row, or none when the published viewport is

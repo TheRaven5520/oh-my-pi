@@ -525,7 +525,7 @@ effect(cfgTuiHyperlinks, applyHyperlinkSetting);
 export const cfgTuiMouse = register({
 	id: "tui.mouse",
 	type: "boolean",
-	default: true,
+	default: false,
 	ui: {
 		tab: "appearance",
 		group: "Display",

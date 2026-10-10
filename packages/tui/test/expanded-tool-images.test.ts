@@ -50,9 +50,6 @@ describe("individually expanded image cards", () => {
 				const expandedPlacement = expanded.findIndex(row => TERMINAL.isImageLine(row));
 				expect(expandedPlacement).toBe(placement);
 				expect(expanded.slice(start, expandedPlacement + 1)).toEqual(imageRows);
-				expect(expanded.at(-1)).toBe(theme.bgFill("toolExpandedBg", " ".repeat(60)));
-				card.setTranscriptAllocation(expanded.length - 1);
-				expect(card.render(60)).toEqual(expanded.slice(0, -1));
 			} finally {
 				terminal.imageProtocol = originalProtocol;
 				setCellDimensions(originalCells);
@@ -62,6 +59,22 @@ describe("individually expanded image cards", () => {
 			}
 		});
 	}
+});
+
+describe("expanded card bottom spacing", () => {
+	it("paints content without appending a blank row", () => {
+		const rows = expandedToolRows(theme, ["first", "", "last"], 20);
+		expect(rows.map(row => Bun.stripANSI(row).trimEnd())).toEqual(["first", "", "last"]);
+	});
+
+	it("preserves styled blank output and image reservation rows", () => {
+		const blank = "\x1b[39m  ";
+		const reserved = "\x1b[0m";
+		const rows = expandedToolRows(theme, ["output", blank, reserved], 20);
+		expect(rows).toHaveLength(3);
+		expect(Bun.stripANSI(rows[1]!)).toBe(" ".repeat(20));
+		expect(rows[2]).toBe(reserved);
+	});
 });
 
 describe("expanded card combined SGR backgrounds", () => {

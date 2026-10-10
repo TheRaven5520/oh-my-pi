@@ -356,11 +356,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#text: Text;
 	#expanded = false;
 	#individuallyExpanded = false;
-	#allocation = Number.POSITIVE_INFINITY;
-	setTranscriptAllocation(rows: number): void {
-		this.#allocation = rows;
-	}
-
 	#toolActivityVisible = true;
 	#showContentPreview: boolean;
 	// A read group accretes entries across multiple assistant completions for as
@@ -407,7 +402,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			return [first, theme.fg("dim", `⎿ ${detail.replace(/\s+/g, " ")}`)].map(line => truncateToWidth(line, width));
 		}
 		if (this.#individuallyExpanded) {
-			return expandedToolRows(theme, lines, width, this.#allocation);
+			return expandedToolRows(theme, lines, width);
 		}
 		return lines;
 	}

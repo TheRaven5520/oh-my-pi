@@ -673,17 +673,24 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		return this.ui.getScreenHistoryOwner(viewport.top + index);
 	}
 
-	/** Toggle a visible tool block and replay only when its rows were retired. */
+	/** Toggle a visible tool block, replaying retired rows or history displaced by a full live card. */
 	toggleViewportTool(id: string): boolean {
 		const entry = this.#toolClickTargets.get(id);
 		if (entry === undefined || !entry.target.toggleClickExpansion()) return false;
-		// Replays anchor retired cards themselves. A live card only repaints, so
-		// retain its bottom-aligned input when collapsing a screenful of output.
+		// A live card can displace earlier settled blocks into native history.
+		// Refill from that ledger, not blank padding: padding hides the earlier
+		// rows and retains the expanded height even when the whole chat now fits.
 		const viewport = this.ui.getMutableViewport();
-		if (!entry.retired && this.#lastNormalRows > 0 && viewport.top + viewport.length >= this.#lastNormalRows) {
-			this.pinInputToBottom();
-		}
-		if (entry.retired) this.ui.resetDisplay();
+		const refillHistory =
+			this.#lastNormalRows > 0 &&
+			viewport.top + viewport.length >= this.#lastNormalRows &&
+			((this.#retiredHeaderRows?.length ?? 0) > 0 ||
+				this.#runtimeChildren.some(root => {
+					if (!(root instanceof TranscriptContainer)) return false;
+					const first = root.children[0];
+					return first !== undefined && !root.canRemoveBlock(first);
+				}));
+		if (entry.retired || refillHistory) this.ui.resetDisplay();
 		else this.ui.requestRender(true);
 		return true;
 	}

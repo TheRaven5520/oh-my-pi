@@ -1313,7 +1313,7 @@ export class ToolExecutionComponent extends Container {
 			lines = trimmed;
 		}
 		if (this.#individuallyExpanded) {
-			return expandedToolRows(theme, lines, width, this.#allocation);
+			return expandedToolRows(theme, lines, width);
 		}
 		return lines;
 	}

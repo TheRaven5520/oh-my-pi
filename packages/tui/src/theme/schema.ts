@@ -10,9 +10,10 @@ export interface ThemeJson {
 	$schema?: string;
 	name: string;
 	vars?: Record<string, ColorValue>;
-	colors: Omit<Record<ThemeColor | ThemeBg, ColorValue>, "thinkingMax" | "toolExpandedBg"> & {
+	colors: Omit<Record<ThemeColor | ThemeBg, ColorValue>, "thinkingMax" | "toolExpandedBg" | "mdTableHeader"> & {
 		thinkingMax?: ColorValue;
 		toolExpandedBg?: ColorValue;
+		mdTableHeader?: ColorValue;
 	};
 	export?: {
 		pageBg?: ColorValue;
@@ -64,6 +65,7 @@ export type ThemeColor =
 	| "mdHeading"
 	| "mdLink"
 	| "mdLinkUrl"
+	| "mdTableHeader"
 	| "mdCode"
 	| "mdCodeBlock"
 	| "mdCodeBlockBorder"
@@ -127,6 +129,7 @@ const THEME_COLOR_RECORD = {
 	mdHeading: true,
 	mdLink: true,
 	mdLinkUrl: true,
+	mdTableHeader: true,
 	mdCode: true,
 	mdCodeBlock: true,
 	mdCodeBlockBorder: true,

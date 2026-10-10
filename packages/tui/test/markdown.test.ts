@@ -228,6 +228,24 @@ describe("Markdown component", () => {
 	});
 
 	describe("Tables", () => {
+		it("keeps table heading colors in column and stacked layouts without tinting body cells", () => {
+			const tableHeader = (text: string) => chalk.hex("#b1b9f9")(text);
+			const source = "| A | B |\n| --- | --- |\n| one | two |";
+			for (const width of [40, 3]) {
+				const markdown = new Markdown(source, 0, 0, { ...defaultMarkdownTheme, tableHeader });
+				const lines = markdown.render(width);
+				for (const header of ["A", "B"]) {
+					const row = lines.find(line => stripVTControlCharacters(line).includes(header));
+					expect(row).toContain("\x1b[38;2;177;185;249m");
+				}
+				for (const body of ["one", "two"]) {
+					const row = lines.find(line => stripVTControlCharacters(line).includes(body));
+					expect(row).toBeDefined();
+					expect(row).not.toContain("\x1b[38;2;177;185;249m");
+				}
+			}
+		});
+
 		it("preserves ST-terminated OSC 8 links inside table cells", () => {
 			const st = "\x1b\\";
 			const fileLink = `\x1b]8;;file:///tmp/DisplayTypeEnum.java${st}\`DisplayTypeEnum.java\`\x1b]8;;${st}`;

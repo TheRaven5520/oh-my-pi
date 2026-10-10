@@ -1471,6 +1471,8 @@ export interface MarkdownTheme {
 	heading: (text: string) => string;
 	link: (text: string) => string;
 	linkUrl: (text: string) => string;
+	/** Optional table-heading color; bold emphasis is applied separately. */
+	tableHeader?: (text: string) => string;
 	/** Resolve the OSC 8 destination without changing visible text; undefined preserves the authored URL. */
 	resolveLink?: (href: string) => string | undefined;
 	code: (text: string) => string;
@@ -4046,7 +4048,11 @@ export class Markdown implements Component {
 				if (lines.length > 0) lines.push("");
 				for (let i = 0; i < numCols; i++) {
 					const header = this.#renderInlineTokens(token.header[i].tokens || [], styleContext);
-					lines.push(...this.#wrapCellText(header, availableWidth).map(line => this.#theme.bold(line)));
+					lines.push(
+						...this.#wrapCellText(header, availableWidth).map(line =>
+							this.#theme.bold(this.#theme.tableHeader?.(line) ?? line),
+						),
+					);
 					const text = this.#renderInlineTokens(row[i]?.tokens || [], styleContext);
 					if (text) lines.push(...this.#wrapCellText(text, availableWidth));
 				}
@@ -4160,7 +4166,7 @@ export class Markdown implements Component {
 			const rowParts = headerCellLines.map((cellLines, colIdx) => {
 				const text = cellLines[lineIdx] || "";
 				const padded = text + padding(Math.max(0, columnWidths[colIdx] - visibleWidth(text)));
-				return this.#theme.bold(padded);
+				return this.#theme.bold(this.#theme.tableHeader?.(padded) ?? padded);
 			});
 			lines.push(rowParts.join(columnGap));
 		}

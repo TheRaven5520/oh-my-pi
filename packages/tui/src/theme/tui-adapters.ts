@@ -236,6 +236,8 @@ export function getMarkdownTheme(): MarkdownTheme {
 		heading: (text: string) => theme.fg("mdHeading", text),
 		link: (text: string) => theme.fg("mdLink", text),
 		linkUrl: (text: string) => theme.fg("mdLinkUrl", text),
+		tableHeader: (text: string) =>
+			theme.getFgAnsi("mdTableHeader") === "\x1b[39m" ? text : theme.fg("mdTableHeader", text),
 		code: (text: string) => theme.fg("mdCode", text),
 		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
 		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),

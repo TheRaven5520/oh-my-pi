@@ -34,11 +34,6 @@ export type EvalExecutionLanguage = "python" | "js";
 
 export class EvalExecutionComponent extends Container {
 	#status: ExecutionStatus = "running";
-	#allocation = Number.POSITIVE_INFINITY;
-	setTranscriptAllocation(rows: number): void {
-		this.#allocation = rows;
-	}
-
 	#exitCode: number | undefined = undefined;
 	#loader: Loader;
 	#truncation?: TruncationMeta;
@@ -231,7 +226,7 @@ export class EvalExecutionComponent extends Container {
 			return [header, truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)];
 		}
 		if (this.#individuallyExpanded) {
-			return expandedToolRows(theme, lines, width, this.#allocation);
+			return expandedToolRows(theme, lines, width);
 		}
 		return lines;
 	}

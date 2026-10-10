@@ -3370,26 +3370,18 @@ export class TUI extends Container {
 		let replayViewportRows = 0;
 		let replayPrependedBlanks = 0;
 		if (history?.kind === "replay") {
-			// Providers may omit unused leading rows from a short viewport. Make
-			// that logical space explicit before the bottom-first replay split.
-			replayPrependedBlanks = Math.max(0, height - viewport.length);
-			while (viewport.length < height) viewport.unshift("");
+			// Only make room for real history. Filling the rest of a short frame
+			// with synthetic rows retains the expanded height after a collapse.
+			replayPrependedBlanks = Math.min(historyRows.length, Math.max(0, height - viewport.length));
+			if (replayPrependedBlanks > 0) viewport = [...Array<string>(replayPrependedBlanks).fill(""), ...viewport];
 			let leadingBlankRows = 0;
 			while (leadingBlankRows < viewport.length && !/\S/.test(viewport[leadingBlankRows]!)) {
 				leadingBlankRows++;
 			}
 			const moved = Math.min(historyRows.length, leadingBlankRows);
-			// Unused synthetic padding belongs above the replayed history, not
-			// between that history and the input. Exclude it from the next mutable
-			// diff too, or the follow-up frame pulls the editor back up the screen.
-			const unusedPadding = Math.min(replayPrependedBlanks, leadingBlankRows - moved);
-			replayViewportRows = unusedPadding + moved;
+			replayViewportRows = moved;
 			if (moved > 0) {
-				viewport = [
-					...viewport.slice(0, unusedPadding),
-					...historyRows.slice(historyRows.length - moved),
-					...viewport.slice(unusedPadding + moved),
-				];
+				viewport = [...historyRows.slice(historyRows.length - moved), ...viewport.slice(moved)];
 				historyRows = historyRows.slice(0, historyRows.length - moved);
 			}
 		}

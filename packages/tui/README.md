@@ -283,6 +283,7 @@ interface MarkdownTheme {
 	heading: (text: string) => string;
 	link: (text: string) => string;
 	linkUrl: (text: string) => string;
+	tableHeader?: (text: string) => string; // Optional header color; headers remain bold
 	code: (text: string) => string;
 	codeBlock: (text: string) => string;
 	codeBlockBorder: (text: string) => string;

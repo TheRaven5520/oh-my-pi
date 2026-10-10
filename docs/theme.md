@@ -22,7 +22,7 @@ Custom theme files are JSON objects validated by `validateThemeJson()` in `packa
 Top-level fields:
 
 - `name` (required)
-- `colors` (required; all tokens except `thinkingMax` required)
+- `colors` (required; all tokens except `thinkingMax`, `toolExpandedBg`, and `mdTableHeader` required)
 - `vars` (optional; reusable color variables)
 - `export` (optional; HTML export colors)
 - `symbols` (optional)
@@ -38,7 +38,7 @@ Color values accept:
 
 ## Required and optional color tokens
 
-All tokens below are required in `colors` except `thinkingMax` and `toolExpandedBg`, which are optional for compatibility. `thinkingMax` falls back to `thinkingXhigh`; `toolExpandedBg` falls back to `userMessageBg`.
+All tokens below are required in `colors` except `thinkingMax`, `toolExpandedBg`, and `mdTableHeader`. `thinkingMax` falls back to `thinkingXhigh`; `toolExpandedBg` falls back to `userMessageBg`; omitted `mdTableHeader` inherits the surrounding text color.
 
 ### Core text and borders (11)
 
@@ -52,9 +52,11 @@ All tokens below are required in `colors` except `thinkingMax` and `toolExpanded
 
 `userMessageText`, `customMessageText`, `customMessageLabel`, `toolTitle`, `toolOutput`
 
-### Markdown (10)
+### Markdown (10 required, 1 optional)
 
-`mdHeading`, `mdLink`, `mdLinkUrl`, `mdCode`, `mdCodeBlock`, `mdCodeBlockBorder`, `mdQuote`, `mdQuoteBorder`, `mdHr`, `mdListBullet`
+`mdHeading`, `mdLink`, `mdLinkUrl`, optional `mdTableHeader`, `mdCode`, `mdCodeBlock`, `mdCodeBlockBorder`, `mdQuote`, `mdQuoteBorder`, `mdHr`, `mdListBullet`
+
+`mdTableHeader` colors both column headers and the labels used by narrow, stacked tables; body cells keep their normal styling. The `dark-claude` theme uses light lavender (`#b1b9f9`) for links, link URLs, inline code, and table headers. Other built-in themes retain their existing colors.
 
 ### Tool diff + syntax highlighting (12)
 

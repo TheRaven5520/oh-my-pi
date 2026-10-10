@@ -181,8 +181,8 @@ describe("composer tool clicks on clipped and retired rows", () => {
 		initTheme();
 	});
 
-	async function mount(tool: ToolBlock) {
-		const terminal = new VirtualTerminal(100, 40);
+	async function mount(tool: ToolBlock, earlierRows = 0) {
+		const terminal = new VirtualTerminal(100, 40, 10_000);
 		const scheduler = new VirtualRenderScheduler();
 		const composer = new Composer({
 			terminal,
@@ -190,6 +190,9 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
 		});
 		const transcript = new TranscriptContainer();
+		for (let row = 0; row < earlierRows; row++) {
+			transcript.addChild(new Text(`earlier unique row ${row}`, 0, 0));
+		}
 		transcript.addChild(new Text("user prompt", 0, 0));
 		transcript.addChild(tool);
 		transcript.addChild(new Text("assistant reply", 0, 0));
@@ -219,6 +222,7 @@ describe("composer tool clicks on clipped and retired rows", () => {
 		const tool = new ToolBlock("live", 60, false);
 		const h = await mount(tool);
 		try {
+			const initial = h.terminal.getViewport();
 			expect(h.composer.toggleViewportTool("live")).toBe(true);
 			await h.scheduler.settle(h.terminal);
 			// A running block cannot retire: the viewport keeps its newest rows
@@ -234,43 +238,98 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			expect(h.composer.toggleViewportTool("live")).toBe(true);
 			await h.scheduler.settle(h.terminal);
 			expect(tool.expanded).toBe(false);
-			expect(h.rowsMatching("EDITOR")).toEqual([39]);
-			// Nothing was retired, so the plain repaint is consistent: the
-			// collapsed card is whole and no expanded row survives anywhere.
-			expect(h.resets()).toBe(0);
+			expect(h.terminal.getViewport()).toEqual(initial);
+			// The tool stays live, but expansion retired the preceding prompt.
+			// Replay that prefix instead of hiding it behind synthetic padding.
+			expect(h.resets()).toBe(1);
+			expect(h.terminal.getBufferPosition()).toEqual({ baseY: 0, viewportY: 0 });
 			const buffer = h.terminal.getScrollBuffer();
 			expect(buffer.filter(line => line.includes("live line"))).toEqual([]);
 			expect(buffer.filter(line => line.includes("live header"))).toHaveLength(1);
 			expect(buffer.filter(line => line.includes("live hidden 60"))).toHaveLength(1);
+			expect(buffer.filter(line => line.includes("user prompt"))).toHaveLength(1);
 		} finally {
 			h.composer.stop();
 		}
 	});
 
-	it("keeps the editor at the bottom after a large retired output collapses", async () => {
+	it("restores the compact transcript after a large retired output collapses", async () => {
 		const tool = new ToolBlock("large", 1000, true);
 		const h = await mount(tool);
 		try {
-			h.composer.toggleViewportTool("large");
+			const initial = h.terminal.getViewport();
+			expect(h.composer.toggleViewportTool("large")).toBe(true);
 			await h.scheduler.settle(h.terminal);
 			expect(h.rowsMatching("EDITOR")).toEqual([39]);
 			const row = h.rowsMatching("large line").at(-1)!;
 			expect(h.toolAt(row)).toBe("large");
-			h.composer.toggleViewportTool("large");
+			expect(h.composer.toggleViewportTool("large")).toBe(true);
 			await h.scheduler.settle(h.terminal);
-			expect(h.rowsMatching("EDITOR")).toEqual([39]);
+			expect(h.terminal.getViewport()).toEqual(initial);
 			h.composer.ui.requestRender();
 			await h.scheduler.settle(h.terminal);
-			expect(h.rowsMatching("EDITOR")).toEqual([39]);
+			expect(h.terminal.getViewport()).toEqual(initial);
+			expect(h.terminal.getBufferPosition()).toEqual({ baseY: 0, viewportY: 0 });
 			expect(h.terminal.getScrollBuffer().some(line => line.includes("large line"))).toBe(false);
 			expect(h.toolAt(h.rowsMatching("large header")[0]!)).toBe("large");
-			h.composer.toggleViewportTool("large");
+			expect(h.composer.toggleViewportTool("large")).toBe(true);
 			await h.scheduler.settle(h.terminal);
 			expect(h.rowsMatching("EDITOR")).toEqual([39]);
-			h.composer.toggleViewportTool("large");
+			// Each click resolves the current screen row first: retired targets
+			// are registered by hit-testing, not retained across frame renders.
+			expect(h.toolAt(h.rowsMatching("large line").at(-1)!)).toBe("large");
+			expect(h.composer.toggleViewportTool("large")).toBe(true);
 			await h.scheduler.settle(h.terminal);
-			expect(h.rowsMatching("EDITOR")).toEqual([39]);
+			expect(h.terminal.getViewport()).toEqual(initial);
 			expect(h.terminal.getScrollBuffer().filter(line => line.includes("large header"))).toHaveLength(1);
+		} finally {
+			h.composer.stop();
+		}
+	});
+
+	it.each([false, true])("preserves earlier scrollback across repeated collapses (finalized=%s)", async finalized => {
+		const tool = new ToolBlock("history-card", 200, finalized);
+		const h = await mount(tool, 100);
+		try {
+			const initialBuffer = h.terminal.getScrollBuffer();
+			const initialViewport = h.terminal.getViewport();
+			const initialPosition = h.terminal.getBufferPosition();
+			expect(initialPosition.baseY).toBeGreaterThan(0);
+			const earlier = Array.from({ length: 100 }, (_, row) => `earlier unique row ${row}`);
+			const assertEarlierRows = () => {
+				expect(
+					h.terminal
+						.getScrollBuffer()
+						.map(row => row.trimEnd())
+						.filter(row => row.startsWith("earlier unique row ")),
+				).toEqual(earlier);
+				h.terminal.scrollLines(-10_000);
+				expect(h.terminal.getBufferPosition().viewportY).toBe(0);
+				expect(h.terminal.getViewport()[0]?.trimEnd()).toBe(earlier[0]);
+				h.terminal.scrollLines(10_000);
+				expect(h.terminal.isNativeViewportAtBottom()).toBe(true);
+			};
+			for (let cycle = 0; cycle < 3; cycle++) {
+				const header = h.rowsMatching("history-card header")[0]!;
+				expect(h.toolAt(header)).toBe("history-card");
+				expect(h.composer.toggleViewportTool("history-card")).toBe(true);
+				await h.scheduler.settle(h.terminal);
+				assertEarlierRows();
+				expect(h.transcript.canRemoveBlock(tool)).toBe(!finalized);
+				const expandedRow = h.rowsMatching("history-card line").at(-1)!;
+				expect(h.toolAt(expandedRow)).toBe("history-card");
+				expect(h.composer.toggleViewportTool("history-card")).toBe(true);
+				await h.scheduler.settle(h.terminal);
+				// No accumulated blank tail, no lost prefix, no duplicate history.
+				expect(h.terminal.getScrollBuffer()).toEqual(initialBuffer);
+				expect(h.terminal.getViewport()).toEqual(initialViewport);
+				expect(h.terminal.getBufferPosition()).toEqual(initialPosition);
+				assertEarlierRows();
+				// A later ordinary paint must not reinstate the expanded height.
+				h.composer.ui.requestRender();
+				await h.scheduler.settle(h.terminal);
+				expect(h.terminal.getScrollBuffer()).toEqual(initialBuffer);
+			}
 		} finally {
 			h.composer.stop();
 		}
@@ -304,7 +363,7 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			expect(buffer.filter(line => line.includes("done header"))).toHaveLength(1);
 			expect(buffer.filter(line => line.includes("done hidden 60"))).toHaveLength(1);
 			expect(buffer.filter(line => line.includes("user prompt"))).toHaveLength(1);
-			// The replayed card is live again and still toggles from its rows.
+			// The replayed card remains clickable in the visible history rows.
 			const header = h.rowsMatching("done header")[0]!;
 			expect(h.toolAt(header)).toBe("done");
 		} finally {

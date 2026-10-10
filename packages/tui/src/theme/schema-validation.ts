@@ -29,6 +29,7 @@ const themeColorsSchema = type({
 	mdHeading: "string | number",
 	mdLink: "string | number",
 	mdLinkUrl: "string | number",
+	"mdTableHeader?": "string | number",
 	mdCode: "string | number",
 	mdCodeBlock: "string | number",
 	mdCodeBlockBorder: "string | number",

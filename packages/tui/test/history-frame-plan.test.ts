@@ -332,7 +332,7 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
-	it.each([0, 1, 5])("keeps a short replay contiguous and bottom-anchored with %i history rows", historyCount => {
+	it.each([0, 1, 5])("keeps replay at its actual height with %i history rows", historyCount => {
 		const terminal = new CountingTerminal(20, 4);
 		const history = Array.from({ length: historyCount }, (_, index) => `history ${index}`);
 		const owners = history.map(() => ({}));
@@ -345,15 +345,17 @@ describe("terminal frame plans", () => {
 		};
 		tui.requestRender(true);
 		const expected = [...history, "live", "editor"].slice(-4);
-		while (expected.length < 4) expected.unshift("");
+		while (expected.length < 4) expected.push("");
+		const top = Math.min(historyCount, 2);
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(expected);
-		expect(tui.getMutableViewport()).toEqual({ top: 2, length: 2 });
-		if (historyCount > 0) expect(tui.getScreenHistoryOwner(1)).toBe(owners.at(-1));
+		expect(tui.getMutableViewport()).toEqual({ top, length: 2 });
+		expect(terminal.getBufferPosition().baseY).toBe(Math.max(0, historyCount + 2 - 4));
+		if (historyCount > 0) expect(tui.getScreenHistoryOwner(top - 1)).toBe(owners.at(-1));
 		provider.plan = { viewport: ["live updated", "editor"] };
 		tui.requestRender();
-		expected[2] = "live updated";
+		expected[top] = "live updated";
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(expected);
-		expect(tui.getMutableViewport()).toEqual({ top: 2, length: 2 });
+		expect(tui.getMutableViewport()).toEqual({ top, length: 2 });
 		tui.stop();
 	});
 

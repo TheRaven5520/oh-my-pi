@@ -204,6 +204,8 @@ export class Theme {
 			this.#fgColors[key] = fgAnsi(value, mode);
 			this.#hexFgColors[key] = hex;
 		}
+		this.#fgColors.mdTableHeader ??= "\x1b[39m";
+		this.#hexFgColors.mdTableHeader ??= this.#hexFgColors.text;
 		this.#bgColors = {} as Record<ThemeBg, string>;
 		this.#hexBgColors = {} as Record<ThemeBg, string>;
 		for (const [key, value] of Object.entries(bgColors) as [ThemeBg, string | number][]) {

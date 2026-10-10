@@ -64,7 +64,6 @@ export class BashExecutionComponent extends Container {
 	#artifactError?: OutputArtifactError;
 	#expanded = false;
 	#individuallyExpanded = false;
-	#allocation = Number.POSITIVE_INFINITY;
 	#hadExpandableContent = false;
 	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
 	// a completed command's block still mutates on expansion toggles, and the
@@ -98,10 +97,6 @@ export class BashExecutionComponent extends Container {
 	#outputVersion = 0;
 	readonly #native = new Memo();
 	readonly #nativeImages = new NativeImageCache();
-
-	setTranscriptAllocation(rows: number): void {
-		this.#allocation = rows;
-	}
 
 	constructor(command: string, ui: TUI, excludeFromContext = false) {
 		super();
@@ -418,7 +413,7 @@ export class BashExecutionComponent extends Container {
 			return [truncateToWidth(header, width), truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)];
 		}
 		if (this.#individuallyExpanded) {
-			return expandedToolRows(theme, lines, width, this.#allocation);
+			return expandedToolRows(theme, lines, width);
 		}
 		return lines;
 	}
