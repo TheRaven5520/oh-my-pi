@@ -264,6 +264,16 @@ describe("native queued messages", () => {
 		const single = new QueuedMessagesBand([{ label: "Steering", messages: ["only"] }], "alt+up", onEdit);
 		expect(byRole(single.describe(), "omp.queue.count")).toBeUndefined();
 	});
+
+	it("explains the optional empty-submit interrupt only when the queue can be interrupted", () => {
+		const groups = [{ label: "Steering (queued)", messages: ["change direction"] }];
+		const waiting = new QueuedMessagesBand(groups, "alt+up", () => {}, "enter");
+		expect(waiting.render(140).join("\n")).toContain("on empty prompt to interrupt");
+		expect(JSON.stringify(waiting.describe())).toContain("on empty prompt to interrupt");
+		const idle = new QueuedMessagesBand(groups, "alt+up", () => {});
+		expect(idle.render(140).join("\n")).not.toContain("to interrupt");
+		expect(JSON.stringify(idle.describe())).not.toContain("to interrupt");
+	});
 });
 
 describe("native autocomplete list", () => {

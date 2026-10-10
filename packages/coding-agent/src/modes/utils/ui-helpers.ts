@@ -1159,13 +1159,20 @@ export class UiHelpers {
 		}
 
 		const groups = [
-			{ label: "Steering", messages: steeringMessages },
+			{ label: "Steering (queued)", messages: steeringMessages },
 			{ label: "After yield", messages: followUpMessages },
 		].filter(group => group.messages.length > 0);
 		if (groups.length > 0) {
 			const dequeueKey = this.ctx.keybindings.getKeys("app.message.dequeue")[0] ?? "alt+up";
 			this.ctx.pendingMessagesContainer.addChild(
-				new QueuedMessagesBand(groups, dequeueKey, () => this.ctx.handleDequeue()),
+				new QueuedMessagesBand(
+					groups,
+					dequeueKey,
+					() => this.ctx.handleDequeue(),
+					this.ctx.viewSession.isStreaming && this.ctx.viewSession.hasInterruptibleInput
+						? (this.ctx.keybindings.getKeys("tui.input.submit")[0] ?? "enter")
+						: undefined,
+				),
 			);
 		}
 		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);

@@ -28,6 +28,7 @@ export class QueuedMessagesBand extends Container {
 		groups: readonly QueuedMessageGroup[],
 		dequeueKey: KeyId,
 		private readonly onEdit: () => void,
+		interruptKey?: KeyId,
 	) {
 		super();
 		this.addChild(new Spacer(1));
@@ -40,7 +41,14 @@ export class QueuedMessagesBand extends Container {
 			}
 		}
 		const editKey = formatKeyHint(dequeueKey);
-		this.addChild(new TruncatedText(theme.fg("dim", `  ${theme.tree.hook} ${editKey} to edit`), 1, 0));
+		const interruptHint = interruptKey ? `${formatKeyHint(interruptKey)} on empty prompt to interrupt` : undefined;
+		this.addChild(
+			new TruncatedText(
+				theme.fg("dim", `  ${theme.tree.hook} ${editKey} to edit${interruptHint ? ` · ${interruptHint}` : ""}`),
+				1,
+				0,
+			),
+		);
 
 		const count = groups.reduce((sum, group) => sum + group.messages.length, 0);
 		const pills: NativeNode[] = [];
@@ -87,6 +95,7 @@ export class QueuedMessagesBand extends Container {
 				);
 			});
 		}
+		if (interruptHint) pills.push(text(interruptHint));
 		this.#native = node("col", { role: "omp.queue", gap: "xs" }, pills);
 	}
 

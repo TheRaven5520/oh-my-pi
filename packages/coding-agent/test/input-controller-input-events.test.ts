@@ -646,6 +646,31 @@ describe("interactive native input ingress", () => {
 		expect(h.prompt).toHaveBeenCalledTimes(1);
 	});
 
+	it("Enter clears immediately while a slow input hook finishes, without consuming the next draft", async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const h = await createHarness(pi => {
+			pi.on("input", async event => {
+				entered.resolve();
+				await release.promise;
+				return { text: `${event.text} transformed` };
+			});
+		});
+		h.editor.setText("change direction");
+		const submitting = h.pressSubmit(ENTER);
+		expect(h.editor.getText()).toBe("");
+		await entered.promise;
+		expect(h.prompt).not.toHaveBeenCalled();
+		h.editor.setText("next draft");
+		release.resolve();
+		await submitting;
+		expect(h.prompt.mock.calls).toEqual([
+			["change direction transformed", { streamingBehavior: "steer", images: undefined }],
+		]);
+		expect(h.editor.getText()).toBe("next draft");
+		expect(h.ctx.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+	});
+
 	it("Ctrl+Enter transforms before compacting a skill-shaped input without expanding it", async () => {
 		const seen: InputEvent[] = [];
 		const h = await createHarness(pi => {

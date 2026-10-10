@@ -33,6 +33,7 @@
 
 ### Changed
 
+- Pending steering now says `Steering (queued)` and shows the existing empty-prompt Enter interrupt shortcut only while a live queue can be interrupted. Enter still accepts the draft once; it does not silently cancel a streaming response. Providers without live steering apply it at the next delivery boundary, while interruptible tool waits wake on the first submission.
 - Tool and script-run transcript blocks now default to a compact collapsed header with a one-line summary (`N lines`, not `N lines hidden`); click a block to expand or collapse it when `tui.mouse` is enabled (now the default), while Ctrl+O still toggles all blocks. Agent-card click-to-focus remains unchanged.
 - Collapsed cards and hovered tool rows have no background. Individually click-expanded cards fill every row to the terminal width with `toolExpandedBg`, plus one blank background row below; global Ctrl+O expansion stays unpainted.
 

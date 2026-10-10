@@ -17,6 +17,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, AgentBusyError, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { Container } from "@oh-my-pi/pi-tui";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { createMockModel, type MockHandler, type MockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -27,6 +31,7 @@ import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/inp
 import { getEditorTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { tryRunRpcSkillCommand } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
+import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { cfgMagicKeyword, cfgMagicKeywordsEnabled } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -335,6 +340,143 @@ describe("AgentSession queued steer delivery", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 		expect(session.getQueuedMessages().steering).toEqual([]);
 	});
+
+	function createInputHarness(session: AgentSession) {
+		const editor = new CustomEditor(getEditorTheme());
+		const errors: string[] = [];
+		const ctx = {
+			session,
+			viewSession: session,
+			editor,
+			keybindings: KeybindingsManager.inMemory(),
+			pendingMessagesContainer: new Container(),
+			compactionQueuedMessages: [],
+			ui: { requestRender() {}, requestComponentRender() {} },
+			showError: (message: string) => errors.push(message),
+			withLocalSubmission: async (_text: string, dispatch: () => Promise<unknown>) => dispatch(),
+		} as unknown as InteractiveModeContext;
+		const helpers = new UiHelpers(ctx);
+		ctx.updatePendingMessagesDisplay = () => helpers.updatePendingMessagesDisplay();
+		new InputController(ctx).setupEditorSubmitHandler();
+		const submit = editor.onSubmit!;
+		let completion: Promise<void>;
+		editor.onSubmit = text => {
+			completion = Promise.resolve(submit(text));
+			return completion;
+		};
+		return {
+			editor,
+			errors,
+			pending: () => ctx.pendingMessagesContainer.render(140).join("\n"),
+			enter: () => {
+				editor.handleInput("\r");
+				return completion!;
+			},
+		};
+	}
+
+	it("accepts one Enter while tool arguments stream, and only empty Enter forces an interruption", async () => {
+		const { session, mock } = await createSession([{ content: ["steer received"] }]);
+		const h = createInputHarness(session);
+		const partialReady = Promise.withResolvers<void>();
+		const originalStream = session.agent.streamFn;
+		let firstSignal: AbortSignal | undefined;
+		session.agent.streamFn = (model, context, options) => {
+			if (firstSignal) return originalStream(model, context, options);
+			firstSignal = options?.signal;
+			if (!firstSignal) throw new Error("Expected the streaming request's abort signal");
+			const stream = new AssistantMessageEventStream();
+			const partial: AssistantMessage = {
+				role: "assistant",
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				content: [{ type: "toolCall", id: "incomplete-call", name: "bash", arguments: {} }],
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+				usage: {
+					input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			};
+			// Like openai-responses, this stream does not consume options.liveSteering.
+			stream.push({ type: "start", partial });
+			stream.push({ type: "toolcall_start", contentIndex: 0, partial });
+			stream.push({ type: "toolcall_delta", contentIndex: 0, delta: '{"command":"pending', partial });
+			firstSignal.addEventListener("abort", () => stream.fail(new Error("Interrupted by user")), { once: true });
+			partialReady.resolve();
+			return stream;
+		};
+		const initialPrompt = session.prompt("start working");
+		try {
+			await withTimeout(partialReady.promise, 2_000, "Partial tool arguments did not start");
+			h.editor.setText("change direction now");
+			const submitting = h.enter();
+			expect(h.editor.getText()).toBe("");
+			await submitting;
+			expect(h.pending()).toContain("Steering (queued)");
+			expect(h.pending()).toContain("change direction now");
+			expect(h.pending()).toContain("on empty prompt to interrupt");
+			expect(firstSignal?.aborted).toBe(false);
+			expect(session.getQueuedMessages().steering).toEqual(["change direction now"]);
+			expect(mock.calls).toHaveLength(0);
+			// A second, empty Enter is an explicit flush, not acceptance of the first message.
+			await h.enter();
+			await initialPrompt;
+			await session.waitForIdle();
+			expect(firstSignal?.aborted).toBe(true);
+			expect(mock.calls).toHaveLength(1);
+			expect(session.getQueuedMessages().steering).toEqual([]);
+			expect(session.messages.filter(message => message.role === "toolResult")).toHaveLength(0);
+			expect(h.errors).toEqual([]);
+		} finally {
+			await session.abort();
+			await initialPrompt;
+		}
+	});
+
+	for (const mode of ["immediate", "wait"] as const) {
+		it(`one Enter delivers steering during an interruptible tool wait in ${mode} mode`, async () => {
+			const { session, mock } = await createSession([
+				{ content: [{ type: "toolCall", id: "wait-call", name: "pause", arguments: {} }] },
+				{ content: ["steer received"] },
+			]);
+			const started = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			let interrupted = false;
+			session.agent.setTools([{
+				name: "pause", label: "Pause", description: "Interruptible wait", parameters: type({}),
+				interruptible: true,
+				async execute(_id, _params, signal) {
+					const onAbort = () => { interrupted = true; release.resolve(); };
+					signal?.addEventListener("abort", onAbort, { once: true });
+					started.resolve();
+					try { await release.promise; }
+					finally { signal?.removeEventListener("abort", onAbort); }
+					return { content: [{ type: "text", text: "wait finished" }], details: {} };
+				},
+			}]);
+			session.setInterruptMode(mode);
+			const h = createInputHarness(session);
+			const delivered = nextUserMessage(session, "change direction now");
+			const initialPrompt = session.prompt("start working");
+			try {
+				await withTimeout(started.promise, 2_000, "Tool wait did not start");
+				h.editor.setText("change direction now");
+				const submitting = h.enter();
+				expect(h.editor.getText()).toBe("");
+				await submitting;
+				await withTimeout(delivered, 2_000, "One Enter did not deliver steering during the wait");
+				expect(interrupted).toBe(true);
+				await initialPrompt;
+				expect(mock.calls).toHaveLength(2);
+				expect(h.errors).toEqual([]);
+			} finally {
+				release.resolve();
+				await initialPrompt;
+			}
+		});
+	}
 
 	it("rapid Enter then empty Enter interrupts and delivers the pending steer exactly once", async () => {
 		const started = Promise.withResolvers<void>();
