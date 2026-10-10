@@ -331,10 +331,16 @@ describe("speed outcome messages", () => {
 			"Ultrafast unavailable (not enabled for you); using standard.",
 		],
 		[
-			"fast on a subscription account",
+			"GPT fast on paid credits",
+			{ requested: "fast", forwarded: "standard", reason: "paid_credits" },
+			"stop",
+			"Fast mode unavailable while this account runs on paid credits; using standard.",
+		],
+		[
+			"GPT fast on paid credits from an older Sprilicred never says subscription account",
 			{ requested: "fast", forwarded: "standard", reason: "subscription_extra_usage" },
 			"stop",
-			"Fast mode unavailable on a subscription account (would bill API-priced extra usage); using standard.",
+			"Fast mode unavailable while this account runs on paid credits; using standard.",
 		],
 		[
 			"API fallback refused",
@@ -367,6 +373,18 @@ describe("speed outcome messages", () => {
 			expect(describeSpeedOutcome(turn(speed, stopReason), undefined, "m")?.text).toBe(text);
 		});
 	}
+
+	it("says 'subscription account' only for Claude Opus", () => {
+		const opus: AssistantMessage = {
+			...turn({ requested: "fast", forwarded: "standard", reason: "subscription_extra_usage" }),
+			api: "anthropic-messages",
+			provider: "sprilicred-anthropic",
+			model: "claude-opus-5-5",
+		};
+		expect(describeSpeedOutcome(opus, undefined, "m")?.text).toBe(
+			"Fast mode unavailable on a subscription account (would bill API-priced extra usage); using standard.",
+		);
+	});
 
 	it("says a wanted tier was not sent when the model can't carry it", () => {
 		expect(describeSpeedOutcome(turn(undefined), "ultrafast", "personal-openai/gpt-6-astra")?.text).toBe(
