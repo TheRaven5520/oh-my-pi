@@ -6540,10 +6540,10 @@ describe("advisor", () => {
 			expect(text).not.toContain("[default]");
 		});
 
-		it("collapses to the first notes with an overflow hint", async () => {
+		it("collapses blocker cards to the first notes with an overflow hint", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
-			const notes = Array.from({ length: 5 }, (_, i) => ({ note: `note ${i}` }));
+			const notes = Array.from({ length: 5 }, (_, i) => ({ note: `note ${i}`, severity: "blocker" as const }));
 			const card = createAdvisorMessageCard({ notes }, () => false, uiTheme);
 			const text = strip(card.render(80));
 			expect(text).toContain("note 0");
@@ -6561,14 +6561,64 @@ describe("advisor", () => {
 			expect(text).toContain("truncated.");
 		});
 
-		it("wraps long notes even when the message card is collapsed", async () => {
+		it("wraps long blocker notes even when the message card is collapsed", async () => {
 			const uiTheme = await getThemeByName("dark");
 			if (!uiTheme) throw new Error("theme unavailable");
 			const note =
 				"This is a very long advisor note that will definitely exceed the restricted width constraint of thirty characters and should therefore wrap across multiple lines rather than getting truncated.";
-			const card = createAdvisorMessageCard({ notes: [{ note, severity: "concern" }] }, () => false, uiTheme);
+			const card = createAdvisorMessageCard({ notes: [{ note, severity: "blocker" }] }, () => false, uiTheme);
 			const text = strip(card.render(30));
 			expect(text).toContain("truncated.");
+		});
+
+		it("collapses non-blockers to one row and expands through clicks, global and native toggles", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			const notes = [
+				{ note: "first note\nsecond paragraph", severity: "nit" as const },
+				{ note: "second note", severity: "concern" as const },
+				{ note: "third note", severity: "nit" as const },
+			];
+			let expanded = false;
+			const card = createAdvisorMessageCard({ notes }, () => expanded, uiTheme);
+			const describe = () =>
+				card.describe!({ cols: 80, dark: true, reduceMotion: false, supports: () => true, feature: () => true });
+			for (const width of [40, 80, 160]) {
+				const rows = card.render(width);
+				expect(rows).toHaveLength(1);
+				expect(strip(rows)).not.toContain("\n");
+				expect(strip(rows)).not.toContain("third note");
+			}
+			const collapsed = describe();
+			expect(collapsed.k).toBe("card");
+			if (collapsed.k !== "card") throw new Error("expected card");
+			expect(collapsed.p).toMatchObject({ collapsible: true, collapsed: true, preview: "none" });
+			expect(collapsed.p?.head?.map(s => s.t).join("")).toContain(
+				"3 notes · 2 nits · 1 concern · NIT first note second paragraph",
+			);
+			expect(describe()).toBe(collapsed);
+			expect(card.getClickToolId()).toMatch(/^advisor:\d+$/);
+			expect(card.toggleClickExpansion()).toBe(true);
+			for (const width of [40, 80, 160]) {
+				const rendered = strip(card.render(width));
+				for (const note of notes) for (const line of note.note.split("\n")) expect(rendered).toContain(line);
+			}
+			const opened = describe();
+			expect(opened).not.toBe(collapsed);
+			expect(opened.p).toMatchObject({ collapsed: false });
+			expect(opened.c).toHaveLength(3);
+			expect(card.toggleClickExpansion()).toBe(true);
+			expect(card.render(80)).toHaveLength(1);
+			card.toggleClickExpansion();
+			card.setExpanded(false);
+			expect(card.render(80)).toHaveLength(1);
+			expanded = true;
+			card.setExpanded(true);
+			expect(strip(card.render(80))).toContain("third note");
+			card.handleNativeEvent({ type: "toggle", key: "", collapsed: true });
+			expect(card.render(80)).toHaveLength(1);
+			card.handleNativeEvent({ type: "toggle", key: "", collapsed: false });
+			expect(strip(card.render(80))).toContain("third note");
 		});
 	});
 

@@ -13,6 +13,7 @@ import { Memo } from "../native/memo";
 
 const COLLAPSED_NOTES = 3;
 const NOTE_LINE_WIDTH = 110;
+let advisorCardCounter = 0;
 
 function wrapVarying(text: string, w1: number, w2: number): string[] {
 	if (text.length === 0) return [];
@@ -45,22 +46,40 @@ function severityColor(severity: AdvisorSeverity | undefined): ToolUIColor {
 class AdvisorHeader implements Component {
 	readonly #meta: readonly string[];
 	readonly #uiTheme: Theme;
+	readonly #compactNote: AdvisorNote | undefined;
+	#expanded = false;
 	#cache: { width: number; lines: readonly string[] } | undefined;
 
-	constructor(meta: readonly string[], uiTheme: Theme) {
+	constructor(meta: readonly string[], uiTheme: Theme, compactNote?: AdvisorNote) {
 		this.#meta = meta;
 		this.#uiTheme = uiTheme;
+		this.#compactNote = compactNote;
+	}
+
+	setExpanded(expanded: boolean): void {
+		if (this.#expanded !== expanded) {
+			this.#expanded = expanded;
+			this.#cache = undefined;
+		}
 	}
 
 	invalidate(): void {
 		this.#cache = undefined;
 	}
-
 	render(width: number): readonly string[] {
 		width = Math.max(1, width);
 		if (this.#cache?.width === width) return this.#cache.lines;
 		const uiTheme = this.#uiTheme;
 		const tag = uiTheme.fg("customMessageLabel", uiTheme.bold(`${uiTheme.status.info} Advisor`));
+		if (this.#compactNote && !this.#expanded) {
+			const badge = this.#compactNote.severity
+				? `${formatBadge(this.#compactNote.severity, severityColor(this.#compactNote.severity), uiTheme)} `
+				: "";
+			const line = `${tag} ${uiTheme.fg("dim", this.#meta.join(uiTheme.sep.dot))}${uiTheme.sep.dot}${badge}${uiTheme.fg("customMessageText", replaceTabs(this.#compactNote.note).replace(/[\r\n]+/g, " "))}`;
+			const lines = [truncateToWidth(line, width, Ellipsis.Unicode)];
+			this.#cache = { width, lines };
+			return lines;
+		}
 		const lines = [
 			truncateToWidth(`${tag} ${uiTheme.fg("dim", this.#meta.join(uiTheme.sep.dot))}`, width, Ellipsis.Unicode),
 		];
@@ -151,9 +170,10 @@ function advisorNoteSpans(entry: AdvisorNote): TspSpan[] {
 export interface AdvisorMessageCard extends Component {
 	/** Transcript-wide expansion (`Ctrl+O`); clears a toggle made in the terminal. */
 	setExpanded(expanded: boolean): void;
+	getClickToolId(): string;
+	toggleClickExpansion(): boolean;
 	handleNativeEvent(event: NativeUiEvent): void;
 }
-
 /**
  * Display-only transcript card for advisor notes injected into the primary
  * session. Styled as a distinct voice so notes never blend into thinking
@@ -171,8 +191,16 @@ export function createAdvisorMessageCard(
 ): AdvisorMessageCard {
 	const notes = details?.notes ?? [];
 	const blockers = notes.filter(note => note.severity === "blocker").length;
+	const compactNote = blockers === 0 ? notes[0] : undefined;
+	const clickId = `advisor:${++advisorCardCounter}`;
+	const severityCounts = new Map<AdvisorSeverity, number>();
+	for (const note of notes)
+		if (note.severity) severityCounts.set(note.severity, (severityCounts.get(note.severity) ?? 0) + 1);
+	const severityMeta = [...severityCounts.entries()].map(
+		([severity, count]) => `${count} ${severity}${count === 1 ? "" : "s"}`,
+	);
 	const meta: string[] = [`${notes.length} ${notes.length === 1 ? "note" : "notes"}`];
-	if (blockers > 0) meta.push(uiTheme.fg("error", `${blockers} blocker${blockers === 1 ? "" : "s"}`));
+	if (severityMeta.length > 0) meta.push(...severityMeta);
 	let override: boolean | undefined;
 	let lastGlobal = getExpanded();
 	const expanded = (): boolean => {
@@ -187,9 +215,16 @@ export function createAdvisorMessageCard(
 	const describeCard = (isExpanded: boolean): NativeNode => {
 		const head: TspSpan[] = [
 			span(`${uiTheme.status.info} Advisor`, "customMessageLabel strong"),
-			span(` ${notes.length} ${notes.length === 1 ? "note" : "notes"}`, "dim"),
+			span(` ${meta.join(uiTheme.sep.dot)}`, "dim"),
 		];
 		if (blockers > 0) head.push(span(`${uiTheme.sep.dot}${blockers} blocker${blockers === 1 ? "" : "s"}`, "error"));
+		if (compactNote && !isExpanded) {
+			head.push(
+				span(uiTheme.sep.dot),
+				...advisorNoteSpans({ ...compactNote, note: compactNote.note.replace(/[\r\n]+/g, " ") }),
+			);
+		}
+		const collapsible = !!compactNote || notes.length > COLLAPSED_NOTES;
 		const body = notes.map((entry, index) =>
 			text(advisorNoteSpans(entry), { wrap: "word", role: "omp.advisor.note", key: `n${index}` }),
 		);
@@ -198,18 +233,20 @@ export function createAdvisorMessageCard(
 				role: "omp.advisor",
 				tone: blockers > 0 ? "error" : "info",
 				head,
-				collapsible: notes.length > COLLAPSED_NOTES,
-				collapsed: notes.length > COLLAPSED_NOTES ? !isExpanded : undefined,
-				preview: notes.length > COLLAPSED_NOTES ? "auto" : undefined,
+				collapsible,
+				collapsed: collapsible ? !isExpanded : undefined,
+				preview: compactNote ? "none" : notes.length > COLLAPSED_NOTES ? "auto" : undefined,
 			},
 			body,
 		);
 	};
 
 	const shown = notes.slice(0, COLLAPSED_NOTES);
+	const summary = new AdvisorHeader(meta, uiTheme, compactNote);
 	const disclosure = new Disclosure({
-		summary: new AdvisorHeader(meta, uiTheme),
-		collapsedBody: () => new AdvisorNotes(shown, notes.length - shown.length, uiTheme),
+		summary,
+		collapsedBody: () =>
+			compactNote ? new AdvisorNotes([], 0, uiTheme) : new AdvisorNotes(shown, notes.length - shown.length, uiTheme),
 		body: () => new AdvisorNotes(notes, 0, uiTheme),
 		expanded: getExpanded(),
 		paddingX: 1,
@@ -218,7 +255,9 @@ export function createAdvisorMessageCard(
 	// disclosure from the callback on every render.
 	return {
 		render(width: number): readonly string[] {
-			disclosure.setExpanded(expanded());
+			const isExpanded = expanded();
+			summary.setExpanded(isExpanded);
+			disclosure.setExpanded(isExpanded);
 			return disclosure.render(width);
 		},
 		describe(): NativeNode {
@@ -228,6 +267,14 @@ export function createAdvisorMessageCard(
 		setExpanded(value: boolean): void {
 			lastGlobal = value;
 			override = undefined;
+		},
+		getClickToolId(): string {
+			return clickId;
+		},
+		toggleClickExpansion(): boolean {
+			const next = !expanded();
+			override = next;
+			return true;
 		},
 		handleNativeEvent(event: NativeUiEvent): void {
 			const toggled = rootToggleExpanded(event);
