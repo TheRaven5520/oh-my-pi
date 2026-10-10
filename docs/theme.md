@@ -38,15 +38,15 @@ Color values accept:
 
 ## Required and optional color tokens
 
-All tokens below are required in `colors` except `thinkingMax`, which is optional for compatibility and falls back to `thinkingXhigh`.
+All tokens below are required in `colors` except `thinkingMax` and `toolExpandedBg`, which are optional for compatibility. `thinkingMax` falls back to `thinkingXhigh`; `toolExpandedBg` falls back to `userMessageBg`.
 
 ### Core text and borders (11)
 
 `accent`, `border`, `borderAccent`, `borderMuted`, `success`, `error`, `warning`, `muted`, `dim`, `text`, `thinkingText`
 
-### Background blocks (7)
+### Background blocks (8)
 
-`selectedBg`, `userMessageBg`, `customMessageBg`, `toolPendingBg`, `toolSuccessBg`, `toolErrorBg`, `statusLineBg`
+`selectedBg`, `userMessageBg`, `toolExpandedBg`, `customMessageBg`, `toolPendingBg`, `toolSuccessBg`, `toolErrorBg`, `statusLineBg`
 
 ### Message/tool text (5)
 

@@ -10,7 +10,10 @@ export interface ThemeJson {
 	$schema?: string;
 	name: string;
 	vars?: Record<string, ColorValue>;
-	colors: Omit<Record<ThemeColor | ThemeBg, ColorValue>, "thinkingMax"> & { thinkingMax?: ColorValue };
+	colors: Omit<Record<ThemeColor | ThemeBg, ColorValue>, "thinkingMax" | "toolExpandedBg"> & {
+		thinkingMax?: ColorValue;
+		toolExpandedBg?: ColorValue;
+	};
 	export?: {
 		pageBg?: ColorValue;
 		cardBg?: ColorValue;
@@ -177,6 +180,7 @@ export function isValidThemeColor(color: string): color is ThemeColor {
 export type ThemeBg =
 	| "selectedBg"
 	| "userMessageBg"
+	| "toolExpandedBg"
 	| "customMessageBg"
 	| "toolPendingBg"
 	| "toolSuccessBg"
@@ -186,6 +190,7 @@ export type ThemeBg =
 const VALID_THEME_BGS: ReadonlySet<string> = new Set([
 	"selectedBg",
 	"userMessageBg",
+	"toolExpandedBg",
 	"customMessageBg",
 	"toolPendingBg",
 	"toolSuccessBg",

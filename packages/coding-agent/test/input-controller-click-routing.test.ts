@@ -11,15 +11,18 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { cfgTuiMouse } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 const ESC = String.fromCharCode(27);
-// SGR click/motion reports on viewport rows.
+// SGR click, motion, and wheel reports on viewport rows.
 const EXPANDER_CLICK = `${ESC}[<0;5;3M`;
 const VIEWPORT_MOTION = `${ESC}[<35;5;3M`;
+const VIEWPORT_WHEEL_UP = `${ESC}[<64;5;3M`;
+const VIEWPORT_WHEEL_DOWN = `${ESC}[<65;5;3M`;
 
 function makeHarness(options: { top?: number; tool?: (index: number) => string | undefined } = {}) {
 	const listeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const focused: string[] = [];
 	const toolToggles: string[] = [];
 	let toggled = 0;
+	let renders = 0;
 	const ctx = {
 		ui: {
 			addInputListener: (fn: (data: string) => { consume?: boolean; data?: string } | undefined) => {
@@ -27,7 +30,9 @@ function makeHarness(options: { top?: number; tool?: (index: number) => string |
 			},
 			getMutableViewport: () => ({ top: options.top ?? 0, length: 5 }),
 			hasOverlay: () => false,
-			requestRender: () => {},
+			requestRender: () => {
+				renders++;
+			},
 			addStartListener: () => {},
 			getFocused: () => undefined,
 		},
@@ -59,13 +64,17 @@ function makeHarness(options: { top?: number; tool?: (index: number) => string |
 			toggled++;
 		},
 		showStatus: () => {},
-		setClickHoverId: () => {},
 	} as unknown as InteractiveModeContext;
 	const controller = new InputController(ctx);
 	controller.setupKeyHandlers();
 	return {
 		click: () => listeners.map(listener => listener(EXPANDER_CLICK)).find(result => result?.consume),
 		motion: () => listeners.map(listener => listener(VIEWPORT_MOTION)).find(result => result?.consume),
+		wheel: (direction: "up" | "down") =>
+			listeners
+				.map(listener => listener(direction === "up" ? VIEWPORT_WHEEL_UP : VIEWPORT_WHEEL_DOWN))
+				.find(result => result?.consume),
+		renders: () => renders,
 		focused,
 		toggled: () => toggled,
 		toolToggles,
@@ -105,10 +114,17 @@ describe("InputController click routing", () => {
 		expect(h.focused).toEqual([]);
 	});
 
-	it("consumes inline SGR click and motion reports", () => {
+	it("consumes inline SGR clicks, motion, and wheel reports without hover repaints", () => {
 		const h = makeHarness();
-		expect(h.click()).toEqual({ consume: true });
+		const renders = h.renders();
 		expect(h.motion()).toEqual({ consume: true });
+		expect(h.wheel("up")).toEqual({ consume: true });
+		expect(h.wheel("down")).toEqual({ consume: true });
+		expect(h.renders()).toBe(renders);
+		expect(h.toggled()).toBe(0);
+		expect(h.focused).toEqual([]);
+		expect(h.toolToggles).toEqual([]);
+		expect(h.click()).toEqual({ consume: true });
 	});
 
 	it("routes a retired row above the viewport to its tool block", () => {
@@ -117,5 +133,14 @@ describe("InputController click routing", () => {
 		expect(h.click()).toEqual({ consume: true });
 		expect(h.toolToggles).toEqual(["tool-1"]);
 		expect(h.toggled()).toBe(0);
+	});
+
+	it("ignores motion over retired tool rows without repainting or toggling", () => {
+		const h = makeHarness({ top: 4, tool: index => (index === -2 ? "tool-1" : undefined) });
+		const renders = h.renders();
+		expect(h.motion()).toEqual({ consume: true });
+		expect(h.renders()).toBe(renders);
+		expect(h.toolToggles).toEqual([]);
+		expect(h.focused).toEqual([]);
 	});
 });

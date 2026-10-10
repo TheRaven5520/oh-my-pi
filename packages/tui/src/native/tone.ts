@@ -41,6 +41,8 @@ export function backgroundChrome(bg: ThemeBg | undefined): BackgroundChrome {
 			return { tone: "success", role: "omp.tool" };
 		case "toolErrorBg":
 			return { tone: "error", role: "omp.tool" };
+		case "toolExpandedBg":
+			return { tone: "neutral", role: "omp.tool" };
 		case "selectedBg":
 			return { tone: "accent", selected: true };
 		case "statusLineBg":

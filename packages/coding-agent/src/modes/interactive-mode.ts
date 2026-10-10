@@ -1794,10 +1794,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
-	setClickHoverId(id: string | undefined): void {
-		this.composer.setHoveredClickId(id);
-	}
-
 	clearTransientSessionUi(): void {
 		this.#commandController.setUsagePinned(false);
 		this.#hideSessionInfo();
@@ -1962,14 +1958,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventBusUnsubscribers.push(
 			cfgTuiMouse.listen(this.settings, on => {
 				this.#mouseCapture = on;
-				// Dropping capture must also drop the band: with reporting off no
-				// motion event will ever arrive to clear a mid-hover highlight.
-				// The controller cache goes too, or a re-enable plus motion over
-				// the same card would look unchanged and skip restoring the band.
-				if (!on) {
-					this.composer.setHoveredClickId(undefined);
-					this.#inputController?.clearHoverHighlight();
-				}
 				this.ui.requestRender();
 			}),
 		);

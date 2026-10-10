@@ -15,6 +15,7 @@ import {
 } from "../tools/read";
 import { PREVIEW_LIMITS, shortenPath } from "../render/render-utils";
 import { fileHyperlink, renderCodeCell } from "../render";
+import { padToWidth } from "../render/utils";
 import { canonicalizeMessage } from "./thinking-display";
 import { internalUrlSchemeSpec, splitUrlScheme } from "../tools/url-scheme-host";
 import type { ToolExecutionHandle } from "./tool-execution";
@@ -352,6 +353,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#hadExpandableContent = false;
 	#text: Text;
 	#expanded = false;
+	#individuallyExpanded = false;
 	#toolActivityVisible = true;
 	#showContentPreview: boolean;
 	// A read group accretes entries across multiple assistant completions for as
@@ -394,8 +396,14 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 							.replace(/^Error:\s*/, "")
 							.trim() || "Read failed"
 					}`
-				: `${Math.max(1, lines.length - 1)} lines hidden`;
+				: `${Math.max(1, lines.length - 1)} lines`;
 			return [first, theme.fg("dim", `⎿ ${detail}`)].map(line => line.slice(0, width));
+		}
+		if (this.#individuallyExpanded) {
+			return [
+				...lines.map(line => theme.bgFill("toolExpandedBg", padToWidth(line, width))),
+				theme.bgFill("toolExpandedBg", " ".repeat(width)),
+			];
 		}
 		return lines;
 	}
@@ -557,9 +565,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#updateDisplay();
 	}
 
-	setExpanded(expanded: boolean): void {
-		if (this.#expanded !== expanded) this.#blockVersion++;
+	setExpanded(expanded: boolean, individual = false): void {
+		const individuallyExpanded = expanded && individual;
+		if (this.#expanded !== expanded || this.#individuallyExpanded !== individuallyExpanded) this.#blockVersion++;
 		this.#expanded = expanded;
+		this.#individuallyExpanded = individuallyExpanded;
 		this.#previewCollapsed.clear();
 		this.#updateDisplay();
 	}
@@ -570,7 +580,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	toggleClickExpansion(): boolean {
 		if (!this.#hadExpandableContent) return false;
-		this.setExpanded(!this.#expanded);
+		this.setExpanded(!this.#expanded, true);
 		return true;
 	}
 

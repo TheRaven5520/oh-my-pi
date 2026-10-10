@@ -33,7 +33,7 @@
 		},
 		"colors": {
 			"type": "object",
-			"description": "Theme color definitions (all required except thinkingMax)",
+			"description": "Theme color definitions (all required except thinkingMax and toolExpandedBg)",
 			"required": [
 				"accent",
 				"border",
@@ -154,6 +154,10 @@
 				"userMessageBg": {
 					"$ref": "#/$defs/colorValue",
 					"description": "User message background"
+				},
+				"toolExpandedBg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Individually expanded tool background (optional; falls back to userMessageBg when omitted)"
 				},
 				"userMessageText": {
 					"$ref": "#/$defs/colorValue",
@@ -462,10 +466,7 @@
 								}
 							},
 							"additionalProperties": false,
-							"anyOf": [
-								{ "required": ["status"] },
-								{ "required": ["activity"] }
-							]
+							"anyOf": [{ "required": ["status"] }, { "required": ["activity"] }]
 						}
 					]
 				}

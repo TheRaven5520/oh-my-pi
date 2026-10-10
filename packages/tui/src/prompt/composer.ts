@@ -9,7 +9,6 @@ import {
 	type Component,
 	Container,
 	type HistoryBatch,
-	type HistoryRowBand,
 	type ResizeScrollbackMode,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
@@ -25,7 +24,7 @@ import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
 import { WelcomeComponent } from "./welcome";
-import { ensureThemeSync, getEditorTheme, theme } from "../theme/theme";
+import { ensureThemeSync, getEditorTheme } from "../theme/theme";
 
 const DOUBLE_INTERRUPT_MS = 500;
 
@@ -181,13 +180,6 @@ export function routeViewportClick(spans: readonly ViewportClickSpan[], index: n
 export const PINNED_HUD_TOGGLE_ID = "@omp:toggle-pinned-hud";
 
 /**
- * Nested background opens inside a hovered row. The band wraps the line, so a
- * surviving nested open would paint over it for every cell it covers; the
- * matching closes stay and become band resumes via bgFill.
- */
-const NESTED_BG_OPEN_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[(?:4[0-7]|10[0-7]|48;[0-9;]*)m`, "g");
-
-/**
  * Candidate resolver for a row-level click target, if the component is one.
  * Shared by root and nested-child hit-testing so both stay in lockstep.
  */
@@ -221,16 +213,6 @@ function blockToolId(block: object, agents: readonly string[]): string | undefin
 	const target = block as ClickBlock;
 	if (agents.length > 0 || typeof target.toggleClickExpansion !== "function") return undefined;
 	return target.getClickToolId?.();
-}
-
-/**
- * Hover band over one row. A wrapping band loses to background opens nested
- * inside the row (live card rows carry the pending-tint bg, which would paint
- * over the band for every cell it covers), so nested bg opens go first; their
- * closes stay and become band resumes via bgFill.
- */
-function bandRow(line: string): string {
-	return theme.bgFill("selectedBg", line.replace(NESTED_BG_OPEN_PATTERN, ""));
 }
 
 /** Header rows (no owner) followed by a transcript batch's row owners, parallel to the combined rows. */
@@ -300,10 +282,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#lastClickSpans: ViewportClickSpan[] = [];
 	/** Tool-block ids and whether their top rows were retired from the mutable viewport. */
 	#toolClickTargets = new Map<string, { target: { toggleClickExpansion(): boolean }; retired: boolean }>();
-	/** Click-candidate id under the pointer, painted with the hover band. Id-anchored so it follows streaming rows. */
-	#hoveredClickId: string | undefined;
-	/** The hover band for retired rows still on screen; set with {@link #hoveredClickId}. */
-	#historyBand: HistoryRowBand | undefined;
 	// Hard-row prefix currently above the native viewport. The first resize
 	// frame may pull part of it down before the normal buffer is borrowed.
 	#retiredHeaderStart = 0;
@@ -545,7 +523,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			const visibleHeaderRows = Math.max(0, rows - (mutable.length + drop));
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
-		return { history, viewport: this.#paintHoverBand(mutable, spans), historyBand: this.#historyBand };
+		return { history, viewport: mutable };
 	}
 
 	/**
@@ -553,8 +531,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 * document: the header (welcome, extras) and every transcript block as its
 	 * own component child. `dock` is the live chrome below the transcript in
 	 * render order: pending messages, HUDs, the working row, the editor and the
-	 * status line. There is no history/viewport split: retirement, resize
-	 * replay and hover bands are ANSI concerns.
+	 * status line. There is no history/viewport split: retirement and resize
+	 * replay are ANSI concerns.
 	 */
 	describeSurface(): NativeSurface {
 		if (!this.#started || this.#stopped) return this.#nativeSurface;
@@ -652,29 +630,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	}
 
 	/**
-	 * Band the hovered click target's current rows. Id-anchored (not
-	 * line-anchored) so the band follows an agent whose rows shift while it
-	 * streams; a retired id matches no span and simply paints nothing. Only
-	 * the viewport copy is banded — retirement reads unbanded component rows.
-	 */
-	#paintHoverBand(viewport: string[], spans: readonly ViewportClickSpan[]): string[] {
-		const hovered = this.#hoveredClickId;
-		if (hovered === undefined) return viewport;
-		let banded = false;
-		const painted = viewport.map((line, index) => {
-			for (const span of spans) {
-				if (index < span.start || index >= span.end) continue;
-				const candidates = span.candidates(index - span.start);
-				if (!candidates.includes(hovered) && span.toolTarget !== hovered) continue;
-				banded = true;
-				return bandRow(line);
-			}
-			return line;
-		});
-		return banded ? painted : viewport;
-	}
-
-	/**
 	 * Candidate subagent ids under a mutable-viewport line, for click-to-focus.
 	 * Empty when the line has no click target (chrome, separators) or shows
 	 * retired history (rows above the viewport, and composer rows a replay
@@ -725,20 +680,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		if (entry.retired) this.ui.resetDisplay();
 		else this.ui.requestRender(true);
 		return true;
-	}
-
-	/**
-	 * Point the hover band at a click-candidate id (or clear it). Takes effect
-	 * on the next frame; callers repaint only when the target actually changes.
-	 * A tool id also bands that block's retired rows still on screen.
-	 */
-	setHoveredClickId(id: string | undefined): void {
-		if (id === this.#hoveredClickId) return;
-		this.#hoveredClickId = id;
-		this.#historyBand =
-			id === undefined
-				? undefined
-				: { matches: owner => blockToolId(owner, blockAgentIds(owner)) === id, paint: bandRow };
 	}
 
 	/** Acknowledges one accepted header, replay, or transcript batch. */

@@ -168,7 +168,7 @@ export interface HistoryBatch {
 	/**
 	 * Optional owner tag per row, parallel to `rows`. The terminal keeps the
 	 * tags of accepted rows still visible above the mutable viewport so the
-	 * provider can hit-test and band them (see {@link TUI.getScreenHistoryOwner}).
+	 * provider can hit-test them (see {@link TUI.getScreenHistoryOwner}).
 	 */
 	readonly owners?: readonly (object | undefined)[];
 	/**
@@ -180,23 +180,10 @@ export interface HistoryBatch {
 	readonly kind?: "append" | "replay";
 }
 
-/** Hover band for accepted history rows still visible above the mutable viewport. */
-export interface HistoryRowBand {
-	/** Whether rows tagged with `owner` belong to the hovered target. */
-	matches(owner: object): boolean;
-	/** Banded copy of one accepted history row. */
-	paint(line: string): string;
-}
-
 /** One history append or complete replay plus the mutable viewport for a terminal frame. */
 export interface TerminalFramePlan {
 	readonly history?: HistoryBatch;
 	readonly viewport: readonly string[];
-	/**
-	 * Band for on-screen history rows. They are rewritten in place and restored
-	 * to their accepted bytes before they can scroll into native scrollback.
-	 */
-	readonly historyBand?: HistoryRowBand;
 }
 
 /** Produces bounded terminal frames and retires acknowledged history batches. */
@@ -652,13 +639,6 @@ interface PreparedLines {
 	rows: PreparedLine[];
 }
 
-/** One accepted history row as written, with its provider owner tag and band state. */
-interface ScreenHistoryRow {
-	line: PreparedLine;
-	owner: object | undefined;
-	banded: boolean;
-}
-
 // Accepted rows kept for on-screen hit-testing: at least this many, and at
 // least twice the terminal height so a height grow that pulls rows back out of
 // scrollback still finds their owners.
@@ -817,13 +797,11 @@ export class TUI extends Container {
 	// rows the paint prepended for a short viewport. Negative while prepended
 	// blanks outweigh replaced rows; zero on ordinary frames.
 	#providerViewportPadTop = 0;
-	// Newest accepted history rows, oldest first, as written; the last one sits
+	// Newest accepted history row owners, oldest first; the last one sits
 	// directly above the mutable viewport, so screen row `top - depth` shows
 	// `#screenHistory[length - depth]`. Emptied when the grid can have rewrapped
 	// them (width change) and rebuilt by every destructive replay.
-	#screenHistory: ScreenHistoryRow[] = [];
-	// Rows of `#screenHistory` currently repainted with the provider's band.
-	#bandedHistoryRows = 0;
+	#screenHistory: (object | undefined)[] = [];
 	// Viewport-relative row of the hardware cursor after the last normal paint
 	// (0 = parked at the viewport top). A resize reflows the normal buffer
 	// before the app hears about it; terminals keep the cursor attached to its
@@ -1354,8 +1332,8 @@ export class TUI extends Container {
 
 	/**
 	 * Owner tag (see {@link HistoryBatch.owners}) of the accepted history row
-	 * shown at physical `screenRow` above the mutable viewport, so a click or
-	 * hover on a retired-but-visible row reaches the component that wrote it.
+	 * shown at physical `screenRow` above the mutable viewport, so a click on
+	 * a retired-but-visible row reaches the component that wrote it.
 	 * Undefined below the history boundary, for untagged rows, for rows that
 	 * predate this TUI or were rewrapped by a width change, and whenever
 	 * {@link getMutableViewport} is empty.
@@ -1365,7 +1343,7 @@ export class TUI extends Container {
 		const depth = this.#providerViewportTop - screenRow;
 		const history = this.#screenHistory;
 		if (depth < 1 || depth > history.length) return undefined;
-		return history[history.length - depth]!.owner;
+		return history[history.length - depth];
 	}
 
 	/** Whether the last normal-buffer paint still maps screen rows to provider rows. */
@@ -2537,21 +2515,6 @@ export class TUI extends Container {
 		this.#clearScrollbackOnNextRender = false;
 		// The surface already holds the transcript; there's no row history to retire.
 		if (!nativeWasLive) this.#flushHistoryBeforeStop();
-		// The shell inherits the screen: banded history rows go back to their
-		// accepted bytes. Unchanged geometry only — a pending resize has already
-		// moved them where these positions no longer point.
-		if (
-			this.#bandedHistoryRows > 0 &&
-			this.terminal.columns === this.#previousWidth &&
-			this.terminal.rows === this.#previousHeight
-		) {
-			const restore = this.#restoreBandedHistory(
-				this.#previousWidth,
-				this.#previousHeight,
-				this.#providerViewportTop,
-			);
-			this.terminal.write(`${this.#paintBeginSequence}\x1b7${restore}\x1b8${this.#paintEndSequence}`);
-		}
 		// Deliberately leave transmitted images in the terminal's graphics store:
 		// placeholder cells committed to native scrollback render only while their
 		// image data lives, so a delete-by-id here blanks every transcript image
@@ -3236,7 +3199,7 @@ export class TUI extends Container {
 			viewport = this.#compositeVisibleOverlays(viewport, width, height);
 		} while (this.#imageBudget.endPass());
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
-		this.#emitPlanFrame(width, height, viewport, plan.history, provider, plan.historyBand);
+		this.#emitPlanFrame(width, height, viewport, plan.history, provider);
 	}
 	/**
 	 * Re-offer finalized history once after a settled resize.
@@ -3367,7 +3330,6 @@ export class TUI extends Container {
 		viewportRows: string[],
 		offered: HistoryBatch | undefined,
 		provider: TerminalFrameProvider | undefined,
-		band?: HistoryRowBand,
 	): void {
 		// Callers composite their overlays inside the budget pass, so `viewportRows`
 		// is already the complete frame. Bound the store here rather than at
@@ -3439,21 +3401,10 @@ export class TUI extends Container {
 			this.#providerWindow = [];
 			this.#providerPreparedRows = [];
 		}
-		// Banded history rows the terminal rewrapped at the new width still carry
-		// the hover band; put their accepted bytes back before forgetting them.
-		let rewrappedBandRestore = "";
 		if (destructiveReset || (this.#hasEverRendered && this.#previousWidth !== width)) {
-			if (!destructiveReset && this.#bandedHistoryRows > 0) {
-				rewrappedBandRestore = this.#restoreRewrappedBandedHistory(
-					width,
-					height,
-					Math.min(this.#providerViewportTop, Math.max(0, height - 1)),
-				);
-			}
 			// Erased, or rewrapped by the terminal at the new width: either way the
 			// rows above the viewport no longer line up with what was written.
 			this.#screenHistory = [];
-			this.#bandedHistoryRows = 0;
 		}
 		// The viewport stays anchored directly below whatever history remains on
 		// screen. Appending K history rows moves the anchor down by K; the write
@@ -3463,7 +3414,7 @@ export class TUI extends Container {
 		const startTop = destructiveReset ? 0 : Math.min(this.#providerViewportTop, Math.max(0, height - 1));
 		const newTop = Math.max(0, Math.min(startTop + historyRows.length, height - rows));
 		const pendingAltExit = this.#pendingAltExit;
-		let buffer = this.#paintBeginSequence + pendingAltExit + rewrappedBandRestore;
+		let buffer = this.#paintBeginSequence + pendingAltExit;
 		const renewSync =
 			destructiveReset &&
 			this.#resizeScrollbackMode === "rebuild" &&
@@ -3547,9 +3498,6 @@ export class TUI extends Container {
 				buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 			}
 		} else {
-			// Banded history rows may scroll into native scrollback below; put
-			// their accepted bytes back first, then re-band at the new positions.
-			buffer += this.#restoreBandedHistory(width, height, this.#providerViewportTop);
 			// This write scrolls when history + viewport overflow the screen; the
 			// terminal pushes the physical top rows into scrollback. Rows above the
 			// old viewport are committed history (correct to push), but old live
@@ -3595,9 +3543,8 @@ export class TUI extends Container {
 		}
 		const mutableTop = newTop + replayViewportRows;
 		if (history !== undefined) {
-			this.#recordScreenHistory(history, preparedHistory.rows, prepared.rows, replayViewportRows, height);
+			this.#recordScreenHistory(history, height);
 		}
-		buffer += this.#paintHistoryBand(band, width, height, mutableTop);
 		const mutablePreparedLines = replayViewportRows > 0 ? prepared.lines.slice(replayViewportRows) : prepared.lines;
 		const mutablePreparedRows = replayViewportRows > 0 ? prepared.rows.slice(replayViewportRows) : prepared.rows;
 		const marker = markers[0];
@@ -3679,118 +3626,15 @@ export class TUI extends Container {
 		}
 	}
 
-	/**
-	 * Append an accepted batch's rows, as written, to the on-screen history
-	 * tail. A replay's bottom rows were written into the viewport area
-	 * (`moved`), still above the mutable top, so they follow the rest in order.
-	 */
-	#recordScreenHistory(
-		history: HistoryBatch,
-		written: readonly PreparedLine[],
-		viewport: readonly PreparedLine[],
-		moved: number,
-		height: number,
-	): void {
+	/** Record every accepted row's owner, including replay rows moved into the viewport. */
+	#recordScreenHistory(history: HistoryBatch, height: number): void {
 		const owners = history.owners;
 		const tail = this.#screenHistory;
-		for (let index = 0; index < written.length + moved; index++) {
-			const line = index < written.length ? written[index]! : viewport[index - written.length]!;
-			tail.push({ line, owner: owners?.[index], banded: false });
+		for (let index = 0; index < history.rows.length; index++) {
+			tail.push(owners?.[index]);
 		}
 		const keep = Math.max(SCREEN_HISTORY_MIN_ROWS, height * 2);
-		if (tail.length <= keep * 2) return;
-		for (const row of tail.splice(0, tail.length - keep)) {
-			if (row.banded) this.#bandedHistoryRows--;
-		}
-	}
-
-	/** Rewrite every banded history row below screen row `top` back to its accepted bytes. */
-	#restoreBandedHistory(width: number, height: number, top: number): string {
-		let buffer = "";
-		const tail = this.#screenHistory;
-		for (let depth = 1; depth <= tail.length && this.#bandedHistoryRows > 0; depth++) {
-			const row = tail[tail.length - depth]!;
-			if (!row.banded) continue;
-			row.banded = false;
-			this.#bandedHistoryRows--;
-			buffer += this.#historyRowRewrite(row.line, width, height, top - depth);
-		}
-		return buffer;
-	}
-
-	/**
-	 * {@link #restoreBandedHistory} after the terminal rewrapped the screen at
-	 * `width`, with `top` the resolved viewport top in the new geometry. History
-	 * rows are hard lines, so each now spans ceil(cells/width) physical rows
-	 * (the {@link #reflowedRowCount} model) stacked directly above `top`; a
-	 * banded row is rewritten segment by segment over exactly those rows. Rows
-	 * already pushed above the screen are out of reach.
-	 */
-	#restoreRewrappedBandedHistory(width: number, height: number, top: number): string {
-		let buffer = "";
-		const tail = this.#screenHistory;
-		const columns = Math.max(1, width);
-		let screenRow = top;
-		for (let depth = 1; depth <= tail.length && this.#bandedHistoryRows > 0 && screenRow > 0; depth++) {
-			const row = tail[tail.length - depth]!;
-			const span = Math.max(1, Math.ceil(visibleWidth(row.line.raw) / columns));
-			screenRow -= span;
-			if (!row.banded) continue;
-			row.banded = false;
-			this.#bandedHistoryRows--;
-			if (span === 1) {
-				buffer += this.#historyRowRewrite(row.line, width, height, screenRow);
-				continue;
-			}
-			const epoch = getWidthConfigEpoch();
-			for (let segment = 0; segment < span; segment++) {
-				const part = sliceByColumn(row.line.raw, segment * columns, columns, true);
-				const prepared = this.#prepareLine(part, width, epoch, TERMINAL.imageProtocol);
-				buffer += this.#historyRowRewrite(prepared, width, height, screenRow + segment);
-			}
-		}
-		return buffer;
-	}
-
-	/**
-	 * Band the on-screen history rows `band` matches and restore the ones it no
-	 * longer matches, in place. Every paint that could scroll a banded row into
-	 * native scrollback restores it first, so scrollback only ever holds
-	 * accepted bytes. Image rows, blank rows and scaled OSC 66 rows (whose
-	 * spacer cells must never be overdrawn) are never banded.
-	 */
-	#paintHistoryBand(band: HistoryRowBand | undefined, width: number, height: number, top: number): string {
-		if (band === undefined) return this.#restoreBandedHistory(width, height, top);
-		let buffer = "";
-		const tail = this.#screenHistory;
-		const visible = Math.min(top, tail.length);
-		let lastOwner: object | undefined;
-		let lastMatch = false;
-		for (let depth = 1; depth <= visible; depth++) {
-			const row = tail[tail.length - depth]!;
-			const { owner, line } = row;
-			let wanted = false;
-			if (owner !== undefined && !line.isImage && line.raw !== "" && !isOsc66Line(line.raw)) {
-				if (owner !== lastOwner) {
-					lastOwner = owner;
-					lastMatch = band.matches(owner);
-				}
-				wanted = lastMatch;
-			}
-			if (wanted === row.banded) continue;
-			row.banded = wanted;
-			this.#bandedHistoryRows += wanted ? 1 : -1;
-			const painted = wanted
-				? this.#prepareLine(band.paint(line.raw), width, getWidthConfigEpoch(), TERMINAL.imageProtocol)
-				: line;
-			buffer += this.#historyRowRewrite(painted, width, height, top - depth);
-		}
-		return buffer;
-	}
-
-	#historyRowRewrite(line: PreparedLine, width: number, height: number, screenRow: number): string {
-		if (screenRow < 0 || screenRow >= height) return "";
-		return `\x1b[${screenRow + 1};1H${this.#lineRewriteSequence(line, width, screenRow)}`;
+		if (tail.length > keep * 2) tail.splice(0, tail.length - keep);
 	}
 
 	/** Render one frame: alt-screen modal, provider plan, or children fallback. */

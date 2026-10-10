@@ -8,6 +8,7 @@ import { Text } from "../components/text";
 import { getImageDimensions, ImageProtocol, imageFallback, TERMINAL } from "../terminal-capabilities";
 import { type Component, Container, type TUI } from "../tui";
 import { truncateToWidth } from "../utils";
+import { padToWidth } from "../render/utils";
 import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../theme/theme";
 import { ensureThemeSync, getThemeEpoch, theme } from "../theme/theme";
@@ -315,6 +316,7 @@ export class ToolExecutionComponent extends Container {
 	#toolLabel: string;
 	#args: unknown;
 	#expanded = false;
+	#individuallyExpanded = false;
 	#hadExpandableContent = false;
 	#allocation = Number.POSITIVE_INFINITY;
 	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
@@ -812,7 +814,7 @@ export class ToolExecutionComponent extends Container {
 
 	toggleClickExpansion(): boolean {
 		if (!this.#hadExpandableContent) return false;
-		this.setExpanded(!this.#expanded);
+		this.setExpanded(!this.#expanded, true);
 		return true;
 	}
 
@@ -881,9 +883,11 @@ export class ToolExecutionComponent extends Container {
 		this.#previewReady?.resolve();
 	}
 
-	setExpanded(expanded: boolean): void {
-		if (this.#expanded !== expanded) this.#blockVersion++;
+	setExpanded(expanded: boolean, individual = false): void {
+		const individuallyExpanded = expanded && individual;
+		if (this.#expanded !== expanded || this.#individuallyExpanded !== individuallyExpanded) this.#blockVersion++;
 		this.#expanded = expanded;
+		this.#individuallyExpanded = individuallyExpanded;
 		this.#updateDisplay();
 	}
 
@@ -1307,6 +1311,12 @@ export class ToolExecutionComponent extends Container {
 			if (trimmed.length > this.#allocation) return this.#renderCompact(width);
 			lines = trimmed;
 		}
+		if (this.#individuallyExpanded) {
+			return [
+				...lines.map(line => theme.bgFill("toolExpandedBg", padToWidth(line, width))),
+				theme.bgFill("toolExpandedBg", " ".repeat(width)),
+			];
+		}
 		return lines;
 	}
 
@@ -1352,7 +1362,7 @@ export class ToolExecutionComponent extends Container {
 			error ||
 			outputTail ||
 			// A one-line output is shown whole rather than counted.
-			(output.count === 1 ? output.first : output.count > 1 ? `${output.count} lines hidden` : undefined) ||
+			(output.count === 1 ? output.first : output.count > 1 ? `${output.count} lines` : undefined) ||
 			(this.#isExpandableState() ? "arguments hidden" : undefined);
 		const detail = hidden ? hidden.replace(/\s+/g, " ") : "";
 		this.#compactKey = key;
@@ -1467,17 +1477,10 @@ export class ToolExecutionComponent extends Container {
 			return;
 		}
 
-		// Non-self-framing tools (custom/extension renderers and the generic
-		// fallback) get a padded, state-tinted block — built-ins that draw their
-		// own frame opt out below via the framed-component mark. A benign skip
-		// (steering/peer interrupt aborted a still-pending call) never ran, so it
-		// gets the neutral pending tint rather than the error tint (#7199).
+		// Card backgrounds belong to the final, full-width individual expansion.
 		const benignSkip = this.#isBenignSkip();
-		const stateBgKey =
-			this.#isPartial || benignSkip ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : "toolSuccessBg";
-		// bgFill, not bg: rows carry nested full resets (e.g. truncateToWidth's
-		// `\x1b[0m` before its ellipsis) that would otherwise punch holes in the tint.
-		const stateBgFn = (t: string) => theme.bgFill(stateBgKey, t);
+		const stateBgKey = "none";
+		const stateBgFn = undefined;
 
 		// A benign skip is a synthetic placeholder for a call that never executed,
 		// so bypass any bespoke error frame and draw the neutral generic card —
@@ -1885,7 +1888,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/** Re-tint (only when the tint changed) and reformat the generic #contentText card. */
-	#refreshContentText(stateBgKey: string, stateBgFn: (text: string) => string): void {
+	#refreshContentText(stateBgKey: string, stateBgFn: ((text: string) => string) | undefined): void {
 		const bgKey = `${stateBgKey}|${getThemeEpoch()}`;
 		if (bgKey !== this.#contentTextBgKey) {
 			this.#contentTextBgKey = bgKey;
@@ -1935,7 +1938,7 @@ export class ToolExecutionComponent extends Container {
 	 * only need the neutral tint. Bespoke-renderer tools get their content box
 	 * swapped for the same neutral card.
 	 */
-	#renderBenignSkipCard(stateBgFn: (text: string) => string): void {
+	#renderBenignSkipCard(stateBgFn: ((text: string) => string) | undefined): void {
 		if (!this.#usesContentBox) {
 			this.#refreshContentText("toolPendingBg", stateBgFn);
 			return;

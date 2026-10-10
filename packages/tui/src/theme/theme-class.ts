@@ -210,6 +210,8 @@ export class Theme {
 			this.#bgColors[key] = bgAnsi(value, mode);
 			this.#hexBgColors[key] = resolveToHex(value, slIsLight);
 		}
+		this.#bgColors.toolExpandedBg ??= this.#bgColors.userMessageBg;
+		this.#hexBgColors.toolExpandedBg ??= this.#hexBgColors.userMessageBg;
 		// Build symbol map from preset + overrides
 		const baseSymbols = SYMBOL_PRESETS[symbolPreset];
 		this.#symbols = { ...baseSymbols };

@@ -31,6 +31,7 @@ const THEME_BG_NAMES: readonly ThemeBg[] = [
 	"toolPendingBg",
 	"customMessageBg",
 	"selectedBg",
+	"toolExpandedBg",
 	"statusLineBg",
 ];
 

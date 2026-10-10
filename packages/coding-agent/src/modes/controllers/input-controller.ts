@@ -290,9 +290,6 @@ export class InputController {
 	#backgroundToolListenerInstalled = false;
 	#pendingStreamingSubmissions = new Set<Promise<void>>();
 
-	/** Click-candidate id the hover band currently tracks; repaint only on change. */
-	#lastHoverClickId: string | undefined;
-
 	/** Return the last full editor snapshot delivered by its change contract. */
 	getDraftText(): string {
 		return this.#draftText ?? this.ctx.editor.getText();
@@ -815,8 +812,7 @@ export class InputController {
 
 	/**
 	 * Inline click-to-focus (`tui.mouse`): left-clicks on live subagent cards
-	 * and HUD rows focus that agent in one action, and pointer motion lights up
-	 * the hover band on the target under the cursor. Every SGR report is consumed
+	 * and HUD rows focus that agent in one action. Every SGR report is consumed
 	 * while inline tracking owns the terminal so button/wheel bytes never reach
 	 * the editor as typed input; clicks on chrome simply swallow.
 	 */
@@ -838,28 +834,14 @@ export class InputController {
 				break;
 			}
 			consumed = true;
-			if (event.motion) this.#updateHoverHighlight(event.row);
-			else if (event.leftClick) this.#clickViewportTarget(event.row);
+			if (event.leftClick) this.#clickViewportTarget(event.row);
 		}
 		return consumed || this.#inlineMouseBuffer.length > 0 ? { consume: true } : undefined;
 	}
 
-	/**
-	 * Track the hovered click target, repainting only when it changes. The band
-	 * is id-anchored in the composer, so it follows an agent whose rows shift
-	 * while streaming; pointing at chrome clears it.
-	 */
-	#updateHoverHighlight(screenRow: number): void {
-		const hovered = this.#viewportCandidates(screenRow)[0] ?? this.#viewportTool(screenRow);
-		if (hovered === this.#lastHoverClickId) return;
-		this.#lastHoverClickId = hovered;
-		this.ctx.setClickHoverId(hovered);
-		this.ctx.ui.requestRender();
-	}
-
 	// Candidates under a screen row, or none when the published viewport is
 	// empty (resize transactions) or the row falls outside it: routing stale
-	// spans would highlight or focus an unrelated agent from old rows.
+	// spans would focus an unrelated agent from old rows.
 	#viewportCandidates(screenRow: number): string[] {
 		const viewport = this.ctx.ui.getMutableViewport();
 		const local = screenRow - viewport.top;
@@ -884,16 +866,6 @@ export class InputController {
 		}
 		const tool = this.#viewportTool(screenRow);
 		if (tool !== undefined) this.ctx.toggleViewportTool(tool);
-	}
-
-	/**
-	 * Forget the last hovered target without repainting. Disabling mouse
-	 * capture clears the composer's band, but with reporting off no motion
-	 * event will ever refresh this cache — so a re-enable plus motion over
-	 * the same card would look unchanged and skip restoring the band.
-	 */
-	clearHoverHighlight(): void {
-		this.#lastHoverClickId = undefined;
 	}
 
 	#focusClickedAgent(screenRow: number): void {

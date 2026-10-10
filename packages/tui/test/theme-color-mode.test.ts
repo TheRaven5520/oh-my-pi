@@ -1,8 +1,24 @@
 import * as path from "node:path";
 import { describe, expect, it } from "bun:test";
 import { colorToAnsi, detectColorMode } from "@oh-my-pi/pi-tui/theme/color";
+import { createTheme, getBuiltinThemes } from "@oh-my-pi/pi-tui/theme/loader";
+import { validateThemeJson } from "@oh-my-pi/pi-tui/theme/schema-validation";
 
 describe("theme color mode", () => {
+	it("supports an optional expanded-tool background with a user-message fallback", () => {
+		const json = structuredClone(getBuiltinThemes().dark!);
+		delete json.colors.toolExpandedBg;
+		const fallback = createTheme(validateThemeJson(json), { mode: "truecolor" });
+		expect(fallback.getBgAnsi("toolExpandedBg")).toBe(fallback.getBgAnsi("userMessageBg"));
+		expect(fallback.getBgHex("toolExpandedBg")).toBe(fallback.getBgHex("userMessageBg"));
+		json.colors.toolExpandedBg = "#464646";
+		const custom = createTheme(validateThemeJson(json), { mode: "truecolor" });
+		expect(custom.getBgAnsi("toolExpandedBg")).toBe("\x1b[48;2;70;70;70m");
+		expect(custom.bgFill("toolExpandedBg", "a\x1b[0mb")).toBe(
+			"\x1b[48;2;70;70;70ma\x1b[0m\x1b[48;2;70;70;70mb\x1b[49m",
+		);
+	});
+
 	it("emits 256-color SGR for macOS Terminal.app", () => {
 		const mode = detectColorMode({ TERM_PROGRAM: "Apple_Terminal", TERM: "xterm-256color" });
 

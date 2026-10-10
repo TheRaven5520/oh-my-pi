@@ -2,8 +2,13 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { ToolExecutionComponent, type ToolExecutionUi } from "@oh-my-pi/pi-tui/chat/tool-execution";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { initTheme, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
+import { createTheme, getBuiltinThemes } from "@oh-my-pi/pi-tui/theme/loader";
+import type { Component, TUI } from "@oh-my-pi/pi-tui";
+import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
+import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
+import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 
 const ui: ToolExecutionUi = {
 	requestRender() {},
@@ -30,8 +35,50 @@ class CountingBody implements Component {
 }
 
 describe("collapsed tool cards", () => {
-	beforeAll(() => {
-		initTheme();
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("paints individual expansions full-width, not collapsed or globally expanded cards", () => {
+		const previousTheme = theme;
+		const json = structuredClone(getBuiltinThemes().dark!);
+		json.colors.toolExpandedBg = "#123456";
+		setThemeInstance(createTheme(json, { mode: "truecolor" }));
+		try {
+			const output = "first\nsecond\nthird\nfourth";
+			const tool = new ToolExecutionComponent("unknown", {}, {}, undefined, ui, "/tmp");
+			tool.updateResult(textResult(output), false);
+			tool.seal();
+			const bash = new BashExecutionComponent("printf lines", ui as TUI);
+			bash.setComplete(0, false, { output });
+			const cell = new EvalExecutionComponent("print('lines')", ui as TUI);
+			cell.setComplete(0, false, { output });
+			const read = new ReadToolGroupComponent({ showContentPreview: true });
+			read.updateArgs({ path: "a.txt" }, "read");
+			read.updateResult(
+				{ ...textResult(output), details: { displayContent: { text: output, startLine: 1 } } },
+				false,
+				"read",
+			);
+			const width = 60;
+			const blank = theme.bgFill("toolExpandedBg", " ".repeat(width));
+			const background = theme.getBgAnsi("toolExpandedBg");
+			expect(background).toBe("\x1b[48;2;18;52;86m");
+			for (const card of [tool, bash, cell, read]) {
+				const collapsed = card.render(width);
+				expect(collapsed.every(line => !line.includes(background))).toBe(true);
+				expect(card.toggleClickExpansion()).toBe(true);
+				const expanded = card.render(width);
+				expect(expanded.at(-1)).toBe(blank);
+				expect(expanded.every(line => line.startsWith(background) && visibleWidth(line) === width)).toBe(true);
+				card.setExpanded(true);
+				expect(card.render(width).every(line => !line.includes(background))).toBe(true);
+				card.setExpanded(false);
+				expect(card.render(width)).toEqual(collapsed);
+			}
+		} finally {
+			setThemeInstance(previousTheme);
+		}
 	});
 
 	it("counts every hidden output line, not the collapsed preview", () => {
@@ -51,7 +98,7 @@ describe("collapsed tool cards", () => {
 			const rows = plain(card.render(120));
 			expect(rows).toHaveLength(2);
 			expect(rows[0]).toContain(command);
-			expect(rows[1]).toBe(`⎿ ${lines} lines hidden`);
+			expect(rows[1]).toBe(`⎿ ${lines} lines`);
 		}
 	});
 
@@ -70,10 +117,10 @@ describe("collapsed tool cards", () => {
 		const text = "a\nb\n\nWall time: 0.02 seconds";
 		card.updateResult({ content: [{ type: "text", text }], details: {} }, false);
 		card.seal();
-		expect(plain(card.render(120))[1]).toBe("⎿ 3 lines hidden");
+		expect(plain(card.render(120))[1]).toBe("⎿ 3 lines");
 		// Same output string, new details: the notice is now known and hidden.
 		card.updateResult({ content: [{ type: "text", text }], details: { wallTimeMs: 20 } }, false);
-		expect(plain(card.render(120))[1]).toBe("⎿ 2 lines hidden");
+		expect(plain(card.render(120))[1]).toBe("⎿ 2 lines");
 	});
 
 	it("keeps only the header in a one-row allocation", () => {
@@ -99,7 +146,7 @@ describe("collapsed tool cards", () => {
 		card.seal();
 
 		const first = card.render(80);
-		expect(plain(first)[1]).toBe("⎿ 12 lines hidden");
+		expect(plain(first)[1]).toBe("⎿ 12 lines");
 		const second = card.render(80);
 		expect(body.renders).toBe(0);
 		expect(second).toBe(first);
@@ -118,7 +165,7 @@ describe("collapsed tool cards", () => {
 
 		// A new result invalidates the memo.
 		card.updateResult(textResult("only\nthree\nlines"), false);
-		expect(plain(card.render(80))[1]).toBe("⎿ 3 lines hidden");
+		expect(plain(card.render(80))[1]).toBe("⎿ 3 lines");
 		expect(body.renders).toBe(1);
 	});
 
@@ -130,7 +177,7 @@ describe("collapsed tool cards", () => {
 		expect(plain(card.render(80))[1]).toBe("⎿ third");
 		card.updateResult(textResult("first\nsecond\nthird"), false);
 		card.seal();
-		expect(plain(card.render(80))[1]).toBe("⎿ 3 lines hidden");
+		expect(plain(card.render(80))[1]).toBe("⎿ 3 lines");
 	});
 
 	it("ticks elapsed seconds on a running collapsed header and drops them once settled", () => {

@@ -16,6 +16,7 @@ const themeColorsSchema = type({
 	thinkingText: "string | number",
 	selectedBg: "string | number",
 	userMessageBg: "string | number",
+	"toolExpandedBg?": "string | number",
 	userMessageText: "string | number",
 	customMessageBg: "string | number",
 	customMessageText: "string | number",

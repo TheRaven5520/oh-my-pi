@@ -45,78 +45,6 @@ describe("routeViewportClick", () => {
 	});
 });
 
-class ClickableBlock implements Component {
-	constructor(
-		private readonly rows: readonly string[],
-		private readonly ids: readonly string[],
-	) {}
-	isTranscriptBlockFinalized(): boolean {
-		return false;
-	}
-	render(): readonly string[] {
-		return this.rows;
-	}
-	getClickFocusAgentIds(): string[] {
-		return [...this.ids];
-	}
-}
-
-describe("composer hover band", () => {
-	beforeAll(() => {
-		initTheme();
-	});
-
-	it("bands only the hovered target's rows and clears byte-identically", () => {
-		const term = new VirtualTerminal(80, 24);
-		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
-		composer.start();
-		try {
-			const transcript = new TranscriptContainer();
-			transcript.addChild(new ClickableBlock(["card one", "card two"], ["AgentA"]));
-			transcript.addChild(new ClickableBlock(["plain"], []));
-			composer.setRuntimeChildren([transcript]);
-			const plain = composer.renderFrame({ columns: 80, rows: 24 });
-			expect(plain.viewport.join("\n")).not.toContain("\x1b[48");
-
-			composer.setHoveredClickId("AgentA");
-			const hovered = composer.renderFrame({ columns: 80, rows: 24 });
-			const banded = hovered.viewport.filter(line => line.includes("\x1b[48"));
-			expect(banded).toHaveLength(2);
-			expect(Bun.stripANSI(banded.join("\n"))).toContain("card one");
-			expect(Bun.stripANSI(banded.join("\n"))).toContain("card two");
-			expect(hovered.viewport.filter(line => line.includes("plain") && line.includes("\x1b[48"))).toHaveLength(0);
-
-			composer.setHoveredClickId("Nobody");
-			expect(composer.renderFrame({ columns: 80, rows: 24 }).viewport).toEqual(plain.viewport);
-
-			composer.setHoveredClickId(undefined);
-			expect(composer.renderFrame({ columns: 80, rows: 24 }).viewport).toEqual(plain.viewport);
-		} finally {
-			composer.stop();
-		}
-	});
-
-	it("drops nested background opens so the band wins tinted rows", () => {
-		const term = new VirtualTerminal(80, 24);
-		const composer = new Composer({ terminal: term, preferences: { ...COMPOSER_DEFAULTS, quiet: true } });
-		composer.start();
-		try {
-			const esc = String.fromCharCode(27);
-			const tinted = `${esc}[48;2;15;18;22mcard tinted${esc}[49m`;
-			const transcript = new TranscriptContainer();
-			transcript.addChild(new ClickableBlock([tinted], ["AgentT"]));
-			composer.setRuntimeChildren([transcript]);
-			composer.setHoveredClickId("AgentT");
-			const hovered = composer.renderFrame({ columns: 80, rows: 24 });
-			const banded = hovered.viewport.filter(line => line.includes("card tinted"));
-			expect(banded).toHaveLength(1);
-			expect(banded[0]).toContain(`${esc}[48`);
-			expect(banded[0]).not.toContain("48;2;15;18;22");
-		} finally {
-			composer.stop();
-		}
-	});
-});
 class RowTarget implements Component {
 	constructor(
 		private readonly rows: readonly string[],
@@ -284,8 +212,7 @@ describe("composer tool clicks on clipped and retired rows", () => {
 				.getViewport()
 				.map((line, row) => (line.includes(text) ? row : -1))
 				.filter(row => row >= 0);
-		const banded = (row: number) => terminal.getViewportRowBackgroundColumns(row).length > 0;
-		return { terminal, scheduler, composer, transcript, resets: () => resets, toolAt, rowsMatching, banded };
+		return { terminal, scheduler, composer, transcript, resets: () => resets, toolAt, rowsMatching };
 	}
 
 	it("toggles a running block whose header is clipped above the viewport", async () => {
@@ -302,15 +229,6 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			expect(h.composer.ui.getMutableViewport().top).toBe(0);
 			expect(h.transcript.canRemoveBlock(tool)).toBe(true);
 			for (const row of visible) expect(h.toolAt(row)).toBe("live");
-
-			h.composer.setHoveredClickId("live");
-			h.composer.ui.requestRender();
-			await h.scheduler.settle(h.terminal);
-			expect(visible.every(h.banded)).toBe(true);
-			h.composer.setHoveredClickId(undefined);
-			h.composer.ui.requestRender();
-			await h.scheduler.settle(h.terminal);
-			expect(visible.some(h.banded)).toBe(false);
 
 			expect(h.toolAt(0)).toBe("live");
 			expect(h.composer.toggleViewportTool("live")).toBe(true);
@@ -345,18 +263,6 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			for (const row of visible) expect(h.toolAt(row)).toBe("done");
 			expect(h.toolAt(h.rowsMatching("user prompt")[0] ?? top)).toBeUndefined();
 
-			// Hover bands the retired rows in place and restores their accepted bytes.
-			const before = visible.map(row => h.terminal.getViewport()[row]);
-			h.composer.setHoveredClickId("done");
-			h.composer.ui.requestRender();
-			await h.scheduler.settle(h.terminal);
-			expect(visible.every(h.banded)).toBe(true);
-			h.composer.setHoveredClickId(undefined);
-			h.composer.ui.requestRender();
-			await h.scheduler.settle(h.terminal);
-			expect(visible.some(h.banded)).toBe(false);
-			expect(visible.map(row => h.terminal.getViewport()[row])).toEqual(before);
-
 			expect(h.toolAt(visible.at(-1)!)).toBe("done");
 			expect(h.composer.toggleViewportTool("done")).toBe(true);
 			await h.scheduler.settle(h.terminal);
@@ -371,44 +277,6 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			// The replayed card is live again and still toggles from its rows.
 			const header = h.rowsMatching("done header")[0]!;
 			expect(h.toolAt(header)).toBe("done");
-		} finally {
-			h.composer.stop();
-		}
-	});
-
-	it("restores banded retired rows the terminal rewrapped at a new width", async () => {
-		// Rows wider than the narrowed terminal: each rewraps into two rows.
-		const pad = " ·".repeat(30);
-		const tool = new ToolBlock("done", 60, true);
-		tool.render = () =>
-			tool.expanded
-				? ["done header", ...Array.from({ length: tool.lines }, (_, row) => `done line ${row}${pad}`)]
-				: ["done header", `done hidden ${tool.lines}`];
-		const h = await mount(tool);
-		try {
-			expect(h.composer.toggleViewportTool("done")).toBe(true);
-			await h.scheduler.settle(h.terminal);
-			const top = h.composer.ui.getMutableViewport().top;
-			const visible = h.rowsMatching("done line");
-			expect(visible.length).toBeGreaterThan(0);
-			expect(visible.every(row => row < top)).toBe(true);
-			h.composer.setHoveredClickId("done");
-			h.composer.ui.requestRender();
-			await h.scheduler.settle(h.terminal);
-			expect(visible.every(h.banded)).toBe(true);
-
-			// Preserve mode keeps the rewrapped screen (no ED3 + replay to repaint it).
-			h.composer.ui.setResizeScrollback("preserve");
-			h.terminal.resize(50, 40);
-			await h.scheduler.advance(h.terminal, 2000);
-			await h.scheduler.settle(h.terminal);
-			const rows = h.terminal.getViewport();
-			const bandedRows = rows.map((_, row) => row).filter(h.banded);
-			expect(bandedRows).toEqual([]);
-			// Each restored row still reads whole across its two rewrapped rows.
-			const restored = rows.findIndex(line => line.startsWith("done line"));
-			expect(restored).toBeGreaterThanOrEqual(0);
-			expect(`${rows[restored]}${rows[restored + 1]}`.trimEnd()).toMatch(/^done line \d+( ·){30}$/);
 		} finally {
 			h.composer.stop();
 		}
@@ -472,19 +340,6 @@ describe("composer tool clicks on clipped and retired rows", () => {
 				lastLineCandidates: [],
 				editorTool: undefined,
 			});
-
-			composer.setHoveredClickId("done");
-			composer.ui.requestRender();
-			await scheduler.settle(terminal);
-			const doneRows = terminal
-				.getViewport()
-				.map((line, row) => (line.includes("done line") ? row : -1))
-				.filter(row => row >= 0);
-			expect(doneRows.length).toBeGreaterThan(0);
-			expect(doneRows.every(row => terminal.getViewportRowBackgroundColumns(row).length > 0)).toBe(true);
-			composer.setHoveredClickId(undefined);
-			composer.ui.requestRender();
-			await scheduler.settle(terminal);
 
 			// A click landing after the replay paint but before the follow-up
 			// frame its acknowledgement requests: queued ahead of that frame.

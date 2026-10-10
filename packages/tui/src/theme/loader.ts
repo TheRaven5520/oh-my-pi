@@ -162,6 +162,7 @@ export function createTheme(themeJson: ThemeJson, options: CreateThemeOptions = 
 	const bgColorKeys: Set<string> = new Set([
 		"selectedBg",
 		"userMessageBg",
+		"toolExpandedBg",
 		"customMessageBg",
 		"toolPendingBg",
 		"toolSuccessBg",

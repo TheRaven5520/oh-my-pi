@@ -161,8 +161,6 @@ export interface InteractiveModeContext {
 	toggleViewportTool(id: string): boolean;
 	/** Flip the pinned jump list between its collapsed few and the full list. */
 	togglePinnedHudExpanded(): void;
-	/** Point the inline hover band at a click-candidate id (or clear it). */
-	setClickHoverId(id: string | undefined): void;
 	/** Pi-style below-editor subagent dock controls. */
 	moveSubagentDockSelection(direction: "next" | "previous"): boolean;
 	readonly hasSubagentDockSelection: boolean;

@@ -11,6 +11,7 @@ import { highlightCode, theme } from "../theme/theme";
 import type { OutputArtifactError } from "../tools/streaming-output";
 import type { TruncationMeta } from "../tools/output-meta";
 import { OutputPane } from "../render/output-pane";
+import { padToWidth } from "../render/utils";
 import {
 	buildExecutionFrame,
 	buildStatusFooter,
@@ -36,6 +37,7 @@ export class EvalExecutionComponent extends Container {
 	#truncation?: TruncationMeta;
 	#artifactError?: OutputArtifactError;
 	#expanded = false;
+	#individuallyExpanded = false;
 	readonly #instanceId = nextEvalExecutionId++;
 	#hadExpandableContent = false;
 	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
@@ -114,13 +116,15 @@ export class EvalExecutionComponent extends Container {
 
 	toggleClickExpansion(): boolean {
 		if (!this.#hadExpandableContent) return false;
-		this.setExpanded(!this.#expanded);
+		this.setExpanded(!this.#expanded, true);
 		return true;
 	}
 
-	setExpanded(expanded: boolean): void {
-		if (this.#expanded !== expanded) this.#blockVersion++;
+	setExpanded(expanded: boolean, individual = false): void {
+		const individuallyExpanded = expanded && individual;
+		if (this.#expanded !== expanded || this.#individuallyExpanded !== individuallyExpanded) this.#blockVersion++;
 		this.#expanded = expanded;
+		this.#individuallyExpanded = individuallyExpanded;
 		this.#outputPane.setExpanded(expanded);
 		this.#updateDisplay();
 	}
@@ -214,10 +218,16 @@ export class EvalExecutionComponent extends Container {
 					? (output.at(-1) ?? "running")
 					: this.#status === "error"
 						? (output[0] ?? "error")
-						: `${output.length} more lines`;
+						: `${output.length} lines`;
 			const colorKey: ExecutionColorKey = this.#excludeFromContext ? "dim" : "pythonMode";
 			const header = this.#formatHeader(colorKey).render(width)[0] ?? ">>>";
 			return [header, theme.fg("dim", detail)];
+		}
+		if (this.#individuallyExpanded) {
+			return [
+				...lines.map(line => theme.bgFill("toolExpandedBg", padToWidth(line, width))),
+				theme.bgFill("toolExpandedBg", " ".repeat(width)),
+			];
 		}
 		return lines;
 	}

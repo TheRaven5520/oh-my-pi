@@ -15,6 +15,7 @@ import type { OutputArtifactError } from "../tools/streaming-output";
 import type { TruncationMeta } from "../tools/output-meta";
 import { resolveImageOptions } from "../render/render-utils";
 import { OutputPane } from "../render/output-pane";
+import { padToWidth } from "../render/utils";
 import { loadXtermTerminal, readTerminalRows, styleTerminalRow } from "../tools/terminal-output";
 import { getSixelLineMask, isSixelPassthroughEnabled, sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import {
@@ -60,6 +61,7 @@ export class BashExecutionComponent extends Container {
 	#truncation?: TruncationMeta;
 	#artifactError?: OutputArtifactError;
 	#expanded = false;
+	#individuallyExpanded = false;
 	#hadExpandableContent = false;
 	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
 	// a completed command's block still mutates on expansion toggles, and the
@@ -142,15 +144,17 @@ export class BashExecutionComponent extends Container {
 
 	toggleClickExpansion(): boolean {
 		if (!this.#hadExpandableContent) return false;
-		this.setExpanded(!this.#expanded);
+		this.setExpanded(!this.#expanded, true);
 		return true;
 	}
 	/**
 	 * Set whether the output is expanded (shows full output) or collapsed (preview only).
 	 */
-	setExpanded(expanded: boolean): void {
-		if (this.#expanded !== expanded) this.#blockVersion++;
+	setExpanded(expanded: boolean, individual = false): void {
+		const individuallyExpanded = expanded && individual;
+		if (this.#expanded !== expanded || this.#individuallyExpanded !== individuallyExpanded) this.#blockVersion++;
 		this.#expanded = expanded;
+		this.#individuallyExpanded = individuallyExpanded;
 		this.#outputPane.setExpanded(expanded);
 		this.#updateDisplay();
 	}
@@ -397,10 +401,16 @@ export class BashExecutionComponent extends Container {
 						: visible.length === 1
 							? visible[0]
 							: visible.length > 1
-								? `${visible.length} lines hidden`
+								? `${visible.length} lines`
 								: "output hidden";
 			const header = `$ ${this.#command}`;
 			return [header, theme.fg("dim", `⎿ ${detail}`)];
+		}
+		if (this.#individuallyExpanded) {
+			return [
+				...lines.map(line => theme.bgFill("toolExpandedBg", padToWidth(line, width))),
+				theme.bgFill("toolExpandedBg", " ".repeat(width)),
+			];
 		}
 		return lines;
 	}

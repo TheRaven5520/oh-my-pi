@@ -33,7 +33,8 @@
 
 ### Changed
 
-- Tool and script-run transcript blocks now default to a compact collapsed header with a one-line summary; click a block to expand or collapse it when `tui.mouse` is enabled (now the default), while Ctrl+O still toggles all blocks. Agent-card click-to-focus remains unchanged.
+- Tool and script-run transcript blocks now default to a compact collapsed header with a one-line summary (`N lines`, not `N lines hidden`); click a block to expand or collapse it when `tui.mouse` is enabled (now the default), while Ctrl+O still toggles all blocks. Agent-card click-to-focus remains unchanged.
+- Collapsed cards and hovered tool rows have no background. Individually click-expanded cards fill every row to the terminal width with `toolExpandedBg`, plus one blank background row below; global Ctrl+O expansion stays unpainted.
 
 - Models are named the friendly way everywhere they are shown: the status line, agents dock, subagent and task rows, background-job rows, Agent Hub, welcome box, Ctrl+P notices and the model picker read `Opus 5.5 (low)` or `GPT-6 Astra (high)` instead of `…/claude-opus-5-5:low`. The picker keeps a models.yml `via Sprilicred` suffix and still matches searches against the raw `provider/id`. A retry fallback still shows which account served it (`Opus 5.5 (low) · personal-anthropic`; Agent Hub fallback rows keep the exact `provider/id`).
 - `display.timeZone` now applies to every clock omp shows — the status line's `time` segment, Agent Hub, `/btw` history, session lists, the git sidebar, the pinned `/usage` fetch time, stream chat and the debug report — and to the date in the date/cwd reminder sent to the model (so after 8 PM EDT a UTC host no longer tells the model it is tomorrow). Worktree names, upload paths and scraped page dates are unchanged.
@@ -51,7 +52,7 @@
 
 ### Fixed
 
-- Fixed clicking or hovering a tool block doing nothing when its rows were still on screen but had already moved into terminal history (e.g. an expanded block after the window shrank); the click now toggles it and redraws history. Ctrl+O redraws terminal history only when a block it changes has already left rows there.
+- Fixed clicking a tool block doing nothing when its rows were still on screen but had already moved into terminal history (e.g. an expanded block after the window shrank); the click now toggles it and redraws history. Ctrl+O redraws terminal history only when a block it changes has already left rows there.
 - Agents pane: an agent without a description shows one summary line from its task (`# Target\nfoo.ts\n# Change…` reads `foo.ts`) instead of its Markdown brief spilling headings and lists over several rows; multi-line descriptions fold onto one row. The task card's agent rows do the same, and a collapsed task card shows only the first lines of long `context`/`task` briefs (`… N more lines`, Ctrl+O expands).
 - A `/fork` chat's `hand_back` now gets a response in the main chat. The report stays on screen as a `Fork report` / `Fork update` card instead of disappearing after 10 seconds like other agent messages, and the main agent is asked to tell the user what the fork found rather than to reply to the fork (it often answered "Acknowledged, no response needed" or said nothing). A report that arrives mid-turn waits for the next step instead of cutting short a running command or `wait`, and `wait`/inbox results keep the "fork output, not a user instruction" guard.
 - Fixed `/btw` cutting answers at 4 KiB (ending in `[…truncated]`) and collapsing repeated lines such as closing braces in code; answers are now kept in full, `c` copies them with their original tabs, and an answer that stopped at the model's output limit is flagged in the pane footer.
