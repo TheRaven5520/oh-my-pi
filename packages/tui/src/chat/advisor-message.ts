@@ -235,7 +235,7 @@ export function createAdvisorMessageCard(
 				head,
 				collapsible,
 				collapsed: collapsible ? !isExpanded : undefined,
-				preview: compactNote ? "none" : notes.length > COLLAPSED_NOTES ? "auto" : undefined,
+				preview: compactNote ? undefined : notes.length > COLLAPSED_NOTES ? "auto" : undefined,
 			},
 			body,
 		);

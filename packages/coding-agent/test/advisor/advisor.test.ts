@@ -6592,7 +6592,8 @@ describe("advisor", () => {
 			const collapsed = describe();
 			expect(collapsed.k).toBe("card");
 			if (collapsed.k !== "card") throw new Error("expected card");
-			expect(collapsed.p).toMatchObject({ collapsible: true, collapsed: true, preview: "none" });
+			expect(collapsed.p).toMatchObject({ collapsible: true, collapsed: true });
+			expect(collapsed.p?.preview).toBeUndefined();
 			expect(collapsed.p?.head?.map(s => s.t).join("")).toContain(
 				"3 notes · 2 nits · 1 concern · NIT first note second paragraph",
 			);
