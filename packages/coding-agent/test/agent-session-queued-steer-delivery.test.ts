@@ -28,7 +28,7 @@ import type { PromptTemplate } from "@oh-my-pi/pi-coding-agent/config/prompt-tem
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
-import { getEditorTheme } from "@oh-my-pi/pi-tui/theme";
+import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { tryRunRpcSkillCommand } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
@@ -68,6 +68,7 @@ describe("AgentSession queued steer delivery", () => {
 	let session: AgentSession;
 
 	beforeAll(async () => {
+		await initTheme(false);
 		fixtureDir = path.join(os.tmpdir(), `pi-steer-strand-fixture-${Snowflake.next()}`);
 		fs.mkdirSync(fixtureDir, { recursive: true });
 		authStorage = await AuthStorage.create(path.join(fixtureDir, "auth.db"));
