@@ -3379,10 +3379,18 @@ export class TUI extends Container {
 				leadingBlankRows++;
 			}
 			const moved = Math.min(historyRows.length, leadingBlankRows);
+			// Unused synthetic padding belongs above the replayed history, not
+			// between that history and the input. Exclude it from the next mutable
+			// diff too, or the follow-up frame pulls the editor back up the screen.
+			const unusedPadding = Math.min(replayPrependedBlanks, leadingBlankRows - moved);
+			replayViewportRows = unusedPadding + moved;
 			if (moved > 0) {
-				viewport = [...historyRows.slice(historyRows.length - moved), ...viewport.slice(moved)];
+				viewport = [
+					...viewport.slice(0, unusedPadding),
+					...historyRows.slice(historyRows.length - moved),
+					...viewport.slice(unusedPadding + moved),
+				];
 				historyRows = historyRows.slice(0, historyRows.length - moved);
-				replayViewportRows = moved;
 			}
 		}
 		// History first: it reuses the previous viewport's rows by content, and
