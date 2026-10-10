@@ -332,22 +332,27 @@ describe("terminal frame plans", () => {
 		tui.stop();
 	});
 
-	it("publishes composer-space origin when a replay prepends blanks", () => {
-		// A short viewport is prepended with blanks before the replay split,
-		// so composer row 0 sits that many screens below the painted top even
-		// when fewer blanks were replaced by history rows.
+	it.each([0, 1, 5])("keeps a short replay contiguous and bottom-anchored with %i history rows", historyCount => {
 		const terminal = new CountingTerminal(20, 4);
+		const history = Array.from({ length: historyCount }, (_, index) => `history ${index}`);
+		const owners = history.map(() => ({}));
 		const provider = new Provider({ viewport: ["live", "editor"] });
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
-
 		provider.plan = {
-			history: { id: 1, rows: ["history one"], kind: "replay" },
+			history: { id: 1, rows: history, owners, kind: "replay" },
 			viewport: ["live", "editor"],
 		};
 		tui.requestRender(true);
-
-		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history one", "", "live", "editor"]);
+		const expected = [...history, "live", "editor"].slice(-4);
+		while (expected.length < 4) expected.unshift("");
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(expected);
+		expect(tui.getMutableViewport()).toEqual({ top: 2, length: 2 });
+		if (historyCount > 0) expect(tui.getScreenHistoryOwner(1)).toBe(owners.at(-1));
+		provider.plan = { viewport: ["live updated", "editor"] };
+		tui.requestRender();
+		expected[2] = "live updated";
+		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(expected);
 		expect(tui.getMutableViewport()).toEqual({ top: 2, length: 2 });
 		tui.stop();
 	});

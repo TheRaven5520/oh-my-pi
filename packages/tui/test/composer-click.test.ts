@@ -234,6 +234,7 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			expect(h.composer.toggleViewportTool("live")).toBe(true);
 			await h.scheduler.settle(h.terminal);
 			expect(tool.expanded).toBe(false);
+			expect(h.rowsMatching("EDITOR")).toEqual([39]);
 			// Nothing was retired, so the plain repaint is consistent: the
 			// collapsed card is whole and no expanded row survives anywhere.
 			expect(h.resets()).toBe(0);
@@ -241,6 +242,35 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			expect(buffer.filter(line => line.includes("live line"))).toEqual([]);
 			expect(buffer.filter(line => line.includes("live header"))).toHaveLength(1);
 			expect(buffer.filter(line => line.includes("live hidden 60"))).toHaveLength(1);
+		} finally {
+			h.composer.stop();
+		}
+	});
+
+	it("keeps the editor at the bottom after a large retired output collapses", async () => {
+		const tool = new ToolBlock("large", 1000, true);
+		const h = await mount(tool);
+		try {
+			h.composer.toggleViewportTool("large");
+			await h.scheduler.settle(h.terminal);
+			expect(h.rowsMatching("EDITOR")).toEqual([39]);
+			const row = h.rowsMatching("large line").at(-1)!;
+			expect(h.toolAt(row)).toBe("large");
+			h.composer.toggleViewportTool("large");
+			await h.scheduler.settle(h.terminal);
+			expect(h.rowsMatching("EDITOR")).toEqual([39]);
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			expect(h.rowsMatching("EDITOR")).toEqual([39]);
+			expect(h.terminal.getScrollBuffer().some(line => line.includes("large line"))).toBe(false);
+			expect(h.toolAt(h.rowsMatching("large header")[0]!)).toBe("large");
+			h.composer.toggleViewportTool("large");
+			await h.scheduler.settle(h.terminal);
+			expect(h.rowsMatching("EDITOR")).toEqual([39]);
+			h.composer.toggleViewportTool("large");
+			await h.scheduler.settle(h.terminal);
+			expect(h.rowsMatching("EDITOR")).toEqual([39]);
+			expect(h.terminal.getScrollBuffer().filter(line => line.includes("large header"))).toHaveLength(1);
 		} finally {
 			h.composer.stop();
 		}

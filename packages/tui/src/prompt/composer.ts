@@ -677,6 +677,12 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	toggleViewportTool(id: string): boolean {
 		const entry = this.#toolClickTargets.get(id);
 		if (entry === undefined || !entry.target.toggleClickExpansion()) return false;
+		// Replays anchor retired cards themselves. A live card only repaints, so
+		// retain its bottom-aligned input when collapsing a screenful of output.
+		const viewport = this.ui.getMutableViewport();
+		if (!entry.retired && this.#lastNormalRows > 0 && viewport.top + viewport.length >= this.#lastNormalRows) {
+			this.pinInputToBottom();
+		}
 		if (entry.retired) this.ui.resetDisplay();
 		else this.ui.requestRender(true);
 		return true;

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Collapsing a large expanded output keeps the input at the bottom of the viewport; short history replay places unused padding above the transcript instead of leaving stale blank space below the input.
 - Markdown headings hide all ATX markers and use terminal styling at every level; unordered lists use preset bullets, and task lists show checked/unchecked state in Unicode, Nerd Font, and ASCII themes. Completed inline emphasis, code, and strike spans hide delimiters; fenced bodies preserve literal marker-only lines while streaming and after completion.
 - Tool and script execution components render collapsed headers with at most one dim summary row when output is hidden (a one-line output shows whole, `⎿ hi`, instead of a count); with `/time` stamps off, a running call's header ticks its elapsed seconds (`⟳ Bash · sleep 6 4s`), and ANSI callers can expose per-block click targets while preserving agent-card focus routing.
 - A tool block whose rows already retired to terminal history but are still on screen above the prompt area (e.g. after a resize) can be clicked: `HistoryBatch.owners` tags each retired row with its block, `TUI.getScreenHistoryOwner(row)` resolves on-screen history rows, and the toggle replays history. Pointer motion never paints a card background. Individually expanded cards use the optional `toolExpandedBg` background (falling back to `userMessageBg`) with one bottom padding row. A collapsed `ToolExecutionComponent` memoizes its header/summary rows instead of rendering its full child tree every frame.
