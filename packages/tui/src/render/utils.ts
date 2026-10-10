@@ -5,6 +5,29 @@ import type { Theme, ThemeBg } from "../theme/theme";
 import { padding, truncateToWidth, visibleWidth } from "../utils";
 import type { State } from "./types";
 
+// Renderers emit standalone SGR background colors. Remove these before filling
+// an expanded card so nested framed/state surfaces cannot cover its background.
+const NESTED_BACKGROUND = /\x1b\[(?:4[0-7]|10[0-7]|48[;:][0-9;:]+)m/g;
+
+/** Paint one expanded tool surface, discarding outer renderer padding first. */
+export function expandedToolRows(
+	theme: Theme,
+	rows: readonly string[],
+	width: number,
+	allocation = Number.POSITIVE_INFINITY,
+): string[] {
+	let start = 0;
+	let end = rows.length;
+	while (start < end && !Bun.stripANSI(rows[start]!).trim()) start++;
+	while (end > start && !Bun.stripANSI(rows[end - 1]!).trim()) end--;
+	const painted: string[] = [];
+	for (let index = start; index < end; index++) {
+		painted.push(theme.bgFill("toolExpandedBg", padToWidth(rows[index]!.replace(NESTED_BACKGROUND, ""), width)));
+	}
+	if (painted.length > 0 && painted.length < allocation) painted.push(theme.bgFill("toolExpandedBg", padding(width)));
+	return painted;
+}
+
 /** Cached typed-array scratch space for hashing non-string primitives. */
 const hashBuf = new ArrayBuffer(8);
 const hashView = new DataView(hashBuf);

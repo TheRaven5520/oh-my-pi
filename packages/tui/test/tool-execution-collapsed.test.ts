@@ -78,8 +78,13 @@ describe("collapsed tool cards", () => {
 				expect(Bun.stripANSI(expanded[0]!).trim()).not.toBe("");
 				expect(Bun.stripANSI(expanded.at(-2)!).trim()).not.toBe("");
 				for (const row of expanded) {
-					expect(row.match(/\x1b\[(?:4[0-7]|10[0-7]|48[;:][0-9;:]+)m/g)?.every(open => open === background)).toBe(true);
+					expect(row.match(/\x1b\[(?:4[0-7]|10[0-7]|48[;:][0-9;:]+)m/g)?.every(open => open === background)).toBe(
+						true,
+					);
 				}
+				card.setTranscriptAllocation(2, { tick: 0, now: 0 });
+				expect(Bun.stripANSI(card.render(width).at(-1)!).trim()).not.toBe("");
+				card.setTranscriptAllocation(Number.POSITIVE_INFINITY, { tick: 0, now: 0 });
 				card.setExpanded(true);
 				expect(card.render(width).every(line => !line.includes(background))).toBe(true);
 				card.setExpanded(false);
@@ -88,6 +93,23 @@ describe("collapsed tool cards", () => {
 		} finally {
 			setThemeInstance(previousTheme);
 		}
+	});
+
+	it("keeps both real rows when an individual card gets exactly two rows", () => {
+		// Render-only tool fixture; execution/schema fields are not consumed.
+		const tool = {
+			name: "two",
+			label: "Two",
+			renderCall: () => ({ render: () => ["header"] }),
+			renderResult: () => ({ render: () => ["body"] }),
+		} as unknown as AgentTool;
+		const card = new ToolExecutionComponent("two", {}, {}, tool, ui, "/tmp");
+		card.updateResult(textResult("first\nsecond"), false);
+		card.seal();
+		card.render(40);
+		expect(card.toggleClickExpansion()).toBe(true);
+		card.setTranscriptAllocation(2, { tick: 0, now: 0 });
+		expect(plain(card.render(40)).map(row => row.trim())).toEqual(["header", "body"]);
 	});
 
 	it("counts every hidden output line, not the collapsed preview", () => {

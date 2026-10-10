@@ -11,7 +11,7 @@ import { highlightCode, theme } from "../theme/theme";
 import type { OutputArtifactError } from "../tools/streaming-output";
 import type { TruncationMeta } from "../tools/output-meta";
 import { OutputPane } from "../render/output-pane";
-import { padToWidth } from "../render/utils";
+import { expandedToolRows } from "../render/utils";
 import {
 	buildExecutionFrame,
 	buildStatusFooter,
@@ -32,6 +32,11 @@ export type EvalExecutionLanguage = "python" | "js";
 
 export class EvalExecutionComponent extends Container {
 	#status: ExecutionStatus = "running";
+	#allocation = Number.POSITIVE_INFINITY;
+	setTranscriptAllocation(rows: number): void {
+		this.#allocation = rows;
+	}
+
 	#exitCode: number | undefined = undefined;
 	#loader: Loader;
 	#truncation?: TruncationMeta;
@@ -224,10 +229,7 @@ export class EvalExecutionComponent extends Container {
 			return [header, theme.fg("dim", detail)];
 		}
 		if (this.#individuallyExpanded) {
-			return [
-				...lines.map(line => theme.bgFill("toolExpandedBg", padToWidth(line, width))),
-				theme.bgFill("toolExpandedBg", " ".repeat(width)),
-			];
+			return expandedToolRows(theme, lines, width, this.#allocation);
 		}
 		return lines;
 	}

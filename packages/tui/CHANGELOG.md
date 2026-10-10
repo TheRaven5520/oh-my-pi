@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Individually expanded tool cards override nested renderer background colors with one uniform `toolExpandedBg` surface, remove redundant outer blank padding, and omit bottom padding when it would displace content in a constrained viewport.
 - Collapsed running task cards list all running agents together in spawn order, removing finished agents instead of flipping to whichever child most recently reported progress.
 - Collapsing a large expanded output keeps the input at the bottom of the viewport; short history replay places unused padding above the transcript instead of leaving stale blank space below the input.
 - Markdown headings hide all ATX markers and use terminal styling at every level; unordered lists use preset bullets, and task lists show checked/unchecked state in Unicode, Nerd Font, and ASCII themes. Completed inline emphasis, code, and strike spans hide delimiters; fenced bodies preserve literal marker-only lines while streaming and after completion.

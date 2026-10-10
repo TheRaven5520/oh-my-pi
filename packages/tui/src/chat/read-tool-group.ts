@@ -15,7 +15,7 @@ import {
 } from "../tools/read";
 import { PREVIEW_LIMITS, shortenPath } from "../render/render-utils";
 import { fileHyperlink, renderCodeCell } from "../render";
-import { padToWidth } from "../render/utils";
+import { expandedToolRows } from "../render/utils";
 import { canonicalizeMessage } from "./thinking-display";
 import { internalUrlSchemeSpec, splitUrlScheme } from "../tools/url-scheme-host";
 import type { ToolExecutionHandle } from "./tool-execution";
@@ -354,6 +354,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#text: Text;
 	#expanded = false;
 	#individuallyExpanded = false;
+	#allocation = Number.POSITIVE_INFINITY;
+	setTranscriptAllocation(rows: number): void {
+		this.#allocation = rows;
+	}
+
 	#toolActivityVisible = true;
 	#showContentPreview: boolean;
 	// A read group accretes entries across multiple assistant completions for as
@@ -400,10 +405,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			return [first, theme.fg("dim", `⎿ ${detail}`)].map(line => line.slice(0, width));
 		}
 		if (this.#individuallyExpanded) {
-			return [
-				...lines.map(line => theme.bgFill("toolExpandedBg", padToWidth(line, width))),
-				theme.bgFill("toolExpandedBg", " ".repeat(width)),
-			];
+			return expandedToolRows(theme, lines, width, this.#allocation);
 		}
 		return lines;
 	}

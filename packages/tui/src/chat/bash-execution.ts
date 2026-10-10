@@ -15,7 +15,7 @@ import type { OutputArtifactError } from "../tools/streaming-output";
 import type { TruncationMeta } from "../tools/output-meta";
 import { resolveImageOptions } from "../render/render-utils";
 import { OutputPane } from "../render/output-pane";
-import { padToWidth } from "../render/utils";
+import { expandedToolRows } from "../render/utils";
 import { loadXtermTerminal, readTerminalRows, styleTerminalRow } from "../tools/terminal-output";
 import { getSixelLineMask, isSixelPassthroughEnabled, sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import {
@@ -62,6 +62,7 @@ export class BashExecutionComponent extends Container {
 	#artifactError?: OutputArtifactError;
 	#expanded = false;
 	#individuallyExpanded = false;
+	#allocation = Number.POSITIVE_INFINITY;
 	#hadExpandableContent = false;
 	// Post-finalize mutation counter (FinalizableBlock.getTranscriptBlockVersion):
 	// a completed command's block still mutates on expansion toggles, and the
@@ -95,6 +96,10 @@ export class BashExecutionComponent extends Container {
 	#outputVersion = 0;
 	readonly #native = new Memo();
 	readonly #nativeImages = new NativeImageCache();
+
+	setTranscriptAllocation(rows: number): void {
+		this.#allocation = rows;
+	}
 
 	constructor(command: string, ui: TUI, excludeFromContext = false) {
 		super();
@@ -407,10 +412,7 @@ export class BashExecutionComponent extends Container {
 			return [header, theme.fg("dim", `⎿ ${detail}`)];
 		}
 		if (this.#individuallyExpanded) {
-			return [
-				...lines.map(line => theme.bgFill("toolExpandedBg", padToWidth(line, width))),
-				theme.bgFill("toolExpandedBg", " ".repeat(width)),
-			];
+			return expandedToolRows(theme, lines, width, this.#allocation);
 		}
 		return lines;
 	}
