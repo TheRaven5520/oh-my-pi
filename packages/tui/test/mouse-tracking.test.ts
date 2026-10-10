@@ -73,6 +73,57 @@ function makeInlineTui(enabled: { current: boolean }): { terminal: MinimalTermin
 }
 
 describe("inline mouse tracking", () => {
+	it("changes the input generation only when capture actually transitions", () => {
+		const enabled = { current: true };
+		const { tui } = makeInlineTui(enabled);
+		try {
+			tui.start();
+			tui.renderNow();
+			const captured = tui.getMouseInputGeneration();
+			tui.renderNow();
+			expect(tui.getMouseInputGeneration()).toBe(captured);
+			enabled.current = false;
+			tui.renderNow();
+			expect(tui.getMouseInputGeneration()).toBe(captured + 1);
+			tui.renderNow();
+			expect(tui.getMouseInputGeneration()).toBe(captured + 1);
+			enabled.current = true;
+			tui.renderNow();
+			expect(tui.getMouseInputGeneration()).toBe(captured + 2);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("records visible overlay open/close even without a paint or input between them", () => {
+		const { tui } = makeInlineTui({ current: true });
+		const initial = tui.getMouseInputGeneration();
+		const overlay = tui.showOverlay(new StaticOverlay());
+		expect(tui.getMouseInputGeneration()).toBe(initial + 1);
+		overlay.hide();
+		expect(tui.getMouseInputGeneration()).toBe(initial + 2);
+		overlay.hide();
+		expect(tui.getMouseInputGeneration()).toBe(initial + 2);
+	});
+
+	it("records overlay visibility transitions but not nested or redundant changes", () => {
+		const { tui } = makeInlineTui({ current: true });
+		const overlay = tui.showOverlay(new StaticOverlay());
+		const visible = tui.getMouseInputGeneration();
+		tui.showOverlay(new StaticOverlay());
+		expect(tui.getMouseInputGeneration()).toBe(visible);
+		tui.hideOverlay();
+		expect(tui.getMouseInputGeneration()).toBe(visible);
+		overlay.setHidden(true);
+		expect(tui.getMouseInputGeneration()).toBe(visible + 1);
+		overlay.setHidden(true);
+		expect(tui.getMouseInputGeneration()).toBe(visible + 1);
+		overlay.setHidden(false);
+		expect(tui.getMouseInputGeneration()).toBe(visible + 2);
+		tui.hideOverlay();
+		expect(tui.getMouseInputGeneration()).toBe(visible + 3);
+	});
+
 	it("enables capture on the normal buffer and releases it on stop", () => {
 		const enabled = { current: true };
 		const { terminal, tui } = makeInlineTui(enabled);

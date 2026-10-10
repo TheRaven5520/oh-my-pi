@@ -1367,7 +1367,7 @@ export class ToolExecutionComponent extends Container {
 		this.#compactRows = [
 			truncateToWidth(headerText, width),
 			// The allocator shows a block's last rows: a one-row squeeze keeps the header.
-			...(detail && this.#allocation !== 1 ? [truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)] : []),
+			...(detail && this.#allocation !== 1 ? [truncateToWidth(theme.fg("dim", `  ⎿ ${detail}`), width)] : []),
 		];
 		return this.#compactRows;
 	}

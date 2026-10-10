@@ -1002,6 +1002,7 @@ export class TUI extends Container {
 	// against the next one.
 	#altActive = false;
 	#mouseTracking: MouseTrackingState = "off";
+	#mouseInputGeneration = 0;
 	/** Product-owned probe for opt-in normal-buffer click capture (`tui.mouse`). Read every frame. */
 	#inlineMouseProvider: (() => boolean) | undefined;
 	#altPreviousLines: string[] = [];
@@ -1243,9 +1244,11 @@ export class TUI extends Container {
 	 * Returns a handle to control the overlay's visibility.
 	 */
 	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle {
+		const hadOverlay = this.hasOverlay();
 		component.setIgnoreTight?.(true);
 		const entry = { component, options, preFocus: this.#focusedComponent, hidden: false, released: false };
 		this.overlayStack.push(entry);
+		if (this.hasOverlay() !== hadOverlay) this.#mouseInputGeneration++;
 		// Only focus if overlay is actually visible
 		if (this.#isOverlayVisible(entry)) {
 			this.setFocus(component);
@@ -1259,7 +1262,9 @@ export class TUI extends Container {
 			hide: () => {
 				const index = this.overlayStack.indexOf(entry);
 				if (index !== -1) {
+					const hadOverlay = this.hasOverlay();
 					this.overlayStack.splice(index, 1);
+					if (this.hasOverlay() !== hadOverlay) this.#mouseInputGeneration++;
 					// Restore focus if this overlay or one of its owned targets had focus
 					if (isOverlayFocusTarget(component, this.#focusedComponent)) {
 						this.setFocus(this.#getKeyHolderOverlay()?.component ?? entry.preFocus);
@@ -1273,7 +1278,9 @@ export class TUI extends Container {
 			},
 			setHidden: (hidden: boolean) => {
 				if (entry.hidden === hidden) return;
+				const hadOverlay = this.hasOverlay();
 				entry.hidden = hidden;
+				if (this.hasOverlay() !== hadOverlay) this.#mouseInputGeneration++;
 				// Update focus when hiding/showing
 				if (hidden) {
 					// If this overlay or one of its owned targets had focus, move focus to the next one holding keys or preFocus
@@ -1294,8 +1301,10 @@ export class TUI extends Container {
 
 	/** Hide the topmost overlay and restore previous focus. */
 	hideOverlay(): void {
+		const hadOverlay = this.hasOverlay();
 		const overlay = this.overlayStack.pop();
 		if (!overlay) return;
+		if (this.hasOverlay() !== hadOverlay) this.#mouseInputGeneration++;
 		// Find the topmost visible overlay holding keys, or fall back to preFocus
 		this.setFocus(this.#getKeyHolderOverlay()?.component ?? overlay.preFocus);
 		if (this.overlayStack.length === 0) {
@@ -1367,9 +1376,15 @@ export class TUI extends Container {
 		this.#inlineMouseProvider = provider;
 	}
 
+	/** Changes whenever mouse capture or visible-overlay ownership transitions. */
+	getMouseInputGeneration(): number {
+		return this.#mouseInputGeneration;
+	}
+
 	/** Transition mouse reporting, emitting only the sequences a change needs. */
 	#setMouseTracking(state: MouseTrackingState): void {
 		if (state === this.#mouseTracking) return;
+		this.#mouseInputGeneration++;
 		const wasOff = this.#mouseTracking === "off";
 		this.#mouseTracking = state;
 		if (state === "off") {
@@ -2496,6 +2511,7 @@ export class TUI extends Container {
 			this.terminal.write(exitSequence);
 			setAltScreenActive(false);
 			this.#altActive = false;
+			if (this.#mouseTracking !== "off") this.#mouseInputGeneration++;
 			this.#mouseTracking = "off";
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];
@@ -2506,6 +2522,7 @@ export class TUI extends Container {
 			// release it — otherwise the parent shell keeps mouse reporting
 			// and loses native selection until a manual reset.
 			this.terminal.write(MOUSE_TRACKING_OFF);
+			this.#mouseInputGeneration++;
 			this.#mouseTracking = "off";
 		}
 		// A latched destructive reset (settled rebuild-mode resize, /clear) pairs
@@ -3728,6 +3745,7 @@ export class TUI extends Container {
 			}
 			this.#forgetHardwareCursorState();
 			this.#altActive = false;
+			if (this.#mouseTracking !== wantMouse) this.#mouseInputGeneration++;
 			this.#mouseTracking = wantMouse;
 			this.#altPreviousLines = [];
 			this.#altPreparedRows = [];

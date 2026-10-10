@@ -399,7 +399,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 							.trim() || "Read failed"
 					}`
 				: `${Math.max(1, lines.length - 1)} lines`;
-			return [first, theme.fg("dim", `⎿ ${detail.replace(/\s+/g, " ")}`)].map(line => truncateToWidth(line, width));
+			return [first, theme.fg("dim", `  ⎿ ${detail.replace(/\s+/g, " ")}`)].map(line =>
+				truncateToWidth(line, width),
+			);
 		}
 		if (this.#individuallyExpanded) {
 			return expandedToolRows(theme, lines, width);

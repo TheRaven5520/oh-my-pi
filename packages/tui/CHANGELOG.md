@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- Inline click consumers can track mouse-input generations across capture and overlay transitions, rejecting releases from stale gestures.
+- Collapsed tool, shell, Eval and grouped-read summaries inset `⎿` by two columns while keeping the existing width bound and header alignment.
 - Individually expanded tool cards override nested renderer background colors with one uniform `toolExpandedBg` surface, remove redundant outer blank padding, and do not append a synthetic bottom row. Image placements and reserved rows remain intact.
 - Collapsed running task cards list all running agents together in spawn order, removing finished agents instead of flipping to whichever child most recently reported progress.
 - Collapsing large output restores the actual compact transcript height and preceding history. Live cards that displaced retired history refill from real transcript rows; short replay no longer pads away older visible text.

@@ -410,7 +410,7 @@ export class BashExecutionComponent extends Container {
 								? `${visible.length} lines`
 								: "output hidden";
 			const header = `$ ${this.#command.replace(/\s+/g, " ")}`;
-			return [truncateToWidth(header, width), truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)];
+			return [truncateToWidth(header, width), truncateToWidth(theme.fg("dim", `  ⎿ ${detail}`), width)];
 		}
 		if (this.#individuallyExpanded) {
 			return expandedToolRows(theme, lines, width);

@@ -114,7 +114,7 @@ describe("transcript content column", () => {
 						if (expanded) expectColumn(rows, "Output first");
 						else {
 							expectColumn(rows, name);
-							expect(rows[1]?.startsWith("⎿ ")).toBe(true);
+							expect(rows[1]?.startsWith("  ⎿ ")).toBe(true);
 						}
 					}
 				}
@@ -131,7 +131,7 @@ describe("transcript content column", () => {
 				const cellRows = surface(cell, width, `cell expanded=${expanded}`);
 				expectColumn(cellRows, ">>>");
 				if (expanded) expectColumn(cellRows, "Output first");
-				else expect(cellRows[1]?.startsWith("⎿ ")).toBe(true);
+				else expect(cellRows[1]?.startsWith("  ⎿ ")).toBe(true);
 				const read = new ReadToolGroupComponent();
 				read.updateArgs({ path: "example.txt" }, "read");
 				read.updateResult({ content: [{ type: "text", text: output }] }, false, "read");

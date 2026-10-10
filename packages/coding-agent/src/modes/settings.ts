@@ -532,7 +532,7 @@ export const cfgTuiMouse = register({
 		label: "Mouse Click-to-Expand",
 		get description() {
 			const shift = formatKeyHint("shift");
-			return `Capture mouse clicks for click-to-expand tool and script blocks, while live subagent cards and HUD rows focus on click; hover highlights the target. Native text selection becomes ${shift}+drag or Option+drag and wheel scroll becomes ${shift}+wheel while on`;
+			return `Capture mouse clicks for click-to-expand tool and script blocks, while live subagent cards and HUD rows focus on click. Native text selection becomes ${shift}+drag or Option+drag and wheel scroll becomes ${shift}+wheel while on`;
 		},
 	},
 });

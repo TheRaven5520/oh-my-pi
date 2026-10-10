@@ -126,6 +126,8 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
+type InlineClickTarget = { kind: "agent" | "tool"; id: string } | { kind: "hud" | "gone"; id?: never };
+
 /** Minimal contract for any component that can receive a paste payload directly. */
 interface PasteTarget {
 	pasteText(text: string): void;
@@ -287,6 +289,16 @@ export class InputController {
 	#expandToolsListenerInstalled = false;
 	#inlineMouseListenerInstalled = false;
 	#inlineMouseBuffer = "";
+	#pendingInlineClick:
+		| {
+				row: number;
+				col: number;
+				button: number;
+				generation: number;
+				session: InteractiveModeContext["viewSession"];
+				target: InlineClickTarget;
+		  }
+		| undefined;
 	#backgroundToolListenerInstalled = false;
 	#pendingStreamingSubmissions = new Set<Promise<void>>();
 
@@ -328,6 +340,16 @@ export class InputController {
 	setupKeyHandlers(): void {
 		this.#draftText ??= this.ctx.editor.getText();
 		this.ctx.editor.setActionKeys("app.interrupt", this.ctx.keybindings.getKeys("app.interrupt"));
+		// Observe input before shortcuts can consume it: typing or paste must
+		// cancel a held click even when another listener handles that input.
+		if (!this.#inlineMouseListenerInstalled) {
+			this.#inlineMouseListenerInstalled = true;
+			// Inline click-to-focus (`tui.mouse`): SGR reports only arrive while
+			// the setting has tracking enabled, so this stays inert otherwise.
+			// Defers to fullscreen overlays, which own mouse handling on the
+			// alternate screen.
+			this.ctx.ui.addInputListener(data => this.#handleInlineMouse(data));
+		}
 		// Pi-style compact subagent dock: from an empty main editor, Down enters
 		// the child list, Up/Down selects, Enter focuses that transcript, and x
 		// interrupts a running child. Agent Hub remains the detailed control view.
@@ -479,14 +501,6 @@ export class InputController {
 				this.toggleToolOutputExpansion();
 				return { consume: true };
 			});
-		}
-		if (!this.#inlineMouseListenerInstalled) {
-			this.#inlineMouseListenerInstalled = true;
-			// Inline click-to-focus (`tui.mouse`): SGR reports only arrive while
-			// the setting has tracking enabled, so this stays inert otherwise.
-			// Defers to fullscreen overlays, which own mouse handling on the
-			// alternate screen.
-			this.ctx.ui.addInputListener(data => this.#handleInlineMouse(data));
 		}
 		if (!this.#backgroundToolListenerInstalled) {
 			this.#backgroundToolListenerInstalled = true;
@@ -814,6 +828,8 @@ export class InputController {
 	 * Inline click-to-focus (`tui.mouse`). Strip only complete SGR reports;
 	 * preserve coalesced typing and retain only a syntactically valid partial
 	 * report. StdinBuffer owns ambiguous ESC / CSI prefixes and paste framing.
+	 * Activate only a matched press/release over the same target. Motion and
+	 * other input cancel the gesture so a native selection drag never toggles.
 	 *
 	 * Captured wheel reports cannot scroll native terminal history: there is no
 	 * terminal output sequence for that operation. Keep their protocol bytes out
@@ -822,15 +838,20 @@ export class InputController {
 	#handleInlineMouse(data: string): { consume?: boolean; data?: string } | undefined {
 		if (!cfgTuiMouse.get(this.ctx.settings) || this.ctx.ui.hasOverlay()) {
 			this.#inlineMouseBuffer = "";
+			this.#pendingInlineClick = undefined;
 			return undefined;
 		}
 		// Pasted mouse-looking text is content, never a pointer action. A paste
 		// also interrupts any unfinished report left by a slow terminal read.
 		if (data.startsWith("\x1b[200~")) {
 			this.#inlineMouseBuffer = "";
+			this.#pendingInlineClick = undefined;
 			return undefined;
 		}
-		if (this.#inlineMouseBuffer.length === 0 && !data.includes("\x1b[<")) return undefined;
+		if (this.#inlineMouseBuffer.length === 0 && !data.includes("\x1b[<")) {
+			this.#pendingInlineClick = undefined;
+			return undefined;
+		}
 		const input = this.#inlineMouseBuffer + data;
 		this.#inlineMouseBuffer = "";
 		let text = "";
@@ -838,20 +859,51 @@ export class InputController {
 		while (offset < input.length) {
 			const start = input.indexOf("\x1b[<", offset);
 			if (start < 0) {
+				this.#pendingInlineClick = undefined;
 				text += input.slice(offset);
 				break;
 			}
+			if (start > offset) this.#pendingInlineClick = undefined;
 			text += input.slice(offset, start);
 			const tail = input.slice(start);
 			const report = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(tail)?.[0];
 			if (report) {
 				const event = parseSgrMouse(report)!;
-				if (event.leftClick) this.#clickViewportTarget(event.row);
+				const pending = this.#pendingInlineClick;
+				this.#pendingInlineClick = undefined;
+				// Only button zero plus the Shift/Alt/Ctrl modifier bits is a left press.
+				if (event.leftClick && (event.button & ~28) === 0) {
+					const target = this.#viewportClickTarget(event.row);
+					if (target) {
+						this.#pendingInlineClick = {
+							row: event.row,
+							col: event.col,
+							button: event.button,
+							generation: this.ctx.ui.getMouseInputGeneration(),
+							session: this.ctx.viewSession,
+							target,
+						};
+					}
+				} else if (
+					pending &&
+					event.release &&
+					pending.generation === this.ctx.ui.getMouseInputGeneration() &&
+					pending.session === this.ctx.viewSession &&
+					event.button === pending.button &&
+					event.row === pending.row &&
+					event.col === pending.col
+				) {
+					const target = this.#viewportClickTarget(event.row);
+					if (target?.kind === pending.target.kind && target.id === pending.target.id) {
+						this.#clickViewportTarget(target);
+					}
+				}
 				offset = start + report.length;
 			} else if (/^\x1b\[<(?:\d*|\d+;\d*|\d+;\d+;\d*)$/.test(tail)) {
 				this.#inlineMouseBuffer = tail;
 				break;
 			} else {
+				this.#pendingInlineClick = undefined;
 				// Not a mouse report: return it unchanged instead of searching for
 				// an arbitrary m/M in subsequent typing and swallowing that text.
 				text += "\x1b[<";
@@ -880,37 +932,42 @@ export class InputController {
 		return this.ctx.resolveViewportClickTool(local);
 	}
 
-	#clickViewportTarget(screenRow: number): void {
+	#viewportClickTarget(screenRow: number): InlineClickTarget | undefined {
 		const candidates = this.#viewportCandidates(screenRow);
-		if (candidates.length > 0) {
-			this.#focusClickedAgent(screenRow);
-			return;
+		if (candidates.length === 0) {
+			const id = this.#viewportTool(screenRow);
+			return id === undefined ? undefined : { kind: "tool", id };
 		}
-		const tool = this.#viewportTool(screenRow);
-		if (tool !== undefined) this.ctx.toggleViewportTool(tool);
-	}
-
-	#focusClickedAgent(screenRow: number): void {
-		const candidates = this.#viewportCandidates(screenRow);
-		if (candidates.length === 0) return;
 		const refs = AgentRegistry.global().list();
 		const scoped = refs.filter(ref => candidates.includes(ref.id));
 		// A live agent wins over the expander sentinel: task names are
 		// user-controlled, so an agent id can equal the toggle id. The toggle
 		// row itself names no agent and still toggles.
 		if (candidates.includes(PINNED_HUD_TOGGLE_ID) && scoped.length === 0) {
-			this.ctx.togglePinnedHudExpanded();
-			return;
+			return { kind: "hud" };
 		}
 		// No global fallback: when every candidate is gone (aborted, released),
 		// focusing an unrelated recent agent would open something other than
 		// what the click displayed.
 		const nextId = pickRecentFocusableAgentId(scoped, this.ctx.focusedAgentId);
-		if (nextId === undefined) {
-			this.ctx.showStatus("That subagent is gone — open the hub for live agents");
-			return;
+		return nextId === undefined ? { kind: "gone" } : { kind: "agent", id: nextId };
+	}
+
+	#clickViewportTarget(target: InlineClickTarget): void {
+		switch (target.kind) {
+			case "agent":
+				this.#focusResolvedAgent(target.id);
+				break;
+			case "tool":
+				this.ctx.toggleViewportTool(target.id);
+				break;
+			case "hud":
+				this.ctx.togglePinnedHudExpanded();
+				break;
+			case "gone":
+				this.ctx.showStatus("That subagent is gone — open the hub for live agents");
+				break;
 		}
-		this.#focusResolvedAgent(nextId);
 	}
 
 	/** Focus a resolved agent id, ignoring already-viewing and surfacing errors as status. */

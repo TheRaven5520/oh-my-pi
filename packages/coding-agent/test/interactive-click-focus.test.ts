@@ -140,6 +140,7 @@ describe("inline click-to-focus geometry", () => {
 			const screenRow = viewport.findIndex(row => row.includes(marker));
 			expect(screenRow).toBeGreaterThanOrEqual(0);
 			term.sendInput(`\x1b[<0;5;${screenRow + 1}M`);
+			term.sendInput(`\x1b[<0;5;${screenRow + 1}m`);
 		};
 
 		// Collapsed by default: main plus the first four agents, then the expander.

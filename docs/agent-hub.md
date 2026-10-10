@@ -90,9 +90,9 @@ The list stays short: it shows a few rows plus an expander (`display.pinnedAgent
 
 Set `display.subagentLivePreview: true` to add a second line under each row showing what that agent is doing: its current tool call (or, between calls, the most recent one) with a one-line detail, plus the elapsed time once a call runs longer than five seconds. Off by default.
 
-Enable `tui.mouse` to click live subagent cards and jump-list rows directly in the main session, without opening the Hub first. A click focuses that card's most recent agent (a jump-list row focuses its exact agent); focusing a parked agent revives it. Tool-card clicks toggle expansion.
+Enable `tui.mouse` to click live subagent cards and jump-list rows directly in the main session, without opening the Hub first. An undragged press/release over the same target focuses that card's most recent agent (a jump-list row focuses its exact agent); focusing a parked agent revives it. Tool-card clicks toggle expansion. The initial press never activates a target, so starting a native selection drag does not toggle a block.
 
-Mouse capture is off by default, preserving native wheel scrolling, drag-selection, and clipboard gestures. Use Ctrl+O to toggle tool expansion without capture. Opting in changes terminal gestures: native selection and scrolling require the terminal's override modifier (usually Shift). Agent focus targets must be in the live viewport; retired tool rows still visible on screen can also be toggled, but off-screen terminal scrollback is not an app click target.
+Mouse capture is off by default. Use Ctrl+O to toggle tool expansion without capture. With capture enabled, a tmux configuration that owns normal-screen wheel and drag events preserves ordinary scrolling and selection while clicks reach omp; otherwise use the terminal's override modifier (usually Shift). Agent focus targets must be in the live viewport; retired tool rows still visible on screen can also be toggled, but off-screen terminal scrollback is not an app click target.
 
 ## Persisted agents and advisors
 

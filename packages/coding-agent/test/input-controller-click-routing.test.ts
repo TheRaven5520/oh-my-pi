@@ -11,13 +11,21 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { cfgTuiMouse } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 const ESC = String.fromCharCode(27);
-// SGR click, motion, and wheel reports on viewport rows.
-const EXPANDER_CLICK = `${ESC}[<0;5;3M`;
+// SGR press/release click pairs, motion, and wheel reports on viewport rows.
+const EXPANDER_PRESS = `${ESC}[<0;5;3M`;
+const EXPANDER_RELEASE = `${ESC}[<0;5;3m`;
+const EXPANDER_CLICK = EXPANDER_PRESS + EXPANDER_RELEASE;
 const VIEWPORT_MOTION = `${ESC}[<35;5;3M`;
 const VIEWPORT_WHEEL_UP = `${ESC}[<64;5;3M`;
 const VIEWPORT_WHEEL_DOWN = `${ESC}[<65;5;3M`;
 
-function makeHarness(options: { top?: number; tool?: (index: number) => string | undefined } = {}) {
+function makeHarness(
+	options: {
+		top?: number;
+		tool?: (index: number) => string | undefined;
+		candidates?: (index: number) => string[];
+	} = {},
+) {
 	// These routing fixtures deliberately opt in; production keeps native wheel
 	// scrolling and text selection unless the user enables click capture.
 	cfgTuiMouse.set(settings, true);
@@ -27,6 +35,7 @@ function makeHarness(options: { top?: number; tool?: (index: number) => string |
 	let toggled = 0;
 	let renders = 0;
 	let overlay = false;
+	let mouseGeneration = 0;
 	const ctx = {
 		ui: {
 			addInputListener: (fn: (data: string) => { consume?: boolean; data?: string } | undefined) => {
@@ -34,6 +43,7 @@ function makeHarness(options: { top?: number; tool?: (index: number) => string |
 			},
 			getMutableViewport: () => ({ top: options.top ?? 0, length: 5 }),
 			hasOverlay: () => overlay,
+			getMouseInputGeneration: () => mouseGeneration,
 			requestRender: () => {
 				renders++;
 			},
@@ -54,7 +64,9 @@ function makeHarness(options: { top?: number; tool?: (index: number) => string |
 		session: {
 			extensionRunner: undefined,
 		},
-		resolveViewportClickCandidates: (index: number) => (index === 2 ? [PINNED_HUD_TOGGLE_ID] : []),
+		hideToolActivity: true,
+		resolveViewportClickCandidates: (index: number) =>
+			options.candidates?.(index) ?? (index === 2 ? [PINNED_HUD_TOGGLE_ID] : []),
 		resolveViewportClickTool: (index: number) => options.tool?.(index),
 		toggleViewportTool: (id: string) => {
 			toolToggles.push(id);
@@ -87,7 +99,12 @@ function makeHarness(options: { top?: number; tool?: (index: number) => string |
 	return {
 		input,
 		setOverlay: (visible: boolean) => {
+			if (overlay !== visible) mouseGeneration++;
 			overlay = visible;
+		},
+		setCapture: (enabled: boolean) => {
+			if (cfgTuiMouse.get(settings) !== enabled) mouseGeneration++;
+			cfgTuiMouse.set(settings, enabled);
 		},
 		click: () => input(EXPANDER_CLICK),
 		motion: () => input(VIEWPORT_MOTION),
@@ -135,6 +152,135 @@ describe("InputController click routing", () => {
 		expect(h.focused).toEqual([]);
 	});
 
+	it("activates exactly once on matching release, never on press or duplicate release", () => {
+		const h = makeHarness();
+		expect(h.input(EXPANDER_PRESS)).toEqual({ consume: true });
+		expect(h.toggled()).toBe(0);
+		expect(h.input(EXPANDER_RELEASE)).toEqual({ consume: true });
+		expect(h.toggled()).toBe(1);
+		h.input(EXPANDER_RELEASE);
+		expect(h.toggled()).toBe(1);
+	});
+
+	it("cancels drags, motion, wheel, and mismatched releases", () => {
+		for (const interruption of [
+			`${ESC}[<32;6;3M`, // left-button drag
+			`${ESC}[<32;5;3M`, // motion at the original cell is still a drag
+			VIEWPORT_MOTION,
+			VIEWPORT_WHEEL_UP,
+			VIEWPORT_WHEEL_DOWN,
+			`${ESC}[<66;5;3M`, // horizontal wheel
+			`${ESC}[<0;6;3m`, // different column
+			`${ESC}[<0;5;4m`, // different row
+			`${ESC}[<2;5;3m`, // different button
+			`${ESC}[<4;5;3m`, // different modifiers
+		]) {
+			const h = makeHarness();
+			h.input(EXPANDER_PRESS);
+			h.input(interruption);
+			h.input(EXPANDER_RELEASE);
+			expect(h.toggled()).toBe(0);
+			expect(h.focused).toEqual([]);
+			expect(h.toolToggles).toEqual([]);
+		}
+	});
+
+	it("does not toggle a tool that replaces the pressed target", () => {
+		let tool: string | undefined = "original";
+		const h = makeHarness({ candidates: () => [], tool: () => tool });
+		h.input(EXPANDER_PRESS);
+		tool = "replacement";
+		h.input(EXPANDER_RELEASE);
+		expect(h.toolToggles).toEqual([]);
+		h.input(EXPANDER_PRESS);
+		tool = undefined;
+		h.input(EXPANDER_RELEASE);
+		expect(h.toolToggles).toEqual([]);
+		h.input(EXPANDER_PRESS); // empty row cannot acquire a target on release
+		tool = "replacement";
+		h.input(EXPANDER_RELEASE);
+		expect(h.toolToggles).toEqual([]);
+		h.input(`${EXPANDER_PRESS}${ESC}[<32;6;3M${EXPANDER_RELEASE}`);
+		expect(h.toolToggles).toEqual([]);
+		h.click();
+		expect(h.toolToggles).toEqual(["replacement"]);
+	});
+
+	it("does not focus a live agent that replaces the pressed HUD target", () => {
+		const h = makeHarness();
+		h.input(EXPANDER_PRESS);
+		AgentRegistry.global().register({
+			id: PINNED_HUD_TOGGLE_ID,
+			displayName: "replacement",
+			kind: "sub",
+			session: {} as unknown as AgentSession,
+			sessionFile: null,
+		});
+		h.input(EXPANDER_RELEASE);
+		expect(h.focused).toEqual([]);
+		expect(h.toggled()).toBe(0);
+	});
+
+	it("cancels pending clicks on typing, including text coalesced with mouse reports", () => {
+		const h = makeHarness();
+		h.input(EXPANDER_PRESS);
+		expect(h.input("every character")).toBeUndefined();
+		h.input(EXPANDER_RELEASE);
+		expect(h.input(`${EXPANDER_PRESS}all the text${EXPANDER_RELEASE}after`)).toEqual({
+			data: "all the textafter",
+		});
+		expect(h.toggled()).toBe(0);
+	});
+
+	it("cancels before a shortcut listener consumes keyboard input", () => {
+		const h = makeHarness();
+		// Ctrl+O is consumed by the global tool-expansion listener.
+		h.input(EXPANDER_PRESS);
+		h.input("\x0f");
+		h.input(EXPANDER_RELEASE);
+		expect(h.toggled()).toBe(0);
+	});
+
+	it("cancels pending clicks for pasted mouse-looking text without altering the paste", () => {
+		const h = makeHarness();
+		h.input(EXPANDER_PRESS);
+		const paste = `${ESC}[200~first\n${EXPANDER_CLICK}\nlast${ESC}[201~`;
+		expect(h.input(paste)).toBeUndefined();
+		h.input(EXPANDER_RELEASE);
+		expect(h.toggled()).toBe(0);
+	});
+
+	it("forgets pending clicks while capture is disabled or an overlay owns input", () => {
+		const h = makeHarness();
+		h.input(EXPANDER_PRESS);
+		cfgTuiMouse.set(settings, false);
+		expect(h.input(EXPANDER_RELEASE)).toBeUndefined();
+		cfgTuiMouse.set(settings, true);
+		h.input(EXPANDER_RELEASE);
+		h.input(EXPANDER_PRESS);
+		h.setOverlay(true);
+		expect(h.input(EXPANDER_RELEASE)).toBeUndefined();
+		h.setOverlay(false);
+		h.input(EXPANDER_RELEASE);
+		expect(h.toggled()).toBe(0);
+	});
+
+	it("rejects release after capture or overlay ownership cycles without intervening input", () => {
+		const h = makeHarness();
+		h.input(EXPANDER_PRESS);
+		h.setCapture(false);
+		h.setCapture(true);
+		h.input(EXPANDER_RELEASE);
+		expect(h.toggled()).toBe(0);
+		h.input(EXPANDER_PRESS);
+		h.setOverlay(true);
+		h.setOverlay(false);
+		h.input(EXPANDER_RELEASE);
+		expect(h.toggled()).toBe(0);
+		h.click();
+		expect(h.toggled()).toBe(1);
+	});
+
 	it("keeps captured mouse protocol out of the editor without pretending to scroll native history", () => {
 		const h = makeHarness();
 		const renders = h.renders();
@@ -166,12 +312,15 @@ describe("InputController click routing", () => {
 	});
 
 	it("reassembles reports split after their unambiguous mouse prefix", () => {
-		for (const report of [EXPANDER_CLICK, VIEWPORT_WHEEL_UP, VIEWPORT_WHEEL_DOWN]) {
+		for (const report of [EXPANDER_PRESS, EXPANDER_RELEASE, VIEWPORT_WHEEL_UP, VIEWPORT_WHEEL_DOWN]) {
 			for (let split = 3; split < report.length; split++) {
 				const h = makeHarness();
+				if (report === EXPANDER_RELEASE) h.input(EXPANDER_PRESS);
 				expect(h.input(report.slice(0, split))).toEqual({ consume: true });
-				expect(h.input(`${report.slice(split)}typed`)).toEqual({ data: "typed" });
-				expect(h.toggled()).toBe(report === EXPANDER_CLICK ? 1 : 0);
+				expect(h.input(report.slice(split))).toEqual({ consume: true });
+				if (report === EXPANDER_PRESS) h.input(EXPANDER_RELEASE);
+				expect(h.input("typed")).toBeUndefined();
+				expect(h.toggled()).toBe(report === EXPANDER_PRESS || report === EXPANDER_RELEASE ? 1 : 0);
 			}
 		}
 	});

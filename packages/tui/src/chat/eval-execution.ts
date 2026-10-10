@@ -223,7 +223,7 @@ export class EvalExecutionComponent extends Container {
 						: `${output.length} lines`;
 			const colorKey: ExecutionColorKey = this.#excludeFromContext ? "dim" : "pythonMode";
 			const header = transcriptContent(this.#formatHeader(colorKey)).render(width)[0] ?? "  >>>";
-			return [header, truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)];
+			return [header, truncateToWidth(theme.fg("dim", `  ⎿ ${detail}`), width)];
 		}
 		if (this.#individuallyExpanded) {
 			return expandedToolRows(theme, lines, width);
