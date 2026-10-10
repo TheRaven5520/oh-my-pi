@@ -309,8 +309,10 @@ describe("terminal frame plans", () => {
 		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
 		tui.setFrameProvider(provider);
 
+		const ownerOne = {};
+		const ownerTwo = {};
 		provider.plan = {
-			history: { id: 1, rows: ["history one", "history two"], kind: "replay" },
+			history: { id: 1, rows: ["history one", "history two"], owners: [ownerOne, ownerTwo], kind: "replay" },
 			viewport: ["", "", "live", "editor"],
 		};
 		tui.requestRender(true);
@@ -321,7 +323,12 @@ describe("terminal frame plans", () => {
 			"live",
 			"editor",
 		]);
-		expect(tui.getMutableViewport()).toEqual({ top: 0, length: 2 });
+		// The window ends at the painted bottom; rows 0-1 (local index below
+		// the pad) show replayed history and resolve to their writers.
+		expect(tui.getMutableViewport()).toEqual({ top: 0, length: 4 });
+		expect(tui.getScreenHistoryOwner(0)).toBe(ownerOne);
+		expect(tui.getScreenHistoryOwner(1)).toBe(ownerTwo);
+		expect(tui.getScreenHistoryOwner(2)).toBeUndefined();
 		tui.stop();
 	});
 
@@ -341,7 +348,7 @@ describe("terminal frame plans", () => {
 		tui.requestRender(true);
 
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["history one", "", "live", "editor"]);
-		expect(tui.getMutableViewport()).toEqual({ top: 2, length: 3 });
+		expect(tui.getMutableViewport()).toEqual({ top: 2, length: 2 });
 		tui.stop();
 	});
 

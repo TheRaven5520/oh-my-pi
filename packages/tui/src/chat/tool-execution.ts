@@ -316,7 +316,6 @@ export class ToolExecutionComponent extends Container {
 	#expanded = false;
 	#hadExpandableContent = false;
 	#allocation = Number.POSITIVE_INFINITY;
-	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
 	#toolActivityVisible = true;
 	#showImages: boolean;
 	#isPartial = true;
@@ -358,9 +357,11 @@ export class ToolExecutionComponent extends Container {
 	#compactRows: readonly string[] = [];
 	#compactKey: string | undefined;
 	// Non-blank output lines behind the collapsed summary, recounted only when
-	// the memoized #getTextOutput() string changes (a running block's spinner
-	// re-keys the card every tick without new output).
+	// the memoized #getTextOutput() string or the result details the renderer's
+	// visibleOutput() reads change (a running block's spinner re-keys the card
+	// every tick without new output).
 	#outputSummarySource: string | undefined;
+	#outputSummaryDetails: unknown;
 	#outputSummary: OutputSummary = { count: 0, first: undefined, last: undefined };
 	#tool?: AgentTool;
 	#renderer?: ToolRenderer;
@@ -1212,9 +1213,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/** Apply the transcript allocator's current viewport reservation. */
-	setTranscriptAllocation(rows: number, frame: AnimationFrame): void {
+	setTranscriptAllocation(rows: number, _frame: AnimationFrame): void {
 		this.#allocation = Math.max(0, Math.trunc(rows));
-		this.#presentationFrame = frame;
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -1307,12 +1307,12 @@ export class ToolExecutionComponent extends Container {
 		return lines;
 	}
 
-	/** Header plus one dim summary row, memoized until an input it reads changes. */
+	/** Header plus one dim summary row (header only in a one-row allocation), memoized until an input it reads changes. */
 	#renderCompact(width: number): readonly string[] {
 		// The display key covers args, result, expansion and partial state (the
 		// summary's render context is rebuilt with the display); spinner ticks
 		// and sealing change the card without a display rebuild.
-		const key = `${width}|${this.#lastDisplayKey}|${this.#sealed ? 1 : 0}|${this.#spinnerFrame ?? "-"}|${getThemeEpoch()}|${TERMINAL.imageProtocol ?? "-"}`;
+		const key = `${width}|${this.#allocation === 1 ? 1 : 2}|${this.#lastDisplayKey}|${this.#sealed ? 1 : 0}|${this.#spinnerFrame ?? "-"}|${getThemeEpoch()}|${TERMINAL.imageProtocol ?? "-"}`;
 		if (key === this.#compactKey) return this.#compactRows;
 		const summary = this.#activitySummary();
 		const status =
@@ -1343,7 +1343,8 @@ export class ToolExecutionComponent extends Container {
 		this.#compactKey = key;
 		this.#compactRows = [
 			truncateToWidth(headerText, width),
-			...(detail ? [truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)] : []),
+			// The allocator shows a block's last rows: a one-row squeeze keeps the header.
+			...(detail && this.#allocation !== 1 ? [truncateToWidth(theme.fg("dim", `⎿ ${detail}`), width)] : []),
 		];
 		return this.#compactRows;
 	}
@@ -1372,12 +1373,13 @@ export class ToolExecutionComponent extends Container {
 	/** Count of non-blank output lines with the first and last, for the collapsed summary. */
 	#summarizeOutput(): OutputSummary {
 		const output = this.#getTextOutput();
-		if (output === this.#outputSummarySource) return this.#outputSummary;
+		const details = this.#result?.details;
+		if (output === this.#outputSummarySource && details === this.#outputSummaryDetails) return this.#outputSummary;
 		let count = 0;
 		let first: string | undefined;
 		let last: string | undefined;
 		// Notices the renderer hides (bash wall time, exit code) are not output rows.
-		const visible = this.#renderer?.visibleOutput?.(output, this.#result?.details) ?? output;
+		const visible = this.#renderer?.visibleOutput?.(output, details) ?? output;
 		for (const line of visible.split("\n")) {
 			if (!line.trim()) continue;
 			count++;
@@ -1385,6 +1387,7 @@ export class ToolExecutionComponent extends Container {
 			last = line;
 		}
 		this.#outputSummarySource = output;
+		this.#outputSummaryDetails = details;
 		this.#outputSummary = { count, first, last };
 		return this.#outputSummary;
 	}

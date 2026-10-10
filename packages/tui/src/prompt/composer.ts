@@ -676,22 +676,33 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	/**
 	 * Candidate subagent ids under a mutable-viewport line, for click-to-focus.
-	 * Empty when the line has no click target (chrome, separators, retired rows
-	 * are never in the viewport). Callers intersect with the live registry.
+	 * Empty when the line has no click target (chrome, separators) or shows
+	 * retired history (rows above the viewport, and composer rows a replay
+	 * paint replaced). Callers intersect with the live registry.
 	 */
 	viewportClickCandidates(index: number): string[] {
+		if (this.#screenHistoryOwnerAt(index) !== undefined) return [];
 		return routeViewportClick(this.#lastClickSpans, index);
 	}
 
 	/**
 	 * Tool target under a row, after agent-card candidates have precedence.
-	 * Negative indexes address retired rows still on screen above the mutable
-	 * viewport (`-1` is the row directly above it): they resolve through the
-	 * terminal's record of which block wrote each accepted history row.
+	 * Rows showing retired history resolve through the terminal's record of
+	 * which block wrote each accepted row: negative indexes (`-1` is the row
+	 * directly above the viewport) and, right after a replay paint, the
+	 * leading composer rows the replay replaced with history.
 	 */
 	viewportClickToolId(index: number): string | undefined {
 		if (!Number.isInteger(index)) return undefined;
-		if (index < 0) return this.#retiredClickToolId(index);
+		const owner = this.#screenHistoryOwnerAt(index);
+		if (owner !== undefined) {
+			const toolId = blockToolId(owner, blockAgentIds(owner));
+			if (toolId === undefined) return undefined;
+			// Its rows are in native history now: a toggle must replay it.
+			this.#toolClickTargets.set(toolId, { target: owner as { toggleClickExpansion(): boolean }, retired: true });
+			return toolId;
+		}
+		if (index < 0) return undefined;
 		for (const span of this.#lastClickSpans) {
 			if (index < span.start || index >= span.end || span.toolTarget === undefined) continue;
 			if (span.candidates(index - span.start).length > 0) return undefined;
@@ -700,17 +711,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		return undefined;
 	}
 
-	/** Tool block that wrote the retired row `-index` rows above the mutable viewport, registered as retired. */
-	#retiredClickToolId(index: number): string | undefined {
+	/** Block that wrote the accepted history row shown at mutable-viewport index `index`, if that row is history. */
+	#screenHistoryOwnerAt(index: number): object | undefined {
 		const viewport = this.ui.getMutableViewport();
 		if (viewport.length === 0) return undefined;
-		const owner = this.ui.getScreenHistoryOwner(viewport.top + index);
-		if (owner === undefined) return undefined;
-		const toolId = blockToolId(owner, blockAgentIds(owner));
-		if (toolId === undefined) return undefined;
-		// Its rows are in native history now: a toggle must replay it.
-		this.#toolClickTargets.set(toolId, { target: owner as { toggleClickExpansion(): boolean }, retired: true });
-		return toolId;
+		return this.ui.getScreenHistoryOwner(viewport.top + index);
 	}
 
 	/** Toggle a visible tool block and replay only when its rows were retired. */

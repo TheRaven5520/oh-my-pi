@@ -1339,13 +1339,17 @@ export class TUI extends Container {
 	 * the display, while a resize transaction is settling, and while a Ghostty
 	 * image paint is deferred — the painted rows predate the latest spans in
 	 * all three cases, so hits would map to unrelated old rows.
-	 * The origin is in composer rows: a replay paint replaces leading composer
-	 * blanks with history rows and prepends blanks for a short viewport, so
-	 * the painted top is backed out by that net pad.
+	 * Both values are in composer rows: a replay paint replaces leading
+	 * composer blanks with history rows and prepends blanks for a short
+	 * viewport, so the painted top is backed out by that net pad and the
+	 * length grows by it — the window always ends at the painted bottom.
+	 * Replaced rows (local index below the pad) show history: resolve them
+	 * through {@link getScreenHistoryOwner} before composer spans.
 	 */
 	getMutableViewport(): { top: number; length: number } {
 		if (!this.#paintedRowsAddressable()) return { top: 0, length: 0 };
-		return { top: this.#providerViewportTop - this.#providerViewportPadTop, length: this.#providerWindow.length };
+		const pad = this.#providerViewportPadTop;
+		return { top: this.#providerViewportTop - pad, length: this.#providerWindow.length + pad };
 	}
 
 	/**
@@ -3435,7 +3439,17 @@ export class TUI extends Container {
 			this.#providerWindow = [];
 			this.#providerPreparedRows = [];
 		}
+		// Banded history rows the terminal rewrapped at the new width still carry
+		// the hover band; put their accepted bytes back before forgetting them.
+		let rewrappedBandRestore = "";
 		if (destructiveReset || (this.#hasEverRendered && this.#previousWidth !== width)) {
+			if (!destructiveReset && this.#bandedHistoryRows > 0) {
+				rewrappedBandRestore = this.#restoreRewrappedBandedHistory(
+					width,
+					height,
+					Math.min(this.#providerViewportTop, Math.max(0, height - 1)),
+				);
+			}
 			// Erased, or rewrapped by the terminal at the new width: either way the
 			// rows above the viewport no longer line up with what was written.
 			this.#screenHistory = [];
@@ -3449,7 +3463,7 @@ export class TUI extends Container {
 		const startTop = destructiveReset ? 0 : Math.min(this.#providerViewportTop, Math.max(0, height - 1));
 		const newTop = Math.max(0, Math.min(startTop + historyRows.length, height - rows));
 		const pendingAltExit = this.#pendingAltExit;
-		let buffer = this.#paintBeginSequence + pendingAltExit;
+		let buffer = this.#paintBeginSequence + pendingAltExit + rewrappedBandRestore;
 		const renewSync =
 			destructiveReset &&
 			this.#resizeScrollbackMode === "rebuild" &&
@@ -3700,6 +3714,40 @@ export class TUI extends Container {
 			row.banded = false;
 			this.#bandedHistoryRows--;
 			buffer += this.#historyRowRewrite(row.line, width, height, top - depth);
+		}
+		return buffer;
+	}
+
+	/**
+	 * {@link #restoreBandedHistory} after the terminal rewrapped the screen at
+	 * `width`, with `top` the resolved viewport top in the new geometry. History
+	 * rows are hard lines, so each now spans ceil(cells/width) physical rows
+	 * (the {@link #reflowedRowCount} model) stacked directly above `top`; a
+	 * banded row is rewritten segment by segment over exactly those rows. Rows
+	 * already pushed above the screen are out of reach.
+	 */
+	#restoreRewrappedBandedHistory(width: number, height: number, top: number): string {
+		let buffer = "";
+		const tail = this.#screenHistory;
+		const columns = Math.max(1, width);
+		let screenRow = top;
+		for (let depth = 1; depth <= tail.length && this.#bandedHistoryRows > 0 && screenRow > 0; depth++) {
+			const row = tail[tail.length - depth]!;
+			const span = Math.max(1, Math.ceil(visibleWidth(row.line.raw) / columns));
+			screenRow -= span;
+			if (!row.banded) continue;
+			row.banded = false;
+			this.#bandedHistoryRows--;
+			if (span === 1) {
+				buffer += this.#historyRowRewrite(row.line, width, height, screenRow);
+				continue;
+			}
+			const epoch = getWidthConfigEpoch();
+			for (let segment = 0; segment < span; segment++) {
+				const part = sliceByColumn(row.line.raw, segment * columns, columns, true);
+				const prepared = this.#prepareLine(part, width, epoch, TERMINAL.imageProtocol);
+				buffer += this.#historyRowRewrite(prepared, width, height, screenRow + segment);
+			}
 		}
 		return buffer;
 	}

@@ -54,6 +54,28 @@ describe("collapsed tool cards", () => {
 		}
 	});
 
+	it("recounts hidden lines when the same output gains notice details", () => {
+		const card = new ToolExecutionComponent("bash", { command: "echo a" }, {}, undefined, ui, "/tmp");
+		const text = "a\nb\n\nWall time: 0.02 seconds";
+		card.updateResult({ content: [{ type: "text", text }], details: {} }, false);
+		card.seal();
+		expect(plain(card.render(120))[1]).toBe("⎿ 3 lines hidden");
+		// Same output string, new details: the notice is now known and hidden.
+		card.updateResult({ content: [{ type: "text", text }], details: { wallTimeMs: 20 } }, false);
+		expect(plain(card.render(120))[1]).toBe("⎿ 2 lines hidden");
+	});
+
+	it("keeps only the header in a one-row allocation", () => {
+		const card = new ToolExecutionComponent("bash", { command: "seq 1 3" }, {}, undefined, ui, "/tmp");
+		card.updateResult(textResult("1\n2\n3"), false);
+		card.seal();
+		expect(plain(card.render(120))).toHaveLength(2);
+		card.setTranscriptAllocation(1, { tick: 0, now: 0 });
+		const rows = plain(card.render(120));
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toContain("seq 1 3");
+	});
+
 	it("keeps a collapsed card off its child tree on unchanged frames", () => {
 		const body = new CountingBody(Array.from({ length: 12 }, (_, index) => `body row ${index}`));
 		const tool = {

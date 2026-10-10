@@ -277,7 +277,8 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			resetDisplay();
 		};
 		/** Click-handler hit-test: screen row to mutable-viewport index, negative above it. */
-		const toolAt = (screenRow: number) => composer.viewportClickToolId(screenRow - composer.ui.getMutableViewport().top);
+		const toolAt = (screenRow: number) =>
+			composer.viewportClickToolId(screenRow - composer.ui.getMutableViewport().top);
 		const rowsMatching = (text: string) =>
 			terminal
 				.getViewport()
@@ -372,6 +373,146 @@ describe("composer tool clicks on clipped and retired rows", () => {
 			expect(h.toolAt(header)).toBe("done");
 		} finally {
 			h.composer.stop();
+		}
+	});
+
+	it("restores banded retired rows the terminal rewrapped at a new width", async () => {
+		// Rows wider than the narrowed terminal: each rewraps into two rows.
+		const pad = " ·".repeat(30);
+		const tool = new ToolBlock("done", 60, true);
+		tool.render = () =>
+			tool.expanded
+				? ["done header", ...Array.from({ length: tool.lines }, (_, row) => `done line ${row}${pad}`)]
+				: ["done header", `done hidden ${tool.lines}`];
+		const h = await mount(tool);
+		try {
+			expect(h.composer.toggleViewportTool("done")).toBe(true);
+			await h.scheduler.settle(h.terminal);
+			const top = h.composer.ui.getMutableViewport().top;
+			const visible = h.rowsMatching("done line");
+			expect(visible.length).toBeGreaterThan(0);
+			expect(visible.every(row => row < top)).toBe(true);
+			h.composer.setHoveredClickId("done");
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			expect(visible.every(h.banded)).toBe(true);
+
+			// Preserve mode keeps the rewrapped screen (no ED3 + replay to repaint it).
+			h.composer.ui.setResizeScrollback("preserve");
+			h.terminal.resize(50, 40);
+			await h.scheduler.advance(h.terminal, 2000);
+			await h.scheduler.settle(h.terminal);
+			const rows = h.terminal.getViewport();
+			const bandedRows = rows.map((_, row) => row).filter(h.banded);
+			expect(bandedRows).toEqual([]);
+			// Each restored row still reads whole across its two rewrapped rows.
+			const restored = rows.findIndex(line => line.startsWith("done line"));
+			expect(restored).toBeGreaterThanOrEqual(0);
+			expect(`${rows[restored]}${rows[restored + 1]}`.trimEnd()).toMatch(/^done line \d+( ·){30}$/);
+		} finally {
+			h.composer.stop();
+		}
+	});
+
+	it("routes rows a replay paint replaced with history to their retired block", async () => {
+		// A short frame whose leading composer rows are blank: the replay
+		// splits history into those rows, so the published top sits above the
+		// painted live top and the last history rows have local index >= 0.
+		const terminal = new VirtualTerminal(100, 12);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			tuiOptions: { renderScheduler: scheduler },
+			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
+		});
+		const tool = new ToolBlock("done", 30, true);
+		tool.expanded = true;
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Text("user prompt", 0, 0));
+		transcript.addChild(tool);
+		const editor = new Container();
+		editor.addChild({ render: () => ["", "", "EDITOR"], invalidate() {} });
+		composer.setRuntimeChildren([transcript, editor]);
+		composer.start({ playWelcomeIntro: false });
+		try {
+			await scheduler.settle(terminal);
+			let resets = 0;
+			const resetDisplay = composer.ui.resetDisplay.bind(composer.ui);
+			composer.ui.resetDisplay = () => {
+				resets++;
+				resetDisplay();
+			};
+			// Paint listeners swallow throws, so the replay frame is sampled here
+			// and asserted after it settles.
+			const seen: Record<string, unknown> = {};
+			const stop = composer.ui.addPaintListener(paint => {
+				if (!paint.reset) return;
+				const viewport = composer.ui.getMutableViewport();
+				const rows = terminal.getViewport();
+				const lastLine = rows.findIndex(row => row.includes("done line 29")) - viewport.top;
+				const editorRow = rows.findIndex(row => row.includes("EDITOR")) - viewport.top;
+				Object.assign(seen, {
+					lastLineLocal: lastLine >= 0,
+					editorInWindow: editorRow < viewport.length,
+					lastLineTool: composer.viewportClickToolId(lastLine),
+					lastLineCandidates: composer.viewportClickCandidates(lastLine),
+					editorTool: composer.viewportClickToolId(editorRow),
+				});
+			});
+			// Uncounted: only the toggle's own replay is counted below.
+			resetDisplay();
+			await scheduler.settle(terminal);
+			stop();
+			// The replaced rows are inside the published window (local >= 0), the
+			// live rows still end inside it, and the history row hits its writer.
+			expect(seen).toEqual({
+				lastLineLocal: true,
+				editorInWindow: true,
+				lastLineTool: "done",
+				lastLineCandidates: [],
+				editorTool: undefined,
+			});
+
+			composer.setHoveredClickId("done");
+			composer.ui.requestRender();
+			await scheduler.settle(terminal);
+			const doneRows = terminal
+				.getViewport()
+				.map((line, row) => (line.includes("done line") ? row : -1))
+				.filter(row => row >= 0);
+			expect(doneRows.length).toBeGreaterThan(0);
+			expect(doneRows.every(row => terminal.getViewportRowBackgroundColumns(row).length > 0)).toBe(true);
+			composer.setHoveredClickId(undefined);
+			composer.ui.requestRender();
+			await scheduler.settle(terminal);
+
+			// A click landing after the replay paint but before the follow-up
+			// frame its acknowledgement requests: queued ahead of that frame.
+			let toggled: boolean | undefined;
+			let queued = false;
+			const stopClick = composer.ui.addPaintListener(paint => {
+				if (!paint.reset || queued) return;
+				queued = true;
+				scheduler.scheduleImmediate(() => {
+					const viewport = composer.ui.getMutableViewport();
+					const row = terminal.getViewport().findIndex(line => line.includes("done line 29"));
+					expect(row - viewport.top).toBeGreaterThanOrEqual(0);
+					const id = composer.viewportClickToolId(row - viewport.top);
+					toggled = id !== undefined && composer.toggleViewportTool(id);
+				});
+			});
+			resetDisplay();
+			await scheduler.settle(terminal);
+			stopClick();
+			expect(toggled).toBe(true);
+			expect(tool.expanded).toBe(false);
+			// The row was history, so the toggle replays instead of repainting.
+			expect(resets).toBe(1);
+			const buffer = terminal.getScrollBuffer();
+			expect(buffer.filter(line => line.includes("done line"))).toEqual([]);
+			expect(buffer.filter(line => line.includes("done hidden 30"))).toHaveLength(1);
+		} finally {
+			composer.stop();
 		}
 	});
 });
