@@ -45,6 +45,7 @@ import {
 	TERMINAL,
 } from "./terminal-capabilities";
 import { classifyTerminalMultiplexer } from "./terminal-multiplexer";
+import { TerminalOutputFence } from "./terminal-output-fence";
 import { TmuxHistoryBridge, type TmuxHistorySnapshot } from "./tmux-history";
 import {
 	Ellipsis,
@@ -199,6 +200,8 @@ export interface TerminalFrameProvider {
 	beginHistoryFlush?(): void;
 	/** Stable component identity for a mutable row used in a native-history snapshot. */
 	viewportHistoryOwner?(index: number): object | undefined;
+	/** Only expandable tool rows are sent through the native-history bridge. */
+	isHistoryTool?(owner: object): boolean;
 	/** Validate retained ownership and toggle with a complete history replay. */
 	toggleHistoryOwner?(owner: object): boolean;
 }
@@ -812,8 +815,7 @@ export class TUI extends Container {
 	#historyBridge: TmuxHistoryBridge | undefined;
 	#historyBridgeStarting = false;
 	#historyPaused = false;
-	#historyFence: ((accepted: boolean) => void) | undefined;
-	#historyFenceFailed = false;
+	#historyFence = new TerminalOutputFence(data => this.terminal.write(data));
 	// Viewport-relative row of the hardware cursor after the last normal paint
 	// (0 = parked at the viewport top). A resize reflows the normal buffer
 	// before the app hears about it; terminals keep the cursor attached to its
@@ -1398,7 +1400,7 @@ export class TUI extends Container {
 		if (this.#stopped || this.#historyBridge || this.#historyBridgeStarting || !this.#inlineMouseProvider) return;
 		this.#historyBridgeStarting = true;
 		void TmuxHistoryBridge.create({
-			capture: owner => this.#captureHistory(owner),
+			capture: (owner, signal) => this.#captureHistory(owner, signal),
 			setHistoryLimit: limit => {
 				this.#historyLimit = Math.max(SCREEN_HISTORY_MIN_ROWS, limit);
 			},
@@ -1413,10 +1415,10 @@ export class TUI extends Container {
 			});
 	}
 
-	async #captureHistory(owner?: object): Promise<TmuxHistorySnapshot | undefined> {
+	async #captureHistory(owner?: object, signal?: AbortSignal): Promise<TmuxHistorySnapshot | undefined> {
 		if (
 			this.#historyPaused ||
-			this.#historyFenceFailed ||
+			signal?.aborted ||
 			this.#stopped ||
 			!this.#inlineMouseProvider?.() ||
 			this.hasOverlay() ||
@@ -1429,7 +1431,11 @@ export class TUI extends Container {
 		const epoch = this.#historyEpoch;
 		const columns = this.terminal.columns;
 		const rows = this.terminal.rows;
+		let expired = false;
+		let released = false;
 		const valid = () =>
+			!expired &&
+			(released || !signal?.aborted) &&
 			!this.#stopped &&
 			epoch === this.#historyEpoch &&
 			columns === this.terminal.columns &&
@@ -1438,34 +1444,26 @@ export class TUI extends Container {
 			this.#paintedRowsAddressable() &&
 			!!this.#inlineMouseProvider?.();
 		this.#historyPaused = true;
-		let released = false;
 		const release = () => {
 			if (released) return;
 			released = true;
+			clearTimeout(watchdog);
+			signal?.removeEventListener("abort", abort);
 			this.#historyPaused = false;
 			if (!this.#stopped) {
 				this.#renderRequested = false;
 				this.requestRender();
 			}
 		};
-		// The reply travels through tmux's pane parser after every preceding
-		// paint byte. A command-channel query alone cannot provide this fence.
-		const accepted = await new Promise<boolean>(resolve => {
-			const timer = setTimeout(() => {
-				this.#historyFenceFailed = true;
-				this.#historyFence?.(false);
-			}, 10_000);
-			this.#historyFence = result => {
-				clearTimeout(timer);
-				this.#historyFence = undefined;
-				resolve(result);
-			};
-			try {
-				this.terminal.write("\x1b[5n");
-			} catch {
-				this.#historyFence?.(false);
-			}
-		});
+		const abort = () => {
+			expired = true;
+			this.#historyFence.cancel();
+			release();
+		};
+		// A failed bridge or disconnected client cannot freeze ordinary painting.
+		const watchdog = setTimeout(abort, 3500);
+		signal?.addEventListener("abort", abort, { once: true });
+		const accepted = await this.#historyFence.wait(signal);
 		if (!accepted || !valid()) {
 			release();
 			return undefined;
@@ -1479,6 +1477,10 @@ export class TUI extends Container {
 					? this.#frameProvider?.viewportHistoryOwner?.(row - viewport.top)
 					: undefined,
 			);
+		}
+		for (let index = 0; index < owners.length; index++) {
+			const candidate = owners[index];
+			if (candidate && !this.#frameProvider?.isHistoryTool?.(candidate)) owners[index] = undefined;
 		}
 		return { owners, screenTop, columns, rows, valid, release };
 	}
@@ -2573,7 +2575,7 @@ export class TUI extends Container {
 	stop(): void {
 		this.#historyBridge?.stop();
 		this.#historyBridge = undefined;
-		this.#historyFence?.(false);
+		this.#historyFence.cancel();
 		this.#historyPaused = false;
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = undefined;
@@ -2858,14 +2860,8 @@ export class TUI extends Container {
 	}
 
 	#handleInput(data: string): void {
-		if (this.#historyFence || this.#historyFenceFailed) {
-			const reply = data.indexOf("\x1b[0n");
-			if (reply >= 0) {
-				data = data.slice(0, reply) + data.slice(reply + 4);
-				this.#historyFence?.(true);
-				if (!data) return;
-			}
-		}
+		data = this.#historyFence.consume(data);
+		if (!data) return;
 		this.#inputRenderPending = true;
 		// Tern Surface Protocol events (acks, pointer actions, resize, theme)
 		// are terminal reports, never keystrokes.

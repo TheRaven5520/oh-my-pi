@@ -16,7 +16,7 @@ export interface TmuxHistorySnapshot {
 }
 
 export interface TmuxHistoryHost {
-	capture(owner?: object): Promise<TmuxHistorySnapshot | undefined>;
+	capture(owner?: object, signal?: AbortSignal): Promise<TmuxHistorySnapshot | undefined>;
 	setHistoryLimit(limit: number): void;
 }
 
@@ -51,7 +51,7 @@ const STATE_FORMAT =
 /** Native tmux history owns scrolling/selection; only immutable row identities cross this socket. */
 export class TmuxHistoryBridge {
 	#server: Server;
-	#clients = new Set<Socket>();
+	#clients = new Map<Socket, AbortController>();
 	#stopped = false;
 	#queue: Promise<void> = Promise.resolve();
 	#pending = 0;
@@ -101,7 +101,7 @@ export class TmuxHistoryBridge {
 			)
 				throw new Error("Invalid tmux pane dimensions");
 			host.setHistoryLimit(state.historyLimit + state.rows);
-			await bridge.#tmux("set", "-p", "-t", pane, "@omp-history-socket", bridge.socketPath);
+			await bridge.#tmux(undefined, "set", "-p", "-t", pane, "@omp-history-socket", bridge.socketPath);
 			return bridge;
 		} catch {
 			if (bridge) bridge.stop();
@@ -114,27 +114,41 @@ export class TmuxHistoryBridge {
 		if (this.#stopped) return;
 		this.#stopped = true;
 		this.#snapshot = undefined;
-		for (const client of this.#clients) client.destroy();
+		for (const [client, controller] of this.#clients) {
+			controller.abort();
+			client.destroy();
+		}
 		this.#server.close();
-		void this.#tmux(
-			"if",
-			"-F",
-			"-t",
-			this.pane,
-			`#{==:#{@omp-history-socket},${this.socketPath}}`,
-			`set -pu -t ${this.pane} @omp-history-socket ; set -pu -t ${this.pane} @omp-history-snapshot`,
-		)
+		// Let an in-flight mutation cancel its own frozen mode before removing the
+		// socket identity that protects that cancellation from newer owners.
+		void this.#queue
+			.then(() =>
+				this.#tmux(
+					undefined,
+					"if",
+					"-F",
+					"-t",
+					this.pane,
+					`#{==:#{@omp-history-socket},${this.socketPath}}`,
+					`set -pu -t ${this.pane} @omp-history-socket ; set -pu -t ${this.pane} @omp-history-snapshot`,
+				),
+			)
 			.catch(() => {})
 			.finally(() => rm(this.directory, { recursive: true, force: true }).catch(() => {}));
 	}
 
-	async #tmux(...args: string[]): Promise<string> {
-		const { stdout } = await execute("tmux", ["-S", this.serverSocket, ...args], { timeout: 2000, maxBuffer: 8192 });
+	async #tmux(signal: AbortSignal | undefined, ...args: string[]): Promise<string> {
+		signal?.throwIfAborted();
+		const { stdout } = await execute("tmux", ["-S", this.serverSocket, ...args], {
+			timeout: 2000,
+			maxBuffer: 8192,
+			signal,
+		});
 		return stdout.trim();
 	}
 
-	async #state(): Promise<PaneState> {
-		const values = (await this.#tmux("display", "-p", "-t", this.pane, STATE_FORMAT)).split("\t");
+	async #state(signal?: AbortSignal): Promise<PaneState> {
+		const values = (await this.#tmux(signal, "display", "-p", "-t", this.pane, STATE_FORMAT)).split("\t");
 		return {
 			mode: values[0] === "1",
 			scrollback: values[1] === "1",
@@ -149,11 +163,23 @@ export class TmuxHistoryBridge {
 	}
 
 	#connect(socket: Socket): void {
-		this.#clients.add(socket);
+		const controller = new AbortController();
+		const { signal } = controller;
+		this.#clients.set(socket, controller);
 		socket.setEncoding("utf8");
-		socket.setTimeout(5000, () => socket.destroy());
-		socket.on("error", () => {});
-		socket.on("close", () => this.#clients.delete(socket));
+		// Includes queue time and leaves headroom before the helper's five-second timeout.
+		const deadline = setTimeout(() => {
+			controller.abort();
+			socket.destroy();
+		}, 4000);
+		deadline.unref();
+		socket.on("error", () => controller.abort());
+		socket.on("end", () => controller.abort());
+		socket.on("close", () => {
+			controller.abort();
+			clearTimeout(deadline);
+			this.#clients.delete(socket);
+		});
 		let input = "";
 		let received = false;
 		socket.on("data", chunk => {
@@ -191,12 +217,13 @@ export class TmuxHistoryBridge {
 			this.#queue = this.#queue.then(async () => {
 				let ok = false;
 				try {
-					if (!this.#stopped) ok = await this.#handle(request);
+					if (!this.#stopped && !signal.aborted) ok = await this.#handle(request, signal);
 				} catch {
 					/* A failed fence or dead pane never resolves a guessed owner. */
 				} finally {
 					this.#pending--;
-					socket.end(`${JSON.stringify({ ok })}\n`);
+					clearTimeout(deadline);
+					if (!socket.destroyed && !socket.writableEnded) socket.end(`${JSON.stringify({ ok })}\n`);
 				}
 			});
 		});
@@ -215,9 +242,9 @@ export class TmuxHistoryBridge {
 		return clauses.reduce((left, right) => `#{&&:${left},${right}}`);
 	}
 
-	async #handle(request: HistoryRequest): Promise<boolean> {
-		const state = await this.#state();
-		if (state.socket !== this.socketPath || this.#stopped) return false;
+	async #handle(request: HistoryRequest, signal: AbortSignal): Promise<boolean> {
+		const state = await this.#state(signal);
+		if (state.socket !== this.socketPath || this.#stopped || signal.aborted) return false;
 		if (request.op === "wheel") {
 			// Wheel requests captured before entry can arrive after its mode-change hook.
 			if (state.mode) {
@@ -229,11 +256,19 @@ export class TmuxHistoryBridge {
 					(request.generation !== state.generation && request.generation + 1 !== state.generation)
 				)
 					return true;
-				await this.#tmux("if", "-F", "-t", this.pane, this.#guard(state), `send -t ${this.pane} -X -N 3 scroll-up`);
+				await this.#tmux(
+					signal,
+					"if",
+					"-F",
+					"-t",
+					this.pane,
+					this.#guard(state),
+					`send -t ${this.pane} -X -N 3 scroll-up`,
+				);
 				return true;
 			}
 			if (state.generation !== request.generation) return true;
-			return this.#enter(state);
+			return this.#enter(state, signal);
 		}
 		const saved = this.#snapshot;
 		if (
@@ -269,17 +304,27 @@ export class TmuxHistoryBridge {
 		if (!owner) return true;
 		let first = index;
 		while (first > 0 && saved.value.owners[first - 1] === owner) first--;
-		return this.#refresh(state, owner, index - first, y!);
+		return this.#refresh(state, owner, index - first, y!, signal);
 	}
 
-	async #enter(state: PaneState): Promise<boolean> {
-		const snapshot = await this.host.capture();
+	async #enter(state: PaneState, signal: AbortSignal): Promise<boolean> {
+		const snapshot = await this.host.capture(undefined, signal);
 		if (!snapshot) return false;
+		const token = `${process.pid}-${++this.#sequence}`;
+		let committed = false;
+		let attempted = false;
 		try {
-			if (this.#stopped || !snapshot.valid() || snapshot.columns !== state.columns || snapshot.rows !== state.rows)
+			if (
+				this.#stopped ||
+				signal.aborted ||
+				!snapshot.valid() ||
+				snapshot.columns !== state.columns ||
+				snapshot.rows !== state.rows
+			)
 				return false;
-			const token = `${process.pid}-${++this.#sequence}`;
+			attempted = true;
 			await this.#tmux(
+				signal,
 				"if",
 				"-F",
 				"-t",
@@ -288,21 +333,88 @@ export class TmuxHistoryBridge {
 				`set -p -t ${this.pane} @scrollback 1 ; copy-mode -e -t ${this.pane} ; ` +
 					`set -p -t ${this.pane} @omp-history-snapshot ${token} ; send -t ${this.pane} -X -N 3 scroll-up`,
 			);
-			const entered = await this.#state();
-			if (entered.mode && entered.token === token && entered.generation === state.generation + 1) {
+			const entered = await this.#state(signal);
+			if (
+				!signal.aborted &&
+				snapshot.valid() &&
+				entered.mode &&
+				entered.token === token &&
+				entered.generation === state.generation + 1
+			) {
 				this.#snapshot = { value: snapshot, token, generation: entered.generation };
+				committed = true;
 			}
 			return true;
 		} finally {
 			snapshot.release();
+			if (attempted && !committed) await this.#discard({ ...state, generation: state.generation + 1, token });
 		}
 	}
 
-	async #refresh(state: PaneState, owner: object, ownerRow: number, mouseY: number): Promise<boolean> {
-		const snapshot = await this.host.capture(owner);
-		if (!snapshot) return true;
+	/** Cancel only our original native mode, never a mode the user entered meanwhile. */
+	async #discard(state: PaneState, replacementToken?: string): Promise<void> {
+		const saved = this.#snapshot;
+		if (saved?.generation === state.generation && (saved.token === state.token || saved.token === replacementToken))
+			this.#snapshot = undefined;
+		const original = `#{==:#{@omp-history-snapshot},${state.token}}`;
+		const token = replacementToken
+			? `#{||:${original},#{==:#{@omp-history-snapshot},${replacementToken}}}`
+			: original;
+		const guard = [
+			`#{==:#{@omp-history-socket},${this.socketPath}}`,
+			`#{==:#{@omp-history-generation},${state.generation}}`,
+			"#{==:#{pane_in_mode},1}",
+			"#{==:#{@scrollback},1}",
+			token,
+		].reduce((left, right) => `#{&&:${left},${right}}`);
+		await this.#tmux(
+			undefined,
+			"if",
+			"-F",
+			"-t",
+			this.pane,
+			guard,
+			`set -pu -t ${this.pane} @omp-history-snapshot ; send -t ${this.pane} -X cancel`,
+		).catch(() => {});
+	}
+
+	async #refresh(
+		state: PaneState,
+		owner: object,
+		ownerRow: number,
+		mouseY: number,
+		signal: AbortSignal,
+	): Promise<boolean> {
+		// The previous request may have waited in the queue while native selection moved.
+		const before = await this.#state(signal);
+		if (
+			this.#stopped ||
+			signal.aborted ||
+			!before.mode ||
+			!before.scrollback ||
+			before.socket !== this.socketPath ||
+			before.token !== state.token ||
+			before.generation !== state.generation ||
+			before.scroll !== state.scroll ||
+			before.columns !== state.columns ||
+			before.rows !== state.rows
+		)
+			return true;
+		let snapshot: TmuxHistorySnapshot | undefined;
+		let committed = false;
+		let token: string | undefined;
 		try {
-			if (this.#stopped || !snapshot.valid() || snapshot.columns !== state.columns || snapshot.rows !== state.rows)
+			// capture(owner) can mutate before returning or throwing: every failure below
+			// must reveal the live grid instead of retaining the old frozen copy.
+			snapshot = await this.host.capture(owner, signal);
+			if (
+				!snapshot ||
+				this.#stopped ||
+				signal.aborted ||
+				!snapshot.valid() ||
+				snapshot.columns !== state.columns ||
+				snapshot.rows !== state.rows
+			)
 				return true;
 			const first = snapshot.owners.indexOf(owner);
 			if (first < 0) return true;
@@ -311,12 +423,19 @@ export class TmuxHistoryBridge {
 			const index = Math.min(first + ownerRow, end - 1);
 			// Stay in native history even if expansion moves the anchor into the live screen.
 			const desired = Math.max(1, snapshot.screenTop + mouseY - index);
-			const token = `${process.pid}-${++this.#sequence}`;
-			const current = await this.#state();
+			token = `${process.pid}-${++this.#sequence}`;
+			const current = await this.#state(signal);
 			if (
+				signal.aborted ||
+				!snapshot.valid() ||
+				!current.mode ||
+				!current.scrollback ||
+				current.socket !== this.socketPath ||
 				current.token !== state.token ||
 				current.generation !== state.generation ||
-				current.scroll !== state.scroll
+				current.scroll !== state.scroll ||
+				current.columns !== state.columns ||
+				current.rows !== state.rows
 			)
 				return true;
 			// Replaying may shrink tmux history and clamp its offset. Evaluate the delta
@@ -327,6 +446,7 @@ export class TmuxHistoryBridge {
 				`{ if -F -t ${this.pane} '#{<:#{scroll_position},${desired}}' ` +
 				`'send -t ${this.pane} -X -N "#{e|-:${desired},#{scroll_position}}" scroll-up' }`;
 			await this.#tmux(
+				signal,
 				"if",
 				"-F",
 				"-t",
@@ -334,13 +454,21 @@ export class TmuxHistoryBridge {
 				`#{&&:${this.#guard(state)},#{==:#{scroll_position},${state.scroll}}}`,
 				`send -t ${this.pane} -X refresh-from-pane ; ${adjust} ; set -p -t ${this.pane} @omp-history-snapshot ${token}`,
 			);
-			const refreshed = await this.#state();
-			if (refreshed.mode && refreshed.token === token && refreshed.generation === state.generation) {
+			const refreshed = await this.#state(signal);
+			if (
+				!signal.aborted &&
+				snapshot.valid() &&
+				refreshed.mode &&
+				refreshed.token === token &&
+				refreshed.generation === state.generation
+			) {
 				this.#snapshot = { value: snapshot, token, generation: refreshed.generation };
+				committed = true;
 			}
 			return true;
 		} finally {
-			snapshot.release();
+			snapshot?.release();
+			if (!committed) await this.#discard(state, token);
 		}
 	}
 }

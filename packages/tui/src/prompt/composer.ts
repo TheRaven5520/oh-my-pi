@@ -675,6 +675,10 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		return this.#lastClickSpans.find(span => index >= span.start && index < span.end)?.owner;
 	}
 
+	isHistoryTool(owner: object): boolean {
+		return blockToolId(owner, blockAgentIds(owner)) !== undefined;
+	}
+
 	/** A snapshot may outlive a session switch; only retained components can be toggled. */
 	toggleHistoryOwner(owner: object): boolean {
 		const retained = this.#runtimeChildren.some(
