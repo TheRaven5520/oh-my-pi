@@ -3174,17 +3174,13 @@ describe("AgentSession retry delay cap", () => {
 	});
 
 	it.each([
-		["sub", 2],
-		["main", 1],
+		["sub", 1],
+		["main", 0],
 	] as const)(
-		"a %s session treats partial text as replay-%s for the Anthropic envelope error",
-		async (agentKind, expectedStreamCalls) => {
-			// Production 2026-09-21: `scout` subagents whose stream died with
-			// "stream ended before message_stop" after streaming prose exited 1
-			// instead of retrying. A subagent's streamed text reaches no output
-			// sink (the parent only ever sees the yield), so it is replay-safe
-			// without the print-mode `setTextOutputCommitted(false)` dance; a
-			// main session keeps the veto because the text is already rendered.
+		"a %s session recovers Anthropic EOF with %s replay retries",
+		async (agentKind, expectedReplayRetries) => {
+			// Subagents buffer text and can replay; main sessions preserve already
+			// rendered text and continue with a reminder instead of replaying it.
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 			if (!model) {
 				throw new Error("Expected bundled Anthropic test model to exist");
@@ -3278,16 +3274,12 @@ describe("AgentSession retry delay cap", () => {
 			await session.prompt("Trigger envelope error after partial text");
 			await session.waitForIdle();
 
-			expect(streamCalls).toBe(expectedStreamCalls);
-			expect(retryStartEvents).toHaveLength(expectedStreamCalls - 1);
+			expect(streamCalls).toBe(2);
+			expect(retryStartEvents).toHaveLength(expectedReplayRetries);
 			const last = lastAssistant(session);
-			if (agentKind === "sub") {
-				expect(last.stopReason).toBe("stop");
-				expect(last.content).toContainEqual({ type: "text", text: "recovered after envelope retry" });
-			} else {
-				expect(last.stopReason).toBe("error");
-				expect(last.errorMessage).toBe(envelopeError);
-			}
+			expect(last.stopReason).toBe("stop");
+			expect(last.content).toContainEqual({ type: "text", text: "recovered after envelope retry" });
+			expect(session.agent.state.messages.some(message => message.role === "developer")).toBe(agentKind === "main");
 		},
 	);
 
