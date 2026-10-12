@@ -6,6 +6,7 @@
 
 ### Added
 
+- `omp login sprilicred` writes Muse Wonder like the Sprilicred installer: its own `sprilicred-muse` provider (`/muse/v1`) after `sprilicred-deepseek`, with no `reasoningDisableMode` because its reasoning cannot be turned off. A dedicated provider new to `models.yml` joins scoped `cycleModels`, `enabledModels` and `modelProviderOrder` after the Sprilicred group.
 - Personal fork installers and `omp update` now use only `TheRaven5520/oh-my-pi` releases (`v18.6.1-personal.N`), with SHA-256 verification and atomic replacement. Updates and opt-in startup notices detect fork revisions sharing a native version by executable digest. Published targets are Linux x64/glibc and Apple Silicon; no upstream or Spring Silicon fallback. Managed installs are refused rather than silently upgraded through an upstream package manager.
 - Handoffs now always save a timestamped artifact for persisted sessions, including manual `/handoff` and speculative/automatic handoffs. The absolute path is included in the compaction summary, successor instructions, TUI status, and ACP output; sessions without an artifacts directory fall back to the in-context handoff document.
 - Todo ETAs are sized from what each step actually runs and the wall times already measured in the session (a rename or single API call is about a minute, not a 10-minute slot): the todo tool tells the agent this when it writes them, and the Overseer corrects ETAs that are out of proportion with their step. Every Overseer update starts with the current Eastern time.

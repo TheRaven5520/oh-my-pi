@@ -5,7 +5,14 @@ import type * as readline from "node:readline";
 import { getAuthBrokerTokenFilePath } from "@oh-my-pi/pi-ai/auth-broker/discover";
 import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
-import { cfgAuthBrokerToken, cfgAuthBrokerUrl, cfgCycleModels, cfgModelRoles } from "../config/model-settings";
+import {
+	cfgAuthBrokerToken,
+	cfgAuthBrokerUrl,
+	cfgCycleModels,
+	cfgEnabledModels,
+	cfgModelProviderOrder,
+	cfgModelRoles,
+} from "../config/model-settings";
 import type { Settings } from "../config/settings";
 import { promptLine } from "./oauth-terminal";
 
@@ -33,12 +40,15 @@ const OPENAI_DISCOVERY = { type: "openai-models-list", injectV1: false };
 const OPENAI_PROVIDER = "sprilicred-openai";
 // Same layout as the Sprilicred installer (deploy/connect.py install_omp): models
 // with a dedicated route (`/<route>/v1`) live under their own `sprilicred-<route>`.
-const DEDICATED_ROUTES = ["glm", "deepseek"];
+const DEDICATED_ROUTES = ["glm", "deepseek", "muse"];
 // The installer's built-in dedicated IDs remain managed even without an ownership file.
 const DEDICATED_MODELS: Record<string, true> = {
 	"abliterated-model-large-v2": true,
 	"deepseek-v4.1-flash": true,
+	"muse-wonder": true,
 };
+// Dedicated models whose reasoning cannot be turned off (Muse Wonder rejects effort none).
+const ALWAYS_REASONING_MODELS: Record<string, true> = { "muse-wonder": true };
 const PROVIDER_GROUPS: ProviderGroup[] = [
 	{
 		provider: "sprilicred-anthropic",
@@ -93,6 +103,8 @@ type WrittenModels = {
 	byProvider: Record<string, string[]>;
 	/** Dedicated model id -> provider it moved to from sprilicred-openai. */
 	moved: Map<string, string>;
+	/** Dedicated providers this login wrote that models.yml did not hold before. */
+	added: string[];
 };
 
 export type SprilicredLoginPaths = { home: string; agentDir: string; tokenPath: string };
@@ -298,7 +310,11 @@ async function writeModels(
 			for (const [field, value] of Object.entries(modelFields(catalogModel, group.family))) {
 				applyOwnedField(state, `${provider}/${catalogModel.id}.${field}`, entry, field, value);
 			}
-			if (!group.required && Object.hasOwn(DEDICATED_MODELS, catalogModel.id)) {
+			if (
+				!group.required &&
+				Object.hasOwn(DEDICATED_MODELS, catalogModel.id) &&
+				!Object.hasOwn(ALWAYS_REASONING_MODELS, catalogModel.id)
+			) {
 				applyOwnedField(state, `${provider}/${catalogModel.id}.compat`, entry, "compat", {
 					reasoningDisableMode: "none-effort",
 				});
@@ -352,7 +368,24 @@ async function writeModels(
 	existing.providers = providers;
 	await privateWrite(modelsPath, `${JSON.stringify(existing, null, 2)}\n`);
 	await privateWrite(statePath, `${JSON.stringify(state, null, 2)}\n`);
-	return { defaultModel: existing.defaultModel, byProvider, moved };
+	const added = PROVIDER_GROUPS.filter(
+		group => !group.required && !(group.provider in original) && group.provider in providers,
+	).map(group => group.provider);
+	return { defaultModel: existing.defaultModel, byProvider, moved, added };
+}
+
+/**
+ * Adds newly written dedicated providers to a scoped list (cycleModels, enabledModels,
+ * modelProviderOrder) after the Sprilicred group, like the installer's scope migration.
+ * Lists without the sprilicred-openai scope are left alone.
+ */
+function addScopes(list: string[], added: string[], providerOnly: boolean): string[] {
+	const scope = (provider: string) => (providerOnly ? provider : `${provider}/*`);
+	if (!list.includes(scope(OPENAI_PROVIDER))) return list;
+	const ours = new Set([OPENAI_PROVIDER, ...DEDICATED_ROUTES.map(route => `sprilicred-${route}`)].map(scope));
+	const index = list.findLastIndex(item => ours.has(item)) + 1;
+	const additions = added.map(scope).filter(item => !list.includes(item));
+	return [...list.slice(0, index), ...additions, ...list.slice(index)];
 }
 
 function wantedRoles(models: WrittenModels): Record<string, string> {
@@ -403,8 +436,25 @@ async function writeOwnedSettings(
 		if (!(await exists(cycleState))) await privateWrite(cycleState, `${JSON.stringify({ before: currentCycle })}\n`);
 	}
 	const nextCycle =
-		currentCycle.length === 0 || ownCycle ? CYCLE_MODELS : currentCycle.map(ref => migrateRef(ref, models.moved));
+		currentCycle.length === 0 || ownCycle
+			? CYCLE_MODELS
+			: addScopes(
+					currentCycle.map(ref => migrateRef(ref, models.moved)),
+					models.added,
+					false,
+				);
 	if (!Bun.deepEquals(currentCycle, nextCycle)) cfgCycleModels.set(settings, nextCycle);
+
+	const currentEnabled = cfgEnabledModels.get(settings);
+	const nextEnabled = addScopes(
+		currentEnabled.map(ref => migrateRef(ref, models.moved)),
+		models.added,
+		false,
+	);
+	if (!Bun.deepEquals(currentEnabled, nextEnabled)) cfgEnabledModels.set(settings, nextEnabled);
+	const currentOrder = cfgModelProviderOrder.get(settings);
+	const nextOrder = addScopes(currentOrder, models.added, true);
+	if (!Bun.deepEquals(currentOrder, nextOrder)) cfgModelProviderOrder.set(settings, nextOrder);
 
 	const currentRoles = cfgModelRoles.get(settings);
 	const rolesStatePath = path.join(paths.home, ROLES_STATE);
