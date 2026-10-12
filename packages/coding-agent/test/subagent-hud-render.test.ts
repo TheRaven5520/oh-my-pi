@@ -15,11 +15,13 @@ import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
 import {
 	InteractiveMode,
 	layoutPinnedHud,
+	registryModelLabel,
 	renderSubagentDockLines,
 	nextSubagentPreviewTickMs,
 	renderSubagentHudLines,
 	SubagentHudComponent,
 } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { type ObservableSession, SessionObserverRegistry } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -890,6 +892,37 @@ describe("subagent dock lines", () => {
 		expect(out).not.toContain("no progress");
 	});
 
+	it("names the live model of agents the executor does not report on (/tan, /fork)", () => {
+		const registry = AgentRegistry.global();
+		const live: Record<string, Record<string, unknown>> = {
+			"Tan-served": {
+				thinkingLevel: "high",
+				servingModel: { selector: "sprilicred-anthropic/claude-opus-5-5:high", isFallback: false },
+			},
+			"Fork-fresh": { model: { id: "claude-opus-5-5", thinking: {} }, thinkingLevel: "low" },
+			"Tan-fallback": { servingModel: { selector: "sprilicred-openai/gpt-6.1-sol", isFallback: true } },
+		};
+		for (const [id, session] of Object.entries(live)) {
+			registry.register({ id, displayName: "tan", kind: "sub", session: session as unknown as AgentSession });
+		}
+		try {
+			const rows = Bun.stripANSI(
+				renderSubagentDockLines(
+					Object.keys(live).map(id => makeSession({ id })),
+					160,
+					undefined,
+					false,
+					{ statsFor: () => ({ tools: 3, tokens: 12_000 }), modelFor: registryModelLabel },
+				).join("\n"),
+			);
+			expect(rows).toContain("Tan-served · Opus 5.5 (high) · 3 tool uses · 12k tokens");
+			expect(rows).toContain("Fork-fresh · Opus 5.5 (low) · 3 tool uses");
+			expect(rows).toContain("Tan-fallback · fallback → sprilicred-openai/gpt-6.1-sol · 3 tool uses");
+		} finally {
+			for (const id of Object.keys(live)) registry.unregister(id);
+		}
+	});
+
 	it("shows only active subagents and hides the dock once none are working", () => {
 		const out = renderDock([
 			makeSession({ id: "Running", description: "live work" }),
@@ -1153,6 +1186,47 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 		vi.advanceTimersByTime(100);
 		expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("Fork-waiting1");
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("keeps refreshing a /tan agent's model and stats while it works", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+		const messages: unknown[] = [];
+		const live = {
+			thinkingLevel: "high",
+			servingModel: undefined as { selector: string; isFallback: boolean } | undefined,
+			agent: { state: { messages } },
+			getSessionStats: () => ({
+				tokens: { input: 0, output: 0, cacheWrite: 0 },
+				assistantMessages: 0,
+				toolCalls: 0,
+				cost: 0,
+				contextUsage: null,
+			}),
+		};
+		const registry = AgentRegistry.global();
+		registry.register({ id: "Tan-live", displayName: "tan", kind: "sub", session: live as unknown as AgentSession });
+		try {
+			await Promise.resolve();
+			const dock = () => Bun.stripANSI(mode.subagentContainer.render(160).join("\n"));
+			expect(dock()).toContain("Tan-live");
+			expect(dock()).not.toContain("tool use");
+			// It starts serving and calls tools without any registry or observer event.
+			live.servingModel = { selector: "sprilicred-anthropic/claude-opus-5-5:high", isFallback: false };
+			messages.push({
+				role: "assistant",
+				content: [{ type: "toolCall" }, { type: "toolCall" }],
+				usage: { input: 1_000, output: 500, cacheWrite: 0, cost: { total: 0 } },
+			});
+			vi.advanceTimersByTime(1_000);
+			expect(dock()).toContain("Tan-live · Opus 5.5 (high) · 2 tool uses · 1.5k tokens");
+		} finally {
+			registry.unregister("Tan-live");
+		}
+		vi.advanceTimersByTime(1_000);
 		expect(vi.getTimerCount()).toBe(0);
 	});
 

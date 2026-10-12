@@ -64,6 +64,7 @@
 
 ### Fixed
 
+- The agents dock now names the model of `/tan`, `/fork` and other agents the task executor doesn't report on, beside their tool uses and tokens (`Tan-… · Opus 5.5 (high) · 103 tool uses · 2.9m tokens`), taken from the model that last served them like Agent Hub, with `fallback →` when a fallback model is serving. These rows now refresh every second while the agent works; before, their model and stats froze until something else redrew the screen.
 - Terminal thinking now disappears as soon as the next tool call starts, including when the live transcript splits a response into separate text and tool components. Thinking stays visible while streaming and before an answer without a later tool call; native finished-thinking folding is unchanged.
 - Fixed clicking a tool block doing nothing when its rows were still on screen but had already moved into terminal history (e.g. an expanded block after the window shrank); the click now toggles it and redraws history. Ctrl+O redraws terminal history only when a block it changes has already left rows there.
 - "Fast mode unavailable on a subscription account" now appears only for Claude Opus. A GPT model such as GPT-6 Astra that Sprilicred serves from an account's paid credits (reason `paid_credits`, or `subscription_extra_usage` from an older Sprilicred) says "Fast mode unavailable while this account runs on paid credits; using standard."

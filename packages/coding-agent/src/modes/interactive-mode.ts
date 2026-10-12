@@ -118,6 +118,7 @@ import planFilenamePrompt from "../prompts/system/plan-filename.md" with { type:
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with { type: "text" };
 import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
+import { modelChip } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
 import { readSessionMetrics } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
 import { type AgentRunStats, formatAgentRunStats } from "@oh-my-pi/pi-tui/overlays/agent-run-stats";
 import { formatModelLabel, formatModelName } from "@oh-my-pi/pi-tui/render/model-names";
@@ -1246,11 +1247,25 @@ export function progressRunStats(session: ObservableSession, now: number): Agent
 }
 
 /**
+ * Model for a dock row the executor does not report on (`/tan`, `/fork` and
+ * other registry-only agents), read from its registry record like Agent Hub
+ * does: the model that last served it, else the one its live session uses.
+ */
+export function registryModelLabel(session: ObservableSession): string | undefined {
+	const ref = AgentRegistry.global().get(session.id);
+	const chip = ref ? modelChip(ref, session) : undefined;
+	if (!chip) return undefined;
+	const label = chip.level ? `${chip.text} (${chip.level})` : chip.text;
+	return chip.fallback ? `fallback → ${label}` : label;
+}
+
+/**
  * Pi-style compact agent dock: an explicit `main` root followed by the active
  * child rows, scrolled so the selected row stays visible. Used by
- * `#renderSubagentList` in place of the plain jump list. Each child row ends
- * with Claude Code-style stats (`12 tool uses · 34.5k tokens · 1m 23s`), which
- * keep their width while the description truncates.
+ * `#renderSubagentList` in place of the plain jump list. Each child row names
+ * its model (from progress, else `modelFor`) and ends with Claude Code-style
+ * stats (`12 tool uses · 34.5k tokens · 1m 23s`), which keep their width while
+ * the description truncates.
  */
 export function renderSubagentDockLines(
 	sessions: ObservableSession[],
@@ -1261,6 +1276,7 @@ export function renderSubagentDockLines(
 		now?: number;
 		livePreview?: boolean;
 		statsFor?: (session: ObservableSession, now: number) => AgentRunStats | undefined;
+		modelFor?: (session: ObservableSession) => string | undefined;
 	} = {},
 ): string[] {
 	const now = options.now ?? Date.now();
@@ -1300,7 +1316,7 @@ export function renderSubagentDockLines(
 			// The identity never carries a level suffix; a bare selector may.
 			const model = identity
 				? `${formatModelLabel(identity, progress?.resolvedThinkingLevel, { ref: progress?.resolvedModelIdentity !== undefined ? "identity" : "selector" })}${fallbackProvider}`
-				: progress?.modelRole;
+				: (options.modelFor?.(session) ?? progress?.modelRole);
 			const statsText = formatAgentRunStats(statsFor(session, now) ?? {});
 			const stats = statsText ? theme.fg("dim", ` · ${statsText}`) : "";
 			const budget = columns - visibleWidth(`${pointer} ${glyph} ${displayId} · `) - visibleWidth(stats) - 4;
@@ -4785,6 +4801,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				now,
 				livePreview,
 				statsFor: (session, at) => this.#dockRunStats(session, at),
+				modelFor: registryModelLabel,
 			},
 		);
 		if (lines.length === 0) return undefined;
@@ -4802,7 +4819,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		let tickMs: number | undefined;
 		if (!agentPauseGate.paused) {
 			tickMs = livePreview ? nextSubagentPreviewTickMs(visible, now) : undefined;
-			if (visible.some(child => child.status === "active" && child.progress?.startedAtMs !== undefined)) {
+			// Registry-only rows (`/tan`, `/fork`) get no progress events, so the
+			// tick is what refreshes their model and stats while they work.
+			if (
+				visible.some(
+					child =>
+						child.status === "active" &&
+						(child.progress
+							? child.progress.startedAtMs !== undefined
+							: AgentRegistry.global().get(child.id) !== undefined),
+				)
+			) {
 				tickMs = Math.min(tickMs ?? SUBAGENT_DOCK_TICK_MS, SUBAGENT_DOCK_TICK_MS);
 			}
 		}
