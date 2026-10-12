@@ -5,6 +5,11 @@
 ### Added
 
 - Hosts can request cooperative backgrounding of a running tool without cancelling its work.
+
+### Changed
+
+- `addBeforeModelCallHook` now receives `(context, signal)`, including queued messages awaiting emission, so hosts can safely decide model changes before provider context preparation.
+
 ## [18.6.1] - 2026-10-04
 
 ### Fixed

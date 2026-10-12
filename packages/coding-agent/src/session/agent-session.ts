@@ -1716,7 +1716,12 @@ export class AgentSession implements SettingsScope {
 			}
 		});
 		this.agent.prepareQueuedMessages = this.#prepareQueuedUserMessages;
-		this.#detachUsageBeforeModelCall = this.agent.addBeforeModelCallHook(async signal => {
+		this.#detachUsageBeforeModelCall = this.agent.addBeforeModelCallHook(async (context, signal) => {
+			// Runs between provider calls, before the loop snapshots model/prompt/tools.
+			// Restore first so usage preflight checks the model that will actually serve.
+			signal?.throwIfAborted();
+			await this.#recovery.maybeRestoreRetryFallbackPrimary({ requestMessages: context.messages, signal });
+			signal?.throwIfAborted();
 			if (!cfgRetryUsageAwareFallback.get(this.settings)) return;
 			if (this.#usagePreflightReadyForNextModelCall) {
 				const checkedModel = this.#usagePreflightReadyModel;

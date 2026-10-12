@@ -2,8 +2,8 @@ import { scheduler } from "node:timers/promises";
 
 // "reset after 1h2m3s" / "10m15s" / "39s"
 const QUOTA_RESET_PATTERN = /reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i;
-// "Please retry in 250ms" / "Please retry in 12s"
-const PLEASE_RETRY_PATTERN = /Please retry in ([0-9.]+)(ms|s)/i;
+// "Please retry in 250ms" / "retry in 12s" / "retry in 2 s" (gateway busy replies).
+const PLEASE_RETRY_PATTERN = /\bretry in\s+([0-9.]+)\s*(ms|s)\b/i;
 // JSON field: "retryDelay": "34.074824224s"
 const RETRY_DELAY_FIELD_PATTERN = /"retryDelay":\s*"([0-9.]+)(ms|s)"/i;
 // "try again in 250ms" / "try again in 12s" / "try again in 12sec" /
@@ -56,7 +56,7 @@ export interface RetryHintOptions {
  *
  * Body patterns:
  *  - `Your quota will reset after 18h31m10s` / `10m15s` / `39s`
- *  - `Please retry in 250ms` / `Please retry in 12s`
+ *  - `Please retry in 250ms` / `retry in 12s` / `retry in 2 s`
  *  - `"retryDelay": "34.074824224s"` (JSON error detail field)
  *  - `try again in 250ms` / `try again in 12s` / `try again in 5 min` / `try again in ~158 min`
  *  - `retry-after-ms=98497000` / `retry-after-ms: 7200000` / `retry-after-ms = 7200000`

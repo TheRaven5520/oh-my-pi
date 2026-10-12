@@ -95,6 +95,9 @@ const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
 const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
+// Brief provider-stated throttles get one same-model retry before spending a fallback.
+// Also bounded by retry.maxDelayMs when that user-configured cap is positive.
+const SHORT_BUSY_RETRY_MAX_DELAY_MS = 10_000;
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
 const STREAM_STALL_ERROR_RE = /stream stall/i;
@@ -710,8 +713,11 @@ export class TurnRecovery {
 	 * primary, so callers can re-run the pre-send context-fit check against the
 	 * reverted (possibly smaller) window before issuing the next request.
 	 */
-	maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
-		return this.#maybeRestoreRetryFallbackPrimary();
+	maybeRestoreRetryFallbackPrimary(options?: {
+		requestMessages?: readonly AgentMessage[];
+		signal?: AbortSignal;
+	}): Promise<boolean> {
+		return this.#maybeRestoreRetryFallbackPrimary(options);
 	}
 
 	/** Applies model fallback policy from live usage health before a turn starts. */
@@ -2325,7 +2331,10 @@ export class TurnRecovery {
 		return true;
 	}
 
-	async #maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
+	async #maybeRestoreRetryFallbackPrimary(options?: {
+		requestMessages?: readonly AgentMessage[];
+		signal?: AbortSignal;
+	}): Promise<boolean> {
 		if (!this.#activeRetryFallback) return false;
 		if (this.#activeRetryFallback.pinned) return false;
 		if (this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry") return false;
@@ -2355,8 +2364,27 @@ export class TurnRecovery {
 
 		const primaryModel = this.#resolveRetryFallbackPrimaryModel(originalSelector);
 		if (!primaryModel) return false;
+		// A running loop owns its own array, including pending steering whose events
+		// have not reached session state. Don't restore using a stale fit estimate,
+		// or compact underneath that loop. The idle prompt path can restore/compact.
+		if (options?.requestMessages) {
+			const stored = this.#host.agent.state.messages;
+			if (
+				options.requestMessages.length !== stored.length ||
+				!this.#host.contextFitsModel(primaryModel)
+			) {
+				return false;
+			}
+		}
 		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, this.#host.sessionId());
-		if (!apiKey) return false;
+		if (
+			!apiKey ||
+			options?.signal?.aborted ||
+			this.#activeRetryFallback !== active ||
+			this.#host.model() !== currentModel
+		) {
+			return false;
+		}
 
 		const thinkingToApply = this.#retryFallbackPrimaryThinkingLevel(active);
 		const primarySelector = formatModelStringWithRouting(primaryModel);
@@ -2654,6 +2682,18 @@ export class TurnRecovery {
 			siblingAvailabilityWaitMs !== undefined &&
 			effectiveUsageLimitWaitMs !== undefined &&
 			effectiveUsageLimitWaitMs <= retrySettings.maxDelayMs;
+		const retryShortBusyOnSameModel =
+			this.#retryAttempt === 1 &&
+			!retryBudgetExhausted &&
+			!AIError.is(id, AIError.Flag.UsageLimit) &&
+			!recordedUsageLimitOutcome &&
+			!classifierRefusal &&
+			(rateLimitReason === "RATE_LIMIT_EXCEEDED" ||
+				rateLimitReason === "CONCURRENT_LIMIT" ||
+				rateLimitReason === "MODEL_CAPACITY_EXHAUSTED") &&
+			parsedRetryAfterMs !== undefined &&
+			parsedRetryAfterMs <= SHORT_BUSY_RETRY_MAX_DELAY_MS &&
+			(retrySettings.maxDelayMs <= 0 || parsedRetryAfterMs <= retrySettings.maxDelayMs);
 		const longUsageLimitFallback =
 			currentModel !== undefined &&
 			resolveModelPolicy(currentModel).catalog.longUsageLimitFallback === true &&
@@ -2671,6 +2711,7 @@ export class TurnRecovery {
 				retrySettings.modelFallback &&
 				!thinkingLoop &&
 				!waitForSiblingCredential &&
+				!retryShortBusyOnSameModel &&
 				!(retryBudgetExhausted && classifierRefusal) &&
 				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
 			) {
@@ -2689,11 +2730,14 @@ export class TurnRecovery {
 			// of the role-fallback setting: it's intrinsic to the Fast contract (speed
 			// best-effort, degrade to Standard on failure) and triggers on hard router
 			// errors the generic retry classifier would otherwise reject.
-			if (!switchedModel && allowModelFallback && options?.fireworksFastFallback) {
+			if (!switchedModel && !retryShortBusyOnSameModel && allowModelFallback && options?.fireworksFastFallback) {
 				switchedModel = await this.#tryFireworksFastFallback(currentSelector);
 			}
 			if (switchedModel) {
 				delayMs = 0;
+			} else if (retryShortBusyOnSameModel) {
+				// Provider timing is authoritative even when shorter than our base backoff.
+				delayMs = parsedRetryAfterMs!;
 			} else if (usageLimitWaitMs === undefined && parsedRetryAfterMs && parsedRetryAfterMs > delayMs) {
 				delayMs = parsedRetryAfterMs;
 			}

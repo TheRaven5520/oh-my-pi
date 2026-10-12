@@ -40,6 +40,7 @@
  * text pattern is not required to match, so the retry decision is stated rather
  * than hoped for.
  */
+import { formatErrorMessageWithRetryAfter, getHeadersFromError } from "../utils/retry-after";
 import { ProviderHttpError } from "./classes";
 import { attach, create, Flag } from "./flags";
 import { isOpaqueStatusBody } from "./rate-limit";
@@ -277,7 +278,11 @@ export function createInBandProviderError(frame: unknown): Error | undefined {
 	if (!signal) return undefined;
 	const { status, code, detail } = signal;
 	if (isRetryableStatus(status)) {
-		return attach(new ProviderHttpError(formatInBandMessage(status, detail, code), status, { code }), IN_BAND_FLAGS);
+		const error = new ProviderHttpError(formatInBandMessage(status, detail, code), status, { code });
+		// Responses WebSocket gateways carry retry headers on the error frame,
+		// not an HTTP response. Preserve them through the same message path as HTTP.
+		error.message = formatErrorMessageWithRetryAfter(error, getHeadersFromError(frame));
+		return attach(error, IN_BAND_FLAGS);
 	}
 	if (detail === undefined && code === undefined) return undefined;
 	// Keep the upstream code visible (`(<code>)`) — it is real provider data and

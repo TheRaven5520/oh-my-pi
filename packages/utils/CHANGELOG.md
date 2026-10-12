@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Retry hint parsing now recognizes gateway `retry in N s` messages, with or without `Please` and a space before the unit.
+
 ## [18.5.1] - 2026-10-03
 
 ### Added
