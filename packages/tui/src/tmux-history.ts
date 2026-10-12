@@ -438,13 +438,9 @@ export class TmuxHistoryBridge {
 				current.rows !== state.rows
 			)
 				return true;
-			// Replaying may shrink tmux history and clamp its offset. Evaluate the delta
-			// inside tmux AFTER refresh, not against the old frozen grid's scroll bound.
-			const adjust =
-				`if -F -t ${this.pane} '#{>:#{scroll_position},${desired}}' ` +
-				`'send -t ${this.pane} -X -N "#{e|-:#{scroll_position},${desired}}" scroll-down' ` +
-				`{ if -F -t ${this.pane} '#{<:#{scroll_position},${desired}}' ` +
-				`'send -t ${this.pane} -X -N "#{e|-:${desired},#{scroll_position}}" scroll-up' }`;
+			// tmux 3.4 redraws immediately on refresh without clamping the old offset:
+			// move to bottom FIRST or shrinking the backing can crash the server.
+			// A positive literal count also avoids lexical format comparisons.
 			await this.#tmux(
 				signal,
 				"if",
@@ -452,7 +448,8 @@ export class TmuxHistoryBridge {
 				"-t",
 				this.pane,
 				`#{&&:${this.#guard(state)},#{==:#{scroll_position},${state.scroll}}}`,
-				`send -t ${this.pane} -X refresh-from-pane ; ${adjust} ; set -p -t ${this.pane} @omp-history-snapshot ${token}`,
+				`send -t ${this.pane} -X history-bottom ; send -t ${this.pane} -X refresh-from-pane ; ` +
+					`send -t ${this.pane} -X -N ${desired} scroll-up ; set -p -t ${this.pane} @omp-history-snapshot ${token}`,
 			);
 			const refreshed = await this.#state(signal);
 			if (

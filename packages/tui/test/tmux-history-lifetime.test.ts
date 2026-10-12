@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -178,6 +178,69 @@ describe.skipIf(!Bun.which("tmux"))("tmux history request lifetime", () => {
 		expect(current.token).not.toBe(original.token);
 		expect(r.captures[1]?.owner).toBe(r.owner);
 		expect(r.released).toBe(2);
+	});
+
+	it("keeps the clicked anchor in native history across real expanded and collapsed replays", async () => {
+		const r = await rig();
+		const tty = await r.tmux("display", "-p", "-t", r.pane, "#{pane_tty}");
+		const anchor = 20;
+		const mouseY = 1;
+		let expanded = false;
+		let revision = 0;
+		const replay = async (): Promise<TmuxHistorySnapshot> => {
+			const toolRows = expanded ? 284 : 4;
+			const suffix = `REPLAY_${++revision}`;
+			const lines = [
+				...Array.from({ length: anchor }, (_, index) => `PREFIX_${index}`),
+				"TOOL_ANCHOR",
+				...Array.from({ length: toolRows - 1 }, (_, index) => `TOOL_BODY_${index}`),
+				...Array.from({ length: 76 }, (_, index) => `${suffix}_SUFFIX_${index}`),
+			];
+			// Write through this private pane's real PTY, including the destructive
+			// reset used by Composer. Merely changing snapshot metadata misses the
+			// native refresh/reanchor behavior that failed in the full application.
+			await writeFile(tty, `\x1b[2J\x1b[3J\x1b[H${lines.join("\r\n")}`);
+			await until(async () => (await r.tmux("capture-pane", "-p", "-t", r.pane)).includes(`${suffix}_SUFFIX_75`));
+			const historySize = Number(await r.tmux("display", "-p", "-t", r.pane, "#{history_size}"));
+			return {
+				...r.snapshot(),
+				owners: lines.map((_, index) => (index >= anchor && index < anchor + toolRows ? r.owner : undefined)),
+				screenTop: historySize,
+			};
+		};
+		let snapshot = await replay();
+		let mutation: Promise<TmuxHistorySnapshot> | undefined;
+		r.setCapture(async owner => {
+			if (owner !== undefined) {
+				expect(owner).toBe(r.owner);
+				expanded = !expanded;
+				mutation = replay();
+				snapshot = await mutation;
+			}
+			return snapshot;
+		});
+		await r.enter();
+		const initialScroll = snapshot.screenTop + mouseY - anchor;
+		await r.tmux("send", "-t", r.pane, "-X", "history-bottom");
+		await r.tmux("send", "-t", r.pane, "-X", "-N", String(initialScroll), "scroll-up");
+		expect(String(initialScroll)).toHaveLength(2);
+		for (const shouldExpand of [true, false]) {
+			const before = await r.state();
+			const response = await (await r.click()).response;
+			await mutation;
+			expect(response).toContain('"ok":true');
+			const after = await r.state();
+			const desired = snapshot.screenTop + mouseY - anchor;
+			expect(expanded).toBe(shouldExpand);
+			expect(after.mode).toBe(true);
+			expect(after.generation).toBe(before.generation);
+			expect(after.token).not.toBe(before.token);
+			expect(after.scroll).toBe(desired);
+			expect(snapshot.owners[snapshot.screenTop + mouseY - after.scroll]).toBe(r.owner);
+			// Two-to-three digit offsets exposed lexicographic tmux comparisons:
+			// "58" > "338" selected a negative scroll-down repeat count.
+			expect(String(desired)).toHaveLength(shouldExpand ? 3 : 2);
+		}
 	});
 
 	for (const failure of [
