@@ -14,7 +14,59 @@ const MODEL_STATE = ".sprilicred/omp-models.json";
 const ROLES_STATE = ".sprilicred/omp-roles.json";
 const CYCLE_STATE = ".sprilicred/omp-cycle.before-sprilicred.json";
 const BROKER_STATE = ".sprilicred/omp-broker.before-sprilicred.json";
-const CYCLE_MODELS = ["sprilicred-anthropic/*", "sprilicred-openai/*"];
+
+type ProviderGroup = {
+	provider: string;
+	/** Route that lists exactly this provider's models. */
+	listing: string;
+	/** Path appended to the Sprilicred URL for the provider's baseUrl. */
+	suffix: string;
+	api: "anthropic-messages" | "openai-responses";
+	auth: "oauth" | "apiKey";
+	discovery: Record<string, unknown>;
+	family: "anthropic" | "openai";
+	/** Required groups fail login when unlisted; dedicated groups are optional. */
+	required: boolean;
+};
+
+const OPENAI_DISCOVERY = { type: "openai-models-list", injectV1: false };
+const OPENAI_PROVIDER = "sprilicred-openai";
+// Same layout as the Sprilicred installer (deploy/connect.py install_omp): models
+// with a dedicated route (`/<route>/v1`) live under their own `sprilicred-<route>`.
+const DEDICATED_ROUTES = ["glm", "deepseek"];
+const PROVIDER_GROUPS: ProviderGroup[] = [
+	{
+		provider: "sprilicred-anthropic",
+		listing: "/anthropic/v1/models",
+		suffix: "/anthropic",
+		api: "anthropic-messages",
+		auth: "oauth",
+		discovery: { type: "openai-models-list" },
+		family: "anthropic",
+		required: true,
+	},
+	{
+		provider: OPENAI_PROVIDER,
+		listing: "/v1/models",
+		suffix: "/v1",
+		api: "openai-responses",
+		auth: "apiKey",
+		discovery: OPENAI_DISCOVERY,
+		family: "openai",
+		required: true,
+	},
+	...DEDICATED_ROUTES.map((route): ProviderGroup => ({
+		provider: `sprilicred-${route}`,
+		listing: `/${route}/v1/models`,
+		suffix: `/${route}/v1`,
+		api: "openai-responses",
+		auth: "apiKey",
+		discovery: OPENAI_DISCOVERY,
+		family: "openai",
+		required: false,
+	})),
+];
+const CYCLE_MODELS = PROVIDER_GROUPS.map(group => `${group.provider}/*`);
 
 type CatalogModel = {
 	id: string;
@@ -31,8 +83,10 @@ type ModelState = Record<string, { present: boolean; before: unknown; applied: u
 
 type WrittenModels = {
 	defaultModel: string;
-	anthropic: string[];
-	openai: string[];
+	/** Model ids per provider that models.yml now holds. */
+	byProvider: Record<string, string[]>;
+	/** Dedicated model id -> provider it moved to from sprilicred-openai. */
+	moved: Map<string, string>;
 };
 
 export type SprilicredLoginPaths = { home: string; agentDir: string; tokenPath: string };
@@ -94,9 +148,23 @@ async function fetchCatalog(baseUrl: string, route: string, key: string): Promis
 	}
 	if (!response.ok) throw new Error(`${route} returned HTTP ${response.status}`);
 	const payload = (await response.json()) as { data?: CatalogModel[] };
-	const models = (payload.data ?? []).filter(model => typeof model?.id === "string" && model.id.length > 0);
-	if (models.length === 0) throw new Error(`${route} returned no models`);
+	return (payload.data ?? []).filter(model => typeof model?.id === "string" && model.id.length > 0);
+}
+
+/** A group's listing; null when an optional route could not be asked (keep what was written before). */
+async function fetchGroup(baseUrl: string, group: ProviderGroup, key: string): Promise<CatalogModel[] | null> {
+	if (!group.required) return fetchCatalog(baseUrl, group.listing, key).catch(() => null);
+	const models = await fetchCatalog(baseUrl, group.listing, key);
+	if (models.length === 0) throw new Error(`${group.listing} returned no models`);
 	return models;
+}
+
+/** Rewrites an old `sprilicred-openai/<dedicated id>[:level]` reference to the model's own provider. */
+function migrateRef(ref: string, moved: Map<string, string>): string {
+	if (!ref.startsWith(`${OPENAI_PROVIDER}/`)) return ref;
+	const rest = ref.slice(OPENAI_PROVIDER.length + 1);
+	const provider = moved.get(rest.split(":")[0]);
+	return provider ? `${provider}/${rest}` : ref;
 }
 
 function perMillion(value: unknown): number | undefined {
@@ -143,7 +211,7 @@ function applyOwnedField(state: ModelState, key: string, entry: ModelConfig, fie
 }
 
 async function writeModels(
-	models: { anthropic: CatalogModel[]; openai: CatalogModel[] },
+	catalogs: Map<string, CatalogModel[] | null>,
 	paths: SprilicredLoginPaths,
 ): Promise<WrittenModels> {
 	const modelsPath = path.join(paths.agentDir, "models.yml");
@@ -158,32 +226,65 @@ async function writeModels(
 	if (existing === null || typeof existing !== "object" || Array.isArray(existing)) {
 		throw new Error(`${modelsPath} must contain a mapping`);
 	}
-	if (models.anthropic.length === 0 || models.openai.length === 0) {
-		throw new Error("Sprilicred returned an empty model catalog");
-	}
 
-	const providers = existing.providers ? { ...existing.providers } : {};
+	const original = (existing.providers ?? {}) as Record<string, any>;
+	const providers = { ...original };
 	const tokenCommand = `!cat ${shellQuote(paths.tokenPath)}`;
 	const statePath = path.join(paths.home, MODEL_STATE);
 	const state = (await readJson(statePath, {})) as ModelState;
-	const discovery = {
-		anthropic: { type: "openai-models-list" },
-		openai: { type: "openai-models-list", injectV1: false },
-	};
-	const written: Record<string, string[]> = {};
+	const previousOpenai = new Map(
+		((original[OPENAI_PROVIDER]?.models ?? []) as ModelConfig[])
+			.filter(model => typeof model?.id === "string")
+			.map(model => [model.id, model]),
+	);
+	const byProvider: Record<string, string[]> = {};
+	const moved = new Map<string, string>();
 
-	for (const [family, api, suffix, catalog] of [
-		["anthropic", "anthropic-messages", "/anthropic", models.anthropic],
-		["openai", "openai-responses", "/v1", models.openai],
-	] as const) {
-		const provider = `sprilicred-${family}`;
-		const previous = (providers[provider]?.models ?? []) as ModelConfig[];
+	for (const group of PROVIDER_GROUPS) {
+		const { provider } = group;
+		let catalog = catalogs.get(provider) ?? null;
+		if (provider === OPENAI_PROVIDER && catalog) {
+			// A model with its own listed route lives only under its own provider.
+			const dedicatedIds = new Set(
+				PROVIDER_GROUPS.filter(other => !other.required).flatMap(
+					other => catalogs.get(other.provider)?.map(model => model.id) ?? [],
+				),
+			);
+			catalog = catalog.filter(model => !dedicatedIds.has(model.id));
+		}
+		if (catalog === null) {
+			// Optional route could not be asked: keep whatever was written before.
+			const kept = ((providers[provider]?.models ?? []) as ModelConfig[]).map(model => model.id);
+			if (kept.length > 0) byProvider[provider] = kept;
+			for (const id of kept) moved.set(id, provider);
+			continue;
+		}
+		if (catalog.length === 0) {
+			delete providers[provider];
+			continue;
+		}
 		const previousById = new Map(
-			previous.filter(model => typeof model?.id === "string").map(model => [model.id, model]),
+			((original[provider]?.models ?? []) as ModelConfig[])
+				.filter(model => typeof model?.id === "string")
+				.map(model => [model.id, model]),
 		);
 		const entries: ModelConfig[] = [];
 		for (const catalogModel of catalog) {
-			const previousModel = previousById.get(catalogModel.id);
+			let previousModel = previousById.get(catalogModel.id);
+			if (!group.required) {
+				moved.set(catalogModel.id, provider);
+				const fromOpenai = previousOpenai.get(catalogModel.id);
+				if (!previousModel && fromOpenai) {
+					// Moved out of sprilicred-openai: keep the person's fields and ownership.
+					previousModel = fromOpenai;
+					const oldPrefix = `${OPENAI_PROVIDER}/${catalogModel.id}.`;
+					for (const key of Object.keys(state)) {
+						if (!key.startsWith(oldPrefix)) continue;
+						state[`${provider}/${catalogModel.id}.${key.slice(oldPrefix.length)}`] = state[key];
+						delete state[key];
+					}
+				}
+			}
 			const defaultName = `${catalogModel.id} via Sprilicred`;
 			const entry = previousModel
 				? {
@@ -192,41 +293,45 @@ async function writeModels(
 						id: catalogModel.id,
 					}
 				: { id: catalogModel.id, name: defaultName };
-			for (const [field, value] of Object.entries(modelFields(catalogModel, family))) {
+			for (const [field, value] of Object.entries(modelFields(catalogModel, group.family))) {
 				applyOwnedField(state, `${provider}/${catalogModel.id}.${field}`, entry, field, value);
 			}
 			entries.push(entry);
 		}
 		providers[provider] = {
-			baseUrl: `${endpoint()}${suffix}`,
+			baseUrl: `${endpoint()}${group.suffix}`,
 			apiKey: tokenCommand,
-			auth: family === "anthropic" ? "oauth" : "apiKey",
+			auth: group.auth,
 			authHeader: true,
-			api,
-			discovery: family === "anthropic" ? discovery.anthropic : discovery.openai,
+			api: group.api,
+			discovery: group.discovery,
 			models: entries,
 		};
-		written[family] = entries.map(entry => entry.id);
+		byProvider[provider] = entries.map(entry => entry.id);
 	}
 
-	const currentDefault = typeof existing.defaultModel === "string" ? existing.defaultModel : undefined;
-	const fallbackDefault = `sprilicred-anthropic/${written.anthropic[0]}`;
+	const fallbackDefault = `sprilicred-anthropic/${byProvider["sprilicred-anthropic"][0]}`;
+	const currentDefault =
+		typeof existing.defaultModel === "string" ? migrateRef(existing.defaultModel, moved) : undefined;
+	const written = Object.entries(byProvider).flatMap(([provider, ids]) => ids.map(id => `${provider}/${id}`));
 	if (!currentDefault) existing.defaultModel = fallbackDefault;
 	else if (
 		currentDefault.startsWith("sprilicred-") &&
-		![...written.anthropic, ...written.openai].some(model => currentDefault.endsWith(`/${model}`))
+		!written.some(model => currentDefault === model || currentDefault.startsWith(`${model}:`))
 	) {
 		existing.defaultModel = fallbackDefault;
-	}
+	} else existing.defaultModel = currentDefault;
 	existing.providers = providers;
 	await privateWrite(modelsPath, `${JSON.stringify(existing, null, 2)}\n`);
 	await privateWrite(statePath, `${JSON.stringify(state, null, 2)}\n`);
-	return { defaultModel: existing.defaultModel, anthropic: written.anthropic, openai: written.openai };
+	return { defaultModel: existing.defaultModel, byProvider, moved };
 }
 
 function wantedRoles(models: WrittenModels): Record<string, string> {
-	const claude = models.anthropic.find(model => model.includes("haiku")) ?? models.anthropic.at(-1);
-	const gpt = models.openai.find(model => model.includes("sol")) ?? models.openai.at(0);
+	const anthropic = models.byProvider["sprilicred-anthropic"];
+	const openai = models.byProvider[OPENAI_PROVIDER];
+	const claude = anthropic.find(model => model.includes("haiku")) ?? anthropic.at(-1);
+	const gpt = openai.find(model => model.includes("sol")) ?? openai.at(0);
 	if (!claude || !gpt) throw new Error("Sprilicred returned no models for helper roles");
 	return {
 		default: models.defaultModel,
@@ -261,10 +366,18 @@ async function writeOwnedSettings(
 	const stateRoot = path.join(paths.home, ".sprilicred");
 	await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
 
+	// The old two-provider list (or any leading subset of ours) is still ours to update.
 	const currentCycle = cfgCycleModels.get(settings);
+	const ownCycle =
+		currentCycle.length >= 2 &&
+		currentCycle[0] === CYCLE_MODELS[0] &&
+		currentCycle[1] === CYCLE_MODELS[1] &&
+		currentCycle.every(entry => CYCLE_MODELS.includes(entry));
 	if (currentCycle.length === 0) {
 		const cycleState = path.join(paths.home, CYCLE_STATE);
 		if (!(await exists(cycleState))) await privateWrite(cycleState, `${JSON.stringify({ before: currentCycle })}\n`);
+	}
+	if (currentCycle.length === 0 || (ownCycle && !Bun.deepEquals(currentCycle, CYCLE_MODELS))) {
 		cfgCycleModels.set(settings, CYCLE_MODELS);
 	}
 
@@ -272,7 +385,12 @@ async function writeOwnedSettings(
 	const rolesStatePath = path.join(paths.home, ROLES_STATE);
 	const rolesState = (await readJson(rolesStatePath, { roles: {} })) as { roles: Record<string, string> };
 	const desired = wantedRoles(models);
-	const nextRoles = { ...currentRoles };
+	const nextRoles: Record<string, string> = {};
+	let changed = false;
+	for (const [role, value] of Object.entries(currentRoles)) {
+		nextRoles[role] = migrateRef(value, models.moved);
+		if (nextRoles[role] !== value) changed = true;
+	}
 	const written: Record<string, string> = {};
 	for (const [role, value] of Object.entries(desired)) {
 		if (currentRoles[role] === undefined || currentRoles[role] === rolesState.roles?.[role]) {
@@ -280,7 +398,7 @@ async function writeOwnedSettings(
 			written[role] = value;
 		}
 	}
-	if (Object.keys(written).length > 0) cfgModelRoles.set(settings, nextRoles);
+	if (changed || Object.keys(written).length > 0) cfgModelRoles.set(settings, nextRoles);
 	await privateWrite(rolesStatePath, `${JSON.stringify({ roles: written })}\n`);
 	await settings.flush();
 }
@@ -294,15 +412,12 @@ export async function runSprilicredLogin(
 	const key = (suppliedKey ?? (await promptLine(rl, "Paste your Sprilicred API key: "))).trim();
 	if (!key) throw new Error("Sprilicred API key is empty");
 	const baseUrl = endpoint();
-	const [openai, anthropic] = await Promise.all([
-		fetchCatalog(baseUrl, "/v1/models", key),
-		fetchCatalog(baseUrl, "/anthropic/v1/models", key),
-	]);
+	const listings = await Promise.all(PROVIDER_GROUPS.map(group => fetchGroup(baseUrl, group, key)));
+	const catalogs = new Map(PROVIDER_GROUPS.map((group, index) => [group.provider, listings[index]]));
 	const paths = resolvePaths(pathOverrides);
 	await prepareBroker(settings, key, paths);
-	const models = await writeModels({ anthropic, openai }, paths);
+	const models = await writeModels(catalogs, paths);
 	await writeOwnedSettings(settings, models, paths);
-	process.stdout.write(
-		`\nLogged in to Sprilicred; configured ${models.anthropic.length + models.openai.length} models\n`,
-	);
+	const count = Object.values(models.byProvider).reduce((total, ids) => total + ids.length, 0);
+	process.stdout.write(`\nLogged in to Sprilicred; configured ${count} models\n`);
 }
