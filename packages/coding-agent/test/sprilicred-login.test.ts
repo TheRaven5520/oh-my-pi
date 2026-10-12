@@ -345,4 +345,65 @@ describe("Sprilicred login", () => {
 		expect(written.defaultModel).toBe("sprilicred-glm/my-glm");
 		expect(cfgCycleModels.get(settings)).toEqual(customCycle);
 	});
+
+	test("writes the Claude effort ladder and Codex none-effort like the installer, keeping user edits", async () => {
+		const baseFetch = globalThis.fetch;
+		globalThis.fetch = (async (input, init) => {
+			const response = await baseFetch(input, init);
+			if (!/^https:\/\/sprilicred\.test\/v1\/models$/.test(String(input))) return response;
+			const { data } = (await response.json()) as { data: unknown[] };
+			return Response.json({ data: [...data, { id: "gpt-7-nova", context_window: 272000 }] });
+		}) as typeof fetch;
+		const paths = { home: root, agentDir, tokenPath };
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		const modelsPath = path.join(agentDir, "models.yml");
+		const first = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		const claude = Object.fromEntries(
+			first.providers["sprilicred-anthropic"].models.map((model: { id: string }) => [model.id, model]),
+		);
+		// No listed efforts: the installer's built-in ladder for the id, none for a budget model.
+		expect(claude["claude-sonnet-5"].thinking).toEqual({
+			mode: "anthropic-adaptive",
+			efforts: ["low", "medium", "high", "xhigh", "max"],
+		});
+		expect(claude["claude-haiku-4-5"].thinking).toBeUndefined();
+		const openai = Object.fromEntries(
+			first.providers["sprilicred-openai"].models.map((model: { id: string }) => [model.id, model]),
+		);
+		expect(openai["gpt-6-astra"].compat).toEqual({ reasoningDisableMode: "none-effort" });
+		// Never guessed for an id the installer does not know.
+		expect(openai["gpt-7-nova"].compat).toBeUndefined();
+
+		claude["claude-sonnet-5"].thinking = { mode: "anthropic-adaptive", efforts: ["high"] };
+		openai["gpt-6-astra"].compat = { reasoningDisableMode: "omit" };
+		await fs.writeFile(modelsPath, JSON.stringify(first));
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		const second = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		expect(second.providers["sprilicred-anthropic"].models[1].thinking).toEqual({
+			mode: "anthropic-adaptive",
+			efforts: ["high"],
+		});
+		expect(second.providers["sprilicred-openai"].models[0].compat).toEqual({ reasoningDisableMode: "omit" });
+	});
+
+	test("writes the same models.yml as the Sprilicred installer for the same listings", async () => {
+		// catalog.json: Sprilicred's live listings (2026-10-12). installer-models.json:
+		// deploy/connect.py install_omp (5dff032) on those listings into an empty HOME,
+		// default claude-fable-5-1, with every apiKey replaced by "<apiKey>".
+		const fixtures = path.join(import.meta.dir, "fixtures", "sprilicred-login-parity");
+		const catalog = JSON.parse(await fs.readFile(path.join(fixtures, "catalog.json"), "utf8"));
+		const expected = JSON.parse(await fs.readFile(path.join(fixtures, "installer-models.json"), "utf8"));
+		globalThis.fetch = (async input => {
+			const route = String(input).replace("https://sprilicred.test", "");
+			return catalog[route] ? Response.json({ data: catalog[route] }) : new Response("no", { status: 404 });
+		}) as typeof fetch;
+		await fs.rm(path.join(agentDir, "models.yml"));
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
+		for (const provider of Object.values(written.providers) as { apiKey: string }[]) provider.apiKey = "<apiKey>";
+		expect(Object.keys(written.providers)).toEqual(Object.keys(expected.providers));
+		expect(written).toEqual(expected);
+	});
 });

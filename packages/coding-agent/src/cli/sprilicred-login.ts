@@ -49,6 +49,22 @@ const DEDICATED_MODELS: Record<string, true> = {
 };
 // Dedicated models whose reasoning cannot be turned off (Muse Wonder rejects effort none).
 const ALWAYS_REASONING_MODELS: Record<string, true> = { "muse-wonder": true };
+// Models that accept the real `none` effort tier (connect.py model_fields): the Codex-backed
+// GPT models plus the dedicated ones, minus ALWAYS_REASONING_MODELS. Do not guess for future IDs.
+const NONE_EFFORT_MODELS: Record<string, true> = {
+	"gpt-6-astra": true,
+	"gpt-6.1-sol": true,
+	"gpt-6-luna": true,
+	...DEDICATED_MODELS,
+};
+// Offline copy of pricing.rs CLAUDE_EFFORTS (connect.py), used when a listing names no efforts;
+// Haiku has token budgets, not effort.
+const CLAUDE_EFFORTS: Record<string, string[]> = {
+	"claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
+	"claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
+	"claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
+};
+const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 const PROVIDER_GROUPS: ProviderGroup[] = [
 	{
 		provider: "sprilicred-anthropic",
@@ -90,6 +106,7 @@ type CatalogModel = {
 	context_length?: number;
 	max_output_tokens?: number;
 	supports_reasoning?: boolean;
+	reasoning_efforts?: unknown;
 	input_modalities?: string[];
 	pricing?: Record<string, unknown>;
 };
@@ -196,6 +213,17 @@ function modelFields(model: CatalogModel, family: "anthropic" | "openai"): Recor
 	if (typeof model.max_output_tokens === "number" && model.max_output_tokens > 0)
 		fields.maxTokens = model.max_output_tokens;
 	if (typeof model.supports_reasoning === "boolean") fields.reasoning = model.supports_reasoning;
+	if (family === "anthropic" && model.supports_reasoning !== false) {
+		// A listed (even empty) effort list wins over the built-in ladder: empty is a budget model.
+		const efforts = "reasoning_efforts" in model ? model.reasoning_efforts : CLAUDE_EFFORTS[model.id];
+		if (
+			Array.isArray(efforts) &&
+			efforts.length > 0 &&
+			efforts.every(effort => CLAUDE_EFFORT_LEVELS.includes(effort))
+		) {
+			fields.thinking = { mode: "anthropic-adaptive", efforts };
+		}
+	}
 	if (Array.isArray(model.input_modalities) && model.input_modalities.includes("text")) {
 		fields.input = model.input_modalities.includes("image") ? ["text", "image"] : ["text"];
 	}
@@ -211,6 +239,13 @@ function modelFields(model: CatalogModel, family: "anthropic" | "openai"): Recor
 	}
 	if (family === "anthropic" && pricing?.fast_mode !== null && typeof pricing?.fast_mode === "object") {
 		fields.compat = { supportsFastMode: true };
+	}
+	if (
+		family !== "anthropic" &&
+		Object.hasOwn(NONE_EFFORT_MODELS, model.id) &&
+		!Object.hasOwn(ALWAYS_REASONING_MODELS, model.id)
+	) {
+		fields.compat = { reasoningDisableMode: "none-effort" };
 	}
 	return fields;
 }
@@ -309,15 +344,6 @@ async function writeModels(
 				: { id: catalogModel.id, name: defaultName };
 			for (const [field, value] of Object.entries(modelFields(catalogModel, group.family))) {
 				applyOwnedField(state, `${provider}/${catalogModel.id}.${field}`, entry, field, value);
-			}
-			if (
-				!group.required &&
-				Object.hasOwn(DEDICATED_MODELS, catalogModel.id) &&
-				!Object.hasOwn(ALWAYS_REASONING_MODELS, catalogModel.id)
-			) {
-				applyOwnedField(state, `${provider}/${catalogModel.id}.compat`, entry, "compat", {
-					reasoningDisableMode: "none-effort",
-				});
 			}
 			if (!group.required) {
 				state[`${provider}/${catalogModel.id}.listed`] = { present: false, before: null, applied: true };
