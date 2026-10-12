@@ -7,6 +7,8 @@ import { ModelHubComponent, type ModelHubRegistry, type ModelHubSource } from ".
 import { ModelPickerComponent } from "../src/overlays/model-picker";
 import { initTheme } from "../src/theme";
 import type { TUI } from "../src/tui";
+import { KeybindingsManager } from "../src/app-keybindings";
+import { getKeybindings, setKeybindings } from "../src/keybindings";
 
 const withPicker: DescribeContext = {
 	cols: 120,
@@ -352,4 +354,47 @@ test("the quick picker is an md sheet with the summary below and a task-model to
 	expect(p.actions?.find(action => action.id === "task")?.on).toBe(true);
 	picker.handleNativeEvent({ type: "activate", key: "", item: "openai/gpt-5.6" });
 	expect(picked).toEqual(["task:openai/gpt-5.6"]);
+});
+
+test.each([
+	["CSI-u", "\x1b[112;6u", "\x10", false],
+	["modifyOtherKeys", "\x1b[27;6;112~", "\x10", false],
+	["remapped", "\x1b[1;3A", "\x1b[1;3B", true],
+] as const)("model picker cycles backward and forward with %s keys", (_name, backward, forward, remapped) => {
+	const previous = getKeybindings();
+	setKeybindings(
+		KeybindingsManager.inMemory(
+			remapped
+				? {
+						"app.model.cycleBackward": "alt+up",
+						"app.model.cycleForward": "alt+down",
+					}
+				: {},
+		),
+	);
+	try {
+		const models = [model("test", "alpha"), model("test", "beta"), model("test", "gamma")];
+		const picked: string[] = [];
+		const picker = new ModelPickerComponent(
+			ui,
+			source({}, []),
+			{ ...registry(models), refreshIfStale: async () => false },
+			models.map(model => ({ model })),
+			{ onPick: (_model, selector) => picked.push(selector), onCancel: () => {} },
+			{ currentSelector: "test/beta" },
+		);
+		picker.handleInput(backward);
+		expect(props(picker.describe(withPicker)).selected).toBe("test/alpha");
+		picker.handleInput(backward);
+		expect(props(picker.describe(withPicker)).selected).toBe("test/gamma");
+		picker.handleInput(forward);
+		expect(props(picker.describe(withPicker)).selected).toBe("test/alpha");
+		picker.handleInput("beta");
+		picker.handleInput(backward);
+		expect(props(picker.describe(withPicker))).toMatchObject({ selected: "test/beta", query: "beta" });
+		picker.handleInput("\r");
+		expect(picked).toEqual(["test/beta"]);
+	} finally {
+		setKeybindings(previous);
+	}
 });

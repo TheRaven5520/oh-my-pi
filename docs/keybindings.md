@@ -51,6 +51,10 @@ app.history.search: []
 | `app.live.toggle`            | `Ctrl+L`                                                              | Start or stop live voice mode (same as `/live`)                                                                                                                                      |
 | `app.agents.hub`             | `Alt+A`                                                               | [Open the Agent Hub](./agent-hub.md)                                                                                                                                                 |
 
+Inside a model picker, `Ctrl+P` moves to the next model and `Ctrl+Shift+P` moves to the previous model, wrapping at either end of the filtered results. These use the same `app.model.cycleForward` and `app.model.cycleBackward` remaps as the prompt. Arrow navigation remains available; navigation does not apply the highlighted model until you confirm it.
+
+The terminal must send a distinct modified-key sequence for `Ctrl+Shift+P`. If it sends the same byte as `Ctrl+P`, remap `app.model.cycleBackward` to a distinguishable chord.
+
 ## Recover a cleared prompt
 
 Press `Ctrl+C` to clear an unsent composer draft, then `Up` to recall it. Older drafts and submitted prompts share the existing Up/Down navigation. Recalled drafts remain editable and are never sent until you submit them.

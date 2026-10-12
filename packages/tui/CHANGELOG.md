@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Model pickers honor the forward/backward model-cycle shortcuts (`Ctrl+P` / `Ctrl+Shift+P`), including remaps and wrapping through filtered results without changing the search query.
 - Individually expanded tool cards receive viewport space before surrounding text, so clicking a completed ask reveals its questions, options and recorded responses even when an earlier live block prevents history retirement.
 - Pending read-result images and Kitty PNG conversions keep their visible owners repaintable until completion, including conversion failure and late protocol detection. Late grouped-read images no longer disappear behind committed text.
 - Active wait calls keep job progress visible rather than collapsing into a result summary, including under viewport pressure. Finished wait calls may condense normally.

@@ -17,6 +17,7 @@ import { fuzzyRank } from "../fuzzy";
 import { Input } from "../components/input";
 import { ScrollView } from "../components/scroll-view";
 import { matchesKey } from "../keys";
+import { getKeybindings } from "../keybindings";
 import type { SgrMouseEvent } from "../mouse";
 import { replaceTabs, truncateToWidth, visibleWidth } from "../utils";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
@@ -1191,6 +1192,15 @@ export class ModelBrowser implements Component {
 			return;
 		}
 		if (matchesSelectDown(data)) {
+			this.moveSelection(1);
+			return;
+		}
+		const keybindings = getKeybindings();
+		if (keybindings.matches(data, "app.model.cycleBackward")) {
+			this.moveSelection(-1);
+			return;
+		}
+		if (keybindings.matches(data, "app.model.cycleForward")) {
 			this.moveSelection(1);
 			return;
 		}
