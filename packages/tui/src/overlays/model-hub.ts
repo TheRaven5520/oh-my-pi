@@ -2747,8 +2747,8 @@ export class ModelHubComponent implements Component {
 		return this.#frame.renderChips(width, prefix, strip, start);
 	}
 
-	render(width: number): readonly string[] {
-		const height = Math.max(16, this.#tui.terminal?.rows || process.stdout.rows || 40);
+	render(width: number, availableRows?: number): readonly string[] {
+		const height = availableRows ?? Math.max(16, this.#tui.terminal?.rows || process.stdout.rows || 40);
 		return this.#frame.render(width, height, this.#entries, this.#renderFooter(width - 4));
 	}
 

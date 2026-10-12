@@ -1835,7 +1835,12 @@ export class AgentsHubComponent implements Component {
 		];
 	}
 
-	render(width: number): readonly string[] {
-		return this.#frame.render(width, this.#terminalRows(), this.#entries, this.#renderFooter(width - 4));
+	render(width: number, availableRows?: number): readonly string[] {
+		return this.#frame.render(
+			width,
+			availableRows ?? this.#terminalRows(),
+			this.#entries,
+			this.#renderFooter(width - 4),
+		);
 	}
 }

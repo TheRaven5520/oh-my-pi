@@ -893,8 +893,8 @@ export class UsageDashboardComponent implements Component {
 		return this.#detailCache.lines;
 	}
 
-	render(width: number): readonly string[] {
-		const height = Math.max(14, process.stdout.rows || 40);
+	render(width: number, availableRows?: number): readonly string[] {
+		const height = availableRows ?? Math.max(14, process.stdout.rows || 40);
 		const innerWidth = Math.max(20, width - 4);
 
 		const contentSource = this.#view === "detail" ? this.#detailLines(innerWidth) : this.#overviewLines(innerWidth);

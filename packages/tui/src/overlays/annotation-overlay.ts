@@ -1444,8 +1444,8 @@ export class AnnotationOverlay implements Component {
 		return keys.length > 0 ? { keys, label } : undefined;
 	}
 
-	render(width: number): readonly string[] {
-		const terminalHeight = process.stdout.rows || 40;
+	render(width: number, availableRows?: number): readonly string[] {
+		const terminalHeight = availableRows ?? (process.stdout.rows || 40);
 		this.#sidebarShown = this.#textSource ? false : this.#canShowSidebar(width);
 		if (!this.#sidebarShown && this.#focus === "files") this.#focus = "diff";
 		const sidebarWidth = this.#sidebarShown ? this.#sidebarWidth(width) : 0;

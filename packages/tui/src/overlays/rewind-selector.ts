@@ -820,8 +820,8 @@ export class RewindSelectorComponent implements Component {
 	// Render
 	// ========================================================================
 
-	render(width: number): readonly string[] {
-		return this.#browser.render(width);
+	render(width: number, availableRows?: number): readonly string[] {
+		return this.#browser.render(width, availableRows);
 	}
 
 	#frame(contentWidth: number): TranscriptBrowserFrame {

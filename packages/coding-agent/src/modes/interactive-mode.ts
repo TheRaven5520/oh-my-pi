@@ -1904,6 +1904,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer =
 			composer ??
 			new Composer({
+				ravensLogo: true,
 				preferences,
 				welcome: { version },
 			});

@@ -1717,8 +1717,8 @@ export class PlanReviewOverlay implements Component {
 		return hints;
 	}
 
-	render(width: number): readonly string[] {
-		const termHeight = process.stdout.rows || 40;
+	render(width: number, availableRows?: number): readonly string[] {
+		const termHeight = availableRows ?? (process.stdout.rows || 40);
 		const sidebarShown = this.#sidebarVisible(width);
 		this.#sidebarShown = sidebarShown;
 		const sidebarWidth = sidebarShown ? this.#sidebarWidthFor(width) : 0;

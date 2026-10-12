@@ -584,8 +584,8 @@ export class AgentTranscriptViewer implements Component {
 	// Render
 	// ========================================================================
 
-	render(width: number): readonly string[] {
-		const lines = this.#browser.render(width);
+	render(width: number, availableRows?: number): readonly string[] {
+		const lines = this.#browser.render(width, availableRows);
 		if (this.#initialEntryId && this.#browser.hasAnchored(this.#initialEntryId)) {
 			this.#initialEntryId = undefined;
 		}

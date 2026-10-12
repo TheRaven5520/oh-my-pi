@@ -549,8 +549,8 @@ export class AgentHubOverlayComponent<TRecord extends AgentRecordLike = AgentRec
 		this.#closeTranscriptOverlay();
 	}
 
-	override render(width: number): readonly string[] {
-		const termHeight = this.#ui.terminal?.rows || process.stdout.rows || 40;
+	override render(width: number, availableRows?: number): readonly string[] {
+		const termHeight = availableRows ?? (this.#ui.terminal?.rows || process.stdout.rows || 40);
 		const frame = (
 			this.#section === "activity"
 				? this.#renderActivityTable(width, termHeight)

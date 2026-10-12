@@ -23,6 +23,7 @@ import { postmortem } from "@oh-my-pi/pi-utils";
 import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
+import { RavensLogo } from "../chrome/ravens-logo";
 import { WelcomeComponent } from "./welcome";
 import { ensureThemeSync, getEditorTheme } from "../theme/theme";
 
@@ -82,6 +83,8 @@ export interface ComposerOptions {
 	readonly tuiOptions?: TUIOptions;
 	readonly preferences?: Partial<ComposerPreferences>;
 	readonly welcome?: ComposerWelcomeUpdate;
+	/** Personal-fork decoration, outside the transcript and native history. */
+	readonly ravensLogo?: boolean;
 	readonly status?: ComposerStatusCache;
 	readonly exit?: (code: number) => void;
 	readonly now?: () => number;
@@ -309,10 +312,13 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#nativeSurface: NativeSurface = { main: [], dock: [] };
 	#started = false;
 	#stopped = false;
+	readonly #ravensLogo: RavensLogo | undefined;
+	#logoRows = 0;
 	#transferred = false;
 
 	constructor(options: ComposerOptions = {}) {
 		ensureThemeSync();
+		this.#ravensLogo = options.ravensLogo ? new RavensLogo() : undefined;
 		// Host-owned hard exit: route through postmortem so a double-Ctrl-C during
 		// an open extension-load guard window exits cleanly instead of throwing
 		// ExtensionExitError through the guarded process.exit (#11789).
@@ -393,8 +399,37 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#anchorAfterInlineRetirement = true;
 	}
 
-	/** Compose the bounded mutable viewport and the next ordered history append. */
+	/** Keep the decoration outside modal bounds as well as transcript bounds. */
+	getViewportTopInset(): number {
+		return this.#logoRows;
+	}
+
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
+		if (!this.#ravensLogo || !this.#started || this.#stopped) return this.#renderBody(viewport);
+		const logo = this.renderViewportTop(viewport);
+		const body = this.#renderBody({ ...viewport, rows: viewport.rows - logo.length });
+		const padding = Math.max(0, viewport.rows - logo.length - body.viewport.length);
+		const offset = logo.length + padding;
+		this.#lastClickSpans = this.#lastClickSpans.map(span => ({
+			...span,
+			start: span.start + offset,
+			end: span.end + offset,
+		}));
+		return { history: body.history, viewport: [...logo, ...Array<string>(padding).fill(""), ...body.viewport] };
+	}
+
+	renderViewportTop(viewport: ViewportSize): readonly string[] {
+		const logo =
+			this.#ravensLogo?.render(
+				viewport.columns,
+				Math.min(6, Math.max(0, Math.min(viewport.rows - 1, Math.max(1, Math.floor(viewport.rows / 4))))),
+			) ?? [];
+		this.#logoRows = logo.length;
+		return logo;
+	}
+
+	/** Compose the bounded mutable viewport and the next ordered history append. */
+	#renderBody(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
@@ -744,6 +779,14 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	/** Render the semantic transcript tail while the terminal borrows its resize buffer. */
 	renderResizeFrame(viewport: ViewportSize): readonly string[] {
+		if (!this.#ravensLogo || !this.#started || this.#stopped) return this.#renderResizeBody(viewport);
+		const logo = this.renderViewportTop(viewport);
+		const body = this.#renderResizeBody({ ...viewport, rows: viewport.rows - logo.length });
+		const padding = Math.max(0, viewport.rows - logo.length - body.length);
+		return [...logo, ...Array<string>(padding).fill(""), ...body];
+	}
+
+	#renderResizeBody(viewport: ViewportSize): readonly string[] {
 		if (!this.#started || this.#stopped) return [];
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);

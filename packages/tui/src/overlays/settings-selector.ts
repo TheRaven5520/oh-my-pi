@@ -729,8 +729,8 @@ export class SettingsSelectorComponent implements Component {
 	 * the active content sized to fill the terminal, the appearance preview,
 	 * then a footer hint pinned above the bottom border.
 	 */
-	render(width: number): readonly string[] {
-		const height = Math.max(14, process.stdout.rows || 40);
+	render(width: number, availableRows?: number): readonly string[] {
+		const height = availableRows ?? Math.max(14, process.stdout.rows || 40);
 		const innerWidth = Math.max(1, width - 4);
 
 		const tabLines = this.#tabBar.render(innerWidth);

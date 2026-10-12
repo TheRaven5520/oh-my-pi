@@ -211,7 +211,7 @@ export class TranscriptBrowser implements Component {
 		};
 	}
 
-	render(width: number): readonly string[] {
+	render(width: number, availableRows?: number): readonly string[] {
 		const frameWidth = Number.isFinite(width) ? Math.max(0, Math.trunc(width)) : 0;
 		const context: TranscriptBrowserRenderContext = {
 			frameWidth,
@@ -219,7 +219,7 @@ export class TranscriptBrowser implements Component {
 			chromeWidth: Math.max(1, frameWidth - 2),
 		};
 		const frame = this.#options.frame(context);
-		const heightValue = this.#options.getHeight();
+		const heightValue = availableRows ?? this.#options.getHeight();
 		const height = Number.isFinite(heightValue) ? Math.max(0, Math.trunc(heightValue)) : 0;
 		const borderRows = frameWidth > 0 ? 3 : 0;
 		const chromeRows = frame.header.length + frame.footer.length + borderRows;

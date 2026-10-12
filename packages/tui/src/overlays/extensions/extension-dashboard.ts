@@ -269,8 +269,8 @@ export class ExtensionDashboard implements Component {
 	 * two-column body sized to fill the viewport, a divider, the footer hint, and
 	 * the bottom border.
 	 */
-	render(width: number): readonly string[] {
-		const height = Math.max(14, this.#terminalRows());
+	render(width: number, availableRows?: number): readonly string[] {
+		const height = availableRows ?? Math.max(14, this.#terminalRows());
 		const innerWidth = Math.max(1, width - 4);
 
 		const tabLines = this.#tabBar.render(innerWidth);

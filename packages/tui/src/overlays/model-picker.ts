@@ -293,8 +293,8 @@ export class ModelPickerComponent implements Component {
 		this.#tui.requestRender();
 	}
 
-	render(width: number): string[] {
-		const termRows = Math.max(16, this.#tui.terminal?.rows || process.stdout.rows || 40);
+	render(width: number, availableRows?: number): string[] {
+		const termRows = availableRows ?? Math.max(16, this.#tui.terminal?.rows || process.stdout.rows || 40);
 		const listBudget = Math.floor(termRows * HEIGHT_FRACTION) - CHROME_ROWS - BROWSER_FRAME_ROWS;
 		this.#browser.setMaxVisible(Math.max(MIN_VISIBLE, listBudget));
 

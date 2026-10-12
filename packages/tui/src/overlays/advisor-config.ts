@@ -386,8 +386,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 
 	// ───────────────────────────── render ─────────────────────────────
 
-	render(width: number): readonly string[] {
-		const height = Math.max(14, process.stdout.rows || 40);
+	render(width: number, availableRows?: number): readonly string[] {
+		const height = availableRows ?? Math.max(14, process.stdout.rows || 40);
 		const bodyRows = Math.max(3, height - 4);
 		this.#bodyRowsLast = bodyRows;
 		const title = `Advisor configuration · ${this.#scope}${this.#dirty ? "  ● unsaved" : ""}`;

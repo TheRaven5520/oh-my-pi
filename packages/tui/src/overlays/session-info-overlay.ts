@@ -252,12 +252,12 @@ export class SessionInfoOverlay implements Component {
 		if (event.type === "action" && event.act === "close") this.#onClose();
 	}
 
-	render(width: number): readonly string[] {
+	render(width: number, availableRows?: number): readonly string[] {
 		const innerWidth = Math.max(1, width - 4);
 		const footerHint = `${formatKeyHints(["up", "down"])} scroll · ${editorKey("tui.select.cancel")} close`;
 		this.#footer.setLines([theme.fg("dim", truncateToWidth(footerHint, innerWidth))]);
 
-		const maxBodyHeight = Math.max(1, this.#host.terminal.rows - PANEL_CHROME_ROWS);
+		const maxBodyHeight = Math.max(1, (availableRows ?? this.#host.terminal.rows) - PANEL_CHROME_ROWS);
 		const fullWidthInfoLines = this.#info.render(innerWidth);
 		const infoWidth = fullWidthInfoLines.length > maxBodyHeight ? Math.max(1, innerWidth - 1) : innerWidth;
 		const infoLines = infoWidth === innerWidth ? fullWidthInfoLines : this.#info.render(infoWidth);

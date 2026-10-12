@@ -29,6 +29,8 @@
 
 ### Added
 
+- Optional personal Ravens corner artwork reserves responsive top chrome without taking focus. Modal layout respects the reserved rows, and replayed history refills below the decoration with retained click ownership.
+
 - Added `dark-claude`, a low-key Claude-inspired dark theme with muted sage success/diffs, slate and lavender links/status accents, gray selection and prompt borders, untinted collapsed tools, and Claude Code's gray user bubbles and expanded tool blocks. Success/error markers use solid dots in the existing muted green/red instead of checkmarks/crosses.
 - `render/render-utils` exports `taskSummaryLine(text)`: one summary line of a Markdown task brief (first non-heading line, list/quote markers stripped; heading text as fallback).
 - `IrcMessage.forkReport` (`{ done }`) marks a `/fork` chat's `hand_back` report; `forkReportOf(details)` reads it back from an `irc:incoming` record. `createIrcMessageCard` titles such a card `Fork report` / `Fork update` and shows the whole report wrapped (8 lines collapsed) instead of three 100-column lines.

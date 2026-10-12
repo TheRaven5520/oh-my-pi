@@ -77,6 +77,30 @@ history remainder, prepares `remainder || finalViewport`, and performs one
 synchronous `terminal.write`. No block-at-a-time replay frames are observable.
 Ordinary renders never audit or rewrite terminal history.
 
+### Reserved top chrome (personal fork)
+
+`ComposerOptions.ravensLogo` opts the personal interactive application into a
+responsive corner logo. The composer reserves the logo's rows, renders the body
+against the remaining height, and returns a full-height viewport. Hit-test spans
+include both the header and any body padding. The logo is never a history batch.
+
+`TerminalFrameProvider.getViewportTopInset()` reports reserved rows to modal
+layout and replay placement. With an inset, the writer retains replayed history
+in the blank space below the header, immediately above the live body. These rows
+remain visible across diff paints, keep their original owners for clicks, and
+enter native scrollback exactly once when displaced. A reset replaces this
+retained suffix from the replay ledger; it must not append the old suffix again.
+
+On the modal alternate screen, `renderViewportTop()` paints only fixed chrome,
+without advancing the transcript. Height-aware panels receive the remaining row
+budget as `Component.render(width, availableRows)`; full-screen mouse coordinates
+are translated back to panel-local rows, and clicks on the logo are ignored.
+
+The artwork uses colored half-block cells sourced from the official NFL Ravens
+logo, with dark colors lifted for terminal contrast. It has 24-, 16-, and 8-column
+rasters and a one-row `BAL` fallback; a one-row terminal prioritizes the input.
+This is ANSI terminal chrome, not a new TSP surface region.
+
 Visible overlays are screen-coordinate content. They composite over the
 viewport and never become history. Showing, updating, or closing an overlay
 only repaints the viewport.

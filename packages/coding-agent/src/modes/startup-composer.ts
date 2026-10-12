@@ -77,6 +77,7 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 	const preferences = { ...COMPOSER_DEFAULTS, ...cached.preferences, ...options.preferences };
 	const welcome: ComposerWelcomeUpdate = { version: options.version ?? "" };
 	const composer = new Composer({
+		ravensLogo: true,
 		terminal: options.terminal,
 		exit: options.exit,
 		now: options.now,
