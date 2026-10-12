@@ -26,7 +26,14 @@ describe("Sprilicred login", () => {
 		);
 		price = 1000;
 		dedicated = {
-			glm: [{ id: "abliterated-model-large-v2", context_window: 200000, input_modalities: ["text"] }],
+			glm: [
+				{
+					id: "abliterated-model-large-v2",
+					display_name: "GLM 5.3 Abliterated",
+					context_window: 200000,
+					input_modalities: ["text"],
+				},
+			],
 			deepseek: [{ id: "deepseek-v4.1-flash", context_window: 1000000, input_modalities: ["text", "image"] }],
 		};
 		previousUrl = process.env.SPRILICRED_URL;
@@ -159,8 +166,10 @@ describe("Sprilicred login", () => {
 				discovery: { type: "openai-models-list", injectV1: false },
 			});
 			expect(provider.models.map((model: { id: string }) => model.id)).toEqual([id]);
+			expect(provider.models[0].compat).toEqual({ reasoningDisableMode: "none-effort" });
 		}
 		expect(written.providers["sprilicred-glm"].models[0].input).toEqual(["text"]);
+		expect(written.providers["sprilicred-glm"].models[0].name).toBe("GLM 5.3 Abliterated via Sprilicred");
 		expect(written.providers["sprilicred-deepseek"].models[0].input).toEqual(["text", "image"]);
 		expect(written.providers["sprilicred-openai"].baseUrl).toBe("https://sprilicred.test/v1");
 		expect(written.providers["sprilicred-openai"].models.map((model: { id: string }) => model.id)).toEqual([
@@ -192,6 +201,19 @@ describe("Sprilicred login", () => {
 		expect(written.providers["sprilicred-glm"]).toBeUndefined();
 		expect(cfgModelRoles.get(settings).plan).toBe("sprilicred-deepseek/deepseek-v4.1-flash");
 		expect(cfgCycleModels.get(settings)).toEqual(CYCLE);
+	});
+
+	test("preserves dedicated defaults and migrates only moved custom cycle refs", async () => {
+		await fs.writeFile(
+			path.join(agentDir, "models.yml"),
+			JSON.stringify({ defaultModel: "sprilicred-glm/abliterated-model-large-v2" }),
+		);
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgCycleModels.set(settings, ["other/keep", "sprilicred-openai/deepseek-v4.1-flash:high"]);
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
+		expect(written.defaultModel).toBe("sprilicred-glm/abliterated-model-large-v2");
+		expect(cfgCycleModels.get(settings)).toEqual(["other/keep", "sprilicred-deepseek/deepseek-v4.1-flash:high"]);
 	});
 
 	test("keeps a dedicated provider when its listing cannot be fetched", async () => {

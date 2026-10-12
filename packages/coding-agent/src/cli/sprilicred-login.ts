@@ -70,6 +70,7 @@ const CYCLE_MODELS = PROVIDER_GROUPS.map(group => `${group.provider}/*`);
 
 type CatalogModel = {
 	id: string;
+	display_name?: string;
 	context_window?: number;
 	context_length?: number;
 	max_output_tokens?: number;
@@ -285,7 +286,7 @@ async function writeModels(
 					}
 				}
 			}
-			const defaultName = `${catalogModel.id} via Sprilicred`;
+			const defaultName = `${catalogModel.display_name || catalogModel.id} via Sprilicred`;
 			const entry = previousModel
 				? {
 						...previousModel,
@@ -295,6 +296,11 @@ async function writeModels(
 				: { id: catalogModel.id, name: defaultName };
 			for (const [field, value] of Object.entries(modelFields(catalogModel, group.family))) {
 				applyOwnedField(state, `${provider}/${catalogModel.id}.${field}`, entry, field, value);
+			}
+			if (!group.required) {
+				applyOwnedField(state, `${provider}/${catalogModel.id}.compat`, entry, "compat", {
+					reasoningDisableMode: "none-effort",
+				});
 			}
 			entries.push(entry);
 		}
@@ -377,9 +383,9 @@ async function writeOwnedSettings(
 		const cycleState = path.join(paths.home, CYCLE_STATE);
 		if (!(await exists(cycleState))) await privateWrite(cycleState, `${JSON.stringify({ before: currentCycle })}\n`);
 	}
-	if (currentCycle.length === 0 || (ownCycle && !Bun.deepEquals(currentCycle, CYCLE_MODELS))) {
-		cfgCycleModels.set(settings, CYCLE_MODELS);
-	}
+	const nextCycle =
+		currentCycle.length === 0 || ownCycle ? CYCLE_MODELS : currentCycle.map(ref => migrateRef(ref, models.moved));
+	if (!Bun.deepEquals(currentCycle, nextCycle)) cfgCycleModels.set(settings, nextCycle);
 
 	const currentRoles = cfgModelRoles.get(settings);
 	const rolesStatePath = path.join(paths.home, ROLES_STATE);
