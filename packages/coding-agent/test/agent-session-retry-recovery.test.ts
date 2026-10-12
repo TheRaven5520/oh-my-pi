@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import { Agent, AgentBusyError } from "@oh-my-pi/pi-agent-core";
-import type { ApiKey, AssistantMessage, AssistantRetryRecovery, Usage } from "@oh-my-pi/pi-ai";
+import { Agent, AgentBusyError, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { ApiKey, AssistantMessage, AssistantRetryRecovery, Message, Usage } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import * as aiStream from "@oh-my-pi/pi-ai/stream";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -10,11 +10,12 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resolveAssistantErrorPresentation } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { convertToLlm, SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
+import { type } from "@oh-my-pi/omptype";
 
 type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
 
@@ -659,6 +660,105 @@ describe("AgentSession retry recovery", () => {
 			),
 		).toEqual({ kind: "none" });
 	});
+
+	for (const errorMessage of [
+		"Anthropic stream envelope error: stream ended before message_stop",
+		SOCKET_CLOSE_MID_STREAM,
+		"Anthropic stream error (overloaded_error): Overloaded",
+		"Error Code server_error: The server had an error while processing your request.",
+	]) {
+		for (const withTool of [false, true]) {
+			it(`continues committed output without replay (${withTool ? "text and tool" : "text"}): ${errorMessage}`, async () => {
+				const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+				authStorage.keys.setRuntime(model.provider, "test-key");
+				const requests: Message[][] = [];
+				let executions = 0;
+				const schema = type({ value: "string" });
+				const tool: AgentTool<typeof schema, { value: string }> = {
+					name: "record",
+					label: "Record",
+					description: "Record a value",
+					parameters: schema,
+					async execute(_id, params) {
+						executions++;
+						return { content: [{ type: "text", text: params.value }], details: params };
+					},
+				};
+				const partial = "Already shown to the user.";
+				const mock = createMockModel({
+					responses: [
+						{
+							content: [
+								partial,
+								...(withTool
+									? [
+											{
+												type: "toolCall" as const,
+												id: "dropped-call",
+												name: "record",
+												arguments: { value: "must-not-run" },
+											},
+										]
+									: []),
+							],
+							stopReason: "error",
+							errorMessage,
+						},
+						{ content: ["Continued without repeating."], stopReason: "stop" },
+					],
+				});
+				const agent = new Agent({
+					getApiKey: () => "test-key",
+					convertToLlm,
+					initialState: { model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+					streamFn: (requestedModel, context, options) => {
+						requests.push(structuredClone(context.messages));
+						return mock.stream(requestedModel, context, options);
+					},
+				});
+				const settings = Settings.isolated({
+					"compaction.enabled": false,
+					"retry.baseDelayMs": 5,
+					"retry.maxRetries": 1,
+					"retry.modelFallback": false,
+				});
+				settings.setModelRole("default", `${model.provider}/${model.id}`);
+				const manager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "sessions"));
+				managers.push(manager);
+				const session = new AgentSession({ agent, sessionManager: manager, settings, modelRegistry });
+				sessions.push(session);
+				session.setTextOutputCommitted(true);
+				await session.prompt("Continue a dropped stream");
+				await session.waitForIdle();
+				await manager.flush();
+				expect(requests).toHaveLength(2);
+				// Anthropic EOF salvages fully completed calls before session recovery;
+				// other failures pair them with synthetic unexecuted results.
+				const salvaged = withTool && errorMessage.startsWith("Anthropic stream envelope error:");
+				expect(executions).toBe(salvaged ? 1 : 0);
+				expect(requests[1][1]).toMatchObject({
+					role: "assistant",
+					content: expect.arrayContaining([{ type: "text", text: partial }]),
+				});
+				if (withTool) {
+					expect(requests[1][2]).toMatchObject({ role: "toolResult", toolCallId: "dropped-call" });
+					if (!salvaged) expect(requests[1][2]).toMatchObject({ details: { executed: false } });
+				} else {
+					expect(requests[1][2]).toMatchObject({ role: "developer" });
+					expect(JSON.stringify(requests[1][2])).toContain("Continue exactly where it stopped");
+				}
+				expect(session.getLastAssistantMessage()).toMatchObject({
+					stopReason: "stop",
+					content: [{ type: "text", text: "Continued without repeating." }],
+				});
+				expect(
+					assistantEntries(manager).some(({ message }) =>
+						message.content.some(block => block.type === "text" && block.text === partial),
+					),
+				).toBe(true);
+			});
+		}
+	}
 
 	it("keeps recovered markers durable across session reload and still excludes them from model context", async () => {
 		const { sessionManager } = await runCredentialRecovery();

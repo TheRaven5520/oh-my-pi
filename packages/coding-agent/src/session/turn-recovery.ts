@@ -107,7 +107,11 @@ const HTTP2_STREAM_RESET_ERROR_RE =
 // Same transport-failure class as the stall/reset entries: retriable, and
 // eligible for preserved-turn continuation on resolved tool turns.
 const PREMATURE_STREAM_CLOSE_ERROR_RE =
-	/(?:stream closed before a (?:finish_reason|terminal response event)|Codex stream ended before terminal completion event|Cursor stream ended before turnEnded)/i;
+	/(?:stream closed before a (?:finish_reason|terminal response event)|Anthropic stream envelope error: stream ended before message_stop|Codex stream ended before terminal completion event|Cursor stream ended before turnEnded)/i;
+// In-band SSE failures have no failed HTTP response: after output started they
+// need the same preserved-turn continuation as a dropped transport, not replay.
+const TRANSIENT_STREAM_ERROR_RE =
+	/^(?:Anthropic stream error \((?:overloaded_error|api_error)\):|Error Code (?:server_error|overloaded_error):)/i;
 const IMMUTABLE_ANTHROPIC_THINKING_ERROR_PATTERN =
 	/messages\.\d+\.content\.\d+.*\b(?:thinking|redacted_thinking)\b.*\blatest assistant message cannot be modified\b/is;
 
@@ -631,17 +635,11 @@ export class TurnRecovery {
 	 * models reject: keep the partial turn in context, append a developer
 	 * reminder to pick up where the text stopped, and continue. Honors
 	 * `retry.enabled`; bounded per prompt, past the cap the error surfaces as before.
-	 * A socket close counts here but not for tool turns: without tool calls there
-	 * is no executed side effect whose resumption policy it could change.
+	 * Transient in-band provider errors use the same continuation policy.
 	 */
 	handleCommittedTextStreamStall(message: AssistantMessage): boolean {
 		const id = this.#classifyRetryMessage(message);
-		const socketClosed =
-			message.stopReason === "error" &&
-			AIError.retriable(id) &&
-			!this.#host.streamingEditAbortTriggered() &&
-			isUnexpectedSocketCloseMessage(message.errorMessage ?? "");
-		if (!socketClosed && !this.#isMidStreamTransportFailure(message, id)) {
+		if (!this.#isMidStreamTransportFailure(message, id)) {
 			this.#streamStallContinueCount = 0;
 			return false;
 		}
@@ -1575,7 +1573,9 @@ export class TurnRecovery {
 			HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) ||
 			AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(errorMessage) ||
 			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
-			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage)
+			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) ||
+			isUnexpectedSocketCloseMessage(errorMessage) ||
+			TRANSIENT_STREAM_ERROR_RE.test(errorMessage)
 		);
 	}
 	/**

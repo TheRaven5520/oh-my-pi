@@ -64,6 +64,7 @@
 
 ### Fixed
 
+- Fixed post-output stream-drop recovery: Anthropic EOF, transient Anthropic/Responses SSE errors, and socket resets after text plus tool calls now continue from preserved output instead of leaving the turn stopped. Partial tool arguments remain unexecuted, and completed tool/result pairs are retained to avoid replaying side effects.
 - `/tan` and `/fork` clones now start on the chat's configured primary model and thinking level when the chat is temporarily on a retry fallback (for example after its primary returned a 429), instead of inheriting the fallback for their whole life. Clones keep the same fallback chains, so they still fall back if the primary fails.
 - The agents dock now names the model of `/tan`, `/fork` and other agents the task executor doesn't report on, beside their tool uses and tokens (`Tan-… · Opus 5.5 (high) · 103 tool uses · 2.9m tokens`), taken from the model that last served them like Agent Hub, with `fallback →` when a fallback model is serving. These rows now refresh every second while the agent works; before, their model and stats froze until something else redrew the screen.
 - Terminal thinking now disappears as soon as the next tool call starts, including when the live transcript splits a response into separate text and tool components. Thinking stays visible while streaming and before an answer without a later tool call; native finished-thinking folding is unchanged.
