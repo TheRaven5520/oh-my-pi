@@ -436,6 +436,7 @@ export class EventController {
 		this.#detachToolApprovalPreviewWaiter?.();
 		this.#detachToolApprovalPreviewWaiter = undefined;
 		this.#clearApprovalPreviewGates();
+		this.#clearReadToolCalls();
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -545,19 +546,27 @@ export class EventController {
 			args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 		this.#readToolCallArgs.set(toolCallId, normalizedArgs);
 		const assistantComponent = this.ctx.streamingComponent ?? this.#lastAssistantComponent;
-		if (assistantComponent) {
-			this.#readToolCallAssistantComponents.set(toolCallId, assistantComponent);
-		}
+		if (assistantComponent) this.inheritReadToolAssistant(toolCallId, assistantComponent);
 	}
 
 	inheritReadToolAssistant(toolCallId: string, component: AssistantMessageComponent | undefined): void {
+		this.#readToolCallAssistantComponents.get(toolCallId)?.setToolResultImagesPending(toolCallId, false);
+		component?.setToolResultImagesPending(toolCallId, true);
 		if (component) this.#readToolCallAssistantComponents.set(toolCallId, component);
 		else this.#readToolCallAssistantComponents.delete(toolCallId);
 	}
 
 	#clearReadToolCall(toolCallId: string): void {
 		this.#readToolCallArgs.delete(toolCallId);
-		this.#readToolCallAssistantComponents.delete(toolCallId);
+		this.inheritReadToolAssistant(toolCallId, undefined);
+	}
+
+	#clearReadToolCalls(): void {
+		for (const [toolCallId, component] of this.#readToolCallAssistantComponents) {
+			component.setToolResultImagesPending(toolCallId, false);
+		}
+		this.#readToolCallArgs.clear();
+		this.#readToolCallAssistantComponents.clear();
 	}
 
 	#retractToolCardEntry(toolCallId: string, component: ToolExecutionHandle): void {
@@ -616,8 +625,8 @@ export class EventController {
 		}
 		const readAssistant = this.#readToolCallAssistantComponents.get(oldId);
 		if (readAssistant !== undefined) {
-			this.#readToolCallAssistantComponents.delete(oldId);
-			this.#readToolCallAssistantComponents.set(newId, readAssistant);
+			this.inheritReadToolAssistant(oldId, undefined);
+			this.inheritReadToolAssistant(newId, readAssistant);
 		}
 		// A collapsed read renders into a shared group keyed by id; rename its
 		// entry so the row isn't duplicated under the new id.
@@ -689,7 +698,7 @@ export class EventController {
 		toolCallId: string,
 		result: { content: Array<{ type: string; data?: string; mimeType?: string }> },
 	): boolean {
-		const assistantComponent = this.#readToolCallAssistantComponents.get(toolCallId);
+		let assistantComponent = this.#readToolCallAssistantComponents.get(toolCallId);
 		if (!assistantComponent) return false;
 		const images: ImageContent[] = result.content
 			.filter(
@@ -698,6 +707,18 @@ export class EventController {
 			)
 			.map(content => ({ type: "image", data: content.data, mimeType: content.mimeType }));
 		if (images.length === 0) return false;
+		if (!this.ctx.chatContainer.canRemoveBlock(assistantComponent)) {
+			const toolComponent = this.ctx.pendingTools.get(toolCallId) ?? this.#toolTimelineComponents.get(toolCallId);
+			// Standalone tool cards already render their result images. Grouped
+			// reads need a fresh image-only owner once the old text is on the tape.
+			if (toolComponent instanceof ToolExecutionComponent) return false;
+			assistantComponent = createAssistantMessageComponent(this.ctx);
+			assistantComponent.markTranscriptBlockFinalized();
+			this.inheritReadToolAssistant(toolCallId, assistantComponent);
+			if (!this.#insertAfterTranscriptComponent(toolComponent, assistantComponent)) {
+				this.ctx.chatContainer.addChild(assistantComponent);
+			}
+		}
 		assistantComponent.setToolResultImages(toolCallId, images);
 		return cfgTerminalShowImages.get(settings);
 	}
@@ -918,8 +939,7 @@ export class EventController {
 		this.#postToolAssistantComponents.clear();
 		this.#backgroundTaskCallIds.clear();
 		this.#approvalAttentionToolCallIds.clear();
-		this.#readToolCallArgs.clear();
-		this.#readToolCallAssistantComponents.clear();
+		this.#clearReadToolCalls();
 		this.#lastAssistantComponent = undefined;
 		this.#turnStartedAt = undefined;
 		this.#turnUsage.reset();
@@ -1065,8 +1085,7 @@ export class EventController {
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
 		this.#lastIntent = undefined;
-		this.#readToolCallArgs.clear();
-		this.#readToolCallAssistantComponents.clear();
+		this.#clearReadToolCalls();
 		this.#resetReadGroup();
 		this.#seedHeldCompletionsFromPendingResults();
 		this.#resolveDisplaceableTodo();
@@ -1477,6 +1496,19 @@ export class EventController {
 			this.ctx.streamingMessage = event.message;
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
+			// A read can append images to this message after its text is done.
+			// Reserve that ownership before the async finalization below can paint
+			// and retire it, even while the read's path is still streaming.
+			for (const content of this.ctx.streamingMessage.content) {
+				if (content.type !== "toolCall" || this.#toolTimelineComponents.has(content.id)) continue;
+				const tool = this.ctx.viewSession.getToolByName(content.name);
+				if (toolRenderName(content.name, tool) !== "read") continue;
+				if (readArgsHaveTarget(content.arguments) && !readArgsCollapseIntoGroup(content.arguments)) {
+					this.#clearReadToolCall(content.id);
+				} else {
+					this.#trackReadToolCall(content.id, content.arguments);
+				}
+			}
 
 			const visibleBlockCount = this.ctx.streamingMessage.content.filter(
 				content =>
@@ -2342,8 +2374,7 @@ export class EventController {
 		await this.ctx.flushPendingModelSwitch();
 		this.#sealAbandonedForegroundTools();
 		this.#approvalAttentionToolCallIds.clear();
-		this.#readToolCallArgs.clear();
-		this.#readToolCallAssistantComponents.clear();
+		this.#clearReadToolCalls();
 		this.#priorTurnToolComponents = new Map(this.#toolTimelineComponents);
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();

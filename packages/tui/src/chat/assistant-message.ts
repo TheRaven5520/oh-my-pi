@@ -233,6 +233,7 @@ export class AssistantMessageComponent extends Container {
 	#lastMessage?: AssistantMessage;
 	#emergencyText?: Markdown;
 	#toolImagesByCallId = new Map<string, ImageContent[]>();
+	#pendingToolImageResults = new Set<string>();
 	/**
 	 * Payload keys ({@link imagePayloadKey}) whose Kitty PNG conversion this
 	 * component already awaits, so a re-delivered image neither re-encodes nor
@@ -535,9 +536,7 @@ export class AssistantMessageComponent extends Container {
 		this.#markdownTheme = undefined;
 		this.#fastPathKey = undefined;
 		this.#fastPathItems = undefined;
-		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
-		}
+		this.#updateImageDisplay();
 	}
 
 	setHideThinkingBlock(hide: boolean): void {
@@ -698,6 +697,17 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	isTranscriptBlockFinalized(): boolean {
+		if (this.#showImages) {
+			if (this.#showToolResultImages && this.#pendingToolImageResults.size > 0) return false;
+			if (
+				this.#kittyConversionsAwaited.size > 0 &&
+				(this.#showToolResultImages ||
+					this.#lastMessage?.content.some(
+						content => content.type === "image" && this.#kittyConversionsAwaited.has(imagePayloadKey(content)),
+					))
+			)
+				return false;
+		}
 		return this.#transcriptBlockFinalized;
 	}
 
@@ -846,13 +856,15 @@ export class AssistantMessageComponent extends Container {
 					children.push(this.#nativeImages.get(`i${index}`, content.data, content.mimeType));
 				}
 			}
-			if (this.#showImages && this.#showToolResultImages) {
-				for (const [toolCallId, images] of this.#toolImagesByCallId) {
-					images.forEach((image, index) => {
-						children.push(this.#nativeImages.get(`r${toolCallId}:${index}`, image.data, image.mimeType));
-					});
-				}
+		}
+		if (this.#showImages && this.#showToolResultImages) {
+			for (const [toolCallId, images] of this.#toolImagesByCallId) {
+				images.forEach((image, index) => {
+					children.push(this.#nativeImages.get(`r${toolCallId}:${index}`, image.data, image.mimeType));
+				});
 			}
+		}
+		if (message) {
 			const errorNode = this.#describeError(message);
 			if (errorNode) children.push(errorNode);
 		}
@@ -1311,18 +1323,20 @@ export class AssistantMessageComponent extends Container {
 	setImagesVisible(visible: boolean): void {
 		if (this.#showImages === visible) return;
 		this.#showImages = visible;
-		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
-		}
+		this.#updateImageDisplay();
 	}
 
 	/** Toggle only images produced by tool results; assistant-native images remain governed by setImagesVisible. */
 	setToolResultImagesVisible(visible: boolean): void {
 		if (this.#showToolResultImages === visible) return;
 		this.#showToolResultImages = visible;
-		if (this.#lastMessage) {
-			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
-		}
+		this.#updateImageDisplay();
+	}
+
+	/** Keep the image owner repaintable until its read result has arrived. */
+	setToolResultImagesPending(toolCallId: string, pending: boolean): void {
+		if (pending) this.#pendingToolImageResults.add(toolCallId);
+		else this.#pendingToolImageResults.delete(toolCallId);
 	}
 
 	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
@@ -1334,8 +1348,18 @@ export class AssistantMessageComponent extends Container {
 			this.#toolImagesByCallId.set(toolCallId, validImages);
 			this.#convertImagesForKitty(validImages.map((image, index) => ({ image, key: `${toolCallId}:${index}` })));
 		}
+		this.#updateImageDisplay();
+	}
+
+	#updateImageDisplay(): void {
 		if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		} else {
+			// A read whose original owner has retired gets a fresh image-only
+			// block, without inventing assistant message metadata or replaying history.
+			this.#blockVersion++;
+			this.#contentContainer.clear();
+			this.#renderToolImages();
 		}
 	}
 
@@ -1355,13 +1379,14 @@ export class AssistantMessageComponent extends Container {
 			convertImageToPngShared(image)
 				.then(converted => {
 					this.#kittyConverted.set(key, converted);
-					if (this.#lastMessage) {
-						this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
-					}
+					this.#kittyConversionsAwaited.delete(key);
+					this.#updateImageDisplay();
 					this.#onImageUpdate?.();
 				})
 				.catch(() => {
 					this.#kittyConversionsAwaited.delete(key);
+					// Release the retirement hold even when the image cannot decode.
+					this.#onImageUpdate?.();
 				});
 		}
 	}

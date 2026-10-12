@@ -49,6 +49,8 @@ Optimistic user submissions call `renderNow()` before agent dispatch so synchron
 
 Finalizing a later block never bypasses an active predecessor. `peekFinalizedBatch(width, capacity)` retires the shortest settled prefix that lets the remaining live tail fit `capacity`, in batches capped by a per-frame render budget (the remainder is offered on later frames), stops at the first active block, and reoffers the same id until `acknowledgeFinalizedBatch()` succeeds. An append-only head may instead emit a monotonically extending prefix of stable semantic rows under pressure, retaining its mutable suffix; final retirement emits only the remainder. `peekFlushBatch(width)` takes the whole eligible finalized prefix during graceful shutdown. Ordinary retirement also bounds the number of live blocks; otherwise, while the screen has room nothing retires, so recent blocks keep reflowing on resize.
 
+Visible image owners remain active while a read result or Kitty PNG conversion is pending. Completion and conversion failure release the hold; still-live settled blocks are rechecked before retirement. A late image never mutates committed text: it uses its existing tool card, or an image-only block for a grouped read.
+
 The composer opens each frame with `beginFrame(frame)` before offering history. Until that frame's `renderViewport(width, rows, frame)` returns, every full-allocation measurement of a live block (retirement peek, `liveRowCount`, viewport layout) renders the block once and replays those rows; `renderViewport` closes the frame, so no measurement outlives the synchronous composition that took it. Allocation-constrained viewport renders are never shared.
 
 Display replay has an independent cursor over committed entries. It never changes
@@ -59,7 +61,7 @@ Every emitted transcript block owns one trailing separator row. This preserves s
 
 ## Viewport allocation and tool collapse
 
-The product root reserves chrome first, gives every active block one row, then allocates surplus to newer blocks. When active count exceeds available rows, it uses a bounded aggregate rather than committing or cancelling work.
+The product root reserves chrome first and gives every visible block one row. Surplus goes first to individually expanded cards and active wait invocations, then ordinary text, then other tool activity, newest-first within each group. This lets a clicked ask card reveal its questions and recorded answers even when an earlier live block prevents retirement. Active waits keep their job progress visible; completed wait invocations may condense even when the final snapshot still lists running jobs. Collapsing or finishing a wait restores the normal priorities. When active count exceeds available rows, it uses a bounded aggregate rather than committing or cancelling work.
 
 `ToolExecutionComponent` owns generic compact presentation:
 

@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- Individually expanded tool cards receive viewport space before surrounding text, so clicking a completed ask reveals its questions, options and recorded responses even when an earlier live block prevents history retirement.
+- Pending read-result images and Kitty PNG conversions keep their visible owners repaintable until completion, including conversion failure and late protocol detection. Late grouped-read images no longer disappear behind committed text.
+- Active wait calls keep job progress visible rather than collapsing into a result summary, including under viewport pressure. Finished wait calls may condense normally.
 - Tool blocks can expand/collapse in native tmux scrollback with the matching natural-scroll helper. A fenced row-owner snapshot prevents later output from retargeting clicks, and replay refreshes/reanchors the native view without replacing drag-selection. Stale mode, size and session identities are rejected.
 - Native-history requests now expire with their socket, and a hard pause deadline keeps failed terminal fences from freezing rendering. Late status replies drain before the next fence; a failed post-toggle refresh leaves only the original copy mode so the changed live state is visible. Plain transcript text does not activate this recovery path.
 - Refreshing expanded native tmux history anchors with a positive absolute scroll count, avoiding lexical comparison errors across two-/three-digit offsets. Collapse moves the old copy view to its bottom before replacing its backing, preventing tmux 3.4 from crashing on a now-out-of-range offset.

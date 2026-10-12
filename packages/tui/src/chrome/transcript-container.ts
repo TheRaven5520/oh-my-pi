@@ -48,6 +48,8 @@ export interface AnimationFrame {
 /** Lets an active block adapt its presentation to its allocated viewport rows. */
 export interface TranscriptPresentationTarget {
 	setTranscriptAllocation?(rows: number, frame: AnimationFrame): void;
+	/** Explicit inspection and transient progress take priority over automatic compact layout. */
+	prioritizeTranscriptAllocation?(): boolean;
 }
 
 /** Presentation declaration captured permanently when a block is added. */
@@ -683,15 +685,17 @@ export class TranscriptContainer extends Container {
 		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
 		const allocation: number[] = new Array(shown.length).fill(1);
 		let surplus = capacity - shown.length;
-		// Surplus rows favor ordinary transcript blocks over dynamic tool-activity
-		// cards (newest-first within each class), so a growing tool card collapses to
-		// its compact form instead of clipping already-visible assistant text (#9718).
+		// Honor explicit inspection before automatic layout preferences. Otherwise
+		// surrounding text can squeeze a clicked tool back to its collapsed rows.
+		// Unselected blocks still favor ordinary text over dynamic tool activity.
 		const order: number[] = [];
-		for (let index = shown.length - 1; index >= 0; index--) {
-			if (!isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
-		}
-		for (let index = shown.length - 1; index >= 0; index--) {
-			if (isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
+		for (let priority = 0; priority < 3; priority++) {
+			for (let index = shown.length - 1; index >= 0; index--) {
+				const component = shown[index]!.entry.component;
+				const preferred = (component as TranscriptPresentationTarget).prioritizeTranscriptAllocation?.();
+				const rank = preferred ? 0 : isToolActivityComponent(component) ? 2 : 1;
+				if (rank === priority) order.push(index);
+			}
 		}
 		for (const index of order) {
 			if (surplus <= 0) break;
@@ -1355,7 +1359,9 @@ export class TranscriptContainer extends Container {
 	#settleFinalized(): void {
 		for (let index = this.#frontier; index < this.#entries.length; index++) {
 			const entry = this.#entries[index]!;
-			if (entry.state === "active" && isFinalized(entry.component)) entry.state = "settled";
+			// A completed message may acquire a read-result image or an async
+			// conversion while still live. Only committed entries are immutable.
+			entry.state = isFinalized(entry.component) ? "settled" : "active";
 		}
 	}
 

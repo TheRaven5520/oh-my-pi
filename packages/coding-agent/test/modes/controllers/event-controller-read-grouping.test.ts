@@ -266,4 +266,102 @@ describe("EventController read-group accretion", () => {
 		assistant?.setImagesVisible(true);
 		expect(hasImageComponent(assistant!)).toBe(true);
 	});
+
+	it("keeps the read image owner live until a completed read can publish its image", async () => {
+		cfgTerminalShowImages.override(Settings.instance, true);
+		setTerminalImageProtocol(ImageProtocol.Kitty);
+		const { controller, chatContainer } = createFixture();
+		const message = assistantMessage([{ type: "text", text: "Inspecting the image" }, read("live.png")]);
+		await controller.handleEvent({ type: "message_start", message } as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_update", message } as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_end", message } as AgentSessionEvent);
+		const owner = chatContainer.children.find(
+			(child): child is AssistantMessageComponent => child instanceof AssistantMessageComponent,
+		);
+		expect(owner).toBeDefined();
+		expect(owner!.isTranscriptBlockFinalized()).toBe(false);
+		expect(chatContainer.peekFlushBatch(80)).toBeUndefined();
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "read-live.png",
+			toolName: "read",
+			result: {
+				content: [
+					{
+						type: "image",
+						data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+						mimeType: "image/png",
+					},
+				],
+			},
+			isError: false,
+		} as AgentSessionEvent);
+		expect(owner!.isTranscriptBlockFinalized()).toBe(true);
+		expect(chatContainer.peekFlushBatch(80)?.rows.join("\n")).toContain("\x1b_G");
+		controller.dispose();
+	});
+
+	it.each(["text", "error", "reset", "dispose"] as const)("releases pending read image ownership on %s", async end => {
+		cfgTerminalShowImages.override(Settings.instance, true);
+		const { controller, chatContainer } = createFixture();
+		const message = assistantMessage([{ type: "text", text: "Checking" }, read("pending.txt")]);
+		await controller.handleEvent({ type: "message_start", message } as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_update", message } as AgentSessionEvent);
+		await controller.handleEvent({ type: "message_end", message } as AgentSessionEvent);
+		const owner = chatContainer.children.find(
+			(child): child is AssistantMessageComponent => child instanceof AssistantMessageComponent,
+		);
+		expect(owner!.isTranscriptBlockFinalized()).toBe(false);
+		if (end === "reset") controller.resetTranscriptAnchors();
+		else if (end === "dispose") controller.dispose();
+		else {
+			await controller.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: "read-pending.txt",
+				toolName: "read",
+				result: { content: [{ type: "text", text: end === "error" ? "Read failed" : "contents" }] },
+				isError: end === "error",
+			} as AgentSessionEvent);
+		}
+		expect(owner!.isTranscriptBlockFinalized()).toBe(true);
+		controller.dispose();
+	});
+
+	it("shows a late read image without replaying its already committed assistant owner", async () => {
+		cfgTerminalShowImages.override(Settings.instance, true);
+		setTerminalImageProtocol(ImageProtocol.Kitty);
+		const { controller, chatContainer } = createFixture();
+		const owner = new AssistantMessageComponent(assistantMessage([{ type: "text", text: "Already printed" }]));
+		chatContainer.addChild(owner);
+		const original = chatContainer.peekFlushBatch(80);
+		expect(original).toBeDefined();
+		chatContainer.acknowledgeFinalizedBatch(original!.id);
+		controller.inheritReadToolAssistant("late-read", owner);
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "late-read",
+			toolName: "read",
+			args: { path: "late.png" },
+		} as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "late-read",
+			toolName: "read",
+			result: {
+				content: [
+					{
+						type: "image",
+						data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+						mimeType: "image/png",
+					},
+				],
+			},
+			isError: false,
+		} as AgentSessionEvent);
+		const rows = chatContainer.renderViewport(80, 40, { tick: 1, now: 0 }).join("\n");
+		expect(rows).toContain("\x1b_G");
+		expect(Bun.stripANSI(rows)).not.toContain("Already printed");
+		expect(chatContainer.blockStates()[0]).toBe("committed");
+		controller.dispose();
+	});
 });

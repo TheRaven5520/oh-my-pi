@@ -3,6 +3,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { ToolExecutionComponent, type ToolExecutionUi } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { initTheme, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { createTheme, getBuiltinThemes } from "@oh-my-pi/pi-tui/theme/loader";
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
@@ -55,6 +56,94 @@ describe("collapsed tool cards", () => {
 		const cropped = plain(card.render(24))[0]!;
 		expect(cropped).toContain(" · Summarizing");
 		expect(visibleWidth(cropped)).toBeLessThanOrEqual(24);
+	});
+
+	it("expands a clicked ask ahead of surrounding text under viewport pressure", () => {
+		const question =
+			"tmux 3.4 cannot bind focus events separately. The safe config-only fix removes the catch-all typing handler. Okay to require Escape before starting input with a non-ASCII character?";
+		const options = ["Preserve focus reliably", "Keep current fallback"];
+		const card = new ToolExecutionComponent(
+			"ask",
+			{
+				i: "Choosing focus handling",
+				questions: [{ id: "focus-fallback", question, options: options.map(label => ({ label })), multi: false }],
+			},
+			{},
+			undefined,
+			ui,
+			"/tmp",
+		);
+		card.updateResult(
+			{
+				...textResult("User selected: Preserve focus reliably"),
+				details: { question, options, multi: false, selectedOptions: [options[0]] },
+			},
+			false,
+		);
+		card.seal();
+		const transcript = new TranscriptContainer();
+		// A live predecessor prevents retirement; text normally wins the surplus
+		// and leaves this card only two rows, even after its click state changes.
+		transcript.addChild({
+			render: () => Array.from({ length: 10 }, (_, index) => `Surrounding text ${index}`),
+			isTranscriptBlockFinalized: () => false,
+		} as Component);
+		transcript.addChild(card);
+		const frame = { tick: 0, now: 0 };
+		const collapsed = plain(transcript.renderViewport(120, 12, frame));
+		expect(collapsed.join("\n")).not.toContain("Keep current fallback");
+		expect(card.getClickToolId()).toBeDefined();
+		expect(card.toggleClickExpansion()).toBe(true);
+		const expanded = plain(transcript.renderViewport(120, 12, frame));
+		expect(expanded.length).toBeLessThanOrEqual(12);
+		expect(expanded.join("\n")).toContain("tmux 3.4 cannot bind focus events separately.");
+		expect(expanded.join("\n")).toContain("Preserve focus reliably");
+		expect(expanded.join("\n")).toContain("Keep current fallback");
+		expect(card.toggleClickExpansion()).toBe(true);
+		expect(plain(transcript.renderViewport(120, 12, frame))).toEqual(collapsed);
+	});
+
+	it("keeps active wait progress visible under pressure until the invocation finishes", () => {
+		const card = new ToolExecutionComponent("wait", {}, {}, undefined, ui, "/tmp");
+		card.setExecutionStarted();
+		const pending = plain(card.render(120)).join("\n");
+		expect(pending).toContain("Wait");
+		expect(pending).not.toContain("Background work or peer message");
+		const transcript = new TranscriptContainer();
+		transcript.addChild({
+			render: () => Array.from({ length: 39 }, (_, index) => `Surrounding text ${index}`),
+			isTranscriptBlockFinalized: () => false,
+		} as Component);
+		transcript.addChild(card);
+		const frame = { tick: 0, now: 0 };
+		const result = {
+			...textResult("Still waiting for jobs"),
+			details: {
+				op: "wait",
+				jobs: Array.from({ length: 10 }, (_, index) => ({
+					id: `job-${index}`,
+					type: "bash",
+					status: "running",
+					label: `Visible progress ${index}`,
+					durationMs: 1000,
+				})),
+			},
+		};
+		card.updateResult(result, true);
+		const progressRows = plain(transcript.renderViewport(120, 40, frame));
+		expect(progressRows.length).toBeLessThanOrEqual(40);
+		const progress = progressRows.join("\n");
+		for (let index = 0; index < 10; index++) expect(progress).toContain(`Visible progress ${index}`);
+		// A completed poll may still report running jobs. It is now a permanent
+		// result, unlike the transient progress above, and may condense normally.
+		card.updateResult(result, false);
+		const completed = plain(card.render(120));
+		expect(completed).toHaveLength(2);
+		expect(completed.join("\n")).not.toContain("Visible progress");
+		const finished = plain(transcript.renderViewport(120, 40, frame)).join("\n");
+		expect(finished).toContain("Surrounding text 38");
+		expect(finished).not.toContain("Visible progress");
+		card.seal();
 	});
 
 	it("paints individual expansions full-width, not collapsed or globally expanded cards", () => {

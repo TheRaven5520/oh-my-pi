@@ -615,8 +615,6 @@ export class ToolExecutionComponent extends Container {
 			wasPartialResult && partialResultPainted,
 			isPartial,
 		);
-		// Convert non-PNG images to PNG for Kitty protocol (async)
-		this.#maybeConvertImagesForKitty();
 	}
 
 	/**
@@ -662,13 +660,15 @@ export class ToolExecutionComponent extends Container {
 			convertImageToPngShared(image)
 				.then(converted => {
 					this.#kittyConverted.set(key, converted);
+					this.#kittyConversionsAwaited.delete(key);
 					this.#displayInputVersion++;
 					this.#updateDisplay();
 					this.#ui.requestRender();
 				})
 				.catch(() => {
-					// Ignore conversion failures - display will use original image format
+					// Failed images stay omitted, but no longer hold history open.
 					this.#kittyConversionsAwaited.delete(key);
+					this.#ui.requestRender();
 				});
 		}
 	}
@@ -790,6 +790,9 @@ export class ToolExecutionComponent extends Container {
 	 */
 	isTranscriptBlockFinalized(): boolean {
 		if (!this.#toolActivityVisible) return true;
+		// Retiring before PNG conversion settles freezes the image-free rows in
+		// native scrollback; an ordinary repaint cannot replace those rows.
+		if (this.#showImages && this.#kittyConversionsAwaited.size > 0) return false;
 		if (this.#sealed) return true;
 		if (this.#result === undefined) return false;
 		// A parked background task's call already returned; job frames that land
@@ -817,6 +820,10 @@ export class ToolExecutionComponent extends Container {
 		if (!this.#hadExpandableContent) return false;
 		this.setExpanded(!this.#expanded, true);
 		return true;
+	}
+
+	prioritizeTranscriptAllocation(): boolean {
+		return this.#individuallyExpanded || (this.#toolName === "wait" && this.#isRunning());
 	}
 
 	getTranscriptBlockVersion(): number {
@@ -978,13 +985,13 @@ export class ToolExecutionComponent extends Container {
 
 	/**
 	 * The native `collapsed` prop: the transcript's expand state, except that a
-	 * call streaming its body (edit, write) stays open until it settles, then
-	 * folds like a finished thought. The user's own toggle still wins meanwhile:
+	 * call streaming its body (edit, write) or waiting for a job stays open until
+	 * it settles, then folds. The user's own toggle still wins meanwhile:
 	 * the terminal keeps local collapse state until this prop changes.
 	 */
 	#nativeCollapsed(status: TspCardStatus): boolean {
 		const live = status === "pending" || status === "running";
-		return !this.#expanded && !(live && streamsBody(this.#toolName));
+		return !this.#expanded && !(live && (streamsBody(this.#toolName) || this.#toolName === "wait"));
 	}
 
 	/** The late diagnostics section and head chip, when LSP reported after the result. */
@@ -1248,6 +1255,9 @@ export class ToolExecutionComponent extends Container {
 		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#argsComplete ? "1" : "0"}|${this.#executionStarted ? "1" : "0"}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
 		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
 		this.#lastDisplayKey = key;
+		// Capability detection may finish after updateResult. Start conversion
+		// on that display transition too, not only when the result first arrives.
+		this.#maybeConvertImagesForKitty();
 
 		this.#rebuildDisplay();
 		this.#displayBuilt = true;
@@ -1293,17 +1303,21 @@ export class ToolExecutionComponent extends Container {
 		}
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
 		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
+		// An active wait is transient progress, not a completed output to fold.
+		// Invocation completion wins even when its final snapshot has running jobs.
+		const waiting = this.#toolName === "wait" && this.#isRunning();
+		const collapsed = !this.#expanded && !waiting;
 		// A collapsed card that hides content shows only its header and summary
 		// row; the full child tree is rendered only to discover hidden content.
-		if (!this.#expanded && (this.#hadExpandableContent || this.#isExpandableState())) {
+		if (collapsed && (this.#hadExpandableContent || this.#isExpandableState())) {
 			this.#hadExpandableContent = true;
 			return this.#renderCompact(width);
 		}
 		let lines = super.render(width);
 		const trimmed = trimBlankEdges(lines);
 		if (this.#isExpandableState() || trimmed.length > 2) this.#hadExpandableContent = true;
-		if (!this.#expanded && this.#hadExpandableContent) return this.#renderCompact(width);
-		if (this.#allocation < 3) {
+		if (collapsed && this.#hadExpandableContent) return this.#renderCompact(width);
+		if (!waiting && this.#allocation < 3) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
 			// The allocator measures blocks by trimmed height and never squeezes one
 			// below that, so inline tools whose real content is 1-2 rows (wait

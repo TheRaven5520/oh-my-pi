@@ -2925,11 +2925,11 @@ export class InputController {
 		let retired = false;
 		for (const root of [chat, this.ctx.pendingMessagesContainer]) {
 			for (const child of root.children) {
+				// A live expanded card can retire its non-expandable prefix too.
+				// Replay that history on collapse so it refills the freed rows.
+				if (!retired && root === chat && !chat.canRemoveBlock(child)) retired = true;
 				if (!isExpandable(child)) continue;
 				child.setExpanded(expanded);
-				// A block that already left rows in terminal history keeps them at
-				// their committed presentation unless the ledger is replayed.
-				if (!retired && root === chat && !chat.canRemoveBlock(child)) retired = true;
 			}
 		}
 		if (retired) this.ctx.ui.resetDisplay();

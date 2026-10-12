@@ -39,7 +39,7 @@
 - The `dark-claude` success green now matches Claude Code's dark-theme color exactly (`#4eba65`), replacing the desaturated green.
 - The `dark-claude` theme uses light lavender (`#b1b9f9`) for links, link URLs, inline code, and table headers; other themes retain their existing colors.
 - Collapsed Eval cards retain their title or first code line, cropped to the available width.
-- Large-output collapse restores the actual compact transcript and preceding history instead of padding away older rows. Short conversations no longer retain the expanded viewport height.
+- Large-output collapse restores the actual compact transcript and preceding history instead of padding away older rows. Short conversations no longer retain the expanded viewport height. Global Ctrl+O also restores preceding history displaced by a still-running card, even when only non-expandable messages retired.
 - Markdown tables use aligned columns and bold headers without visible gridlines; very narrow terminals show labelled cells instead of raw table delimiters.
 - Individually expanded cards preserve inline-image placement and reserved rows, and remove nested backgrounds from combined ANSI styles without losing foreground colors or attributes.
 - Compact advisor cards omit the native body-preview property instead of sending the unsupported `"none"` value; the header stays compact and expansion still exposes every note.

@@ -279,7 +279,7 @@ function jobsRenderResult(
 	let cached: RenderCache | undefined;
 	return {
 		render(width: number): readonly string[] {
-			const expanded = options.expanded;
+			const expanded = options.expanded || options.isPartial;
 			const spinnerFrame = options.spinnerFrame ?? 0;
 			// Running-job labels shimmer while the wait block is live; the band
 			// phase is Date.now()-sampled at render time, so serving cached bytes
