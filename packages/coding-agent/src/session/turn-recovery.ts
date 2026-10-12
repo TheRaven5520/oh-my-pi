@@ -2330,12 +2330,8 @@ export class TurnRecovery {
 		if (this.#activeRetryFallback.pinned) return false;
 		if (this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry") return false;
 
-		const {
-			originalSelector: originalSelectorRaw,
-			originalThinkingLevel,
-			lastAppliedFallbackThinkingLevel,
-		} = this.#activeRetryFallback;
-		const originalSelector = parseRetryFallbackSelector(originalSelectorRaw, this.#host.modelRegistry);
+		const active = this.#activeRetryFallback;
+		const originalSelector = parseRetryFallbackSelector(active.originalSelector, this.#host.modelRegistry);
 		if (!originalSelector) {
 			// Defensive: the stored selector is always produced by
 			// `formatRetryFallbackSelector`, so it should never fail to parse. If it
@@ -2357,20 +2353,12 @@ export class TurnRecovery {
 		}
 		if (this.isRetryFallbackSelectorSuppressed(originalSelector)) return false;
 
-		const resolvedPrimary = resolveModelOverride(
-			[originalSelector.raw],
-			this.#host.modelRegistry,
-			this.#host.settings,
-		);
-		const primaryModel =
-			resolvedPrimary.model ?? this.#host.modelRegistry.find(originalSelector.provider, originalSelector.id);
+		const primaryModel = this.#resolveRetryFallbackPrimaryModel(originalSelector);
 		if (!primaryModel) return false;
 		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, this.#host.sessionId());
 		if (!apiKey) return false;
 
-		const currentThinkingLevel = this.#host.configuredThinkingLevel();
-		const thinkingToApply =
-			currentThinkingLevel === lastAppliedFallbackThinkingLevel ? originalThinkingLevel : currentThinkingLevel;
+		const thinkingToApply = this.#retryFallbackPrimaryThinkingLevel(active);
 		const primarySelector = formatModelStringWithRouting(primaryModel);
 		const previousEditMode = this.#host.resolveActiveEditMode();
 		// Clear before the swap: `setModelWithProviderSessionReset` and
@@ -2384,6 +2372,32 @@ export class TurnRecovery {
 		this.#host.setThinkingLevel(thinkingToApply);
 		await this.#host.syncAfterModelChange(previousEditMode);
 		return true;
+	}
+
+	/**
+	 * The configured primary an active retry fallback displaced, with the thinking
+	 * level a restore would re-apply; `undefined` when no fallback is active.
+	 * Session clones (`/tan`, `/fork`) start here rather than on the fallback.
+	 */
+	retryFallbackPrimary(): { model: Model; thinkingLevel: ConfiguredThinkingLevel | undefined } | undefined {
+		const active = this.#activeRetryFallback;
+		if (!active) return undefined;
+		const selector = parseRetryFallbackSelector(active.originalSelector, this.#host.modelRegistry);
+		if (!selector) return undefined;
+		const model = this.#resolveRetryFallbackPrimaryModel(selector);
+		if (!model) return undefined;
+		return { model, thinkingLevel: this.#retryFallbackPrimaryThinkingLevel(active) };
+	}
+
+	#resolveRetryFallbackPrimaryModel(selector: RetryFallbackSelector): Model | undefined {
+		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
+		return resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
+	}
+
+	/** The fallback overwrote the configured level; a level the user set since then wins. */
+	#retryFallbackPrimaryThinkingLevel(active: ActiveRetryFallbackState): ConfiguredThinkingLevel | undefined {
+		const current = this.#host.configuredThinkingLevel();
+		return current === active.lastAppliedFallbackThinkingLevel ? active.originalThinkingLevel : current;
 	}
 
 	#parseRetryAfterMsFromError(errorMessage: string): number | undefined {

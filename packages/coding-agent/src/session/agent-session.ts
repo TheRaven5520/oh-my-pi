@@ -5886,6 +5886,14 @@ export class AgentSession implements SettingsScope {
 		return this.#recovery.servingModel;
 	}
 
+	/**
+	 * Configured primary model and thinking level an active retry fallback
+	 * displaced; `undefined` while the session runs on its primary.
+	 */
+	retryFallbackPrimary(): { model: Model; thinkingLevel: ConfiguredThinkingLevel | undefined } | undefined {
+		return this.#recovery.retryFallbackPrimary();
+	}
+
 	/** Install the interactive decision surface for reserve-triggered model changes. */
 	setUsageFallbackConfirmer(confirmer: UsageFallbackConfirmer | undefined): void {
 		this.#usageFallbackConfirmer = confirmer;

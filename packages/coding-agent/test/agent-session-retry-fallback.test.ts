@@ -4954,6 +4954,57 @@ describe("AgentSession retry fallback", () => {
 		});
 	});
 
+	it("reports the displaced primary and its thinking level while a retry fallback is active", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-5-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels);
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}:low`],
+			},
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		session.setThinkingLevel(Effort.High);
+		expect(session.retryFallbackPrimary()).toBeUndefined();
+
+		await session.prompt("Primary is rate limited");
+		await session.waitForIdle();
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		// The fallback overwrote the live configured level with its own.
+		expect(session.model?.id).toBe(fallbackModel.id);
+		expect(session.configuredThinkingLevel()).toBe(Effort.Low);
+
+		const primary = session.retryFallbackPrimary();
+		expect(primary?.model.provider).toBe(primaryModel.provider);
+		expect(primary?.model.id).toBe(primaryModel.id);
+		expect(primary?.thinkingLevel).toBe(Effort.High);
+
+		// A level the user picks mid-fallback is theirs and carries back to the primary.
+		session.setThinkingLevel(Effort.Medium);
+		expect(session.retryFallbackPrimary()?.thinkingLevel).toBe(Effort.Medium);
+
+		// An explicit model choice ends the fallback.
+		await session.setModel(primaryModel);
+		expect(session.retryFallbackPrimary()).toBeUndefined();
+	});
+
 	it("keeps credit with the fallback when a restored primary fails without serving", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");

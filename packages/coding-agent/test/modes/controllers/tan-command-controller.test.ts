@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import { type AssistantMessage, Effort, type Model } from "@oh-my-pi/pi-ai";
 import type { AsyncJobRegisterOptions } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capability/types";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -14,6 +14,7 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 interface CapturedJobRunContext {
 	jobId: string;
@@ -106,6 +107,8 @@ function createContext(overrides?: {
 	preparedExtensions?: unknown;
 	effectiveExtensionRoots?: unknown;
 	extensionPaths?: unknown;
+	configuredThinkingLevel?: ConfiguredThinkingLevel;
+	retryFallbackPrimary?: { model: Model; thinkingLevel: ConfiguredThinkingLevel | undefined };
 }) {
 	const tempDir = TempDir.createSync("@omp-tan-controller-");
 	const parentFile = path.join(tempDir.path(), "parent.jsonl");
@@ -128,7 +131,8 @@ function createContext(overrides?: {
 		model: overrides?.model ?? model,
 		asyncJobManager: { register },
 		sessionId: "parent-session",
-		configuredThinkingLevel: vi.fn(() => undefined),
+		configuredThinkingLevel: vi.fn(() => overrides?.configuredThinkingLevel),
+		retryFallbackPrimary: vi.fn(() => overrides?.retryFallbackPrimary),
 		systemPrompt: ["system prompt"],
 		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
 		getEnabledToolNames: vi.fn(() => overrides?.enabledToolNames ?? overrides?.activeToolNames ?? ["read", "bash"]),
@@ -537,6 +541,36 @@ describe("TanCommandController", () => {
 		const opts = createAgentSessionSpy.mock.calls[0]?.[0];
 		expect(opts?.providerPromptCacheKey).toBe("grandparent-cache-key");
 		expect(opts?.providerSessionId).toMatch(/^parent-session:tan:/);
+	});
+
+	it("starts the clone on the parent's configured primary while the parent rides a retry fallback", async () => {
+		const fallbackModel = { provider: "personal-anthropic", id: "claude-opus-4-5" } as Model;
+		const run = async (overrides: Parameters<typeof createContext>[0]) => {
+			vi.restoreAllMocks();
+			const harness = createContext(overrides);
+			vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+			const { clone } = createCloneStub();
+			const createAgentSessionSpy = vi
+				.spyOn(sdkModule, "createAgentSession")
+				.mockResolvedValue({ session: clone } as unknown as CreateAgentSessionResult);
+			await new TanCommandController(harness.ctx).start("follow the tangent");
+			const captured = harness.capturedRun;
+			if (!captured) throw new Error("run function was not captured");
+			await captured({ jobId: "job-1", signal: new AbortController().signal, reportProgress: async () => {} });
+			return createAgentSessionSpy.mock.calls[0]?.[0];
+		};
+
+		const onFallback = await run({
+			model: fallbackModel,
+			configuredThinkingLevel: Effort.Low,
+			retryFallbackPrimary: { model, thinkingLevel: Effort.High },
+		});
+		expect(onFallback?.model).toBe(model);
+		expect(onFallback?.thinkingLevel).toBe(Effort.High);
+
+		const onPrimary = await run({ configuredThinkingLevel: Effort.Medium });
+		expect(onPrimary?.model).toBe(model);
+		expect(onPrimary?.thinkingLevel).toBe(Effort.Medium);
 	});
 
 	it("parks the finished tan in the registry so it stays visible in the Agent Hub", async () => {
