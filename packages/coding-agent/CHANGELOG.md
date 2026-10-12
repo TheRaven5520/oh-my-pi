@@ -34,6 +34,7 @@
 ### Changed
 
 - `omp login sprilicred` writes the same models.yml layout as the Sprilicred installer: GLM and DeepSeek models live under their own `sprilicred-glm` (`/glm/v1`) and `sprilicred-deepseek` (`/deepseek/v1`) providers instead of `sprilicred-openai`, `cycleModels` covers all four providers (an existing Sprilicred-owned two-provider list is upgraded), and `defaultModel`/`modelRoles` references to a moved model follow it to its new provider.
+- Sprilicred login preserves custom dedicated-provider models when their catalog is empty, removes only managed withdrawn models, and leaves custom provider-cycle exclusions intact.
 - Transcript prose, thinking, tool output, and wrapped continuations now share a left content column, with prompt and status markers on a separate rail.
 - The `dark-claude` success green now matches Claude Code's dark-theme color exactly (`#4eba65`), replacing the desaturated green.
 - The `dark-claude` theme uses light lavender (`#b1b9f9`) for links, link URLs, inline code, and table headers; other themes retain their existing colors.

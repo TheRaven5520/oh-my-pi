@@ -189,6 +189,11 @@ describe("Sprilicred login", () => {
 				},
 			}),
 		);
+		await fs.mkdir(path.join(root, ".sprilicred"), { recursive: true });
+		await fs.writeFile(
+			path.join(root, ".sprilicred/omp-models.json"),
+			JSON.stringify({ "sprilicred-glm/stale-glm.listed": { present: false, before: null, applied: true } }),
+		);
 		dedicated.glm = [];
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
 		cfgCycleModels.set(settings, ["sprilicred-anthropic/*", "sprilicred-openai/*"]);
@@ -224,5 +229,28 @@ describe("Sprilicred login", () => {
 		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
 		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
 		expect(written.providers["sprilicred-glm"].models[0].id).toBe("abliterated-model-large-v2");
+	});
+
+	test("keeps custom dedicated models when the managed catalog becomes empty", async () => {
+		const paths = { home: root, agentDir, tokenPath };
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		const modelsPath = path.join(agentDir, "models.yml");
+		const existing = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		const custom = { id: "my-glm", name: "Personal GLM", contextWindow: 12345, headers: { "X-Custom": "yes" } };
+		existing.providers["sprilicred-glm"].models.push(custom);
+		existing.defaultModel = "sprilicred-glm/my-glm";
+		await fs.writeFile(modelsPath, JSON.stringify(existing));
+		const customCycle = ["sprilicred-anthropic/*", "sprilicred-openai/*", "sprilicred-deepseek/*"];
+		cfgCycleModels.set(settings, customCycle);
+		dedicated.glm = [];
+		dedicated.deepseek = [];
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		const written = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		expect(written.providers["sprilicred-glm"].models).toEqual([custom]);
+		expect(written.providers["sprilicred-glm"].baseUrl).toBe("https://sprilicred.test/glm/v1");
+		expect(written.providers["sprilicred-deepseek"]).toBeUndefined();
+		expect(written.defaultModel).toBe("sprilicred-glm/my-glm");
+		expect(cfgCycleModels.get(settings)).toEqual(customCycle);
 	});
 });

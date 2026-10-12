@@ -34,6 +34,11 @@ const OPENAI_PROVIDER = "sprilicred-openai";
 // Same layout as the Sprilicred installer (deploy/connect.py install_omp): models
 // with a dedicated route (`/<route>/v1`) live under their own `sprilicred-<route>`.
 const DEDICATED_ROUTES = ["glm", "deepseek"];
+// The installer's built-in dedicated IDs remain managed even without an ownership file.
+const DEDICATED_MODELS: Record<string, true> = {
+	"abliterated-model-large-v2": true,
+	"deepseek-v4.1-flash": true,
+};
 const PROVIDER_GROUPS: ProviderGroup[] = [
 	{
 		provider: "sprilicred-anthropic",
@@ -260,10 +265,6 @@ async function writeModels(
 			for (const id of kept) moved.set(id, provider);
 			continue;
 		}
-		if (catalog.length === 0) {
-			delete providers[provider];
-			continue;
-		}
 		const previousById = new Map(
 			((original[provider]?.models ?? []) as ModelConfig[])
 				.filter(model => typeof model?.id === "string")
@@ -297,14 +298,35 @@ async function writeModels(
 			for (const [field, value] of Object.entries(modelFields(catalogModel, group.family))) {
 				applyOwnedField(state, `${provider}/${catalogModel.id}.${field}`, entry, field, value);
 			}
-			if (!group.required) {
+			if (!group.required && Object.hasOwn(DEDICATED_MODELS, catalogModel.id)) {
 				applyOwnedField(state, `${provider}/${catalogModel.id}.compat`, entry, "compat", {
 					reasoningDisableMode: "none-effort",
 				});
 			}
+			if (!group.required) {
+				state[`${provider}/${catalogModel.id}.listed`] = { present: false, before: null, applied: true };
+			}
 			entries.push(entry);
 		}
+		if (!group.required) {
+			const listedIds = new Set(entries.map(entry => entry.id));
+			const ownedFields = Object.keys(state);
+			for (const [id, entry] of previousById) {
+				if (
+					!listedIds.has(id) &&
+					!Object.hasOwn(DEDICATED_MODELS, id) &&
+					!ownedFields.some(key => key.startsWith(`${provider}/${id}.`))
+				) {
+					entries.push(entry);
+				}
+			}
+		}
+		if (entries.length === 0) {
+			delete providers[provider];
+			continue;
+		}
 		providers[provider] = {
+			...(!group.required ? original[provider] : {}),
 			baseUrl: `${endpoint()}${group.suffix}`,
 			apiKey: tokenCommand,
 			auth: group.auth,
@@ -372,13 +394,10 @@ async function writeOwnedSettings(
 	const stateRoot = path.join(paths.home, ".sprilicred");
 	await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
 
-	// The old two-provider list (or any leading subset of ours) is still ours to update.
+	// Only the installer's exact old or current defaults are ours to replace.
 	const currentCycle = cfgCycleModels.get(settings);
 	const ownCycle =
-		currentCycle.length >= 2 &&
-		currentCycle[0] === CYCLE_MODELS[0] &&
-		currentCycle[1] === CYCLE_MODELS[1] &&
-		currentCycle.every(entry => CYCLE_MODELS.includes(entry));
+		Bun.deepEquals(currentCycle, CYCLE_MODELS) || Bun.deepEquals(currentCycle, CYCLE_MODELS.slice(0, 2));
 	if (currentCycle.length === 0) {
 		const cycleState = path.join(paths.home, CYCLE_STATE);
 		if (!(await exists(cycleState))) await privateWrite(cycleState, `${JSON.stringify({ before: currentCycle })}\n`);
