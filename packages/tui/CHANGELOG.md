@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Confirmed native-link sessions retain the normal arrow through expand/collapse redraws instead of briefly reverting to a text cursor. Kitty still handles link hover and text-selection cursors; the previous pointer is restored on exit, including from fullscreen overlays.
 - Direct Kitty sessions can keep native wheel scrolling and selection together with mouse tool expansion through the companion OSC 8 link handler. A per-start handshake precedes release of DEC mouse capture; tool identities survive native history and clicks return in-band for local and SSH sessions. Tmux and fullscreen mouse handling remain unchanged.
 - With the companion Kitty/tmux helper, report exact terminal background and completed status-line geometry for conditional three-pixel padding above the existing tmux bar. Short chats, overlays and copy mode retain their layout; no extra terminal row or transcript gap is added. Shutdown clears only the owning process's receipt.
 - Render the compact 56×27 Ravens logo directly from the vector artwork rather than downsampling the larger PNG; preserve its four-column, one-row footprint and use matching image dimensions for inline placement.
