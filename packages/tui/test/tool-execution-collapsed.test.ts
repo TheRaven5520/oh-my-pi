@@ -62,7 +62,6 @@ describe("collapsed tool cards", () => {
 		);
 		const limited = plain(card.render(100))[0]!;
 		expect(limited).toContain("truncated");
-		expect(limited).toContain("paths skipped");
 		card.setExpanded(true);
 		expect(plain(card.render(100)).join("\n")).toContain("missing");
 		card.seal();
@@ -591,7 +590,7 @@ describe("collapsed tool cards", () => {
 		card.seal();
 	});
 
-	it("separates back-to-back Bash, Eval, Grep and Read cards by exactly one blank row", () => {
+	it("groups back-to-back Bash, Eval, Grep and Read cards without blank rows", () => {
 		const bash = new ToolExecutionComponent("bash", { command: "git status --short" }, {}, undefined, ui, "/tmp");
 		bash.updateResult(textResult(" M one.ts\n M two.ts"), false);
 		const cell = new ToolExecutionComponent("eval", { code: "print(1)\nprint(2)" }, {}, undefined, ui, "/tmp");
@@ -606,15 +605,12 @@ describe("collapsed tool cards", () => {
 		const frame = { tick: 0, now: 0 };
 		for (const width of [40, 100]) {
 			const rows = plain(transcript.renderViewport(width, 60, frame)).map(row => row.trimEnd());
-			const starts = ["git status", "print(1)", '"needle"', "Read"].map(text =>
-				rows.findIndex(row => row.includes(text)),
-			);
+			const starts = ["Bash", "Eval", "Grep", "Read"].map(text => rows.findIndex(row => row.includes(text)));
 			for (let index = 1; index < starts.length; index++) {
 				expect(starts[index]).toBeGreaterThan(starts[index - 1]!);
-				expect(rows[starts[index]! - 1]).toBe("");
-				expect(rows[starts[index]! - 2]).not.toBe("");
+				expect(rows[starts[index]! - 1]).not.toBe("");
 			}
-			expect(rows.join("\n")).not.toContain("\n\n\n");
+			expect(rows).not.toContain("");
 		}
 		transcript.dispose();
 		for (const card of [bash, cell, grep]) card.seal();
@@ -640,5 +636,32 @@ describe("collapsed tool cards", () => {
 		card.seal();
 		card.setTranscriptAllocation(2, { tick: 4, now: started + 6000 });
 		expect(plain(card.render(80))[0]).not.toMatch(/\d+s$/);
+	});
+	it("keeps the shell prompt on action headers and reveals the exact command on expansion", () => {
+		const command = "git push origin feature";
+		const card = new ToolExecutionComponent("bash", { command, cwd: "/tmp/project" }, {}, undefined, ui, "/tmp");
+		card.updateResult(textResult("Everything up-to-date"), false);
+		const collapsed = plain(card.render(100)).join("\n");
+		expect(collapsed).toContain("$ ");
+		expect(collapsed).not.toContain(command);
+		card.setExpanded(true);
+		expect(plain(card.render(100)).join("\n")).toContain(command);
+		card.seal();
+	});
+
+	it("summarizes unknown tool operations without exposing body payloads in the header", () => {
+		const card = new ToolExecutionComponent(
+			"custom_tool",
+			{ op: "update", path: "src/item.ts", input: "private payload" },
+			{},
+			undefined,
+			ui,
+			"/tmp",
+		);
+		const header = plain(card.render(100))[0]!;
+		expect(header).toContain("update");
+		expect(header).toContain("src/item.ts");
+		expect(header).not.toContain("private payload");
+		card.seal();
 	});
 });

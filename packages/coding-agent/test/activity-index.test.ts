@@ -53,6 +53,36 @@ describe("AgentActivityIndex", () => {
 		expect(activity.query({ search: "SRC/A.TS" })).toHaveLength(1);
 	});
 
+	it("projects Bash actions from titles or literal commands without inventing intent", async () => {
+		using tempDir = TempDir.createSync("activity-index-bash-");
+		const sessionFile = path.join(tempDir.path(), "worker.jsonl");
+		const calls = [
+			{ command: "git push", cwd: "/repo/project" },
+			{ title: "git.sync", command: "custom-sync" },
+			{ title: "Checking release", command: "git push" },
+			{ command: "git pull && deploy" },
+		];
+		await Bun.write(
+			sessionFile,
+			calls
+				.map((args, i) =>
+					messageEntry(`entry-${i}`, i + 1, {
+						role: "assistant",
+						content: [{ type: "toolCall", id: `call-${i}`, name: "bash", arguments: args }],
+					}),
+				)
+				.join("\n") + "\n",
+		);
+		const activity = new AgentActivityIndex();
+		await activity.sync("Worker", sessionFile);
+		expect(activity.query().map(row => row.summary)).toEqual([
+			"Syncing git repo · /repo/project",
+			"Syncing git repo",
+			"Checking release",
+			"git pull && deploy",
+		]);
+	});
+
 	it("tails appended JSONL incrementally and scopes rows by agent subtree", async () => {
 		using tempDir = TempDir.createSync("activity-index-tail-");
 		const parentFile = path.join(tempDir.path(), "parent.jsonl");

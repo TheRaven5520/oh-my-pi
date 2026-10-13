@@ -30,6 +30,7 @@ import { formatExpandHint, truncateToWidth } from "../render/render-utils";
 import { formatOutputPaneLines, styleToolOutputLine } from "../render/output-pane";
 import type { StatusLineOptions } from "../render/status-line";
 import { plainToolCard, type ToolCardPhase } from "../render/tool-card";
+import { defaultToolActivityDetail } from "./default-renderer";
 
 /** Expanded Args tree shared by the MCP result cards. */
 function buildMcpArgsSection(args: Record<string, unknown>, theme: Theme): readonly string[] {
@@ -243,30 +244,29 @@ function visibleMcpArgs(args: Record<string, unknown> | undefined): [string, unk
 	return Object.entries(args).filter(([key]) => key !== INTENT_FIELD && key !== "__partialJson");
 }
 
-/** Inline args summary budget in characters (a data cap, not a width). */
-const MCP_ARGS_SUMMARY_CHARS = 160;
-
-/** Native MCP head: the tool title with a one-line args summary as target. */
+/** Native MCP head shares the compact operation/target projection. */
 function mcpHead(title: string, args: Record<string, unknown> | undefined): NativeToolHead {
-	const entries = visibleMcpArgs(args);
-	const summary =
-		entries.length > 0
-			? formatArgsInline(Object.fromEntries(entries), MCP_ARGS_SUMMARY_CHARS, { characterBudget: true })
-			: "";
+	const summary = defaultToolActivityDetail(args);
 	return { title, target: summary ? plainText(summary) : undefined, targetKind: "text" };
 }
 
 /** Native MCP call view: the head only, inline while pending. */
 export function describeMCPCall(args: Record<string, unknown>, label: string): NativeToolView {
-	return { tool: mcpHead(label, args), inline: true };
+	const entries = visibleMcpArgs(args);
+	return {
+		tool: mcpHead(label, args),
+		body: entries.length ? [describeJsonTree(Object.fromEntries(entries))] : undefined,
+		preview: "none",
+		inline: true,
+	};
 }
 
 const mcpResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /**
  * Native MCP result view: JSON output as a JSON tree, Markdown when the
- * preference is on, otherwise the raw text as tool output. The head's args
- * summary stands in for the ANSI card's Args tree.
+ * preference is on, otherwise the raw text as tool output. Full arguments remain
+ * available after the output in the expanded body.
  */
 export function describeMCPResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: MCPToolDetails; isError?: boolean },
@@ -300,6 +300,8 @@ export function describeMCPResult(
 		else body.push(ansi(output));
 		const warning = truncationNotice(result.details?.meta);
 		if (warning) body.push(warning);
+		const entries = visibleMcpArgs(args);
+		if (entries.length) body.push(noteText("Args"), describeJsonTree(Object.fromEntries(entries)));
 		return {
 			tool: mcpHead(title, args),
 			tone: isError ? "error" : undefined,

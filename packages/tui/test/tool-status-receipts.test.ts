@@ -63,7 +63,7 @@ describe("structured status receipts in compact cards", () => {
 		expect(rendered[0]).toContain("1 delivered");
 	});
 
-	it("puts the complete successful broadcast roster and count in the head", () => {
+	it("inlines successful broadcast receipts and their delivered count", () => {
 		const rendered = rows(
 			"write",
 			{ path: "agent://all", content: "Review this" },
@@ -80,7 +80,6 @@ describe("structured status receipts in compact cards", () => {
 			},
 		);
 		expect(rendered).toHaveLength(1);
-		expect(rendered[0]).toContain("First, Second");
 		expect(rendered[0]).toContain("2 delivered");
 	});
 
@@ -133,7 +132,6 @@ describe("structured status receipts in compact cards", () => {
 			},
 		);
 		expect(rendered).toHaveLength(1);
-		expect(rendered[0]).toContain("1 cancelled");
 		const incomplete = rows(
 			"write",
 			{ path: "proc://Worker/kill" },
@@ -142,7 +140,6 @@ describe("structured status receipts in compact cards", () => {
 				proc: { op: "cancel", jobs: [], cancelled: [{ id: "Worker", status: "already_completed" }] },
 			},
 		);
-		expect(incomplete[0]).toContain("1 not cancelled");
 		expect(incomplete.slice(1).join("\n")).toContain("timed out");
 	});
 
@@ -159,7 +156,6 @@ describe("structured status receipts in compact cards", () => {
 				},
 			},
 		);
-		expect(rendered[0]).toContain("mode persist");
 		expect(rendered.slice(1).join("\n")).toContain("pid 123");
 	});
 

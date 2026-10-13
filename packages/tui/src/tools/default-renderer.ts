@@ -1,5 +1,6 @@
 import type { Component } from "../index";
 import { isRecord } from "@oh-my-pi/pi-utils";
+import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { NativeToolHead, NativeToolView, RenderResultOptions } from "./renderer";
 import { ansi } from "../native/describe";
 import { noteText } from "./native-view";
@@ -20,6 +21,44 @@ import {
 	renderJsonTreeLines,
 } from "./json-tree";
 import { formatExpandHint } from "../render/render-utils";
+
+/** Bounded semantic fields only; arbitrary payloads belong in the expanded body. */
+export function defaultToolActivityDetail(value: unknown): string | undefined {
+	if (!isRecord(value)) return undefined;
+	const operation = [value.op, value.operation, value.action].find(
+		item =>
+			typeof item === "string" &&
+			/^(?:get|list|search|read|write|create|update|delete|run|start|stop|status|inspect|open|close|select|rename|query|set|remove|add|check|connect|disconnect)$/.test(
+				item,
+			),
+	);
+	let target: string | undefined;
+	for (const key of [
+		"file",
+		"path",
+		"url",
+		"query",
+		"symbol",
+		"name",
+		"id",
+		"session",
+		"host",
+		"repo",
+		"pattern",
+	] as const) {
+		const item = value[key];
+		if (typeof item === "string" && item.trim()) {
+			target = item.split("\n", 1)[0];
+			break;
+		}
+	}
+	if (operation || target) return [operation, target].filter(Boolean).join(" · ");
+	for (const key of ["title", INTENT_FIELD, "command"] as const) {
+		const item = value[key];
+		if (typeof item === "string" && item.trim()) return item.split("\n", 1)[0];
+	}
+	return undefined;
+}
 
 /** Inputs rendered by the fallback card used when a tool has no bespoke renderer. */
 export interface DefaultToolRenderInput {
@@ -165,35 +204,31 @@ export function formatDefaultToolExecution(
 	].join("\n");
 }
 
-/** Inline args summary budget in characters (a data cap, not a width). */
-const NATIVE_ARGS_SUMMARY_CHARS = 160;
 /** Result text kept for the native card body. */
 const NATIVE_RESULT_MAX_CHARS = 64 * 1024;
 
 /**
- * TSP view of the generic fallback card: the tool label with a one-line args
- * summary as the head target; the result as a JSON tree or raw `ansi` output.
+ * TSP view of the generic fallback card: the tool label with a semantic
+ * operation/target; the result as a JSON tree or raw `ansi` output.
  */
 export function describeDefaultToolExecution(input: DefaultToolRenderInput): NativeToolView {
 	const { result } = input;
-	const args = isRecord(input.args) ? input.args : undefined;
-	const summary =
-		args && Object.keys(args).length > 0
-			? formatArgsInline(args, NATIVE_ARGS_SUMMARY_CHARS, { characterBudget: true })
-			: undefined;
-	const tool: NativeToolHead = { title: input.label, target: summary || undefined, targetKind: "text" };
-	if (!result) return { tool };
+	const summary = defaultToolActivityDetail(input.args);
+	const tool: NativeToolHead = { title: input.label, target: summary, targetKind: "text" };
+	const argsBody =
+		isRecord(input.args) && Object.keys(input.args).length ? [noteText("Args"), describeJsonTree(input.args)] : [];
+	if (!result) return { tool, body: argsBody, preview: "none" };
 	const output = result.output.trimEnd().slice(0, NATIVE_RESULT_MAX_CHARS);
 	const tone = result.skipped ? "info" : result.isError ? "error" : undefined;
-	if (!output) return { tool, tone, body: [noteText("(no output)")] };
+	if (!output) return { tool, tone, body: [noteText("(no output)"), ...argsBody] };
 	if (output.startsWith("{") || output.startsWith("[")) {
 		try {
-			return { tool, tone, body: [describeJsonTree(JSON.parse(output))] };
+			return { tool, tone, body: [describeJsonTree(JSON.parse(output)), ...argsBody] };
 		} catch {
 			// Not JSON: shown as raw output below.
 		}
 	}
-	return { tool, tone, body: [ansi(output)] };
+	return { tool, tone, body: [ansi(output), ...argsBody] };
 }
 
 /** Render the generic fallback as the state-tinted card used by direct custom tools. */

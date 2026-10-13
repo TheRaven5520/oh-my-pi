@@ -26,9 +26,11 @@ import type {
 	ToolActivityContext,
 	ToolRenderer,
 } from "./renderer";
-import { ansi, compact, keyed } from "../native/describe";
+import { ansi, code, compact, keyed } from "../native/describe";
 import type { NativeChild } from "../native/node";
+import { plainText } from "../native/spans";
 import { footnoteText, resultText } from "./native-view";
+import { inferCommandTitle, resolveCommandTitle } from "./command-action";
 
 /** Default collapsed shell output preview height. */
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
@@ -221,6 +223,7 @@ export function formatExitCodeNotice(exitCode: number): string {
 
 /** Shell arguments used to build a command preview. */
 export interface BashRenderArgs {
+	title?: string;
 	command?: string;
 	env?: Record<string, unknown>;
 	timeout?: number;
@@ -247,6 +250,8 @@ export interface BashRenderContext {
 export interface ShellRendererConfig<TArgs> {
 	resolveTitle: (args: TArgs | undefined, options: RenderResultOptions) => string;
 	resolveCommand?: (args: TArgs | undefined) => string | undefined;
+	/** Optional purpose label; without it shell commands retain their original presentation. */
+	resolveCommandTitle?: (args: TArgs | undefined) => string | undefined;
 	resolveCwd?: (args: TArgs | undefined) => string | undefined;
 	resolveEnv?: (args: TArgs | undefined) => Record<string, unknown> | undefined;
 	showHeader?: boolean;
@@ -301,6 +306,10 @@ export function formatBashCommandText(args: BashRenderArgs): string {
 	if (envAssignments) parts.push(envAssignments);
 	parts.push(args.command || "…");
 	return parts.join(" ");
+}
+
+function formatShellAction(title: string, cwd: string | undefined): string {
+	return `$ ${title}${cwd ? ` · ${plainText(cwd)}` : ""}`;
 }
 
 /** Bash output with the LLM-facing notices (background, exit, wall time, artifact, truncation) removed. */
@@ -368,22 +377,24 @@ function bashStatsParts(
 }
 
 /**
- * Native head facts of a shell call: title, the command once (`cd`/env
- * prefix included), a `background` badge for a backgrounded job, the
- * `exit N` chip and a `timed out` note only when the deadline hit.
+ * Native head facts of a shell call: purpose (or command), a `background`
+ * badge for a backgrounded job, the `exit N` chip and a `timed out` note
+ * only when the deadline hit.
  */
 function shellToolHead(
 	title: string,
 	command: string,
 	details: BashToolDetails | undefined,
 	settled: boolean,
+	commandTitle?: string,
+	cwd?: string,
 ): NativeToolHead {
 	const exit = settled && details?.exitCode !== undefined && details.exitCode !== 0 ? details.exitCode : undefined;
 	return {
 		title,
-		target: command,
-		targetKind: "command",
-		lang: "bash",
+		target: commandTitle ? `${commandTitle}${cwd ? ` · ${plainText(cwd)}` : ""}` : command,
+		targetKind: commandTitle ? "text" : "command",
+		lang: commandTitle ? undefined : "bash",
 		badges:
 			details?.async?.state === "running"
 				? [{ text: "background", title: `Backgrounded as job ${details.async.jobId}` }]
@@ -409,6 +420,7 @@ function shellFootParts(details: BashToolDetails | undefined, artifactId: string
 function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererConfig<TArgs>): BashRenderArgs {
 	return {
 		command: config.resolveCommand?.(args),
+		title: config.resolveCommandTitle?.(args),
 		cwd: config.resolveCwd?.(args),
 		env: config.resolveEnv?.(args),
 		__partialJson: getPartialJson(args),
@@ -420,10 +432,14 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 	return {
 		activitySummary(args: TArgs, context: ToolActivityContext) {
 			const details = context.result?.details as BashToolDetails | undefined;
+			const renderArgs = toBashRenderArgs(args, config);
 			return {
 				label: config.resolveTitle(args, context),
-				detail: formatBashCommandText(toBashRenderArgs(args, config)),
-				command: true,
+				detail: renderArgs.title
+					? `${renderArgs.title}${renderArgs.cwd ? ` · ${renderArgs.cwd}` : ""}`
+					: formatBashCommandText(renderArgs),
+				command: !renderArgs.title,
+				shellPrompt: true,
 				meta: details?.timedOut
 					? "timed out"
 					: details?.exitCode
@@ -443,7 +459,13 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			// so a rebuild that is replaced before painting never pays for it.
 			let cmdLines: string[] | undefined;
 			return framedToolCard(uiTheme, () => {
-				cmdLines ??= formatBashCommandLines(renderArgs, uiTheme);
+				const titleLines = renderArgs.title
+					? [uiTheme.fg("toolTitle", formatShellAction(renderArgs.title, renderArgs.cwd))]
+					: [];
+				const lines =
+					renderArgs.title && !options.expanded
+						? titleLines
+						: [...titleLines, ...(cmdLines ??= formatBashCommandLines(renderArgs, uiTheme))];
 				const header =
 					config.showHeader === false
 						? undefined
@@ -458,7 +480,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 				return {
 					header,
 					phase: options.spinnerFrame !== undefined ? "running" : "pending",
-					sections: [{ content: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded }) }],
+					sections: [{ content: capPreviewLines(lines, uiTheme, { expanded: options.expanded }) }],
 				};
 			});
 		},
@@ -597,7 +619,21 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								// Viewport-sized tail window in every state — streaming and final
 								// render identically; only ctrl+o uncaps.
 								content: capPreviewLines(
-									args ? (cmdLines ??= formatBashCommandLines(renderArgs, uiTheme)) : [],
+									args
+										? renderArgs.title && !expanded
+											? [uiTheme.fg("toolTitle", formatShellAction(renderArgs.title, renderArgs.cwd))]
+											: [
+													...(renderArgs.title
+														? [
+																uiTheme.fg(
+																	"toolTitle",
+																	formatShellAction(renderArgs.title, renderArgs.cwd),
+																),
+															]
+														: []),
+													...(cmdLines ??= formatBashCommandLines(renderArgs, uiTheme)),
+												]
+										: [],
 									uiTheme,
 									{ expanded },
 								),
@@ -629,11 +665,19 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			);
 		},
 		describeCall(args: TArgs, options: RenderResultOptions): NativeToolView {
-			const command = formatBashCommandText(toBashRenderArgs(args, config));
-			// The command shows once, in the head; the body is only the output.
+			const renderArgs = toBashRenderArgs(args, config);
+			const command = formatBashCommandText(renderArgs);
 			return {
-				tool: shellToolHead(config.resolveTitle(args, options), command, undefined, false),
-				preview: { tail: BASH_DEFAULT_PREVIEW_LINES },
+				tool: shellToolHead(
+					config.resolveTitle(args, options),
+					command,
+					undefined,
+					false,
+					renderArgs.title,
+					renderArgs.cwd,
+				),
+				body: renderArgs.title ? [code(command, { lang: "bash" })] : undefined,
+				preview: renderArgs.title ? "none" : { tail: BASH_DEFAULT_PREVIEW_LINES },
 			};
 		},
 
@@ -655,24 +699,44 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const output = stripped.text.trimEnd();
 			const expanded = renderContext?.expanded ?? options.expanded;
 			const showingFullOutput = expanded && renderContext?.isFullOutput === true;
-			const command = formatBashCommandText(toBashRenderArgs(args, config));
+			const renderArgs = toBashRenderArgs(args, config);
+			const command = formatBashCommandText(renderArgs);
 			const previewLines = renderContext?.previewLines ?? BASH_DEFAULT_PREVIEW_LINES;
 			// Wall time is the head timer, the timeout a note only when hit, the exit a head chip:
 			// what is left (service state, artifact, truncation) is one quiet final line.
 			const meta = details?.meta;
+			const footnote = footnoteText(shellFootParts(details, stripped.artifactId), {
+				...meta,
+				truncation: showingFullOutput ? undefined : meta?.truncation,
+			});
 			const body: NativeChild[] = compact([
+				renderArgs.title ? keyed(code(command, { lang: "bash" }), "command") : undefined,
 				output.trim().length > 0 &&
 					keyed(ansi(output, { follow: isPartial, role: "omp.tool.bash.output" }), "output"),
-				footnoteText(shellFootParts(details, stripped.artifactId), {
-					...meta,
-					truncation: showingFullOutput ? undefined : meta?.truncation,
-				}),
+				footnote,
 			]);
 			return {
-				tool: shellToolHead(config.resolveTitle(args, options), command, details, !isPartial),
+				tool: shellToolHead(
+					config.resolveTitle(args, options),
+					command,
+					details,
+					!isPartial,
+					renderArgs.title,
+					renderArgs.cwd,
+				),
 				body,
 				tone: !isPartial && isError && details?.timedOut === true ? "warning" : undefined,
-				preview: { tail: previewLines },
+				// Keep the command mounted for native local expansion, outside the output-only preview.
+				preview: renderArgs.title
+					? output.length > 0 || footnote
+						? {
+								tail: Math.min(
+									previewLines,
+									(output.length > 0 ? output.split("\n").length : 0) + (footnote ? 1 : 0),
+								),
+							}
+						: "none"
+					: { tail: previewLines },
 			};
 		},
 		mergeCallAndResult: true,
@@ -684,6 +748,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 export const bashToolRenderer = createShellRenderer<BashRenderArgs>({
 	resolveTitle: args => (args?.name ? `Bash · ${String(args.name)}` : "Bash"),
 	resolveCommand: args => args?.command,
+	resolveCommandTitle: args => {
+		const title = resolveCommandTitle(args?.title) ?? inferCommandTitle(args?.command);
+		return title && args?.name ? `${title} · ${plainText(String(args.name))}` : title;
+	},
 	resolveCwd: args => args?.cwd,
 	resolveEnv: args => args?.env,
 	showHeader: false,

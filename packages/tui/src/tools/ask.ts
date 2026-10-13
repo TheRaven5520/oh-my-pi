@@ -1,4 +1,11 @@
-import type { NativeToolHead, NativeToolView, ToolRenderer, ToolRenderResult } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+	ToolRenderResult,
+} from "./renderer";
 import type { TspSpan } from "@oh-my-pi/pi-wire";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import { compact, md, node, row, span, text } from "../native/describe";
@@ -315,6 +322,58 @@ function askHead(question: string | undefined, meta?: string): NativeToolHead {
 	return { title: "Ask", target: first || undefined, targetKind: "text", meta: meta ? [meta] : undefined };
 }
 
+function askActivity(
+	args: AskRenderArgs | undefined,
+	context: Pick<ToolActivityContext, "result" | "isPartial">,
+): ToolActivitySummary {
+	const details = context.result?.details as AskToolDetails | undefined;
+	const questions = normalizeRenderQuestions(args?.questions);
+	const question =
+		details?.continued?.assumptions[0]?.question ??
+		details?.results?.[0]?.question ??
+		details?.questions?.[0] ??
+		details?.question ??
+		questions?.[0]?.question ??
+		args?.question;
+	let meta: string | undefined;
+	if (context.result?.isError) meta = "failed";
+	else if (details?.continued) meta = `no answer after ${formatDuration(details.continued.afterMs)} · continuing`;
+	else if (details?.chatRedirect) meta = "chat redirect";
+	else if (details?.results?.length || details?.question) {
+		const answers = details.results?.length ? details.results : [details];
+		let answered = 0;
+		let timedOut = 0;
+		let cancelled = 0;
+		for (const answer of answers) {
+			if (answer.timedOut) timedOut++;
+			else if (answer.selectedOptions?.length || answer.customInput !== undefined || answer.note !== undefined)
+				answered++;
+			else cancelled++;
+		}
+		meta =
+			answers.length === 1
+				? timedOut
+					? "auto-selected after timeout"
+					: answered
+						? "answered"
+						: "cancelled"
+				: [
+						answered ? `${answered} answered` : "",
+						timedOut ? `${timedOut} auto-selected after timeout` : "",
+						cancelled ? `${cancelled} cancelled` : "",
+					]
+						.filter(Boolean)
+						.join(" · ");
+	} else if (!context.result || context.isPartial) meta = "awaiting answer";
+	return {
+		label: "Ask",
+		detail:
+			typeof question === "string" ? plainText(sanitizeCarriageReturns(question)).trim().split("\n")[0] : undefined,
+		meta,
+		receipt: false,
+	};
+}
+
 /** One question of a multi-question result: the question as markdown over its answers. */
 function describeQuestionSection(id: string, question: string, rest: readonly NativeChild[]): NativeNode {
 	return node("section", {}, [md(plainText(question)), ...rest], id);
@@ -420,20 +479,23 @@ function describeAskResult(result: ToolRenderResult<AskToolDetails>, args: AskRe
 				r.customInput !== undefined || r.note !== undefined || (r.selectedOptions && r.selectedOptions.length > 0),
 		);
 		return {
-			tool: askHead(results[0]?.question, results.length > 1 ? `${results.length} questions` : undefined),
+			tool: askHead(results[0]?.question, askActivity(args, { result, isPartial: false }).meta),
 			tone: answered ? undefined : "warning",
 			// Sanitizing preserves order and length, so raw indices align with `r`.
 			body: results.map((r, index) =>
 				describeQuestionSection(
 					r.id,
 					r.question,
-					describeAnswers(
-						r.options,
-						r.selectedOptions,
-						r.customInput,
-						r.note,
-						selectedIndicesFor(rawResults[index]?.options, rawResults[index]?.selectedOptions),
-					),
+					compact([
+						...describeAnswers(
+							r.options,
+							r.selectedOptions,
+							r.customInput,
+							r.note,
+							selectedIndicesFor(rawResults[index]?.options, rawResults[index]?.selectedOptions),
+						),
+						r.timedOut ? noteText("auto-selected after timeout — not a user choice") : undefined,
+					]),
 				),
 			),
 		};
@@ -448,7 +510,7 @@ function describeAskResult(result: ToolRenderResult<AskToolDetails>, args: AskRe
 		details.note !== undefined ||
 		(details.selectedOptions && details.selectedOptions.length > 0);
 	return {
-		tool: askHead(details.question),
+		tool: askHead(details.question, askActivity(args, { result, isPartial: false }).meta),
 		tone: answered ? undefined : "warning",
 		body: compact([
 			md(plainText(details.question)),
@@ -474,6 +536,7 @@ const askResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /** Render question forms and their recorded answers. */
 export const askToolRenderer = {
+	activitySummary: askActivity,
 	describeCall(args: AskRenderArgs): NativeToolView | undefined {
 		return askCallMemo.get(args, [JSON.stringify(args)], () => describeAskCall(args));
 	},
@@ -624,7 +687,7 @@ export const askToolRenderer = {
 				{
 					icon: hasAnySelection ? "success" : "warning",
 					title: "Ask",
-					meta: [`${results.length} questions`],
+					meta: [askActivity(undefined, { result, isPartial: false }).meta ?? `${results.length} questions`],
 				},
 				uiTheme,
 			);
@@ -648,6 +711,7 @@ export const askToolRenderer = {
 							selectedIndicesFor(raw?.options, raw?.selectedOptions),
 						),
 					];
+					if (r.timedOut) lines.push(uiTheme.fg("dim", "auto-selected after timeout — not a user choice"));
 					return { label: uiTheme.fg("dim", `[${r.id}]`), content: lines };
 				});
 				return {

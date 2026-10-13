@@ -18,6 +18,7 @@ const STREAMING_STRING_KEYS_BY_TOOL: Record<string, readonly string[]> = {
 	write: ["content"],
 	edit: ["input", "_input"],
 	eval: ["code"],
+	bash: ["title", "command"],
 };
 
 /** String fields the streamed-args decode reads incrementally for `toolName`. */

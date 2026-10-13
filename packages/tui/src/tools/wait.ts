@@ -689,7 +689,7 @@ function describeJobsResult(
 					? `waiting on ${jobs.length} ${noun}`
 					: `waiting on ${counts.running} of ${jobs.length} ${noun}`
 				: `${jobs.length} ${noun} settled`;
-	const head: TspSpan[] = [span(title, "toolTitle strong")];
+	const head: TspSpan[] = [span("Wait", "toolTitle strong"), span(` ${title}`, "muted")];
 	if (counts.completed > 0) head.push(span(` ${counts.completed} done`, "success"));
 	if (counts.failed > 0) head.push(span(` ${counts.failed} failed`, "error"));
 	if (counts.cancelled > 0) head.push(span(` ${counts.cancelled} cancelled`, "warning"));
@@ -714,6 +714,11 @@ function describeJobsResult(
 				],
 				`agent:${agent.id}`,
 			),
+		);
+	}
+	if (result.details?.meta?.artifactError) {
+		body.push(
+			text([span(formatArtifactErrorNotice(result.details.meta.artifactError), "warning")], { wrap: "word" }),
 		);
 	}
 	return {
@@ -757,8 +762,15 @@ export const waitToolRenderer = {
 	mergeCallAndResult: true,
 	activitySummary(_args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const details = context.result?.details as CoordinationDetails | undefined;
-		if (details?.waited) return { label: "Wait", detail: `message from ${details.waited.from}` };
-		if (!details?.jobs) return { label: "Wait", detail: details?.interrupted ? "interrupted" : undefined };
+		if (details?.waited)
+			return {
+				label: "IRC ←",
+				detail: details.waited.from,
+				meta: details.waited.replyTo ? "reply" : undefined,
+				receipt: false,
+			};
+		if (!details?.jobs)
+			return { label: "Wait", detail: details?.interrupted ? "interrupted" : "background work", receipt: false };
 		const counts = { completed: 0, failed: 0, cancelled: 0, running: 0 };
 		for (const job of details.jobs) counts[job.status]++;
 		const meta = [
@@ -770,7 +782,17 @@ export const waitToolRenderer = {
 		]
 			.filter(Boolean)
 			.join(" · ");
-		return { label: "Wait", detail: meta || "no jobs", receipt: true };
+		const ids = [...details.jobs.map(job => job.id), ...(details.agents ?? []).map(agent => agent.id)];
+		return {
+			label: "Wait",
+			detail: ids.length
+				? `${ids.slice(0, 3).join(", ")}${ids.length > 3 ? ` +${ids.length - 3}` : ""}`
+				: details.interrupted
+					? "interrupted"
+					: "no jobs",
+			meta: meta || undefined,
+			receipt: false,
+		};
 	},
 	renderCall: waitRenderCall,
 	describeCall(): NativeToolView {

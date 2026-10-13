@@ -14,7 +14,14 @@ import {
 } from "../render/render-utils";
 import { classifyGroupedLines, groupLineIndicesByBlank } from "./grouped-file-output";
 import type { OutputMeta } from "./output-meta";
-import type { NativeToolHead, NativeToolView, RenderResultOptions, ToolRenderer } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+} from "./renderer";
 import { code, compact, diff, node, span, text } from "../native/describe";
 import type { NativeChild, NativeNode } from "../native/node";
 import { diffStatsMeta, displayPath, errorText, fileDiffSection, noteText, resultText, statsText } from "./native-view";
@@ -168,6 +175,28 @@ function astEditScopeStats(details: AstEditToolDetails | undefined): NativeNode 
 
 /** Render AST edit calls and results. */
 export const astEditToolRenderer = {
+	activitySummary(args: AstEditRenderArgs, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as AstEditToolDetails | undefined;
+		const head = astEditPatternHead(args);
+		const paths = args.paths ?? [];
+		const scope = details?.scopePath ?? paths.slice(0, 3).join(", ");
+		const meta: string[] = [];
+		if (scope) meta.push(`in ${scope}${paths.length > 3 ? ` +${paths.length - 3} paths` : ""}`);
+		if (details && !context.result?.isError) {
+			meta.push(
+				`${formatCount("replacement", details.totalReplacements)} in ${formatCount("file", details.filesTouched)}`,
+			);
+			meta.push(details.applied ? "applied" : "preview");
+			if (details.limitReached) meta.push("limit reached");
+			if (details.parseErrors?.length)
+				meta.push(formatParseErrorsCountLabel(details.parseErrors, details.parseErrorsTotal));
+		}
+		return {
+			label: "AST Edit",
+			detail: typeof head.target === "string" ? head.target : undefined,
+			meta: meta.join(" · ") || undefined,
+		};
+	},
 	inline: true,
 	renderCall(args: AstEditRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];

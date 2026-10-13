@@ -28,6 +28,128 @@ describe("bashToolRenderer", () => {
 		terminal.imageProtocol = originalProtocol;
 	});
 
+	it("uses a prose title in compact views and reveals the exact command when expanded", () => {
+		const args = {
+			title: "Inspecting repository changes",
+			command: "cd ~/dotfiles && printf '%s\\n' \"$PWD\"\ngit status --short",
+		};
+		const options = { expanded: false, isPartial: false };
+		const summary = bashToolRenderer.activitySummary(args, options);
+		expect(summary.detail).toBe(args.title);
+		expect(summary.command).toBe(false);
+		expect(summary.shellPrompt).toBe(true);
+		const pending = bashToolRenderer.renderCall(args, options, uiTheme);
+		const compact = sanitizeText(pending.render(120).join("\n"));
+		expect(compact).toContain(args.title);
+		expect(compact).toContain("$ Inspecting");
+		expect(compact).not.toContain("cd ~/dotfiles");
+		const result = bashToolRenderer.renderResult(
+			{ content: [{ type: "text", text: "fatal: not a repository" }], details: { exitCode: 128 }, isError: true },
+			options,
+			uiTheme,
+			args,
+		);
+		const collapsed = sanitizeText(result.render(120).join("\n"));
+		expect(collapsed).toContain(args.title);
+		expect(collapsed).toContain("fatal: not a repository");
+		expect(collapsed).toContain("Exit: 128");
+		expect(collapsed).not.toContain("cd ~/dotfiles");
+		options.expanded = true;
+		for (const component of [pending, result]) {
+			const expanded = sanitizeText(component.render(120).join("\n"));
+			for (const line of args.command.split("\n")) expect(expanded).toContain(line);
+		}
+	});
+
+	it("keeps custom titles as prose and recognizes commands when titles are empty", () => {
+		const title = "Inspecting repository changes ".repeat(30).trim();
+		const args = { title, command: "git status --short" };
+		const options = { expanded: false, isPartial: true };
+		expect(bashToolRenderer.activitySummary(args, options).detail).toBe(title);
+		const compact = sanitizeText(bashToolRenderer.renderCall(args, options, uiTheme).render(50).join("\n"));
+		expect(compact).toContain("Inspecting repository");
+		expect(compact).not.toContain("git status");
+		for (const title of [undefined, "", "  \n\t"]) {
+			const summary = bashToolRenderer.activitySummary({ title, command: "git status" }, options);
+			expect(summary.detail).toBe("Inspecting repo");
+			expect(summary.command).toBe(false);
+		}
+	});
+
+	it("groups literal git synchronization commands under one scoped action", () => {
+		for (const command of ["git push", "git pull --rebase", 'git commit -m "Fix headers"']) {
+			const args = { command, cwd: "/repo/project" };
+			const options = { expanded: false, isPartial: false };
+			expect(bashToolRenderer.activitySummary(args, options)).toMatchObject({
+				detail: `Syncing git repo · ${args.cwd}`,
+				command: false,
+				shellPrompt: true,
+			});
+			const component = bashToolRenderer.renderCall(args, options, uiTheme);
+			expect(sanitizeText(component.render(120).join("\n"))).toContain("$ Syncing git repo · /repo/project");
+			options.expanded = true;
+			expect(sanitizeText(component.render(120).join("\n"))).toContain(command);
+		}
+	});
+
+	it("recognizes common literal test and build commands without requiring a title", () => {
+		for (const command of [
+			"bun test",
+			"npm test",
+			"npm run test",
+			"cargo test",
+			"pytest tests",
+			"python3 -m pytest",
+		]) {
+			expect(bashToolRenderer.activitySummary({ command }, { expanded: false, isPartial: false }).detail).toBe(
+				"Running tests",
+			);
+		}
+		for (const command of ["bun run build", "npm run build", "cargo build --release"]) {
+			expect(bashToolRenderer.activitySummary({ command }, { expanded: false, isPartial: false }).detail).toBe(
+				"Building project",
+			);
+		}
+	});
+
+	it("keeps unknown, mixed, wrapped, and expanding commands truthful", () => {
+		for (const command of [
+			"echo 'git push'",
+			"git pull && deploy",
+			"git status; git push",
+			"git push | tee log",
+			"git push $REMOTE",
+			"git push $(choose-remote)",
+			"git push `choose-remote`",
+			"git push *",
+			"env CI=1 git push",
+			"sudo git push",
+			"git -C /other push",
+			"cd /other && git push",
+			"git push\necho done",
+			'git commit -m "unterminated',
+			`git push ${"x".repeat(4096)}`,
+		]) {
+			const summary = bashToolRenderer.activitySummary({ command }, { expanded: false, isPartial: false });
+			expect(summary).toMatchObject({ label: "Bash", detail: command, command: true, shellPrompt: true });
+		}
+	});
+
+	it("expands action IDs and gives explicit custom purposes precedence", () => {
+		for (const [title, label] of [
+			["git.sync", "Syncing git repo"],
+			["test", "Running tests"],
+			["build", "Building project"],
+			["inspect", "Inspecting state"],
+			["run", "Running command"],
+			["Checking release readiness", "Checking release readiness"],
+		]) {
+			expect(
+				bashToolRenderer.activitySummary({ title, command: "git push" }, { expanded: false, isPartial: false }),
+			).toMatchObject({ detail: label, command: false, shellPrompt: true });
+		}
+	});
+
 	it("shows rendered env assignments in the command preview", async () => {
 		const component = bashToolRenderer.renderCall(
 			{ command: "printf '%s' \"$MERMAID\"", env: { MERMAID: 'line "one"\ntwo' } },

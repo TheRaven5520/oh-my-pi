@@ -37,8 +37,8 @@ import { formatBytes, sanitizeDisplayLines, shortenPath, wrapBrackets } from "..
 
 import type { OutputMeta } from "./output-meta";
 import type { TruncationResult } from "./streaming-output";
-import { describeProcRead, renderProcRead, type ProcReadDetails } from "./proc-render";
-import { describeCfgRead, renderCfgRead, type CfgReadDetails } from "./cfg-render";
+import { describeProcRead, procReadActivity, renderProcRead, type ProcReadDetails } from "./proc-render";
+import { cfgReadActivity, describeCfgRead, renderCfgRead, type CfgReadDetails } from "./cfg-render";
 import type { CardToolResult } from "./result-card";
 import { type InternalUrlSchemeSpec, internalUrlSchemeSpec, splitUrlScheme } from "./url-scheme-host";
 
@@ -452,12 +452,15 @@ export const readToolRenderer = {
 		const input = args as ReadRenderArgs | undefined;
 		const rawPath =
 			typeof input?.file_path === "string" ? input.file_path : typeof input?.path === "string" ? input.path : "";
-		const routed = readUrlCard(rawPath);
-		if (routed) return { label: routed.card.label, detail: routed.target || routed.card.rootDetail };
 		const result = context.result;
 		const details = result?.details as ReadToolDetails | undefined;
-		const summary: ToolActivitySummary = { label: "Read", detail: shortenPath(rawPath) };
-		if (!result || context.isPartial || details?.kind === "url" || isReadableUrlPath(rawPath)) return summary;
+		const routed = readUrlCard(rawPath, details);
+		const summary: ToolActivitySummary = routed
+			? routed.card.detailsKey === "proc"
+				? procReadActivity(routed.target, details?.proc)
+				: cfgReadActivity(splitInternalUrlSel(rawPath).path, details?.cfg)
+			: { label: "Read", detail: shortenPath(rawPath) };
+		if (!result || context.isPartial) return summary;
 		if (result.isError) {
 			summary.error = (result.content.find(block => block.type === "text")?.text || "Read failed").replace(
 				/^Error:\s*/,
@@ -465,9 +468,9 @@ export const readToolRenderer = {
 			);
 			return summary;
 		}
+		if (routed || details?.kind === "url" || isReadableUrlPath(rawPath)) return summary;
 		const count = readResultLineCount({ ...result, details });
-		if (count === undefined) return summary;
-		const meta = [formatCount("line", count)];
+		const meta = count === undefined ? [] : [formatCount("line", count)];
 		if (details?.suffixResolution) {
 			const suffix = details.suffixResolution;
 			const selector = splitPathAndSel(rawPath).sel;
@@ -476,16 +479,19 @@ export const readToolRenderer = {
 			meta.push(`corrected from ${shortenPath(suffix.from)}`);
 		}
 		if (details?.conflictCount) meta.push(formatCount("conflict", details.conflictCount));
-		summary.meta = meta.join(" · ");
+		summary.meta = meta.join(" · ") || undefined;
 		// Warning bodies and multi-target identities must remain visible.
-		summary.receipt = !(
-			details?.meta?.truncation ||
-			details?.meta?.artifactError ||
-			details?.meta?.limits ||
-			details?.truncation?.truncated ||
-			details?.notes?.length ||
-			(details?.displayReadTargets && details.displayReadTargets.length > 1)
-		);
+		summary.receipt =
+			count !== undefined &&
+			!(
+				details?.meta?.truncation ||
+				details?.meta?.artifactError ||
+				details?.meta?.diagnostics ||
+				details?.meta?.limits ||
+				details?.truncation?.truncated ||
+				details?.notes?.length ||
+				(details?.displayReadTargets && details.displayReadTargets.length > 1)
+			);
 		return summary;
 	},
 	renderCall(args: ReadRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {

@@ -23,7 +23,7 @@ import {
 	formatErrorMessage,
 	PREVIEW_LIMITS,
 } from "../render/render-utils";
-import { formatFullOutputReference } from "./output-meta";
+import { formatFullOutputReference, formatOutputNotice } from "./output-meta";
 
 /** Display metadata for glob tool results. */
 export interface GlobToolDetails {
@@ -54,11 +54,21 @@ interface GlobRenderArgs {
 	/** Legacy pre-`path` argument name; kept so historical transcripts still render a scope. */
 	paths?: string | string[];
 	limit?: number;
+	hidden?: boolean;
+	gitignore?: boolean;
 }
 
 function formatGlobRenderPaths(args: GlobRenderArgs | undefined): string | undefined {
 	const list = toPathList(args?.path ?? args?.paths);
 	return list.length > 0 ? list.join(", ") : undefined;
+}
+
+function globFlags(args: GlobRenderArgs | undefined): string[] {
+	return compact([
+		args?.hidden === false && "hidden excluded",
+		args?.gitignore === false && "ignored included",
+		args?.limit !== undefined && `limit:${args.limit}`,
+	]);
 }
 
 function globStatusIcon(uiTheme: Theme): string {
@@ -105,9 +115,8 @@ function describeGlobFiles(files: readonly string[], cwd: string | undefined): N
 
 /** Native glob head: the pattern, then `meta` (the result counts, or the call's `limit`). */
 function globNativeHead(args: GlobRenderArgs | undefined, meta: readonly string[] = []): NativeToolHead {
-	const parts = [...meta];
-	if (meta.length === 0 && args?.limit !== undefined) parts.push(`limit:${args.limit}`);
-	return { title: "Glob", target: formatGlobRenderPaths(args) || "*", targetKind: "pattern", meta: parts };
+	const parts = [...meta, ...globFlags(args)];
+	return { title: "Glob", target: formatGlobRenderPaths(args) || ".", targetKind: "pattern", meta: parts };
 }
 
 /** Render glob calls and results in the transcript. */
@@ -118,37 +127,49 @@ export const globToolRenderer = {
 		if (context.result?.isError || details?.error) {
 			return {
 				label: "Glob",
-				detail: formatGlobRenderPaths(args) || "*",
+				detail: formatGlobRenderPaths(args) || details?.scopePath || ".",
 				error: details?.error || context.result?.content.find(c => c.type === "text")?.text || "Unknown error",
 				receipt: false,
 			};
 		}
 		const count = details?.fileCount;
-		const limited = details?.truncated || details?.meta?.truncation || details?.resultLimitReached;
+		const limited =
+			details?.truncated ||
+			details?.truncation?.truncated ||
+			details?.meta?.truncation ||
+			details?.meta?.limits ||
+			details?.resultLimitReached;
 		return {
 			label: "Glob",
-			detail: formatGlobRenderPaths(args) || "*",
+			detail: formatGlobRenderPaths(args) || details?.scopePath || ".",
 			meta:
 				[
+					...globFlags(args),
 					count === undefined ? undefined : formatCount("file", count),
 					limited ? "truncated" : undefined,
-					details?.missingPaths?.length ? "paths skipped" : undefined,
+					details?.missingPaths?.length
+						? `${formatCount("path", details.missingPaths.length)} skipped`
+						: undefined,
 				]
 					.filter(Boolean)
 					.join(" · ") || undefined,
-			receipt: count !== undefined,
+			receipt:
+				count !== undefined &&
+				!limited &&
+				!details?.missingPaths?.length &&
+				!details?.meta?.artifactError &&
+				!details?.meta?.diagnostics,
 		};
 	},
 	renderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
-		const meta: string[] = [];
-		if (args.limit !== undefined) meta.push(`limit:${args.limit}`);
+		const meta = globFlags(args);
 
 		const text = renderStatusLine(
 			{
 				icon: "pending",
 				title: "Glob",
 				titleColor: "toolTitle",
-				description: formatGlobRenderPaths(args) || "*",
+				description: formatGlobRenderPaths(args) || ".",
 				meta,
 			},
 			uiTheme,
@@ -238,6 +259,8 @@ export const globToolRenderer = {
 			);
 			const lines = [header, formatEmptyMessage(emptyLabel, uiTheme)];
 			if (missingNote) lines.push(missingNote);
+			const notice = formatOutputNotice(details?.meta).trim();
+			if (notice) lines.push(...notice.split("\n").map(line => uiTheme.fg("warning", line)));
 			return new Text(lines.join("\n"), 1, 0);
 		}
 		const meta: string[] = [formatCount("file", fileCount)];
@@ -266,6 +289,11 @@ export const globToolRenderer = {
 			extraLines.push(uiTheme.fg("warning", `truncated: ${truncationReasons.join(", ")}`));
 		}
 		if (missingNote) extraLines.push(missingNote);
+		const notice = formatOutputNotice({
+			artifactError: details?.meta?.artifactError,
+			diagnostics: details?.meta?.diagnostics,
+		}).trim();
+		if (notice) extraLines.push(...notice.split("\n").map(line => uiTheme.fg("warning", line)));
 
 		return createCachedComponent(
 			() => options.expanded,
@@ -330,7 +358,7 @@ export const globToolRenderer = {
 		const missingNote = missingPaths.length > 0 ? `skipped missing: ${missingPaths.join(", ")}` : undefined;
 		const scope = details.scopePath ? `in ${details.scopePath}` : undefined;
 		if (details.fileCount === 0) {
-			const foot = footnoteText(compact([missingNote]));
+			const foot = footnoteText(compact([missingNote, formatOutputNotice(details.meta).trim()]));
 			return {
 				// `truncated` on an empty result means the scan timed out mid-walk.
 				tool: { ...globNativeHead(args, compact(["0 files", scope])), note: truncated ? "timed out" : undefined },
@@ -345,13 +373,17 @@ export const globToolRenderer = {
 		if (truncation) reasons.push(truncation.truncatedBy === "lines" ? "line limit" : "size limit");
 		const artifactId = truncation && "artifactId" in truncation ? truncation.artifactId : undefined;
 		if (artifactId) reasons.push(formatFullOutputReference(artifactId));
+		const notice = formatOutputNotice({
+			artifactError: details.meta?.artifactError,
+			diagnostics: details.meta?.diagnostics,
+		}).trim();
 		const head = globNativeHead(args, compact([formatCount("file", details.fileCount), scope]));
 		return {
 			tool: truncated ? { ...head, badges: [{ text: "truncated", tone: "warning" }] } : head,
 			inline: true,
 			body: compact<NativeChild>([
 				describeGlobFiles(details.files ?? [], details.cwd),
-				footnoteText(compact([reasons.length > 0 && `truncated: ${reasons.join(", ")}`, missingNote])),
+				footnoteText(compact([reasons.length > 0 && `truncated: ${reasons.join(", ")}`, missingNote, notice])),
 			]),
 			preview: { lines: NATIVE_PREVIEW_LINES },
 		};

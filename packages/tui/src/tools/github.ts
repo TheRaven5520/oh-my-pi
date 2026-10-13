@@ -1,4 +1,10 @@
-import type { NativeToolView, ToolRenderer, ToolRenderResult } from "./renderer";
+import type {
+	NativeToolView,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+	ToolRenderResult,
+} from "./renderer";
 import { type Component, padding, Text, visibleWidth } from "../index";
 import type { TspTone } from "@oh-my-pi/pi-wire";
 import { ansi, compact, item, list, md, node, span, text } from "../native/describe";
@@ -496,6 +502,31 @@ const githubResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /** Render GitHub operations and live workflow status. */
 export const githubToolRenderer = {
+	activitySummary(args: GithubToolRenderArgs, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as GhToolDetails | undefined;
+		const watch = details?.watch;
+		const meta: string[] = [];
+		if (watch?.run) {
+			meta.push(watch.run.conclusion ?? watch.run.status ?? watch.state, `${watch.run.jobs.length} jobs`);
+		} else if (watch?.runs) {
+			meta.push(watch.state, `${watch.runs.length} runs`);
+		} else if (details?.checkouts && !context.result?.isError) {
+			meta.push(`${details.checkouts.length} checkouts`);
+		}
+		return {
+			label: formatOpTitle(args.op),
+			detail:
+				args.op === "run_watch"
+					? [
+							args.repo ?? watch?.repo,
+							args.run ?? (watch?.run ? `#${watch.run.id}` : (args.branch ?? watch?.branch)),
+						]
+							.filter(Boolean)
+							.join(" · ") || undefined
+					: buildOpMeta(args).join(" · ") || undefined,
+			meta: meta.join(" · ") || undefined,
+		};
+	},
 	// No animatedPendingPreview: renderCall materializes plain Text components
 	// once per display rebuild (no render closure), so a live spinner interval
 	// would request 30fps repaints while the visible glyph stays frozen.

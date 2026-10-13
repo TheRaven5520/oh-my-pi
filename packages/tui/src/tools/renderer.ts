@@ -61,6 +61,8 @@ export interface ToolActivitySummary {
 	receipt?: boolean;
 	/** Shell targets use a prompt marker and keep their lines, wrapping onto continuation rows. */
 	command?: boolean;
+	/** Show the shell prompt for semantic action text without enabling code wrapping. */
+	shellPrompt?: boolean;
 	/** Code targets keep their lines and wrap onto continuation rows instead of being cut to one row. */
 	wrap?: boolean;
 }

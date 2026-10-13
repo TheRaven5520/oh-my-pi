@@ -20,7 +20,11 @@ import {
 	type ToolRenderer,
 	toolRenderers,
 } from "../tools/index";
-import { describeDefaultToolExecution, formatDefaultToolExecution } from "../tools/default-renderer";
+import {
+	defaultToolActivityDetail,
+	describeDefaultToolExecution,
+	formatDefaultToolExecution,
+} from "../tools/default-renderer";
 import { INTENT_FIELD, type TspCardStatus, type TspPreview, type TspText, type TspTone } from "@oh-my-pi/pi-wire";
 import { card, col, EMPTY_NODE, node, span, text, withHidden } from "../native/describe";
 import {
@@ -1532,7 +1536,7 @@ export class ToolExecutionComponent extends Container {
 					: [plainText(summary.detail).replace(/\s+/g, " ")];
 			const label = theme.fg("toolTitle", theme.bold(summary.label));
 			const meta = summary.meta ? theme.fg("dim", ` · ${plainText(summary.meta)}`) : "";
-			const prompt = summary.command && lines.length > 0 ? "$ " : "";
+			const prompt = (summary.command || summary.shellPrompt) && lines.length > 0 ? "$ " : "";
 			head = compactHeadRows(
 				`${icon} ${label}${lines.length > 0 ? "  " : ""}${prompt}`,
 				lines,
@@ -1629,15 +1633,10 @@ export class ToolExecutionComponent extends Container {
 			// pressure — keep the generic liveness hint for in-flight calls.
 			return this.#isRunning() ? { ...summary, detail: "running", command: false, receipt: false } : summary;
 		}
-		if (isRecord(this.#args)) {
-			for (const key of ["command", "path", "input"] as const) {
-				const value = this.#args[key];
-				if (typeof value === "string" && value.length > 0) {
-					return { label: this.#toolLabel, detail: value.split("\n", 1)[0] };
-				}
-			}
-		}
-		return { label: this.#toolLabel, detail: this.#isRunning() ? "running" : undefined };
+		return {
+			label: this.#toolLabel,
+			detail: defaultToolActivityDetail(this.#args) ?? (this.#isRunning() ? "running" : undefined),
+		};
 	}
 	/** Still executing: no settled result yet and the turn has not sealed it. */
 	#isRunning(): boolean {

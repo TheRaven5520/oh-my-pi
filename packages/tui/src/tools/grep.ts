@@ -12,7 +12,7 @@ import { compact } from "../native/describe";
 import type { NativeChild } from "../native/node";
 import { footnoteText, inlineErrorView, resultText } from "./native-view";
 import { type Theme } from "../theme/theme";
-import type { OutputMeta } from "./output-meta";
+import { formatOutputNotice, stripOutputNotice, type OutputMeta } from "./output-meta";
 import type { TruncationResult } from "./streaming-output";
 import { toPathList } from "../render/render-utils";
 import {
@@ -81,6 +81,14 @@ interface GrepRenderArgs {
 	case?: boolean;
 	gitignore?: boolean;
 	skip?: number;
+}
+
+function grepFlags(args: GrepRenderArgs | undefined): string[] {
+	return compact([
+		args?.case === false && "case-insensitive",
+		args?.gitignore === false && "ignored included",
+		args?.skip !== undefined && args.skip > 0 && `skip:${args.skip}`,
+	]);
 }
 
 const COLLAPSED_TEXT_LIMIT = PREVIEW_LIMITS.COLLAPSED_LINES * 2;
@@ -255,7 +263,7 @@ export const grepToolRenderer = {
 	inline: true,
 	activitySummary(args: GrepRenderArgs, context: ToolActivityContext) {
 		const details = context.result?.details as GrepToolDetails | undefined;
-		const scope = details?.scopePath ?? toPathList(args?.path ?? args?.paths).join(", ");
+		const scope = details?.scopePath ?? (toPathList(args?.path ?? args?.paths).join(", ") || ".");
 		if (context.result?.isError || details?.error) {
 			return {
 				label: "Grep",
@@ -271,28 +279,34 @@ export const grepToolRenderer = {
 		const limited =
 			details?.truncated ||
 			details?.meta?.truncation ||
+			details?.truncation?.truncated ||
+			details?.meta?.limits ||
 			details?.fileLimitReached ||
 			details?.perFileLimitReached ||
 			details?.linesTruncated;
 		const notes = [
+			...grepFlags(args),
 			counts,
 			limited ? "truncated" : undefined,
-			details?.missingPaths?.length ? "paths skipped" : undefined,
+			details?.missingPaths?.length ? `${formatCount("path", details.missingPaths.length)} skipped` : undefined,
 		].filter(Boolean);
 		return {
 			label: "Grep",
 			detail: `${JSON.stringify(args?.pattern ?? "?")}${scope ? ` in ${scope}` : ""}`,
 			meta: notes.join(" · ") || undefined,
-			receipt: counts !== undefined,
+			receipt:
+				counts !== undefined &&
+				!limited &&
+				!details?.missingPaths?.length &&
+				!details?.meta?.artifactError &&
+				!details?.meta?.diagnostics,
 		};
 	},
 	renderCall(args: GrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const paths = toPathList(args.path ?? args.paths);
 		const meta: string[] = [];
 		if (paths.length) meta.push(`in ${paths.join(", ")}`);
-		if (args.case === false) meta.push("case:insensitive");
-		if (args.gitignore === false) meta.push("gitignore:false");
-		if (args.skip !== undefined && args.skip > 0) meta.push(`skip:${args.skip}`);
+		meta.push(...grepFlags(args));
 
 		const text = renderStatusLine(
 			{ icon: "pending", title: "Grep", titleColor: "toolTitle", description: args.pattern || "?", meta },
@@ -364,6 +378,8 @@ export const grepToolRenderer = {
 			missingPathsList.length > 0
 				? uiTheme.fg("warning", `skipped missing: ${missingPathsList.join(", ")}`)
 				: undefined;
+		const notice = formatOutputNotice(details?.meta).trim();
+		const noticeLines = notice ? notice.split("\n").map(line => uiTheme.fg("warning", line)) : [];
 
 		if (matchCount === 0) {
 			const meta = ["0 matches"];
@@ -375,6 +391,7 @@ export const grepToolRenderer = {
 			);
 			const lines = [header, formatEmptyMessage("No matches found", uiTheme)];
 			if (missingNote) lines.push(missingNote);
+			lines.push(...noticeLines);
 			return new Text(lines.join("\n"), 1, 0);
 		}
 
@@ -396,7 +413,7 @@ export const grepToolRenderer = {
 		);
 
 		const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text ?? "";
-		const allLines = textContent.split("\n");
+		const allLines = stripOutputNotice(textContent, details?.meta).split("\n");
 		// Resolve hyperlinks once over the whole output so a nested directory stack
 		// reconstructs correctly across blank-line group boundaries.
 		// Header/match display paths are cwd-relative, so resolve them against cwd
@@ -411,7 +428,7 @@ export const grepToolRenderer = {
 		);
 		const matchGroups = groupLineIndicesByBlank(allLines).map(indices => indices.map(i => renderedLines[i]!));
 
-		const extraLines: string[] = [];
+		const extraLines: string[] = [...noticeLines];
 		if (missingNote) extraLines.push(missingNote);
 
 		return createCachedComponent(
@@ -444,7 +461,7 @@ export const grepToolRenderer = {
 		if (result.isError || details?.error) {
 			return inlineErrorView(grepNativeHead(args), details?.error || resultText(result) || "Unknown error");
 		}
-		const textContent = details?.displayContent ?? resultText(result);
+		const textContent = stripOutputNotice(details?.displayContent ?? resultText(result), details?.meta);
 		const missing = details?.missingPaths ?? [];
 		const missingNote = missing.length > 0 ? `skipped missing: ${missing.join(", ")}` : undefined;
 		const scope = details?.scopePath ? `in ${details.scopePath}` : undefined;
@@ -454,7 +471,7 @@ export const grepToolRenderer = {
 			(!hasDetailedData && (!textContent || textContent === "No matches found")) ||
 			(hasDetailedData && matchCount === 0)
 		) {
-			const foot = footnoteText(compact([missingNote]));
+			const foot = footnoteText(compact([missingNote, formatOutputNotice(details?.meta).trim()]));
 			return {
 				tool: grepNativeHead(args, compact(["0 matches", scope])),
 				tone: "warning",
@@ -472,8 +489,11 @@ export const grepToolRenderer = {
 		const head = grepNativeHead(args, compact([counts, scope]));
 		const hiddenFiles = options.expanded ? 0 : Math.max(0, fileCount - NATIVE_COLLAPSED_FILES);
 		const foot = footnoteText(
-			compact([hiddenFiles > 0 && formatCount("more file", hiddenFiles), missingNote]),
-			details?.meta,
+			compact([
+				hiddenFiles > 0 && formatCount("more file", hiddenFiles),
+				missingNote,
+				formatOutputNotice(details?.meta).trim(),
+			]),
 		);
 		return {
 			tool: truncated ? { ...head, badges: [{ text: "truncated", tone: "warning" }] } : head,
@@ -497,9 +517,7 @@ function grepNativeHead(args: GrepRenderArgs | undefined, meta?: readonly string
 	if (!meta && args) {
 		const paths = toPathList(args.path ?? args.paths);
 		if (paths.length) parts.push(`in ${paths.join(", ")}`);
-		if (args.case === false) parts.push("case:insensitive");
-		if (args.gitignore === false) parts.push("gitignore:false");
-		if (args.skip !== undefined && args.skip > 0) parts.push(`skip:${args.skip}`);
 	}
+	parts.push(...grepFlags(args));
 	return { title: "Grep", target: args?.pattern || "?", targetKind: "pattern", meta: parts };
 }

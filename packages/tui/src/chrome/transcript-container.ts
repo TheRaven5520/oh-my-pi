@@ -173,6 +173,11 @@ function isPlainBlank(line: string): boolean {
 	return !/\S/.test(line);
 }
 
+/** Visible tool activity is contiguous; every boundary involving text gets one row. */
+function separatorRows(previous: Component | undefined, next: Component): number {
+	return previous === undefined || (isToolActivityComponent(previous) && isToolActivityComponent(next)) ? 0 : 1;
+}
+
 /** `rows` with a dim `label` written into row `index`, or `rows` itself when there is no such row or no room. */
 function withLabel(
 	rows: readonly string[],
@@ -546,9 +551,13 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		this.#settleFinalized();
 		let total = 0;
+		let previous: Component | undefined;
 		for (const { entry, index } of this.#liveEntries()) {
 			const block = this.#liveBlockRows(entry, index, width);
-			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
+			if (block.length > 0) {
+				total += block.length + separatorRows(previous, entry.component);
+				previous = entry.component;
+			}
 			if (total > limit) break;
 		}
 		return total;
@@ -654,7 +663,12 @@ export class TranscriptContainer extends Container {
 		shown.reverse();
 		blocks.reverse();
 		let total = 0;
-		for (const block of blocks) total += block.length + (total > 0 ? 1 : 0);
+		let separators = 0;
+		for (let index = 0; index < blocks.length; index++) {
+			separators += separatorRows(shown[index - 1]?.entry.component, shown[index]!.entry.component);
+			total += blocks[index]!.length;
+		}
+		total += separators;
 		if (shown.length === 0) {
 			this.#lastViewportSpans = [];
 			return EMPTY_ROWS;
@@ -668,7 +682,7 @@ export class TranscriptContainer extends Container {
 			const output: string[] = [];
 			const owners: (Component | undefined)[] = [];
 			for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
-				if (output.length > 0) {
+				if (separatorRows(shown[blockIndex - 1]?.entry.component, shown[blockIndex]!.entry.component)) {
 					output.push("");
 					owners.push(undefined);
 				}
@@ -682,12 +696,12 @@ export class TranscriptContainer extends Container {
 			return output;
 		}
 
-		// Blocks keep their one-row separators while every block can still show
-		// a row beside them; only a viewport too small for that drops them.
-		const separated = capacity >= shown.length * 2 - 1;
+		// Preserve text boundaries while every visible block can still show a row.
+		// Tool groups reserve no separators, leaving that room for output previews.
+		const separated = capacity >= shown.length + separators;
 		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
 		const allocation: number[] = new Array(shown.length).fill(1);
-		let surplus = capacity - shown.length - (separated ? shown.length - 1 : 0);
+		let surplus = capacity - shown.length - (separated ? separators : 0);
 		// Honor explicit inspection before automatic layout preferences. Otherwise
 		// surrounding text can squeeze a clicked tool back to its collapsed rows.
 		// Unselected blocks still favor ordinary text over dynamic tool activity.
@@ -708,6 +722,7 @@ export class TranscriptContainer extends Container {
 		}
 		const output: string[] = [];
 		const owners: (Component | undefined)[] = [];
+		let previous: Component | undefined;
 		for (let index = 0; index < shown.length; index++) {
 			const candidate = shown[index]!;
 			const allocated = allocation[index]!;
@@ -716,7 +731,7 @@ export class TranscriptContainer extends Container {
 				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
 			);
 			const visible = rendered.length <= allocated ? rendered : rendered.slice(rendered.length - allocated);
-			if (separated && output.length > 0 && visible.length > 0) {
+			if (separated && visible.length > 0 && separatorRows(previous, candidate.entry.component)) {
 				output.push("");
 				owners.push(undefined);
 			}
@@ -724,6 +739,7 @@ export class TranscriptContainer extends Container {
 				output.push(line);
 				owners.push(candidate.entry.component);
 			}
+			if (visible.length > 0) previous = candidate.entry.component;
 		}
 		const drop = Math.max(0, output.length - capacity);
 		this.#commitViewportSpans(owners.slice(drop), output.length - drop);
@@ -825,12 +841,14 @@ export class TranscriptContainer extends Container {
 		let liveRows = 0;
 		let keep = 0;
 		let fits = true;
+		let nextComponent: Component | undefined;
 		for (let cursor = live.length - 1; cursor >= 0; cursor--) {
 			const candidate = live[cursor]!;
 			const height = this.#liveBlockRows(candidate.entry, candidate.index, width).length;
-			if (height > 0) liveRows += height + (liveRows > 0 ? 1 : 0);
+			const separator = nextComponent === undefined ? 0 : separatorRows(candidate.entry.component, nextComponent);
+			if (height > 0) liveRows += height + separator;
 			if (fits) {
-				const next = height > 0 ? tailRows + height + (tailRows > 0 ? 1 : 0) : tailRows;
+				const next = height > 0 ? tailRows + height + separator : tailRows;
 				if (next > room) {
 					fits = false;
 					keep = cursor + 1;
@@ -838,6 +856,7 @@ export class TranscriptContainer extends Container {
 					tailRows = next;
 				}
 			}
+			if (height > 0) nextComponent = candidate.entry.component;
 			if (!fits && appendHead === undefined) break;
 		}
 		const overflowing = keep > 0 || this.#liveCount() >= MAX_LIVE_BLOCKS;
@@ -940,13 +959,15 @@ export class TranscriptContainer extends Container {
 		const cap = Math.max(0, Math.trunc(maxRows));
 		if (cap === 0) return EMPTY_ROWS;
 		const rows: string[] = [];
+		let next: Component | undefined;
 		for (let index = this.#entries.length - 1; index >= 0; index--) {
 			const entry = this.#entries[index]!;
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = this.#renderBlock(entry, width);
 			if (block.length === 0) continue;
-			if (rows.length > 0) rows.unshift("");
+			if (next !== undefined && separatorRows(entry.component, next)) rows.unshift("");
 			rows.unshift(...block);
+			next = entry.component;
 			if (rows.length >= cap) break;
 		}
 		return rows.length > cap ? rows.slice(rows.length - cap) : rows;
@@ -988,13 +1009,15 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		this.#childStartRows.clear();
 		const rows: string[] = [];
+		let previous: Component | undefined;
 		for (const entry of this.#entries) {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = this.#renderEntry(entry, width);
 			if (block.length === 0) continue;
-			if (rows.length > 0) rows.push("");
+			if (separatorRows(previous, entry.component)) rows.push("");
 			this.#childStartRows.set(entry.component, rows.length);
 			rows.push(...block);
+			previous = entry.component;
 		}
 		return rows;
 	}
@@ -1188,6 +1211,7 @@ export class TranscriptContainer extends Container {
 		const owners: (Component | undefined)[] = [];
 		const startedAt = budgetMs === undefined ? 0 : performance.now();
 		let reached = start;
+		let previous: Component | undefined;
 		for (let index = start; index < end; index++) {
 			const entry = this.#entries[index]!;
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
@@ -1200,20 +1224,32 @@ export class TranscriptContainer extends Container {
 			const block = rendered.slice(emittedRows);
 			reached = index + 1;
 			if (block.length > 0) {
-				if (rows.length > 0) {
+				if (separatorRows(previous, entry.component)) {
 					rows.push("");
 					owners.push(undefined);
 				}
 				rows.push(...block);
 				for (let row = 0; row < block.length; row++) owners.push(entry.component);
+				previous = entry.component;
 			}
 			if (budgetMs !== undefined && performance.now() - startedAt >= budgetMs) break;
 		}
-		if (trailingBlank && rows.length > 0) {
+		if (trailingBlank && previous !== undefined && this.#trailingSeparator(previous, reached, width)) {
 			rows.push("");
 			owners.push(undefined);
 		}
 		return { rows, owners, end: reached };
+	}
+
+	/** Retirement owns its trailing boundary, including across empty blocks or a batch split. */
+	#trailingSeparator(previous: Component, start: number, width: number): number {
+		if (!isToolActivityComponent(previous)) return 1;
+		for (let index = start; index < this.#entries.length; index++) {
+			const entry = this.#entries[index]!;
+			if (this.#measuredRows(entry, width).length > 0) return separatorRows(previous, entry.component);
+		}
+		// Keep the final retirement padding used by flush and complete-ledger replay.
+		return 1;
 	}
 
 	#renderReplay(width: number): OwnedRows {

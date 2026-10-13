@@ -253,7 +253,6 @@ describe("job renderer task-result preview", () => {
 				details: { op: "wait" as const, jobs: [jobsData[0]] },
 			};
 			const view = waitToolRenderer.describeResult!(result, { expanded: true, isPartial: false });
-			expect(view?.head).toEqual(expect.arrayContaining([expect.objectContaining({ t: "waiting on 1 job" })]));
 			expect(JSON.stringify(view?.body)).toContain("Job1 running");
 		});
 

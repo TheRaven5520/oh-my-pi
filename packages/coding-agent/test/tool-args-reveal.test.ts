@@ -6,6 +6,7 @@ import {
 	ToolArgsRevealController,
 } from "@oh-my-pi/pi-coding-agent/modes/controllers/tool-args-reveal";
 import { STREAMING_JSON_PARSE_MIN_GROWTH } from "@oh-my-pi/pi-utils";
+import { bashToolRenderer } from "@oh-my-pi/pi-tui/tools/bash";
 
 class RecordingArgsComponent {
 	frames: Array<Record<string, unknown>> = [];
@@ -59,6 +60,39 @@ function rawTarget() {
 describe("tool args reveal", () => {
 	afterEach(() => {
 		vi.useRealTimers();
+	});
+
+	it("streams long Bash titles and commands between full JSON parses", () => {
+		const { controller } = makeController({ smooth: false });
+		const title = "Inspecting repository changes ".repeat(12);
+		const seed = `{"title":"${title}`;
+		const keys = streamingStringKeysForTool("bash", false);
+		const options = jsonTarget({ streamingStringKeys: keys });
+		const renderOptions = { expanded: false, isPartial: true };
+		const first = controller.setTarget("bash-title", seed, options);
+		expect(bashToolRenderer.activitySummary(first, renderOptions).detail).toBe(title.trim());
+		const grown = controller.setTarget("bash-title", `${seed}and branch state`, options);
+		expect(bashToolRenderer.activitySummary(grown, renderOptions)).toMatchObject({
+			detail: `${title}and branch state`,
+			command: false,
+		});
+		expect(bashToolRenderer.describeCall(grown, renderOptions).tool).toMatchObject({
+			target: `${title}and branch state`,
+			targetKind: "text",
+		});
+		const command = `printf '%s' ${"x".repeat(STREAMING_JSON_PARSE_MIN_GROWTH)}`;
+		const commandSeed = `${seed}and branch state","command":"${command}`;
+		controller.setTarget("bash-title", commandSeed, options);
+		const final = controller.setTarget("bash-title", `${commandSeed}tail`, options);
+		expect(final.command).toBe(`${command}tail`);
+		expect(bashToolRenderer.activitySummary(final, renderOptions).detail).toBe(`${title}and branch state`);
+		const rebuilt = decodeStreamedToolArgs(`${commandSeed}tail`, {
+			rawInput: false,
+			fullArgs: { title: "stale", command: "stale" },
+			streamingStringKeys: keys,
+		});
+		expect(rebuilt.title).toBe(final.title);
+		expect(rebuilt.command).toBe(final.command);
 	});
 
 	it("passes the bound component to requestRender on each rendered tick", () => {

@@ -2054,14 +2054,14 @@ function describeTaskResult(
 	for (const res of details.results ?? []) {
 		requests += res.requests ?? 0;
 		if (res.aborted) aborted++;
-		else if (res.exitCode !== 0) failed++;
-		else if (!res.error) succeeded++;
+		else if (res.exitCode !== 0 || res.error) failed++;
+		else succeeded++;
 	}
 	const summary: string[] = [];
 	if ((details.results ?? []).length > 0) {
-		if (succeeded) summary.push(`${succeeded} succeeded`);
+		if (succeeded) summary.push(`${succeeded} done`);
 		if (failed) summary.push(`${failed} failed`);
-		if (aborted) summary.push(`${aborted} aborted`);
+		if (aborted) summary.push(`${aborted} cancelled`);
 		if (requests) summary.push(`${formatNumber(requests)} req`);
 		summary.push(formatDuration(details.totalDurationMs));
 	}

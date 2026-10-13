@@ -24,7 +24,7 @@ import type { FileDiagnosticsResult } from "./lsp";
 import { nativeDiff, renderDiff as renderDiffColored } from "../chrome/diff";
 import { getLanguageFromPath } from "../lang-from-path";
 import type { Theme } from "../theme/theme";
-import type { OutputMeta } from "./output-meta";
+import { formatOutputNotice, type OutputMeta } from "./output-meta";
 import {
 	cachedRenderedString,
 	cappedHeadLines,
@@ -32,6 +32,7 @@ import {
 	formatDiagnostics,
 	formatExpandHint,
 	formatStatusIcon,
+	type DiffStats,
 	getDiffStats,
 	invalidateRenderedStringCache,
 	PREVIEW_LIMITS,
@@ -1074,6 +1075,17 @@ function sliceCollapsedDiffRows(
 	};
 }
 
+const editActivityStats = new WeakMap<EditToolDetails | EditToolPerFileResult, { diff: string; stats: DiffStats }>();
+
+function activityDiffStats(file: EditToolDetails | EditToolPerFileResult): DiffStats {
+	const diff = file.diff ?? "";
+	const cached = editActivityStats.get(file);
+	if (cached?.diff === diff) return cached.stats;
+	const stats = getDiffStats(diff);
+	editActivityStats.set(file, { diff, stats });
+	return stats;
+}
+
 /** Render edit previews and completed file diffs. */
 export const editToolRenderer = {
 	mergeCallAndResult: true,
@@ -1082,17 +1094,35 @@ export const editToolRenderer = {
 		const editArgs = (args ?? {}) as EditRenderArgs;
 		const editMode = (context.renderContext as EditRenderContext | undefined)?.editMode;
 		const facts = resolveEditCallFacts(editArgs, context.isPartial, editMode);
-		const label = getOperationTitle(facts.op);
-		if (!facts.rawPath) return { label };
-		let detail = formatEditTitlePath(facts.rawPath);
-		if (facts.rename) detail += ` → ${formatEditTitlePath(facts.rename)}`;
-		if (facts.fileCount > 1) detail += ` (+${facts.fileCount - 1} more)`;
 		const details = context.result?.details as EditToolDetails | undefined;
 		const files = details?.perFileResults;
+		const first = files?.[0] ?? details;
+		const rawPath = first?.sourcePath ?? first?.path ?? facts.rawPath;
+		const rename = first?.sourcePath ? first.path : (first?.move ?? facts.rename);
+		const fileCount = files?.length ?? facts.fileCount;
+		const label = fileCount > 1 ? "Edit" : rename ? "Move" : getOperationTitle(first?.op ?? facts.op);
+		if (!rawPath) return { label };
+		let detail = formatEditTitlePath(rawPath);
+		if (rename) detail += ` → ${formatEditTitlePath(rename)}`;
+		if (fileCount > 1) detail += ` (+${fileCount - 1} more)`;
 		let added = 0;
 		let removed = 0;
+		let hasNotices = Boolean(
+			details?.diagnostics ||
+			details?.meta?.diagnostics ||
+			details?.meta?.truncation ||
+			details?.meta?.artifactError ||
+			details?.meta?.limits,
+		);
 		for (const file of files ?? (details ? [details] : [])) {
-			const stats = getDiffStats(file.diff ?? "");
+			hasNotices ||= Boolean(
+				file.diagnostics ||
+				file.meta?.diagnostics ||
+				file.meta?.truncation ||
+				file.meta?.artifactError ||
+				file.meta?.limits,
+			);
+			const stats = activityDiffStats(file);
 			added += stats.added;
 			removed += stats.removed;
 		}
@@ -1104,7 +1134,8 @@ export const editToolRenderer = {
 				details && !context.result?.isError
 					? `+${added} −${removed}${failed ? ` · ${failed} failed` : ""}`
 					: undefined,
-			receipt: details !== undefined && failed === 0 && !context.result?.isError,
+			error: context.result?.isError ? resultText(context.result) || "Edit failed" : undefined,
+			receipt: details !== undefined && failed === 0 && !context.result?.isError && !hasNotices,
 		};
 	},
 
@@ -1398,6 +1429,13 @@ function editFileParts(
 	}
 	const diagnostics = diagnosticsSection(details?.diagnostics);
 	if (diagnostics) body.push(diagnostics);
+	if (details?.meta) {
+		const notice = formatOutputNotice({
+			...details.meta,
+			diagnostics: details.diagnostics ? undefined : details.meta.diagnostics,
+		}).trim();
+		if (notice) body.push(noteText(notice, "warning"));
+	}
 	const stats = diffText ? getDiffStats(diffText) : undefined;
 	return {
 		op,
@@ -1551,6 +1589,13 @@ function renderSingleFileResult(
 			body += formatDiagnostics(details.diagnostics, expanded, uiTheme, (fp: string) =>
 				uiTheme.getLangIcon(getLanguageFromPath(fp)),
 			);
+		}
+		if (details?.meta) {
+			const notice = formatOutputNotice({
+				...details.meta,
+				diagnostics: details.diagnostics ? undefined : details.meta.diagnostics,
+			});
+			if (notice) body += uiTheme.fg("warning", notice);
 		}
 
 		// Diff lines self-wrap with a continuation gutter; pre-wrap to the frame's
