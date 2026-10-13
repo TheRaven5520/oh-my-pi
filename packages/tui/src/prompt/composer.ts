@@ -5,6 +5,7 @@ import type { StatusLineSession } from "../status-line/host";
 import { createStartupStatusLine, type StatusLineStartupData } from "../status-line/startup";
 import { isInsideTerminalMultiplexer } from "../terminal-multiplexer";
 import { ProcessTerminal, type Terminal } from "../terminal";
+import { resolveTmuxStatusPadding, type TmuxStatusPadding } from "../tmux-status-padding";
 import {
 	type Component,
 	Container,
@@ -14,6 +15,7 @@ import {
 	type TerminalFrameProvider,
 	TUI,
 	type TUIOptions,
+	type TuiPaint,
 	type ViewportSize,
 } from "../tui";
 import { sliceWithWidth, visibleWidth } from "../utils";
@@ -131,10 +133,14 @@ export interface ComposerStartOptions {
  * status line's facts ({@link StatusLineComponent.describeComposerFacts}).
  */
 class StatusHost implements Component {
-	#component: Component | undefined;
+	#component: (Component & { readonly lastRenderEndsWithStatusLine: boolean }) | undefined;
 
-	setComponent(component: Component): void {
+	setComponent(component: Component & { readonly lastRenderEndsWithStatusLine: boolean }): void {
 		this.#component = component;
+	}
+
+	get lastRenderEndsWithStatusLine(): boolean {
+		return this.#component?.lastRenderEndsWithStatusLine === true;
 	}
 
 	render(width: number): readonly string[] {
@@ -316,6 +322,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	readonly #ravensLogo: RavensLogo | undefined;
 	#logoRows = 0;
 	#transferred = false;
+	#statusPadding: TmuxStatusPadding | undefined;
+	#statusPaddingBackground: string | undefined;
+	#statusPaddingAtBottom = false;
+	#statusPaddingPainted = false;
+	#unsubscribePaddingBackground: (() => void) | undefined;
 
 	constructor(options: ComposerOptions = {}) {
 		ensureThemeSync();
@@ -340,6 +351,14 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				})
 			: undefined;
 		this.ui.setFrameProvider(this);
+		this.ui.addStartListener(() => {
+			this.#statusPadding = resolveTmuxStatusPadding();
+			if (!this.#statusPadding) return;
+			this.#unsubscribePaddingBackground = this.ui.terminal.onBackgroundColorChange?.(color => {
+				this.#statusPaddingBackground = color;
+				if (this.#statusPaddingPainted) this.#statusPadding?.publish(this.#statusPaddingAtBottom, color);
+			});
+		});
 		this.ui.setMaxInlineImages(this.#preferences.maxInlineImages);
 		this.ui.setResizeScrollback(this.#preferences.resizeScrollback);
 
@@ -409,6 +428,30 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	/** Keep the decoration outside modal bounds as well as transcript bounds. */
 	getViewportTopInset(): number {
 		return this.#logoRows;
+	}
+
+	onTerminalPaint(paint: TuiPaint): void {
+		if (!this.#statusPadding) return;
+		this.#statusPaddingPainted = true;
+		this.#statusPaddingAtBottom =
+			!paint.alt &&
+			!this.ui.hasOverlay() &&
+			paint.viewport.length > 0 &&
+			paint.viewportTop !== undefined &&
+			paint.viewportTop + paint.viewport.length === paint.rows &&
+			this.#statusHost.lastRenderEndsWithStatusLine;
+		this.#statusPadding.publish(this.#statusPaddingAtBottom, this.#statusPaddingBackground);
+	}
+
+	/** Also runs when InteractiveMode stops the transferred TUI directly. */
+	onTerminalStop(): void {
+		this.#unsubscribePaddingBackground?.();
+		this.#unsubscribePaddingBackground = undefined;
+		this.#statusPadding?.stop();
+		this.#statusPadding = undefined;
+		this.#statusPaddingBackground = undefined;
+		this.#statusPaddingAtBottom = false;
+		this.#statusPaddingPainted = false;
 	}
 
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {

@@ -136,8 +136,8 @@ function removeFile(file: string): void {
 /** Owns one stable image and one pane receipt. All probes are async and bounded. */
 export class RavensHeader {
 	mode: "pending" | "inline" | "header" = "pending";
-	#wanted: number | undefined;
-	#published: { columns: number; file: string } | undefined;
+	#wanted: { columns: number | undefined; png: string } = { columns: undefined, png: RAVENS_LOGO_PNG_BASE64 };
+	#published: { columns: number; png: string; file: string } | undefined;
 	#busy = true;
 	#closed = false;
 	#failures = 0;
@@ -165,9 +165,17 @@ export class RavensHeader {
 		this.onChange();
 	}
 
-	sync(columns: number | undefined): void {
-		this.#wanted = columns;
-		if (this.#closed || this.mode !== "header" || this.#busy || columns === this.#published?.columns) return;
+	sync(columns: number | undefined, png = RAVENS_LOGO_PNG_BASE64): void {
+		this.#wanted.columns = columns;
+		this.#wanted.png = png;
+		if (
+			this.#closed ||
+			this.mode !== "header" ||
+			this.#busy ||
+			(columns === this.#published?.columns && (columns === undefined || png === this.#published?.png))
+		) {
+			return;
+		}
 		this.#busy = true;
 		void this.#sync();
 	}
@@ -191,7 +199,7 @@ export class RavensHeader {
 				this.mode = "inline";
 				return;
 			}
-			const columns = this.#wanted;
+			const { columns, png } = this.#wanted;
 			if (columns === undefined) {
 				this.#clear();
 				return;
@@ -210,7 +218,7 @@ export class RavensHeader {
 			}
 			const placement = { imageId: this.imageId, placementId: this.imageId, columns, rows: 1 };
 			const raw =
-				encodeKittyTransmit(RAVENS_LOGO_PNG_BASE64, this.imageId, false) +
+				encodeKittyTransmit(png, this.imageId, false) +
 				encodeKittyVirtualPlacement({ ...placement, passthrough: false });
 			const candidate = join(dir, `${process.pid}-${this.imageId}-${++this.#generation}.apc`);
 			const fd = openSync(candidate, "wx", 0o600);
@@ -222,7 +230,7 @@ export class RavensHeader {
 			}
 			if (!state.inMode) {
 				this.emit(
-					encodeKittyTransmit(RAVENS_LOGO_PNG_BASE64, this.imageId, true) +
+					encodeKittyTransmit(png, this.imageId, true) +
 						encodeKittyVirtualPlacement({ ...placement, passthrough: true }),
 				);
 			}
@@ -230,7 +238,7 @@ export class RavensHeader {
 			const header = `#[fg=#${color},us=#${color}]${encodeKittyPlaceholderCells(0, columns)}`;
 			if (!this.transport.publish(header, file)) throw new Error("tmux publish failed");
 			const previous = this.#published;
-			this.#published = { columns, file };
+			this.#published = { columns, png, file };
 			file = undefined;
 			if (previous) removeFile(previous.file);
 			this.#failures = 0;

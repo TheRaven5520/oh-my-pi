@@ -13,8 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RavensHeader, type RavensHeaderTransport, TmuxRavensHeaderTransport } from "../src/chrome/ravens-header";
 import { encodeKittyPlaceholderCells, encodeKittyVirtualPlacement } from "../src/kitty-graphics";
-import { encodeKittyTransmit } from "../src/terminal-capabilities";
-import { RAVENS_LOGO_PNG_BASE64 } from "../src/chrome/ravens-logo-data";
+import { calculateImageFit, encodeKittyTransmit, getPngDimensions } from "../src/terminal-capabilities";
+import {
+	RAVENS_LOGO_COMPACT_DIMENSIONS,
+	RAVENS_LOGO_DIMENSIONS,
+	RAVENS_LOGO_PNG_BASE64,
+	ravensLogoPngForBox,
+} from "../src/chrome/ravens-logo-data";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -88,6 +93,59 @@ it("publishes exact raw replay bytes and color-addressed cells with private perm
 	expect(transport.clearObservedExisting).toEqual([true]);
 	expect(existsSync(owned.file)).toBe(false);
 	expect(header.release()).toBe("");
+});
+
+it("selects the native compact raster only for a matching pixel box", () => {
+	expect(getPngDimensions(ravensLogoPngForBox(56, 29))).toEqual(RAVENS_LOGO_COMPACT_DIMENSIONS);
+	expect(getPngDimensions(RAVENS_LOGO_PNG_BASE64)).toEqual(RAVENS_LOGO_DIMENSIONS);
+	expect(
+		calculateImageFit(
+			RAVENS_LOGO_COMPACT_DIMENSIONS,
+			{ maxWidthCells: 4, maxHeightCells: 1 },
+			{ widthPx: 14, heightPx: 29 },
+		),
+	).toEqual({ columns: 4, rows: 1 });
+	expect(ravensLogoPngForBox(56, 27)).toBe(ravensLogoPngForBox(56, 29));
+	for (const [width, height] of [
+		[40, 20],
+		[56, 26],
+		[64, 32],
+		[112, 58],
+	]) {
+		expect(ravensLogoPngForBox(width!, height!)).toBe(RAVENS_LOGO_PNG_BASE64);
+	}
+});
+
+it("replaces replay pixels without changing cells or ids when cell geometry changes", async () => {
+	const transport = new FakeTransport();
+	transport.state = { enabled: true, inMode: true };
+	const emitted: string[] = [];
+	const header = new RavensHeader(
+		transport,
+		100,
+		() => {},
+		bytes => emitted.push(bytes),
+	);
+	await Promise.resolve();
+	header.sync(4);
+	await Promise.resolve();
+	const first = transport.owned!;
+	const compact = ravensLogoPngForBox(56, 29);
+	header.sync(4, compact);
+	await Promise.resolve();
+	expect(transport.owned!.header).toBe(first.header);
+	expect(existsSync(first.file)).toBe(false);
+	expect(readFileSync(transport.owned!.file, "utf8")).toContain(encodeKittyTransmit(compact, 100, false));
+	expect(readFileSync(transport.owned!.file, "utf8")).toContain("a=p,U=1,q=2,i=100,p=100,c=4,r=1");
+	for (let i = 0; i < 100; i++) header.sync(4, compact);
+	expect(transport.publishes).toBe(2);
+	expect(emitted).toEqual([]);
+	header.sync(4);
+	await Promise.resolve();
+	expect(readFileSync(transport.owned!.file, "utf8")).toContain(
+		encodeKittyTransmit(RAVENS_LOGO_PNG_BASE64, 100, false),
+	);
+	header.release();
 });
 
 it("publishes during copy mode for direct replay without dropped pane passthrough", async () => {
