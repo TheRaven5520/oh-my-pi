@@ -8,6 +8,7 @@
 import { type ApiKey, withAuth } from "@oh-my-pi/pi-ai/auth-retry";
 import { getAppleFoundationModelsAvailability } from "@oh-my-pi/pi-ai/providers/apple-foundation-models";
 import type { Api, FetchImpl, Model, RemoteCompactionConfig } from "@oh-my-pi/pi-ai/types";
+import { type Effort, THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import { buildDiscoveredModel, buildModel } from "@oh-my-pi/pi-catalog/build";
 import {
 	getBundledModelReferenceIndex,
@@ -250,6 +251,42 @@ function toPositiveNumberOrUndefined(value: unknown): number | undefined {
 		}
 	}
 	return undefined;
+}
+
+type DiscoveryCost = { input: number; output: number; cacheRead: number; cacheWrite: number };
+
+/**
+ * Per-million-token prices from a gateway row that prices in its own unit,
+ * as Sprilicred does: `pricing.unit: "microcredits_per_token"` with
+ * `usd_per_microcredit`. Input and output must both be known non-negative
+ * numbers (0 is free); a missing, null or negative leg makes the price
+ * `"unknown"`. An absent cache class costs nothing, matching the installer.
+ * Rows without such a block return undefined (gateway pricing unknown to us).
+ */
+function advertisedMicrocreditCost(pricing: unknown): DiscoveryCost | "unknown" | undefined {
+	if (!isRecord(pricing) || pricing.unit !== "microcredits_per_token") return undefined;
+	const usdPerMicrocredit = toPositiveNumberOrUndefined(pricing.usd_per_microcredit);
+	if (usdPerMicrocredit === undefined) return "unknown";
+	const perMillion = (value: unknown): number | undefined =>
+		typeof value === "number" && Number.isFinite(value) && value >= 0
+			? Number((value * usdPerMicrocredit * 1_000_000).toPrecision(12))
+			: undefined;
+	const input = perMillion(pricing.input);
+	const output = perMillion(pricing.output);
+	if (input === undefined || output === undefined) return "unknown";
+	return {
+		input,
+		output,
+		cacheRead: perMillion(pricing.cache_read) ?? 0,
+		cacheWrite: perMillion(pricing.cache_write) ?? 0,
+	};
+}
+
+/** Advertised `reasoning_efforts` in canonical order; undefined unless every entry is a known effort. */
+function advertisedEfforts(value: unknown): Effort[] | undefined {
+	if (!Array.isArray(value) || value.length === 0) return undefined;
+	if (!value.every(effort => THINKING_EFFORTS.includes(effort as Effort))) return undefined;
+	return THINKING_EFFORTS.filter(effort => value.includes(effort));
 }
 
 function isLlamaCppUnlimitedSentinel(value: unknown): boolean {
@@ -907,7 +944,11 @@ export async function discoverOpenAIModelsList(
 						id?: string;
 						max_model_len?: unknown;
 						context_length?: unknown;
+						context_window?: unknown;
+						display_name?: unknown;
 						max_output_tokens?: unknown;
+						reasoning_efforts?: unknown;
+						pricing?: unknown;
 						supports_reasoning?: unknown;
 						limits?: unknown;
 						input?: unknown;
@@ -964,6 +1005,7 @@ export async function discoverOpenAIModelsList(
 			maxOutputTokens !== undefined && Number.isSafeInteger(maxOutputTokens) ? maxOutputTokens : undefined;
 		const reportedContextWindow =
 			toPositiveNumberOrUndefined(item.max_model_len) ??
+			toPositiveNumberOrUndefined(item.context_window) ??
 			toPositiveNumberOrUndefined(item.context_length) ??
 			reportedLimitsContextWindow ??
 			nativeMetadataForModel?.contextWindow ??
@@ -1002,25 +1044,36 @@ export async function discoverOpenAIModelsList(
 				: providerConfig.api;
 		const contextWindow = reportedContextWindow ?? DISCOVERY_DEFAULT_CONTEXT_WINDOW;
 		// Gateways that describe their models (e.g. Sprilicred) advertise whether
-		// each one reasons and how much it may write; the gateway's word wins over
-		// the bundled reference, and lets a model newer than the catalog think.
+		// each one reasons, which efforts it takes, how much it may write, its
+		// display name and price; the gateway's word wins over the bundled
+		// reference, and lets a model newer than the catalog think.
 		const advertisedReasoning = typeof item.supports_reasoning === "boolean" ? item.supports_reasoning : undefined;
 		const advertisedMaxTokens = toPositiveNumberOrUndefined(item.max_output_tokens);
+		const efforts = advertisedReasoning === true ? advertisedEfforts(item.reasoning_efforts) : undefined;
+		const advertisedCost = advertisedMicrocreditCost(item.pricing);
+		const displayName = typeof item.display_name === "string" ? item.display_name.trim() : "";
 		discovered.push(
 			buildModel({
 				id,
-				name: reference?.name ?? id,
+				name: displayName || (reference?.name ?? id),
 				api,
 				provider: providerConfig.provider,
 				baseUrl,
 				reasoning: advertisedReasoning ?? reference?.reasoning ?? false,
-				thinking: inheritReferenceThinking(undefined, reference, providerConfig.provider),
+				thinking: efforts
+					? { mode: "effort", efforts }
+					: inheritReferenceThinking(undefined, reference, providerConfig.provider),
 				input,
 				...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
 				// Proxy/gateway pricing is provider-specific and rarely matches
 				// upstream bundled catalogs, so keep costs local-unknown even
-				// when we successfully recover the upstream model identity.
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				// when we successfully recover the upstream model identity,
+				// unless the gateway prices the row itself.
+				cost:
+					typeof advertisedCost === "object"
+						? advertisedCost
+						: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				...(advertisedCost === "unknown" ? { pricingStatus: "unknown" as const } : {}),
 				contextWindow,
 				// Cap a provider-advertised output limit or the reference's output limit at
 				// the discovered context window so a larger limit can never request more
