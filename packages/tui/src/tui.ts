@@ -23,7 +23,6 @@ import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { TuiDebugServer } from "./debug-server";
 import { isKeyRelease, matchesKey } from "./keys";
 import { KITTY_PLACEHOLDER } from "./kitty-graphics";
-import { parseSgrMouse } from "./mouse";
 import { LoopWatchdog } from "./loop-watchdog";
 import { assumedTspHello, NativeBackend, type NativeHost } from "./native/backend";
 import { col } from "./native/describe";
@@ -195,10 +194,6 @@ export interface TerminalFramePlan {
 /** Produces bounded terminal frames and retires acknowledged history batches. */
 export interface TerminalFrameProvider {
 	renderFrame(viewport: ViewportSize): TerminalFramePlan;
-	/** Reserved top chrome in the current viewport, excluded from modal layout. */
-	getViewportTopInset?(): number;
-	/** Render only fixed chrome on a borrowed modal screen, without touching history. */
-	renderViewportTop?(viewport: ViewportSize): readonly string[];
 	acknowledgeHistory(id: number): void;
 	/** Full semantic viewport used only on the transient resize buffer. */
 	renderResizeFrame?(viewport: ViewportSize): readonly string[];
@@ -823,12 +818,6 @@ export class TUI extends Container {
 	// `#screenHistory[length - depth]`. Emptied when the grid can have rewrapped
 	// them (width change) and rebuilt by every destructive replay.
 	#screenHistory: (object | undefined)[] = [];
-	// Replayed history can sit below reserved top chrome, not above the whole
-	// viewport. Retain it across diff paints; commit it only when displaced.
-	#insetHistoryRows: readonly string[] = [];
-	#insetHistoryOwners: readonly (object | undefined)[] = [];
-	#insetHistoryTop = 0;
-	#insetHistoryWidth = 0;
 	#historyLimit = SCREEN_HISTORY_MIN_ROWS;
 	#historyEpoch = 0;
 	#historyOffset = 0;
@@ -1395,10 +1384,6 @@ export class TUI extends Container {
 	 */
 	getScreenHistoryOwner(screenRow: number): object | undefined {
 		if (!Number.isInteger(screenRow) || !this.#paintedRowsAddressable()) return undefined;
-		const insetIndex = screenRow - this.#insetHistoryTop;
-		if (insetIndex >= 0 && insetIndex < this.#insetHistoryRows.length) {
-			return this.#insetHistoryOwners[insetIndex];
-		}
 		const depth = this.#providerViewportTop - screenRow;
 		const history = this.#screenHistory;
 		if (depth < 1 || depth > history.length) return undefined;
@@ -2641,7 +2626,6 @@ export class TUI extends Container {
 		if (provider?.beginHistoryFlush === undefined) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
-		const retireChrome = (provider.getViewportTopInset?.() ?? 0) > 0 || this.#insetHistoryRows.length > 0;
 		provider.beginHistoryFlush();
 		if (width <= 0 || height <= 0) return;
 		while (true) {
@@ -2653,10 +2637,9 @@ export class TUI extends Container {
 				viewport = Array.from(plan.viewport);
 				if (viewport.length > height) viewport = viewport.slice(0, height);
 			} while (this.#imageBudget.endPass());
-			if (plan.history === undefined && !retireChrome) return;
+			if (plan.history === undefined) return;
 			const acceptedBefore = this.#acceptedHistoryBatchId;
 			this.#emitPlanFrame(width, height, viewport, plan.history, provider, true);
-			if (plan.history === undefined) return;
 			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
 				throw new Error("History flush did not accept the offered batch");
 			}
@@ -2737,12 +2720,6 @@ export class TUI extends Container {
 		this.#clearScrollbackOnNextRender = false;
 		// The surface already holds the transcript; there's no row history to retire.
 		if (!nativeWasLive) this.#flushHistoryBeforeStop();
-		// Retired chrome ids are never painted again; a stop without a final
-		// normal-screen paint must still blank their native-history copies.
-		const screenPurgeIds = this.#imageBudget.takeScreenPurgeIds();
-		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
-			for (const id of screenPurgeIds) this.terminal.write(encodeKittyDeleteImage(id));
-		}
 		// Deliberately leave transmitted images in the terminal's graphics store:
 		// placeholder cells committed to native scrollback render only while their
 		// image data lives, so a delete-by-id here blanks every transcript image
@@ -3078,14 +3055,6 @@ export class TUI extends Container {
 			if (isKeyRelease(data) && !focused.wantsKeyRelease) {
 				return;
 			}
-			if (focusedOverlay?.options?.fullscreen && data.startsWith("\x1b[<")) {
-				const inset = this.#frameProvider?.getViewportTopInset?.() ?? 0;
-				const mouse = inset > 0 ? parseSgrMouse(data) : null;
-				if (mouse) {
-					if (mouse.row < inset && !mouse.release && (mouse.button & 32) === 0) return;
-					data = `\x1b[<${mouse.button};${mouse.col + 1};${Math.max(0, mouse.row - inset) + 1}${mouse.release ? "m" : "M"}`;
-				}
-			}
 			focused.handleInput(data);
 			this.requestRender();
 		}
@@ -3128,8 +3097,7 @@ export class TUI extends Container {
 			typeof opt.margin === "number"
 				? { top: opt.margin, right: opt.margin, bottom: opt.margin, left: opt.margin }
 				: (opt.margin ?? {});
-		const topInset = Math.max(0, Math.min(termHeight - 1, this.#frameProvider?.getViewportTopInset?.() ?? 0));
-		const marginTop = topInset + Math.max(0, margin.top ?? 0);
+		const marginTop = Math.max(0, margin.top ?? 0);
 		const marginRight = Math.max(0, margin.right ?? 0);
 		const marginBottom = Math.max(0, margin.bottom ?? 0);
 		const marginLeft = Math.max(0, margin.left ?? 0);
@@ -3276,10 +3244,7 @@ export class TUI extends Container {
 			// Get layout with height=0 first to determine width and maxHeight
 			// (width and maxHeight don't depend on overlay height).
 			const { width, maxHeight } = this.#resolveOverlayLayout(options, 0, termWidth, termHeight);
-			let overlayLines = component.render(
-				width,
-				this.#frameProvider?.getViewportTopInset?.() ? maxHeight : undefined,
-			);
+			let overlayLines = component.render(width);
 			if (overlayLines.length > maxHeight) {
 				const anchor = options?.anchor ?? "center";
 				overlayLines =
@@ -3497,19 +3462,18 @@ export class TUI extends Container {
 			this.#forceViewportRepaintOnNextRender = true;
 			return;
 		}
-		// A height-only settled resize rewraps nothing — rewrap is a width change
-		// everywhere. A pure height grow pulls committed scrollback down without
-		// polluting a copy, so the rebuild (an ED3 plus a full ledger replay)
-		// would be a destructive repaint that buys nothing. `rebuild` still
-		// refreshes on a burst shrink (the multiplexer pushes live pane rows into its
-		// scrollback; the destructive refresh is the only purge) and on a host
-		// that repaints its own grid (ConPTY's stale re-emission is untrusted).
+		// A height grow normally pulls committed scrollback into the new space.
+		// Kitty leaves it in history instead, so its direct-terminal growth needs
+		// the ledger refill too. Multiplexers own their grid's resize semantics;
+		// the outer terminal's identity must not change their growth behavior.
 		if (this.#resizeScrollbackMode === "rebuild") {
 			// Every destructive cause warrants a rebuild: a burst shrink can push
 			// live rows into history (tmux discards rows below the cursor, then
 			// pushes rows above it; a later grow cannot undo that clipping or the
 			// provider's retirement), and ConPTY can repaint its own stale grid.
-			if (!widthChanged && this.terminal.hostOwnsGridOnResize !== true && !this.#resizeBurstShrank) return;
+			const kittyGrow = this.#resizeBurstGrew && TERMINAL.id === "kitty" && !isInsideTerminalMultiplexer();
+			if (!widthChanged && this.terminal.hostOwnsGridOnResize !== true && !this.#resizeBurstShrank && !kittyGrow)
+				return;
 			this.#prepareForcedRender(true);
 			return;
 		}
@@ -3636,55 +3600,9 @@ export class TUI extends Container {
 				return owner && provider?.isHistoryTool?.(owner) ? toolLinks.decorate(line, owner) : line;
 			});
 		}
-		let emittedHistoryOwners = history?.owners;
-		const inset = Math.max(0, Math.min(height - 1, provider?.getViewportTopInset?.() ?? 0));
-		const insetHistory = inset > 0 || this.#insetHistoryRows.length > 0;
-		if (insetHistory && (flushing || this.#getTopmostVisibleOverlay() === undefined)) {
-			const reset = this.#clearScrollbackOnNextRender || history?.kind === "replay";
-			let retained = reset ? [] : this.#insetHistoryRows;
-			let retainedOwners = reset ? [] : this.#insetHistoryOwners;
-			// Retained rows have not reached native history: the terminal cannot
-			// reflow our copy. Preserve every column before the writer truncates it,
-			// including on preserve-mode and in-place resizes without ledger replay.
-			if (retained.length > 0 && this.#insetHistoryWidth !== width) {
-				const reflowed: string[] = [];
-				const owners: (object | undefined)[] = [];
-				for (let index = 0; index < retained.length; index++) {
-					const line = retained[index]!;
-					const lineWidth = visibleWidth(line);
-					if (lineWidth <= width || isOsc66Line(line)) {
-						reflowed.push(line);
-						owners.push(retainedOwners[index]);
-						continue;
-					}
-					for (let column = 0; column < lineWidth;) {
-						let slice = sliceWithWidth(line, column, width, true);
-						if (slice.width === 0) slice = sliceWithWidth(line, column, width);
-						reflowed.push(slice.text);
-						owners.push(retainedOwners[index]);
-						column += Math.max(1, slice.width);
-					}
-				}
-				retained = reflowed;
-				retainedOwners = owners;
-			}
-			let end = inset;
-			while (inset > 0 && end < viewport.length && !/\S/.test(viewport[end]!)) end++;
-			const pending = [...retained, ...historyRows];
-			const owners = [...retainedOwners, ...historyRows.map((_, index) => history?.owners?.[index])];
-			const keep = Math.min(end - inset, pending.length);
-			const split = pending.length - keep;
-			this.#insetHistoryRows = pending.slice(split);
-			this.#insetHistoryOwners = owners.slice(split);
-			this.#insetHistoryTop = end - keep;
-			this.#insetHistoryWidth = width;
-			historyRows = pending.slice(0, split);
-			emittedHistoryOwners = owners.slice(0, split);
-			if (keep > 0) viewport = [...viewport.slice(0, end - keep), ...this.#insetHistoryRows, ...viewport.slice(end)];
-		}
 		let replayViewportRows = 0;
 		let replayPrependedBlanks = 0;
-		if (history?.kind === "replay" && !insetHistory) {
+		if (history?.kind === "replay") {
 			// Only make room for real history. Filling the rest of a short frame
 			// with synthetic rows retains the expanded height after a collapse.
 			replayPrependedBlanks = Math.min(historyRows.length, Math.max(0, height - viewport.length));
@@ -3774,10 +3692,8 @@ export class TUI extends Container {
 		}
 		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
 			for (const id of this.#imageBudget.takePurgeIds()) buffer += encodeKittyDeleteImage(id);
-			for (const id of this.#imageBudget.takeScreenPurgeIds()) buffer += encodeKittyDeleteImage(id);
 		} else {
 			this.#imageBudget.takePurgeIds();
-			this.#imageBudget.takeScreenPurgeIds();
 		}
 		// ED2 MUST precede ED3: tmux implements ED2 by scrolling the live screen
 		// into pane history (so cleared content stays reachable), so erasing
@@ -3874,11 +3790,7 @@ export class TUI extends Container {
 			if (newTop + rows < height) buffer += `\x1b[${newTop + rows + 1};1H\x1b[J`;
 		}
 		const mutableTop = newTop + replayViewportRows;
-		if (insetHistory) {
-			if (historyRows.length > 0) {
-				this.#recordScreenHistory({ id: 0, rows: historyRows, owners: emittedHistoryOwners }, height);
-			}
-		} else if (history !== undefined) {
+		if (history !== undefined) {
 			this.#recordScreenHistory(history, height);
 		}
 		const mutablePreparedLines = replayViewportRows > 0 ? prepared.lines.slice(replayViewportRows) : prepared.lines;
@@ -4625,14 +4537,12 @@ export class TUI extends Container {
 	/**
 	 * Compose and paint a single fullscreen overlay frame on the alt buffer.
 	 * Cursor markers are stripped (the modal draws its own in-band caret and
-	 * keeps the hardware cursor hidden). Fixed top chrome and the modal paint
-	 * over a blank base; the transcript is never touched while this buffer is up.
+	 * keeps the hardware cursor hidden). The modal paints over a blank base;
+	 * the transcript is never touched while this buffer is up.
 	 */
 	#renderAltFrame(width: number, height: number): void {
 		// oxlint-disable-next-line unicorn/no-new-array -- alt-frame length preallocation
 		const base: string[] = new Array(Math.max(0, height)).fill("");
-		const top = this.#frameProvider?.renderViewportTop?.({ columns: width, rows: height }) ?? [];
-		for (let row = 0; row < Math.min(top.length, base.length); row++) base[row] = top[row]!;
 		let lines: string[];
 		do {
 			this.#imageBudget.beginPass(false, true);

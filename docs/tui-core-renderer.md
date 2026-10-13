@@ -77,38 +77,29 @@ history remainder, prepares `remainder || finalViewport`, and performs one
 synchronous `terminal.write`. No block-at-a-time replay frames are observable.
 Ordinary renders never audit or rewrite terminal history.
 
-### Reserved top chrome (personal fork)
+### Companion watermark (personal fork)
 
-`ComposerOptions.ravensLogo` opts the personal interactive application into a
-tiny corner image. On supported terminals the composer reserves one row,
-renders the body against the remaining height, and returns a full-height
-viewport. Hit-test spans include the header and body padding. The logo is never
-a history batch. Unsupported terminals use the ordinary layout with no inset.
+`ComposerOptions.watermark` opts the personal interactive application into a
+Kitty-owned background watermark. It reserves no terminal rows or modal insets,
+allocates no graphics IDs, and never enters transcript history. The companion
+draws the clipped silver Ravens emblem behind text; the TUI does not carry an
+image asset or fall back to inline graphics on unsupported terminals.
 
-`TerminalFrameProvider.getViewportTopInset()` reports reserved rows to modal
-layout and replay placement. With an inset, the writer retains replayed history
-in the blank space below the header, immediately above the live body. These rows
-remain visible across diff paints, keep their original owners for clicks, and
-enter native scrollback exactly once when displaced. A reset replaces this
-retained suffix from the replay ledger; it must not append the old suffix again.
-Retained physical rows reflow when the width changes without a ledger replay.
-At shutdown the composer removes fixed chrome and padding; the final flush
-commits retained rows ahead of the compact body, including when a modal is open.
+Direct terminals receive `OSC 1337;SetUserVar=omp_watermark_instance=<base64> BEL`,
+where the decoded identity is `PID-UUID`. An empty value clears the watermark.
+The start listener runs even for deferred-input prepaint; transferring the
+composer to InteractiveMode retains its ownership without another write.
+Terminal stop (including suspend or launching an external editor) clears it;
+resume republishes the same identity. Rendering, resize, replay, and modal
+transitions emit no watermark traffic.
 
-On the modal alternate screen, `renderViewportTop()` paints only fixed chrome,
-without advancing the transcript. Height-aware panels receive the remaining row
-budget as `Component.render(width, availableRows)`; full-screen mouse coordinates
-are translated back to panel-local rows. New presses and wheel events on the
-logo are ignored; motion and releases clamp to the panel's first row so a drag
-started inside the panel can finish over the header.
-
-The official NFL Ravens artwork is bundled as a transparent, antialiased PNG
-and displayed with Kitty Unicode placeholders, at most four columns by one row.
-It uses a stable graphics ID but no chat-image budget slot. Cached rows contain
-their transmission so replay and fresh alternate buffers remain self-contained;
-shutdown deletes only the logo's image. Terminals without Kitty placeholders
-hide it rather than displaying block art or a text fallback. A one-row terminal
-prioritizes the input. This is terminal chrome, not a new TSP surface region.
+Inside tmux, OMP instead sets the pane option `@omp-watermark-owner` to that
+identity and invokes `python3 ~/.config/tmux/omp-watermark.py refresh
+#{q:session_id}` through `run-shell -b`. Cleanup atomically checks ownership
+before unsetting the option and refreshing. The companion selects the active
+OMP pane and draws one watermark per Kitty window, hiding it when the active
+pane is not OMP. Other multiplexers omit the signal. Native scrolling, clicks,
+pointer handling, and fullscreen mouse coordinates are independent of the mark.
 
 Visible overlays are screen-coordinate content. They composite over the
 viewport and never become history. Showing, updating, or closing an overlay
@@ -137,6 +128,12 @@ rebuild resize policies each prepare one complete bottom-first replay
 transaction; preserve prepares none. Replay consumes one fresh monotonic history
 id without rewinding logical retirement state, and acknowledgement happens only
 after the synchronous write returns.
+
+Direct Kitty height growth also rebuilds in `rebuild` mode: Kitty does not pull
+older scrollback back into newly exposed rows. Other terminals and multiplexers
+retain their non-destructive height-growth path. Starting a transcript replay
+releases any input-bottom pin left by an inline panel, so real restored history
+fills the viewport instead of being covered by synthetic top padding.
 
 In-place resize (Warp by default outside multiplexers/ConPTY, or forced with
 `PI_TUI_RESIZE_IN_PLACE=1`) skips resize replay entirely and repaints once the

@@ -25,8 +25,7 @@ import { postmortem } from "@oh-my-pi/pi-utils";
 import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
-import { RavensLogo } from "../chrome/ravens-logo";
-import type { RavensHeaderTransport } from "../chrome/ravens-header";
+import { resolveOmpWatermark, type OmpWatermark } from "../omp-watermark";
 import { WelcomeComponent } from "./welcome";
 import { ensureThemeSync, getEditorTheme } from "../theme/theme";
 
@@ -86,8 +85,8 @@ export interface ComposerOptions {
 	readonly tuiOptions?: TUIOptions;
 	readonly preferences?: Partial<ComposerPreferences>;
 	readonly welcome?: ComposerWelcomeUpdate;
-	/** Personal-fork decoration, outside the transcript and native history. */
-	readonly ravensLogo?: boolean | { header?: RavensHeaderTransport | null };
+	/** Signal the companion Kitty background watermark while this TUI owns the terminal. */
+	readonly watermark?: boolean;
 	readonly status?: ComposerStatusCache;
 	readonly exit?: (code: number) => void;
 	readonly now?: () => number;
@@ -319,8 +318,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#nativeSurface: NativeSurface = { main: [], dock: [] };
 	#started = false;
 	#stopped = false;
-	readonly #ravensLogo: RavensLogo | undefined;
-	#logoRows = 0;
+	readonly #watermark: OmpWatermark | undefined;
 	#transferred = false;
 	#statusPadding: TmuxStatusPadding | undefined;
 	#statusPaddingBackground: string | undefined;
@@ -343,15 +341,10 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#preferences.showHardwareCursor,
 			options.tuiOptions,
 		);
-		this.#ravensLogo = options.ravensLogo
-			? new RavensLogo(this.ui.imageBudget, {
-					header: typeof options.ravensLogo === "object" ? options.ravensLogo.header : undefined,
-					onChange: () => this.ui.requestRender(),
-					emit: bytes => this.ui.terminal.write(bytes),
-				})
-			: undefined;
+		this.#watermark = options.watermark ? resolveOmpWatermark(bytes => this.ui.terminal.write(bytes)) : undefined;
 		this.ui.setFrameProvider(this);
 		this.ui.addStartListener(() => {
+			this.#watermark?.start();
 			this.#statusPadding = resolveTmuxStatusPadding();
 			if (!this.#statusPadding) return;
 			this.#unsubscribePaddingBackground = this.ui.terminal.onBackgroundColorChange?.(color => {
@@ -425,11 +418,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#anchorAfterInlineRetirement = true;
 	}
 
-	/** Keep the decoration outside modal bounds as well as transcript bounds. */
-	getViewportTopInset(): number {
-		return this.#logoRows;
-	}
-
 	onTerminalPaint(paint: TuiPaint): void {
 		if (!this.#statusPadding) return;
 		this.#statusPaddingPainted = true;
@@ -445,6 +433,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	/** Also runs when InteractiveMode stops the transferred TUI directly. */
 	onTerminalStop(): void {
+		this.#watermark?.stop();
 		this.#unsubscribePaddingBackground?.();
 		this.#unsubscribePaddingBackground = undefined;
 		this.#statusPadding?.stop();
@@ -454,31 +443,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#statusPaddingPainted = false;
 	}
 
-	renderFrame(viewport: ViewportSize): TerminalFramePlan {
-		const logo = this.renderViewportTop(viewport);
-		if (logo.length === 0) return this.#renderBody(viewport);
-		const body = this.#renderBody({ ...viewport, rows: viewport.rows - logo.length });
-		const padding = Math.max(0, viewport.rows - logo.length - body.viewport.length);
-		const offset = logo.length + padding;
-		this.#lastClickSpans = this.#lastClickSpans.map(span => ({
-			...span,
-			start: span.start + offset,
-			end: span.end + offset,
-		}));
-		return { history: body.history, viewport: [...logo, ...Array<string>(padding).fill(""), ...body.viewport] };
-	}
-
-	renderViewportTop(viewport: ViewportSize): readonly string[] {
-		const logo =
-			this.#started && !this.#stopped && !this.#historyFlush
-				? (this.#ravensLogo?.render(viewport.columns, viewport.rows) ?? [])
-				: [];
-		this.#logoRows = logo.length;
-		return logo;
-	}
-
 	/** Compose the bounded mutable viewport and the next ordered history append. */
-	#renderBody(viewport: ViewportSize): TerminalFramePlan {
+	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
@@ -828,14 +794,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	/** Render the semantic transcript tail while the terminal borrows its resize buffer. */
 	renderResizeFrame(viewport: ViewportSize): readonly string[] {
-		const logo = this.renderViewportTop(viewport);
-		if (logo.length === 0) return this.#renderResizeBody(viewport);
-		const body = this.#renderResizeBody({ ...viewport, rows: viewport.rows - logo.length });
-		const padding = Math.max(0, viewport.rows - logo.length - body.length);
-		return [...logo, ...Array<string>(padding).fill(""), ...body];
-	}
-
-	#renderResizeBody(viewport: ViewportSize): readonly string[] {
 		if (!this.#started || this.#stopped) return [];
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
@@ -868,9 +826,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	/** Forces every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush(): void {
 		this.#historyFlush = true;
-		this.#logoRows = 0;
-		const release = this.#ravensLogo?.release();
-		if (release) this.ui.terminal.write(release);
 		// A pending replay would re-render and re-stream the entire committed
 		// ledger during shutdown; the terminal already holds that history, so
 		// flush emits only genuinely un-retired rows. An already offered batch
@@ -883,6 +838,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	}
 
 	#startHistoryReplay(): void {
+		// Replay makes retired rows available again. A pin that protected an
+		// inline-panel retirement must not pad over the reconstructed history.
+		this.#anchorAfterInlineRetirement = false;
 		this.#headerReplayPending = this.#headerRetired && (this.#retiredHeaderRows?.length ?? 0) > 0;
 		this.#historyReplayRequested = false;
 		for (const child of this.#runtimeChildren) {
@@ -1187,8 +1145,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#welcome?.stopIntro();
 		this.#disposeStartupStatus();
 		this.ui.stop();
-		const release = this.#ravensLogo?.release();
-		if (release) this.ui.terminal.write(release);
 		this.#stopped = true;
 	}
 
@@ -1227,8 +1183,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#welcome?.stopIntro();
 		if (this.#started) {
 			this.ui.stop();
-			const release = this.#ravensLogo?.release();
-			if (release) this.ui.terminal.write(release);
 		}
 		this.#stopped = true;
 		this.#exit(code);

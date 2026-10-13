@@ -102,7 +102,12 @@ export class VirtualTerminal implements Terminal {
 	// long streaming runs O(n²) in committed rows.
 	#historyTextCache: string[] = [];
 
-	constructor(columns = 80, rows = 24, scrollback?: number) {
+	constructor(
+		columns = 80,
+		rows = 24,
+		scrollback?: number,
+		readonly pullHistoryOnGrow = true,
+	) {
 		this.#columns = columns;
 		this.#rows = rows;
 		this.#scrollbackCap = scrollback ?? DEFAULT_SCROLLBACK_LINES;
@@ -445,7 +450,7 @@ export class VirtualTerminal implements Terminal {
 		this.#term.resize(this.#columns, this.#rows);
 		this.#historyTextCache.length = 0; // engine rewraps scrollback on resize
 		const grown = this.#rows - prevRows;
-		if (grown > 0) {
+		if (grown > 0 && this.pullHistoryOnGrow) {
 			// kitty leaves scrolled-out lines in history when the grid grows;
 			// xterm/tmux/ghostty pull them back onto the new blank rows. Emulate
 			// with kitty's SD+ (scroll down filling from scrollback), then move

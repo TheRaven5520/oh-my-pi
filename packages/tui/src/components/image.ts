@@ -170,14 +170,6 @@ export class ImageBudget {
 	 */
 	#resetPurgeIds: number[] = [];
 	/**
-	 * Normal-screen-only deletions for graphics outside the budget (fixed
-	 * chrome) whose stale copies may sit in native history. Kept apart from
-	 * {@link #purgeIds}, which alternate-buffer frames also drain: a `d=I` sent
-	 * there reaches only the alternate store and leaves the normal screen's
-	 * copies visible.
-	 */
-	#screenPurgeIds: number[] = [];
-	/**
 	 * Image ids whose data is believed to be loaded in each screen's store.
 	 * kitty and Ghostty keep the normal and alternate buffers' graphics apart
 	 * and wipe the alternate store on every `?1049h`, so data sent while one
@@ -461,22 +453,6 @@ export class ImageBudget {
 		if (this.#purgeIds.length === 0) return EMPTY_IDS;
 		const ids = this.#purgeIds;
 		this.#purgeIds = [];
-		return ids;
-	}
-
-	/**
-	 * Delete `imageId` from the normal screen on its next paint — every
-	 * placeholder copy, scrollback included. For an id no frame will paint again.
-	 */
-	purgeFromScreen(imageId: number): void {
-		this.#screenPurgeIds.push(imageId);
-	}
-
-	/** Normal-screen deletions queued by {@link purgeFromScreen}; clears the queue. */
-	takeScreenPurgeIds(): readonly number[] {
-		if (this.#screenPurgeIds.length === 0) return EMPTY_IDS;
-		const ids = this.#screenPurgeIds;
-		this.#screenPurgeIds = [];
 		return ids;
 	}
 
