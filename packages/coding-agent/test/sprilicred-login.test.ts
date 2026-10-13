@@ -46,6 +46,7 @@ describe("Sprilicred login", () => {
 					context_window: 1048576,
 					max_output_tokens: 128000,
 					supports_reasoning: true,
+					reasoning_efforts: ["none", "low", "high"],
 					input_modalities: ["text", "image"],
 					pricing: {
 						unit: "microcredits_per_token",
@@ -263,14 +264,27 @@ describe("Sprilicred login", () => {
 		expect(written.providers["sprilicred-muse"]).toBeUndefined();
 		expect(written.providers["sprilicred-glm"]).toBeUndefined();
 		expect(Object.keys(written.providers).at(-1)).toBe("sprilicred-openrouter");
-		// No model list: discovery reads the listing, so the browser always shows the current catalog.
+		// A search in /model, not a discovered list. Its models are the person's, plus the entry
+		// the moved Muse reference needs, built from the listing row; effort `none` is not omp's.
 		expect(written.providers["sprilicred-openrouter"]).toEqual({
 			baseUrl: "https://sprilicred.test/openrouter/v1",
 			apiKey: `!cat '${tokenPath}'`,
 			auth: "apiKey",
 			authHeader: true,
 			api: "openai-responses",
-			discovery: { type: "openai-models-list", injectV1: false },
+			modelSearch: { type: "openai-models-list", param: "search", limit: 25 },
+			models: [
+				{
+					id: "meta/muse-wonder",
+					name: "Meta: Muse Wonder via Sprilicred",
+					contextWindow: 1048576,
+					maxTokens: 128000,
+					reasoning: true,
+					thinking: { mode: "effort", efforts: ["low", "high"] },
+					input: ["text", "image"],
+					cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 0 },
+				},
+			],
 		});
 		expect(written.defaultModel).toBe(`${MUSE}:high`);
 		const state = JSON.parse(await fs.readFile(path.join(root, ".sprilicred/omp-models.json"), "utf8"));
@@ -321,6 +335,133 @@ describe("Sprilicred login", () => {
 		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
 		// Muse Wonder's old entries go; an OpenRouter entry the person put there themselves stays.
 		expect(cfgCycleModels.get(settings)).toEqual(["other/keep", "sprilicred-openai/*", `${MUSE}:high`]);
+	});
+
+	test("rewrites an earlier discovery-shaped OpenRouter provider as the search, keeping the person's keys", async () => {
+		const picked = { id: "openai/gpt-5", name: "Mine" };
+		await fs.writeFile(
+			path.join(agentDir, "models.yml"),
+			JSON.stringify({
+				providers: {
+					"sprilicred-openrouter": {
+						headers: { "X-Mine": "yes" },
+						baseUrl: "https://sprilicred.test/openrouter/v1",
+						discovery: { type: "openai-models-list", injectV1: false },
+					},
+				},
+			}),
+		);
+		const paths = { home: root, agentDir, tokenPath };
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		const modelsPath = path.join(agentDir, "models.yml");
+		const first = JSON.parse(await fs.readFile(modelsPath, "utf8")).providers["sprilicred-openrouter"];
+		expect(Object.keys(first)).toEqual([
+			"headers",
+			"baseUrl",
+			"apiKey",
+			"auth",
+			"authHeader",
+			"api",
+			"modelSearch",
+			"models",
+		]);
+		expect(first.models).toEqual([]);
+
+		// A model picked in the search is the person's: kept as it is, never rebuilt.
+		const written = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		written.providers["sprilicred-openrouter"].models = [picked];
+		written.defaultModel = "sprilicred-openrouter/openai/gpt-5";
+		await fs.writeFile(modelsPath, JSON.stringify(written));
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		expect(JSON.parse(await fs.readFile(modelsPath, "utf8")).providers["sprilicred-openrouter"].models).toEqual([
+			picked,
+		]);
+	});
+
+	test("gives a Muse role moved to OpenRouter its entry, built in when the listing is unknown", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgModelRoles.setEntry(settings, "plan", "sprilicred-muse/muse-wonder:high");
+		await settings.flush();
+		dedicated.openrouter = 503;
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		expect(cfgModelRoles.get(settings).plan).toBe(`${MUSE}:high`);
+		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
+		expect(written.providers["sprilicred-openrouter"].models).toEqual([
+			{
+				id: "meta/muse-wonder",
+				name: "Muse Wonder via Sprilicred",
+				contextWindow: 1048576,
+				maxTokens: 128000,
+				reasoning: true,
+				thinking: { mode: "effort", efforts: ["low", "medium", "high", "xhigh", "max"] },
+				input: ["text", "image"],
+			},
+		]);
+	});
+
+	test("an OpenRouter default gets its entry: bare id when unknown, no thinking for listed null efforts", async () => {
+		await fs.writeFile(
+			path.join(agentDir, "models.yml"),
+			JSON.stringify({ defaultModel: "sprilicred-openrouter/openai/gpt-5:high" }),
+		);
+		const paths = { home: root, agentDir, tokenPath };
+		const modelsPath = path.join(agentDir, "models.yml");
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		dedicated.openrouter = 503;
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		expect(JSON.parse(await fs.readFile(modelsPath, "utf8")).providers["sprilicred-openrouter"].models).toEqual([
+			{ id: "openai/gpt-5", name: "openai/gpt-5 via Sprilicred" },
+		]);
+
+		const written = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		written.providers["sprilicred-openrouter"].models = [];
+		await fs.writeFile(modelsPath, JSON.stringify(written));
+		dedicated.openrouter = [
+			{ id: "meta/muse-wonder" },
+			{
+				id: "openai/gpt-5",
+				display_name: "OpenAI: GPT-5",
+				context_window: 400000,
+				max_output_tokens: 128000,
+				supports_reasoning: true,
+				reasoning_efforts: null,
+			},
+		];
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		expect(JSON.parse(await fs.readFile(modelsPath, "utf8")).providers["sprilicred-openrouter"].models).toEqual([
+			{
+				id: "openai/gpt-5",
+				name: "OpenAI: GPT-5 via Sprilicred",
+				contextWindow: 400000,
+				maxTokens: 128000,
+				reasoning: true,
+			},
+		]);
+	});
+
+	test("withdraws Muse when the OpenRouter listing names models but not Muse Wonder", async () => {
+		await fs.writeFile(
+			path.join(agentDir, "models.yml"),
+			JSON.stringify({ defaultModel: "sprilicred-muse/muse-wonder:high" }),
+		);
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgModelRoles.setEntry(settings, "plan", "muse-wonder");
+		await settings.flush();
+		dedicated.openrouter = [{ id: "openai/gpt-5" }];
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
+		expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5");
+		expect(written.providers["sprilicred-openrouter"].models).toEqual([]);
+		expect(cfgModelRoles.get(settings).plan).toBeUndefined();
+	});
+
+	test("keeps duplicates the person wrote in a list, as the installer does", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgEnabledModels.set(settings, ["mine/*", "mine/*"]);
+		await settings.flush();
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		expect(cfgEnabledModels.get(settings)).toEqual(["mine/*", "mine/*", "sprilicred-openrouter/**"]);
 	});
 
 	test("keeps a listed or unverifiable OpenRouter default, and drops the provider when nothing is listed", async () => {
@@ -694,7 +835,7 @@ describe("Sprilicred login", () => {
 	});
 
 	// Each case is deploy/fixtures/omp-parity/<case> from Sprilicred's installer (deploy/connect.py,
-	// or-installer 3c0f04c), written by install_omp from the same listings and the same
+	// or-installer 922c290), written by install_omp from the same listings and the same
 	// before-files: catalog.json (listing bodies per route), models/config/state.before.json
 	// (migration cases), installer-{models,config,state}.json. `$HOME` is the scratch home and
 	// https://sprilicred.example the server.

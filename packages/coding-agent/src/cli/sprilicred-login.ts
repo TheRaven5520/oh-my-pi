@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import type * as readline from "node:readline";
 import { getAuthBrokerTokenFilePath } from "@oh-my-pi/pi-ai/auth-broker/discover";
 import { getAgentDir, isRecord } from "@oh-my-pi/pi-utils";
@@ -59,7 +60,19 @@ const OPENROUTER_SCOPE = `${OPENROUTER_PROVIDER}/**`;
 // Muse Wonder had its own provider (`sprilicred-muse`, `/muse/v1`); it is now an OpenRouter model.
 const MUSE_PROVIDER = "sprilicred-muse";
 const MUSE_ID = "muse-wonder";
-const MUSE_REF = `${OPENROUTER_PROVIDER}/meta/muse-wonder`;
+const MUSE_OPENROUTER_ID = "meta/muse-wonder";
+const MUSE_REF = `${OPENROUTER_PROVIDER}/${MUSE_OPENROUTER_ID}`;
+// The search /model runs on the OpenRouter provider (`<baseUrl>/models?search=<q>&limit=25`).
+const OPENROUTER_SEARCH = { type: "openai-models-list", param: "search", limit: 25 };
+// Muse Wonder's DEDICATED row in pricing.rs (connect.py MODEL_LIMITS, BUILT_IN_CAPABILITIES,
+// OPENROUTER_EFFORTS), for the entry a moved Muse reference gets when the listing can't be read.
+const MUSE_BUILT_IN = {
+	contextWindow: 1_048_576,
+	maxTokens: 128_000,
+	reasoning: true,
+	efforts: ["low", "medium", "high", "xhigh", "max"],
+	input: ["text", "image"],
+};
 // Providers Sprilicred no longer offers anyone: removed with every reference to them.
 const RETIRED_PROVIDERS = ["sprilicred-glm", MUSE_PROVIDER];
 // Retired models once listed under sprilicred-openai (GLM 5.3 Abliterated, Muse Wonder).
@@ -141,8 +154,13 @@ type Migration = {
 	moved: Map<string, string>;
 	/** Providers removed this login; references to them are removed too. */
 	withdrawn: Set<string>;
-	/** Muse Wonder moves to OpenRouter, only in a login that writes the OpenRouter provider. */
+	/**
+	 * Muse Wonder moves to OpenRouter, only in a login that writes the OpenRouter provider and
+	 * whose OpenRouter listing (when known) still names it.
+	 */
 	muse: boolean;
+	/** Set when a setting's Muse reference moved to OpenRouter: the provider then needs its entry. */
+	museMoved: boolean;
 };
 
 type WrittenModels = {
@@ -156,6 +174,9 @@ type WrittenModels = {
 	migration: Migration;
 	/** Dedicated and OpenRouter providers this login wrote that models.yml did not hold before. */
 	added: string[];
+	/** models.yml as written, rewritten once more when a setting's Muse reference needs its entry. */
+	document: Record<string, any>;
+	modelsPath: string;
 };
 
 export type SprilicredLoginPaths = { home: string; agentDir: string; tokenPath: string };
@@ -310,16 +331,9 @@ function modelFields(model: CatalogModel, family: "anthropic" | "openai"): Recor
 	if (Array.isArray(model.input_modalities) && model.input_modalities.includes("text")) {
 		fields.input = model.input_modalities.includes("image") ? ["text", "image"] : ["text"];
 	}
+	const cost = listedCost(model.pricing);
+	if (cost) fields.cost = cost;
 	const pricing = model.pricing;
-	if (pricing?.unit === "microcredits_per_token") {
-		const cost = {
-			input: perMillion(pricing.input),
-			output: perMillion(pricing.output),
-			cacheRead: perMillion(pricing.cache_read ?? 0),
-			cacheWrite: perMillion(pricing.cache_write ?? pricing.cache_write_5m ?? 0),
-		};
-		if (Object.values(cost).every(value => value !== undefined)) fields.cost = cost;
-	}
 	if (family === "anthropic" && pricing?.fast_mode !== null && typeof pricing?.fast_mode === "object") {
 		fields.compat = { supportsFastMode: true };
 	}
@@ -327,6 +341,62 @@ function modelFields(model: CatalogModel, family: "anthropic" | "openai"): Recor
 		fields.compat = { reasoningDisableMode: "none-effort" };
 	}
 	return fields;
+}
+
+/** A listing's price as omp's cost ($/MTok), or undefined when any part is missing. */
+function listedCost(pricing: Record<string, unknown> | undefined): Record<string, number> | undefined {
+	if (pricing?.unit !== "microcredits_per_token") return undefined;
+	const cost = {
+		input: perMillion(pricing.input),
+		output: perMillion(pricing.output),
+		cacheRead: perMillion(pricing.cache_read || 0),
+		cacheWrite: perMillion(pricing.cache_write || pricing.cache_write_5m || 0),
+	};
+	return Object.values(cost).every(value => value !== undefined) ? (cost as Record<string, number>) : undefined;
+}
+
+/**
+ * The sprilicred-openrouter entry for `id` (connect.py add_omp_openrouter_entry/model_fields): from
+ * its listing row, else Muse Wonder's built-in one, else just its id. Effort stays selectable only
+ * with `thinking`: the listed levels omp knows, in omp's order (`none` is not one).
+ */
+function openRouterEntry(listing: CatalogModel[] | null, id: string): ModelConfig {
+	const row: CatalogModel | undefined = listing?.find(model => model.id === id);
+	const builtIn = id === MUSE_OPENROUTER_ID ? MUSE_BUILT_IN : undefined;
+	const listedName = row?.display_name?.trim() && row.display_name !== id ? row.display_name : undefined;
+	const entry: ModelConfig = { id, name: `${listedName ?? (builtIn ? "Muse Wonder" : id)} via Sprilicred` };
+	const window = row?.context_window ?? row?.context_length;
+	const output = row?.max_output_tokens;
+	if (Number.isInteger(window) && Number.isInteger(output) && window! > 0 && output! > 0) {
+		entry.contextWindow = window;
+		entry.maxTokens = output;
+	} else if (builtIn) {
+		entry.contextWindow = builtIn.contextWindow;
+		entry.maxTokens = builtIn.maxTokens;
+	}
+	if (typeof row?.supports_reasoning === "boolean") entry.reasoning = row.supports_reasoning;
+	else if (builtIn) entry.reasoning = builtIn.reasoning;
+	if (entry.reasoning === true) {
+		// A listed key wins, even null; the built-in ladder only when the row does not say.
+		const listed = row && "reasoning_efforts" in row ? row.reasoning_efforts : builtIn?.efforts;
+		const efforts = THINKING_EFFORTS.filter(effort => Array.isArray(listed) && listed.includes(effort));
+		if (efforts.length > 0) entry.thinking = { mode: "effort", efforts };
+	}
+	const modalities = row?.input_modalities;
+	if (Array.isArray(modalities) && modalities.includes("text")) {
+		entry.input = modalities.includes("image") ? ["text", "image"] : ["text"];
+	} else if (builtIn) entry.input = builtIn.input;
+	const cost = listedCost(row?.pricing);
+	if (cost) entry.cost = cost;
+	return entry;
+}
+
+/** Adds `id`'s entry to sprilicred-openrouter's models unless the person already has one. */
+function addOpenRouterEntry(providers: Record<string, any>, listing: CatalogModel[] | null, id: string): boolean {
+	const models: unknown[] = providers[OPENROUTER_PROVIDER].models;
+	if (models.some(entry => isRecord(entry) && entry.id === id)) return false;
+	models.push(openRouterEntry(listing, id));
+	return true;
 }
 
 /** connect.py's ownership rule: a field is ours to move only while it still holds what we wrote. */
@@ -348,6 +418,7 @@ const MANAGED_PROVIDER_KEYS: Record<string, true> = {
 	authHeader: true,
 	api: true,
 	discovery: true,
+	modelSearch: true,
 	models: true,
 };
 
@@ -477,8 +548,9 @@ async function writeModels(
 		};
 		byProvider[provider] = entries.map(entry => entry.id);
 	}
-	// The OpenRouter provider carries no model list of ours: discovery reads the listing.
-	// Not offered to this key: removed with its references. Not reachable: written anyway.
+	// The OpenRouter provider is a search in /model: its models are the ones the person picked
+	// there, plus the entries a moved reference needs. Not offered to this key: removed with its
+	// references. Not reachable: written anyway.
 	const offersOpenRouter = openrouter === null || openrouter.length > 0;
 	if (offersOpenRouter) {
 		const before = original[OPENROUTER_PROVIDER];
@@ -489,9 +561,8 @@ async function writeModels(
 			auth: "apiKey",
 			authHeader: true,
 			api: "openai-responses",
-			discovery: OPENAI_DISCOVERY,
-			// Models the person listed there themselves stay; the login lists none.
-			...(Array.isArray(before?.models) ? { models: before.models } : {}),
+			modelSearch: OPENROUTER_SEARCH,
+			models: Array.isArray(before?.models) ? before.models : [],
 		};
 	} else withdrawn.add(OPENROUTER_PROVIDER);
 	// Withdrawn providers go even when the person added models under them, and so do the
@@ -506,7 +577,9 @@ async function writeModels(
 			delete state[key];
 		}
 	}
-	const migration: Migration = { moved, withdrawn, muse: offersOpenRouter };
+	// A listing that names models but not Muse Wonder: Muse is not offered, so its references go.
+	const museListed = !openrouter?.length || openrouter.some(model => model.id === MUSE_OPENROUTER_ID);
+	const migration: Migration = { moved, withdrawn, muse: offersOpenRouter && museListed, museMoved: false };
 
 	existing.providers = providers;
 	const anthropicIds = byProvider["sprilicred-anthropic"];
@@ -533,6 +606,14 @@ async function writeModels(
 		existing.defaultModel = fallbackDefault;
 		replacedDefault = previousDefault;
 	} else existing.defaultModel = currentDefault;
+	// An OpenRouter default (moved from Muse, or the person's) needs its entry.
+	if (existing.defaultModel.startsWith(`${OPENROUTER_PROVIDER}/`) && OPENROUTER_PROVIDER in providers) {
+		addOpenRouterEntry(
+			providers,
+			openrouter,
+			existing.defaultModel.slice(OPENROUTER_PROVIDER.length + 1).split(":")[0],
+		);
+	}
 	await privateWrite(modelsPath, `${JSON.stringify(existing, null, 2)}\n`);
 	await privateWrite(statePath, `${JSON.stringify(state, null, 2)}\n`);
 	const added = [
@@ -546,6 +627,8 @@ async function writeModels(
 		deepseek: DEEPSEEK_PROVIDER in providers,
 		migration,
 		added,
+		document: existing,
+		modelsPath,
 	};
 }
 
@@ -574,9 +657,17 @@ function addScopes(list: string[], added: string[], providerOnly: boolean, cycle
 	return [...list.slice(0, index), ...additions, ...list.slice(index)];
 }
 
+/** {@link migrateRef} for a setting's reference; notes when it moved a Muse reference to OpenRouter. */
+function migrateSettingRef(ref: string, migration: Migration, cycle = false): string | undefined {
+	const migrated = migrateRef(ref, migration, cycle);
+	if (migrated !== ref && migrated?.startsWith(MUSE_REF)) migration.museMoved = true;
+	return migrated;
+}
+
 /**
- * Moves a scoped list's references to where their models live now ({@link migrateRef}).
- * Duplicates keep the first. Dropped references are recorded in `removed` as `setting=value`.
+ * Moves a scoped list's references to where their models live now ({@link migrateRef}). A moved
+ * reference already in the list is not repeated; duplicates the person wrote stay, as the
+ * installer leaves them. Dropped references are recorded in `removed` as `setting=value`.
  */
 function migrateScopes(
 	setting: string,
@@ -587,9 +678,9 @@ function migrateScopes(
 ): string[] {
 	const next: string[] = [];
 	for (const item of list) {
-		const migrated = migrateRef(item, migration, cycle);
+		const migrated = migrateSettingRef(item, migration, cycle);
 		if (migrated === undefined) removed.push(`${setting}=${item}`);
-		else if (!next.includes(migrated)) next.push(migrated);
+		else if (migrated === item || !next.includes(migrated)) next.push(migrated);
 	}
 	return next;
 }
@@ -609,7 +700,7 @@ function migrateChains(
 	const next: Record<string, string[]> = {};
 	const movedKeys: [string, string[]][] = [];
 	for (const [key, chain] of Object.entries(chains)) {
-		const migratedKey = migrateRef(key, migration);
+		const migratedKey = migrateSettingRef(key, migration);
 		const migrated = migrateScopes(`${setting}.${key}`, chain, migration, removed);
 		if (migratedKey !== key || !Bun.deepEquals(migrated, chain)) changed = true;
 		if (migratedKey === undefined) removed.push(`${setting}=${key}`);
@@ -635,7 +726,7 @@ function migratePresets(settings: Settings, migration: Migration, removed: strin
 		const nextRoles: Record<string, unknown> = {};
 		let changed = false;
 		for (const [role, value] of Object.entries(preset.modelRoles)) {
-			const migrated = typeof value === "string" ? migrateRef(value, migration) : value;
+			const migrated = typeof value === "string" ? migrateSettingRef(value, migration) : value;
 			if (migrated !== value) changed = true;
 			if (migrated === undefined) removed.push(`modelPresets.${name}.modelRoles.${role}=${value}`);
 			else nextRoles[role] = migrated;
@@ -743,7 +834,7 @@ async function writeOwnedSettings(
 	const nextRoles: Record<string, string> = {};
 	let changed = false;
 	for (const [role, value] of Object.entries(currentRoles)) {
-		const migrated = migrateRef(value, migration);
+		const migrated = migrateSettingRef(value, migration);
 		if (migrated !== value) changed = true;
 		if (migrated !== undefined) nextRoles[role] = migrated;
 		else if (rolesState.roles?.[role] !== value) removed.push(`modelRoles.${role}=${value}`);
@@ -786,8 +877,17 @@ export async function runSprilicredLogin(
 	await prepareBroker(settings, key, paths);
 	const models = await writeModels(catalogs, openrouter, paths);
 	const removed = await writeOwnedSettings(settings, models, paths);
+	// Roles, chains or presets on Muse now name the OpenRouter model: give it its entry.
+	const { providers } = models.document;
+	if (
+		models.migration.museMoved &&
+		OPENROUTER_PROVIDER in providers &&
+		addOpenRouterEntry(providers, openrouter, MUSE_OPENROUTER_ID)
+	) {
+		await privateWrite(models.modelsPath, `${JSON.stringify(models.document, null, 2)}\n`);
+	}
 	const count = Object.values(models.byProvider).reduce((total, ids) => total + ids.length, 0);
-	const browse = openrouter?.length ? `; ${openrouter.length} OpenRouter models are in /model` : "";
+	const browse = openrouter?.length ? "; search OpenRouter models in /model" : "";
 	process.stdout.write(`\nLogged in to Sprilicred; configured ${count} models${browse}\n`);
 	if (models.replacedDefault) {
 		process.stdout.write(

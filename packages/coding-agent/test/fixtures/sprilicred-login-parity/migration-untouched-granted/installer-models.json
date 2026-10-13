@@ -222,10 +222,12 @@
       "auth": "apiKey",
       "authHeader": true,
       "api": "openai-responses",
-      "discovery": {
+      "modelSearch": {
         "type": "openai-models-list",
-        "injectV1": false
-      }
+        "param": "search",
+        "limit": 25
+      },
+      "models": []
     }
   },
   "defaultModel": "sprilicred-anthropic/claude-sonnet-5"
