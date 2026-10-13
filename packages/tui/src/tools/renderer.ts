@@ -55,6 +55,8 @@ export interface ToolActivitySummary {
 	detail?: string;
 	/** Small result fact kept visible even when the target is long. */
 	meta?: string;
+	/** Structured preview rows, ordered by importance; errors always take precedence. */
+	preview?: readonly string[];
 	/** Renderer-recognized failure; displayed instead of an output preview or receipt. */
 	error?: string;
 	/** Receipts need no output preview once their result is represented in the head. */

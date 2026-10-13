@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
+import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
 import { formatArtifactErrorNotice, type TruncationMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 
@@ -19,6 +19,13 @@ const factories = {
 	eval: () => new EvalExecutionComponent("print('sample')", ui),
 };
 
+function previewText(rows: readonly string[]): string[] {
+	return rows.map((row, index) => {
+		const text = row.trimStart();
+		return index === 0 && text.startsWith(theme.tree.last) ? text.slice(theme.tree.last.length).trimStart() : text;
+	});
+}
+
 for (const [name, create] of Object.entries(factories)) {
 	describe(`${name} compact execution receipts`, () => {
 		it("puts singular counts inline and previews actual output", () => {
@@ -28,7 +35,7 @@ for (const [name, create] of Object.entries(factories)) {
 			expect(rows).toHaveLength(2);
 			expect(rows[0]).toContain("done · 1 line");
 			expect(rows[0]).not.toContain("1 lines");
-			expect(rows[1]).toBe("  └ only result");
+			expect(previewText(rows.slice(1))).toEqual(["only result"]);
 		});
 
 		it("keeps empty output header-only without a zero-line receipt", () => {
@@ -46,7 +53,7 @@ for (const [name, create] of Object.entries(factories)) {
 			const rows = component.render(100).map(row => Bun.stripANSI(row));
 			expect(rows).toHaveLength(4);
 			expect(rows[0]).toContain("5 lines");
-			expect(rows.slice(1)).toEqual(["  └ first", "    second", "    third"]);
+			expect(previewText(rows.slice(1))).toEqual(["first", "second", "third"]);
 			expect(component.toggleClickExpansion()).toBe(true);
 			expect(Bun.stripANSI(component.render(100).join("\n"))).toContain("fifth");
 			component.setExpanded(false);
@@ -62,7 +69,7 @@ for (const [name, create] of Object.entries(factories)) {
 				component.appendOutput("first\nsecond\nthird\nfourth\nfifth");
 				const rows = component.render(100).map(row => Bun.stripANSI(row));
 				expect(rows[0]).toContain("running · 5 lines");
-				expect(rows.slice(1)).toEqual(["  └ third", "    fourth", "    fifth"]);
+				expect(previewText(rows.slice(1))).toEqual(["third", "fourth", "fifth"]);
 			} finally {
 				component.setComplete(0, false);
 			}
@@ -75,7 +82,7 @@ for (const [name, create] of Object.entries(factories)) {
 			});
 			const rows = component.render(100).map(row => Bun.stripANSI(row));
 			expect(rows[0]).toContain("exit 2 · 5 lines");
-			expect(rows.slice(1)).toEqual(["  └ trace frame", "    source line", "    ValueError: invalid"]);
+			expect(previewText(rows.slice(1))).toEqual(["trace frame", "source line", "ValueError: invalid"]);
 		});
 
 		it("shows output-free failures and cancellation on the header", () => {

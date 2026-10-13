@@ -8,7 +8,7 @@ import { Text } from "../components/text";
 import { getImageDimensions, ImageProtocol, imageFallback, TERMINAL } from "../terminal-capabilities";
 import { type Component, Container, type TUI } from "../tui";
 import { truncateToWidth } from "../utils";
-import { expandedToolRows } from "../render/utils";
+import { compactOutputIndent, expandedToolRows } from "../render/utils";
 import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../theme/theme";
 import { ensureThemeSync, getThemeEpoch, theme } from "../theme/theme";
@@ -314,8 +314,6 @@ const COMPACT_HEAD_ROWS = 3;
 const COMPACT_PREVIEW_ROWS = 3;
 /** Head continuation column when the target's own column leaves too little room. */
 const COMPACT_FALLBACK_INDENT = 4;
-const COMPACT_OUTPUT_LEAD = "  └ ";
-const COMPACT_OUTPUT_INDENT = "    ";
 /** Below this many target columns a wrapped target reads worse than a cut one. */
 const COMPACT_MIN_WRAP_WIDTH = 12;
 /**
@@ -403,13 +401,14 @@ function compactPreviewRows(
 	color: "error" | "toolOutput",
 ): string[] {
 	if (maxRows <= 0 || count === 0) return [];
+	const indent = compactOutputIndent(theme);
 	const style = (line: string) => theme.fg(color, replaceTabs(line).trimEnd());
 	const rows: string[] = [];
 	if (count <= maxRows) {
 		for (const line of lines.slice(0, count)) rows.push(style(line));
 	} else if (maxRows === 1) {
 		const marker = theme.fg("dim", ` ${formatMoreItems(count - 1, "line")}`);
-		const room = Math.max(0, width - COMPACT_OUTPUT_LEAD.length - visibleWidth(marker));
+		const room = Math.max(0, width - indent.width - visibleWidth(marker));
 		rows.push(`${truncateToWidth(style(fromTail ? lines.at(-1)! : lines[0]!), room)}${marker}`);
 	} else {
 		const shown = maxRows - 1;
@@ -428,9 +427,7 @@ function compactPreviewRows(
 			rows.push(markerRow);
 		}
 	}
-	return rows.map((row, index) =>
-		truncateToWidth(`${index === 0 ? COMPACT_OUTPUT_LEAD : COMPACT_OUTPUT_INDENT}${row}`, width),
-	);
+	return rows.map((row, index) => truncateToWidth(`${index === 0 ? indent.lead : indent.continuation}${row}`, width));
 }
 
 /**
@@ -1511,10 +1508,11 @@ export class ToolExecutionComponent extends Container {
 					.filter(line => line.trim())
 			: undefined;
 		const failed = errorLines !== undefined || this.#result?.isError === true;
-		const fromTail = errorLines === undefined && (failed || this.#isRunning());
+		const semanticPreview = failed ? undefined : summary.preview;
+		const fromTail = semanticPreview === undefined && errorLines === undefined && (failed || this.#isRunning());
 		const previewed = failed || fromTail || !summary.receipt || customHeader !== undefined;
-		const previewLines = errorLines ?? (fromTail ? output.tail : output.head);
-		const previewCount = errorLines?.length ?? (previewed ? output.count : 0);
+		const previewLines = errorLines ?? semanticPreview ?? (fromTail ? output.tail : output.head);
+		const previewCount = errorLines?.length ?? semanticPreview?.length ?? (previewed ? output.count : 0);
 		const wantedPreview = Math.min(previewCount, COMPACT_PREVIEW_ROWS);
 		// Priority under a squeeze: the head's first row, one output row, the
 		// head's continuation rows, then the rest of the preview. The allocator

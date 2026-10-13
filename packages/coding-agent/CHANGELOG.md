@@ -6,6 +6,7 @@
 
 ### Added
 
+- Learn results retain structured memory storage and optional skill outcomes, including partial failures after a lesson was stored or queued. Dedicated cards show the lesson preview without a JSON argument wall; full context and skill content remain available on expansion.
 - Bash uses structured display actions for simple Git, test and build commands. Its optional `title` accepts a small action ID or concise custom override; commands remain exact on expansion and execution/approval are unchanged. Tool headers retain tool-specific facts, shell styling and actionable outcomes without requiring extra model fields for structured tools.
 - Compact agent dock rows show the actual resolved model and thinking level, including fallback routing, without requiring expansion. Unresolved roles are not presented as actual model identities.
 - Agent dock rows now show active, waiting or inactive state with elapsed time in that phase. Explicit waits and questions are distinct from quiet active work; idle forks retain their inactivity clock. Timers survive metadata refreshes, and native dock counts use the same states.

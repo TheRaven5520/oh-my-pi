@@ -1,16 +1,18 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import type { LearnDetails } from "@oh-my-pi/pi-tui/tools/learn";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skills";
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
+import { cfgHindsightScoping } from "../hindsight/settings";
 import { localBackend } from "../memory-backend/local-backend";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
 import type { ToolSession } from ".";
 
 import { cfgAutolearnEnabled } from "../autolearn/settings";
 import { cfgMemoryBackend } from "../memory-backend/settings";
-import { isGlobalMemoryScopeAvailable } from "../mnemopi/settings";
+import { cfgMnemopiScoping, isGlobalMemoryScopeAvailable } from "../mnemopi/settings";
 
 const learnSkillSchema = type({
 	action: "'create' | 'update'",
@@ -76,13 +78,23 @@ export class LearnTool implements AgentTool<LearnSchema> {
 		return new LearnTool(session);
 	}
 
-	async execute(_id: string, params: LearnParams): Promise<AgentToolResult> {
+	async execute(_id: string, params: LearnParams): Promise<AgentToolResult<LearnDetails>> {
 		// 1) Persist or queue the lesson to long-term memory (mirrors MemoryRetainTool).
 		const backend = cfgMemoryBackend.get(this.session.settings);
 		if (params.scope === "global" && backend !== "mnemopi") {
 			throw new Error("Global memory scope is only available with the Mnemopi backend.");
 		}
 		let memoryMessage = "Lesson stored";
+		const memory: LearnDetails["memory"] = {
+			status: "stored",
+			backend: backend === "local" || backend === "mnemopi" ? backend : "hindsight",
+			scope:
+				params.scope === "global" ||
+				(backend === "mnemopi" && cfgMnemopiScoping.get(this.session.settings) === "global") ||
+				(backend === "hindsight" && cfgHindsightScoping.get(this.session.settings) === "global")
+					? "global"
+					: "project",
+		};
 		if (backend === "mnemopi") {
 			const state = this.session.getMnemopiSessionState?.();
 			if (!state) {
@@ -132,6 +144,7 @@ export class LearnTool implements AgentTool<LearnSchema> {
 			}
 			state.enqueueRetain(params.memory, params.context);
 			memoryMessage = "Lesson queued for retention";
+			memory.status = "queued";
 		}
 
 		// 2) Optionally mint/enhance a managed skill. A failure here is surfaced
@@ -156,25 +169,60 @@ export class LearnTool implements AgentTool<LearnSchema> {
 						},
 					],
 					isError: true,
-					details: { skill: null, shadowed: true },
+					details: {
+						skill: null,
+						shadowed: true,
+						memory,
+						skillOperation: {
+							action: params.skill.action,
+							name: params.skill.name,
+							outcome: "failed",
+							error: "An authored skill of that name already exists; managed skills cannot override it.",
+						},
+					},
 				};
 			}
+			let skillPath: string;
 			try {
-				await writeManagedSkill(params.skill);
+				({ path: skillPath } = await writeManagedSkill(params.skill));
 			} catch (err) {
 				const reason = err instanceof Error ? err.message : String(err);
-				throw new Error(`${memoryMessage}, but the managed skill could not be written: ${reason}`);
+				return {
+					content: [
+						{ type: "text", text: `${memoryMessage}, but the managed skill could not be written: ${reason}` },
+					],
+					isError: true,
+					details: {
+						skill: null,
+						memory,
+						skillOperation: {
+							action: params.skill.action,
+							name: params.skill.name,
+							outcome: "failed",
+							error: reason,
+						},
+					},
+				};
 			}
 			const verb = params.skill.action === "create" ? "Created" : "Updated";
 			return {
 				content: [{ type: "text", text: `${memoryMessage}. ${verb} managed skill "${params.skill.name}".` }],
-				details: { skill: params.skill.name },
+				details: {
+					skill: params.skill.name,
+					memory,
+					skillOperation: {
+						action: params.skill.action,
+						name: safeSkillName!,
+						outcome: params.skill.action === "create" ? "created" : "updated",
+						path: skillPath,
+					},
+				},
 			};
 		}
 
 		return {
 			content: [{ type: "text", text: `${memoryMessage}.` }],
-			details: { skill: null },
+			details: { skill: null, memory },
 		};
 	}
 }

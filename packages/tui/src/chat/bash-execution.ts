@@ -15,7 +15,7 @@ import type { OutputArtifactError } from "../tools/streaming-output";
 import type { TruncationMeta } from "../tools/output-meta";
 import { resolveImageOptions } from "../render/render-utils";
 import { OutputPane } from "../render/output-pane";
-import { expandedToolRows } from "../render/utils";
+import { compactOutputIndent, expandedToolRows } from "../render/utils";
 import { TranscriptMarkerText, transcriptContent } from "./transcript-content";
 import { truncateToWidth, visibleWidth } from "../utils";
 import { loadXtermTerminal, readTerminalRows, styleTerminalRow } from "../tools/terminal-output";
@@ -410,10 +410,14 @@ export class BashExecutionComponent extends Container {
 			const headerWidth = Math.max(0, width - visibleWidth(suffix));
 			if (visibleWidth(header) > headerWidth) this.#hadExpandableContent = true;
 			const preview = this.#status === "complete" ? visible.slice(0, 3) : visible.slice(-3);
+			const indent = compactOutputIndent(theme);
 			const rows = [
 				truncateToWidth(`${truncateToWidth(header, headerWidth)}${suffix}`, width),
 				...preview.map((line, index) =>
-					truncateToWidth(`${index === 0 ? "  └ " : "    "}${this.#styleDisplayLine(line)}`, width),
+					truncateToWidth(
+						`${index === 0 ? indent.lead : indent.continuation}${this.#styleDisplayLine(line)}`,
+						width,
+					),
 				),
 			];
 			const notices = buildStatusFooter({

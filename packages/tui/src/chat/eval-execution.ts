@@ -11,7 +11,7 @@ import { highlightCode, theme } from "../theme/theme";
 import type { OutputArtifactError } from "../tools/streaming-output";
 import type { TruncationMeta } from "../tools/output-meta";
 import { OutputPane } from "../render/output-pane";
-import { expandedToolRows } from "../render/utils";
+import { compactOutputIndent, expandedToolRows } from "../render/utils";
 import { transcriptContent } from "./transcript-content";
 import { truncateToWidth, visibleWidth } from "../utils";
 import {
@@ -224,10 +224,11 @@ export class EvalExecutionComponent extends Container {
 			if (headerRows.length > 1) this.#hadExpandableContent = true;
 			const header = headerRows[0] ?? "  >>>";
 			const preview = this.#status === "complete" ? output.slice(0, 3) : output.slice(-3);
+			const indent = compactOutputIndent(theme);
 			const rows = [
 				truncateToWidth(`${truncateToWidth(header, headerWidth)}${suffix}`, width),
 				...preview.map((line, index) =>
-					truncateToWidth(theme.fg("muted", `${index === 0 ? "  └ " : "    "}${line}`), width),
+					truncateToWidth(`${index === 0 ? indent.lead : indent.continuation}${theme.fg("muted", line)}`, width),
 				),
 			];
 			const notices = buildStatusFooter({

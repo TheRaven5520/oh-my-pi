@@ -434,7 +434,7 @@ describe.skipIf(!Bun.which("tmux"))("tmux history request lifetime", () => {
 		const before = await r.state();
 		r.setCapture(async () => ({ ...r.snapshot(), screenTop: 108 }));
 		for (let i = 0; i < 20; i++) r.bridge.notifyOutput();
-		await until(async () => (await r.state()).token !== before.token);
+		await until(async () => (await r.state()).token !== before.token && r.released === 2);
 		expect((await r.state()).scroll).toBe(before.scroll + 8);
 		expect(r.captures).toHaveLength(2);
 		expect(r.captures[1]?.owner).toBeUndefined();

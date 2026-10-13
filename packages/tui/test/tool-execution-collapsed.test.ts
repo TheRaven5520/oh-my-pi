@@ -27,6 +27,13 @@ function plain(lines: readonly string[]): string[] {
 	return lines.map(line => Bun.stripANSI(line));
 }
 
+function previewText(lines: readonly string[]): string[] {
+	return plain(lines).map((line, index) => {
+		const text = line.trimStart();
+		return index === 0 && text.startsWith(theme.tree.last) ? text.slice(theme.tree.last.length).trimStart() : text;
+	});
+}
+
 /** Result body that counts how often the card renders it. */
 class CountingBody implements Component {
 	renders = 0;
@@ -40,6 +47,41 @@ class CountingBody implements Component {
 describe("collapsed tool cards", () => {
 	beforeAll(async () => {
 		await initTheme();
+	});
+
+	it("aligns flat previews under Read-style themed connectors within the viewport", () => {
+		const previousTheme = theme;
+		try {
+			for (const connector of ["└", "`-", "界界└"]) {
+				const json = structuredClone(getBuiltinThemes().dark!);
+				json.symbols = { overrides: { "tree.last": connector } };
+				setThemeInstance(createTheme(json, { mode: "truecolor" }));
+				const output = "first result\nsecond result\nthird result";
+				const tool = new ToolExecutionComponent("unknown", {}, {}, undefined, ui, "/tmp");
+				tool.updateResult(textResult(output), false);
+				tool.seal();
+				const bash = new BashExecutionComponent("printf sample", ui as unknown as TUI);
+				const evaluation = new EvalExecutionComponent("print('sample')", ui as unknown as TUI);
+				bash.setComplete(0, false, { output });
+				evaluation.setComplete(0, false, { output });
+				const lead = `   ${connector} `;
+				const continuation = " ".repeat(visibleWidth(lead));
+				for (const component of [tool, bash, evaluation]) {
+					const rows = component.render(100);
+					expect(rows[1]).toStartWith(`   ${theme.fg("dim", connector)} `);
+					expect(plain(rows).slice(1)).toEqual([
+						`${lead}first result`,
+						`${continuation}second result`,
+						`${continuation}third result`,
+					]);
+					for (const width of [1, 4, 8, 16, 32]) {
+						expect(component.render(width).every(row => visibleWidth(row) <= width)).toBe(true);
+					}
+				}
+			}
+		} finally {
+			setThemeInstance(previousTheme);
+		}
 	});
 
 	it("keeps search counts distinct from output lines and retains partial-result warnings", () => {
@@ -363,10 +405,10 @@ describe("collapsed tool cards", () => {
 		const text = "a\nb\n\nWall time: 0.02 seconds";
 		card.updateResult({ content: [{ type: "text", text }], details: {} }, false);
 		card.seal();
-		expect(plain(card.render(120)).slice(1)).toEqual(["  └ a", "    b", "    Wall time: 0.02 seconds"]);
+		expect(previewText(card.render(120).slice(1))).toEqual(["a", "b", "Wall time: 0.02 seconds"]);
 		// Same output string, new details: the notice is now known and hidden.
 		card.updateResult({ content: [{ type: "text", text }], details: { wallTimeMs: 20 } }, false);
-		expect(plain(card.render(120)).slice(1)).toEqual(["  └ a", "    b"]);
+		expect(previewText(card.render(120).slice(1))).toEqual(["a", "b"]);
 	});
 
 	it("wraps a long multi-line command into the head instead of cutting it to one row", () => {
@@ -379,7 +421,7 @@ describe("collapsed tool cards", () => {
 			const rows = card.render(width);
 			expect(rows.every(row => visibleWidth(row) <= width)).toBe(true);
 			const text = plain(rows).map(row => row.trimEnd());
-			const outputStart = text.findIndex(row => row.startsWith("  └ "));
+			const outputStart = text.findIndex(row => row.trimStart().startsWith(theme.tree.last));
 			expect(outputStart).toBeGreaterThan(1);
 			expect(outputStart).toBeLessThanOrEqual(3);
 			const head = text.slice(0, outputStart);
@@ -388,7 +430,7 @@ describe("collapsed tool cards", () => {
 			const commandColumn = visibleWidth(head[0]!.slice(0, head[0]!.indexOf("cd packages/tui")));
 			for (const row of head.slice(1)) expect(row.search(/\S/)).toBe(commandColumn);
 			expect(head.join(" ")).toContain("--timeout");
-			expect(text.slice(outputStart)).toEqual(["  └ ok", "    clean"]);
+			expect(previewText(text.slice(outputStart))).toEqual(["ok", "clean"]);
 		}
 		// The head is capped; a command beyond it ends in an ellipsis.
 		const long = new ToolExecutionComponent(
@@ -404,7 +446,8 @@ describe("collapsed tool cards", () => {
 		const rows = plain(long.render(80)).map(row => row.trimEnd());
 		expect(rows[0]).toEndWith("Bash  $ echo step-0");
 		const indent = " ".repeat(visibleWidth(rows[0]!.slice(0, rows[0]!.indexOf("echo"))));
-		expect(rows.slice(1)).toEqual([`${indent}echo step-1`, `${indent}echo step-2…`, "  └ done"]);
+		expect(rows.slice(1, 3)).toEqual([`${indent}echo step-1`, `${indent}echo step-2…`]);
+		expect(previewText(rows.slice(3))).toEqual(["done"]);
 	});
 
 	it("previews failed output from its tail, where the error lands", () => {
@@ -414,7 +457,7 @@ describe("collapsed tool cards", () => {
 		card.seal();
 		const rows = plain(card.render(100)).map(row => row.trimEnd());
 		expect(rows[1]).toContain("3 earlier lines");
-		expect(rows.slice(2)).toEqual(["    pass c", "    error: expected 1 to be 2"]);
+		expect(rows.slice(2).map(row => row.trimStart())).toEqual(["pass c", "error: expected 1 to be 2"]);
 	});
 
 	it("keeps the first head row free for a /time label", () => {
@@ -490,16 +533,16 @@ describe("collapsed tool cards", () => {
 	it("follows a running block's streamed tail while collapsed, then previews the head", () => {
 		const card = new ToolExecutionComponent("counted", { path: "x" }, {}, undefined, ui, "/tmp");
 		card.updateResult(textResult("first\nsecond"), true);
-		expect(plain(card.render(80)).slice(1)).toEqual(["  └ first", "    second"]);
+		expect(previewText(card.render(80).slice(1))).toEqual(["first", "second"]);
 		const streamed = "first\nsecond\nthird\nfourth\nfifth";
 		card.updateResult(textResult(streamed), true);
 		const live = plain(card.render(80)).slice(1);
 		expect(live[0]).toContain("3 earlier lines");
-		expect(live.slice(1)).toEqual(["    fourth", "    fifth"]);
+		expect(live.slice(1).map(row => row.trimStart())).toEqual(["fourth", "fifth"]);
 		card.updateResult(textResult(streamed), false);
 		card.seal();
 		const settled = plain(card.render(80)).slice(1);
-		expect(settled.slice(0, 2)).toEqual(["  └ first", "    second"]);
+		expect(previewText(settled.slice(0, 2))).toEqual(["first", "second"]);
 		expect(settled[2]).toContain("3 more lines");
 	});
 

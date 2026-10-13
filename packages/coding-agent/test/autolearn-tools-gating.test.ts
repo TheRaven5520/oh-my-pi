@@ -226,30 +226,94 @@ describe("learn execute", () => {
 	});
 
 	it("stores a lesson to memory without writing a skill when no skill payload", async () => {
-		await new LearnTool(learnSession()).execute("1", { memory: "Prefer Bun.file over readFileSync." });
+		const result = await new LearnTool(learnSession()).execute("1", { memory: "Prefer Bun.file over readFileSync." });
+		expect(result.details).toEqual({
+			skill: null,
+			memory: { status: "stored", backend: "mnemopi", scope: "project" },
+		});
 		expect(remembered).toEqual(["Prefer Bun.file over readFileSync."]);
 		// No managed skills written.
 		expect(await fs.readdir(getManagedSkillsDir()).catch(() => [])).toHaveLength(0);
 	});
 
 	it("stores a lesson AND mints a managed skill when a skill payload is given", async () => {
-		await new LearnTool(learnSession()).execute("2", {
+		const result = await new LearnTool(learnSession()).execute("2", {
 			memory: "Use the worker host entry pattern.",
 			skill: { action: "create", name: "worker-host", description: "Spawn workers.", body: "# Worker host" },
 		});
 		expect(remembered).toHaveLength(1);
+		expect(result.details?.skillOperation).toEqual({
+			action: "create",
+			name: "worker-host",
+			outcome: "created",
+			path: path.join(getManagedSkillsDir(), "worker-host", "SKILL.md"),
+		});
 		expect(await Bun.file(path.join(getManagedSkillsDir(), "worker-host", "SKILL.md")).exists()).toBe(true);
+		const updated = await new LearnTool(learnSession()).execute("2-update", {
+			memory: "Keep the worker-host instructions current.",
+			skill: {
+				action: "update",
+				name: "worker-host",
+				description: "Spawn workers safely.",
+				body: "# Updated worker host",
+			},
+		});
+		expect(updated.details?.skillOperation).toMatchObject({
+			action: "update",
+			name: "worker-host",
+			outcome: "updated",
+		});
+		expect(await Bun.file(updated.details!.skillOperation!.path!).text()).toContain("# Updated worker host");
 	});
 
 	it("surfaces a partial-outcome error when the skill name is invalid", async () => {
-		await expect(
-			new LearnTool(learnSession()).execute("3", {
-				memory: "lesson",
-				skill: { action: "create", name: "../evil", description: "d", body: "b" },
-			}),
-		).rejects.toThrow(/Lesson stored, but the managed skill could not be written/);
+		const result = await new LearnTool(learnSession()).execute("3", {
+			memory: "lesson",
+			skill: { action: "create", name: "../evil", description: "d", body: "b" },
+		});
+		expect(result.isError).toBe(true);
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining("Lesson stored, but the managed skill could not be written"),
+		});
+		expect(result.details?.memory.status).toBe("stored");
+		expect(result.details?.skillOperation).toMatchObject({
+			action: "create",
+			name: "../evil",
+			outcome: "failed",
+			error: expect.any(String),
+		});
+		expect(result.details?.skillOperation?.path).toBeUndefined();
 		// The memory half still ran.
 		expect(remembered).toHaveLength(1);
+	});
+
+	it("preserves the stored lesson while refusing an authored-skill collision", async () => {
+		const filePath = path.join(tempHome, "authored", "demo", "SKILL.md");
+		setActiveSkills([
+			{
+				name: "demo",
+				description: "Authored demo",
+				filePath,
+				baseDir: path.dirname(filePath),
+				source: "native:user",
+				_source: { provider: "native", providerName: "Pi", path: filePath, level: "user" },
+			},
+		]);
+		try {
+			const result = await new LearnTool(learnSession()).execute("shadowed", {
+				memory: "Do not shadow authored skills.",
+				skill: { action: "create", name: "demo", description: "Managed demo", body: "# Managed demo" },
+			});
+			expect(result.isError).toBe(true);
+			expect(result.details?.shadowed).toBe(true);
+			expect(result.details?.memory.status).toBe("stored");
+			expect(result.details?.skillOperation).toMatchObject({ action: "create", name: "demo", outcome: "failed" });
+			expect(result.content[0]).toMatchObject({ text: expect.stringContaining("authored skill") });
+			expect(remembered).toEqual(["Do not shadow authored skills."]);
+			expect(await Bun.file(path.join(getManagedSkillsDir(), "demo", "SKILL.md")).exists()).toBe(false);
+		} finally {
+			resetActiveSkillsForTests();
+		}
 	});
 
 	it("reports Hindsight lessons as queued rather than stored", async () => {
@@ -273,6 +337,10 @@ describe("learn execute", () => {
 
 		expect(queued).toEqual([{ memory: "Queue this lesson.", context: "from review" }]);
 		expect(result.content[0]).toEqual({ type: "text", text: "Lesson queued for retention." });
+		expect(result.details).toEqual({
+			skill: null,
+			memory: { status: "queued", backend: "hindsight", scope: "project" },
+		});
 	});
 
 	it("rejects a global Hindsight lesson before queueing or minting a skill", async () => {
@@ -314,12 +382,17 @@ describe("learn execute", () => {
 			},
 		);
 
-		await expect(
-			new LearnTool(session).execute("hindsight-2", {
-				memory: "queued lesson",
-				skill: { action: "create", name: "../evil", description: "d", body: "b" },
-			}),
-		).rejects.toThrow(/Lesson queued for retention, but the managed skill could not be written/);
+		const result = await new LearnTool(session).execute("hindsight-2", {
+			memory: "queued lesson",
+			skill: { action: "create", name: "../evil", description: "d", body: "b" },
+		});
+		expect(result.isError).toBe(true);
+		expect(result.content[0]).toMatchObject({
+			text: expect.stringContaining("Lesson queued for retention, but the managed skill could not be written"),
+		});
+		expect(result.details?.memory.status).toBe("queued");
+		expect(result.details?.skillOperation?.outcome).toBe("failed");
+		expect(result.details?.skillOperation?.path).toBeUndefined();
 		expect(queued).toEqual(["queued lesson"]);
 	});
 
