@@ -1,0 +1,171 @@
+{
+  "/v1/models": {
+    "object": "list",
+    "data": [
+      {
+        "id": "gpt-6-astra",
+        "context_window": 500000,
+        "context_length": 500000,
+        "max_output_tokens": 128000,
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "supports_reasoning": true,
+        "pricing": {
+          "unit": "microcredits_per_token",
+          "input": 10000,
+          "output": 50000,
+          "cache_read": 1000,
+          "cache_write": 0
+        }
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "context_window": 500000,
+        "context_length": 500000,
+        "max_output_tokens": 128000,
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "supports_reasoning": true,
+        "pricing": {
+          "unit": "microcredits_per_token",
+          "input": 2000,
+          "output": 10000,
+          "cache_read": 200,
+          "cache_write": 0
+        }
+      },
+      {
+        "id": "gpt-6-luna",
+        "context_window": 500000,
+        "context_length": 500000,
+        "max_output_tokens": 128000,
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "supports_reasoning": true,
+        "pricing": {
+          "unit": "microcredits_per_token",
+          "input": 100,
+          "output": 500,
+          "cache_read": 10,
+          "cache_write": 0
+        }
+      }
+    ]
+  },
+  "/anthropic/v1/models": {
+    "object": "list",
+    "data": [
+      {
+        "id": "claude-fable-5-1",
+        "context_length": 1000000,
+        "max_output_tokens": 128000,
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "supports_reasoning": true,
+        "pricing": {
+          "unit": "microcredits_per_token",
+          "input": 15000,
+          "output": 75000,
+          "cache_read": 1500,
+          "cache_write": 18750
+        },
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      {
+        "id": "claude-opus-5-5",
+        "context_length": 1000000,
+        "max_output_tokens": 128000,
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "supports_reasoning": true,
+        "pricing": {
+          "unit": "microcredits_per_token",
+          "input": 4000,
+          "output": 20000,
+          "cache_read": 400,
+          "cache_write": 5000
+        },
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      {
+        "id": "claude-sonnet-5",
+        "context_length": 1000000,
+        "max_output_tokens": 128000,
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "supports_reasoning": true,
+        "pricing": {
+          "unit": "microcredits_per_token",
+          "input": 2000,
+          "output": 10000,
+          "cache_read": 200,
+          "cache_write": 2500
+        },
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      {
+        "id": "claude-haiku-4-5",
+        "context_length": 200000,
+        "max_output_tokens": 64000,
+        "input_modalities": [
+          "text",
+          "image",
+          "file"
+        ],
+        "supports_reasoning": true,
+        "pricing": {
+          "unit": "microcredits_per_token",
+          "input": 1000,
+          "output": 5000,
+          "cache_read": 100,
+          "cache_write": 1250
+        },
+        "reasoning_efforts": []
+      }
+    ]
+  },
+  "/deepseek/v1/models": {
+    "object": "list",
+    "data": []
+  },
+  "/openrouter/v1/models": {
+    "object": "list",
+    "data": []
+  }
+}

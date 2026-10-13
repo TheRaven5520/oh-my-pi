@@ -1,0 +1,402 @@
+{
+  ".sprilicred/omp-models.json": {
+    "sprilicred-anthropic/claude-fable-5-1.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 1000000
+    },
+    "sprilicred-anthropic/claude-fable-5-1.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 128000
+    },
+    "sprilicred-anthropic/claude-fable-5-1.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-fable-5-1.thinking": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "mode": "anthropic-adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    "sprilicred-anthropic/claude-fable-5-1.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-anthropic/claude-fable-5-1.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 15,
+        "output": 75,
+        "cacheRead": 1.5,
+        "cacheWrite": 18.75
+      }
+    },
+    "sprilicred-anthropic/claude-fable-5-1.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-opus-5-5.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 1000000
+    },
+    "sprilicred-anthropic/claude-opus-5-5.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 128000
+    },
+    "sprilicred-anthropic/claude-opus-5-5.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-opus-5-5.thinking": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "mode": "anthropic-adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    "sprilicred-anthropic/claude-opus-5-5.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-anthropic/claude-opus-5-5.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 4,
+        "output": 20,
+        "cacheRead": 0.4,
+        "cacheWrite": 5
+      }
+    },
+    "sprilicred-anthropic/claude-opus-5-5.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-sonnet-5.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 1000000
+    },
+    "sprilicred-anthropic/claude-sonnet-5.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 128000
+    },
+    "sprilicred-anthropic/claude-sonnet-5.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-sonnet-5.thinking": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "mode": "anthropic-adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    "sprilicred-anthropic/claude-sonnet-5.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-anthropic/claude-sonnet-5.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.2,
+        "cacheWrite": 2.5
+      }
+    },
+    "sprilicred-anthropic/claude-sonnet-5.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-haiku-4-5.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 200000
+    },
+    "sprilicred-anthropic/claude-haiku-4-5.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 64000
+    },
+    "sprilicred-anthropic/claude-haiku-4-5.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-haiku-4-5.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-anthropic/claude-haiku-4-5.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 1,
+        "output": 5,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25
+      }
+    },
+    "sprilicred-anthropic/claude-haiku-4-5.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-openai/gpt-6-astra.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 500000
+    },
+    "sprilicred-openai/gpt-6-astra.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 128000
+    },
+    "sprilicred-openai/gpt-6-astra.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-openai/gpt-6-astra.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-openai/gpt-6-astra.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
+        "cacheWrite": 0
+      }
+    },
+    "sprilicred-openai/gpt-6-astra.compat": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "reasoningDisableMode": "none-effort"
+      }
+    },
+    "sprilicred-openai/gpt-6-astra.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-openai/gpt-6.1-sol.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 500000
+    },
+    "sprilicred-openai/gpt-6.1-sol.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 128000
+    },
+    "sprilicred-openai/gpt-6.1-sol.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-openai/gpt-6.1-sol.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-openai/gpt-6.1-sol.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.2,
+        "cacheWrite": 0
+      }
+    },
+    "sprilicred-openai/gpt-6.1-sol.compat": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "reasoningDisableMode": "none-effort"
+      }
+    },
+    "sprilicred-openai/gpt-6.1-sol.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-openai/gpt-6-luna.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 500000
+    },
+    "sprilicred-openai/gpt-6-luna.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 128000
+    },
+    "sprilicred-openai/gpt-6-luna.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-openai/gpt-6-luna.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-openai/gpt-6-luna.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 0.1,
+        "output": 0.5,
+        "cacheRead": 0.01,
+        "cacheWrite": 0
+      }
+    },
+    "sprilicred-openai/gpt-6-luna.compat": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "reasoningDisableMode": "none-effort"
+      }
+    },
+    "sprilicred-openai/gpt-6-luna.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-deepseek/deepseek-v4.1-flash.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 1048576
+    },
+    "sprilicred-deepseek/deepseek-v4.1-flash.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 262144
+    },
+    "sprilicred-deepseek/deepseek-v4.1-flash.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-deepseek/deepseek-v4.1-flash.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-deepseek/deepseek-v4.1-flash.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 0.3,
+        "output": 1.2,
+        "cacheRead": 0.007,
+        "cacheWrite": 0
+      }
+    },
+    "sprilicred-deepseek/deepseek-v4.1-flash.compat": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "reasoningDisableMode": "none-effort"
+      }
+    },
+    "sprilicred-deepseek/deepseek-v4.1-flash.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "defaultModel": {
+      "present": false,
+      "before": null,
+      "applied": "sprilicred-anthropic/claude-sonnet-5",
+      "chosen": false
+    },
+    "providerScopes": {
+      "present": false,
+      "before": null,
+      "applied": []
+    }
+  },
+  ".sprilicred/omp-roles.json": {
+    "roles": {
+      "default": "sprilicred-anthropic/claude-sonnet-5",
+      "smol": "sprilicred-anthropic/claude-haiku-4-5",
+      "tiny": "sprilicred-anthropic/claude-haiku-4-5",
+      "judge": "sprilicred-anthropic/claude-haiku-4-5",
+      "slow": "sprilicred-openai/gpt-6.1-sol",
+      "web": "sprilicred-anthropic/claude-haiku-4-5"
+    }
+  },
+  ".sprilicred/omp-cycle.before-sprilicred.json": {
+    "before": []
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "auth.broker.url": "https://sprilicred.example",
+  "cycleModels": [
+    "sprilicred-anthropic/claude-opus-5-5",
+    "sprilicred-muse/*",
+    "sprilicred-glm/*",
+    "sprilicred-openai/*"
+  ],
+  "enabledModels": [
+    "sprilicred-anthropic/*",
+    "sprilicred-openai/*",
+    "sprilicred-glm/*",
+    "sprilicred-deepseek/*",
+    "sprilicred-muse/*",
+    "mine/*"
+  ],
+  "modelProviderOrder": [
+    "sprilicred-openai",
+    "sprilicred-glm",
+    "sprilicred-deepseek",
+    "sprilicred-muse",
+    "personal-openai"
+  ],
+  "modelRoles": {
+    "default": "sprilicred-anthropic/claude-sonnet-5",
+    "smol": "sprilicred-anthropic/claude-haiku-4-5",
+    "tiny": "sprilicred-anthropic/claude-haiku-4-5",
+    "judge": "sprilicred-anthropic/claude-haiku-4-5",
+    "slow": "sprilicred-openai/gpt-6.1-sol",
+    "web": "sprilicred-anthropic/claude-haiku-4-5",
+    "mine": "sprilicred-muse/muse-wonder:high",
+    "odd": "sprilicred-glm/abliterated-model-large-v2",
+    "plan": "sprilicred-openai/gpt-6-astra:low"
+  },
+  "retry.fallbackChains": {
+    "sprilicred-muse/muse-wonder": [
+      "sprilicred-glm/abliterated-model-large-v2",
+      "sprilicred-openai/gpt-6-astra"
+    ],
+    "sprilicred-glm/abliterated-model-large-v2": [
+      "sprilicred-glm/abliterated-model-large-v2:low"
+    ]
+  },
+  "retry.usageLimitFallbackChains": {
+    "sprilicred-openai/*": [
+      "sprilicred-deepseek/*",
+      "personal-openai/*"
+    ]
+  },
+  "auth.broker.token": ""
+}
