@@ -318,7 +318,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	constructor(options: ComposerOptions = {}) {
 		ensureThemeSync();
-		this.#ravensLogo = options.ravensLogo ? new RavensLogo() : undefined;
 		// Host-owned hard exit: route through postmortem so a double-Ctrl-C during
 		// an open extension-load guard window exits cleanly instead of throwing
 		// ExtensionExitError through the guarded process.exit (#11789).
@@ -332,6 +331,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#preferences.showHardwareCursor,
 			options.tuiOptions,
 		);
+		this.#ravensLogo = options.ravensLogo ? new RavensLogo(this.ui.imageBudget.acquireId()) : undefined;
 		this.ui.setFrameProvider(this);
 		this.ui.setMaxInlineImages(this.#preferences.maxInlineImages);
 		this.ui.setResizeScrollback(this.#preferences.resizeScrollback);
@@ -405,8 +405,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	}
 
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
-		if (!this.#ravensLogo || !this.#started || this.#stopped || this.#historyFlush) return this.#renderBody(viewport);
 		const logo = this.renderViewportTop(viewport);
+		if (logo.length === 0) return this.#renderBody(viewport);
 		const body = this.#renderBody({ ...viewport, rows: viewport.rows - logo.length });
 		const padding = Math.max(0, viewport.rows - logo.length - body.viewport.length);
 		const offset = logo.length + padding;
@@ -420,10 +420,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	renderViewportTop(viewport: ViewportSize): readonly string[] {
 		const logo =
-			this.#ravensLogo?.render(
-				viewport.columns,
-				Math.min(6, Math.max(0, Math.min(viewport.rows - 1, Math.max(1, Math.floor(viewport.rows / 4))))),
-			) ?? [];
+			this.#started && !this.#stopped && !this.#historyFlush
+				? (this.#ravensLogo?.render(viewport.columns, viewport.rows > 1 ? 1 : 0) ?? [])
+				: [];
 		this.#logoRows = logo.length;
 		return logo;
 	}
@@ -779,8 +778,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	/** Render the semantic transcript tail while the terminal borrows its resize buffer. */
 	renderResizeFrame(viewport: ViewportSize): readonly string[] {
-		if (!this.#ravensLogo || !this.#started || this.#stopped) return this.#renderResizeBody(viewport);
 		const logo = this.renderViewportTop(viewport);
+		if (logo.length === 0) return this.#renderResizeBody(viewport);
 		const body = this.#renderResizeBody({ ...viewport, rows: viewport.rows - logo.length });
 		const padding = Math.max(0, viewport.rows - logo.length - body.length);
 		return [...logo, ...Array<string>(padding).fill(""), ...body];
@@ -820,6 +819,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	beginHistoryFlush(): void {
 		this.#historyFlush = true;
 		this.#logoRows = 0;
+		const release = this.#ravensLogo?.release();
+		if (release) this.ui.terminal.write(release);
 		// A pending replay would re-render and re-stream the entire committed
 		// ledger during shutdown; the terminal already holds that history, so
 		// flush emits only genuinely un-retired rows. An already offered batch
@@ -1136,6 +1137,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#welcome?.stopIntro();
 		this.#disposeStartupStatus();
 		this.ui.stop();
+		const release = this.#ravensLogo?.release();
+		if (release) this.ui.terminal.write(release);
 		this.#stopped = true;
 	}
 
@@ -1172,7 +1175,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// Remains live after transfer until InteractiveMode installs its configured handlers.
 		if (this.#stopped) return;
 		this.#welcome?.stopIntro();
-		if (this.#started) this.ui.stop();
+		if (this.#started) {
+			this.ui.stop();
+			const release = this.#ravensLogo?.release();
+			if (release) this.ui.terminal.write(release);
+		}
 		this.#stopped = true;
 		this.#exit(code);
 	}

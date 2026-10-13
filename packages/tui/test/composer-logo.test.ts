@@ -1,8 +1,12 @@
-import { beforeAll, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, it } from "bun:test";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { Text } from "@oh-my-pi/pi-tui";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { Image } from "@oh-my-pi/pi-tui/components/image";
+import { getKittyGraphics, KITTY_PLACEHOLDER, setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
+import { getCellDimensions, ImageProtocol, setCellDimensions, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import { RAVENS_LOGO_DIMENSIONS, RAVENS_LOGO_PNG_BASE64 } from "@oh-my-pi/pi-tui/chrome/ravens-logo-data";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { VirtualTerminal } from "./virtual-terminal";
 import { withoutTerminalMultiplexer } from "./terminal-multiplexer-environment";
@@ -10,6 +14,24 @@ import { withoutTerminalMultiplexer } from "./terminal-multiplexer-environment";
 withoutTerminalMultiplexer();
 beforeAll(async () => {
 	await initTheme();
+});
+
+const terminalInfo = TERMINAL as unknown as { imageProtocol: ImageProtocol | null };
+let previousProtocol: ImageProtocol | null;
+let previousGraphics: ReturnType<typeof getKittyGraphics>;
+let previousCells: ReturnType<typeof getCellDimensions>;
+beforeEach(() => {
+	previousProtocol = terminalInfo.imageProtocol;
+	previousGraphics = { ...getKittyGraphics() };
+	previousCells = { ...getCellDimensions() };
+	terminalInfo.imageProtocol = ImageProtocol.Kitty;
+	setKittyGraphics({ unicodePlaceholders: true });
+	setCellDimensions({ widthPx: 10, heightPx: 20 });
+});
+afterEach(() => {
+	terminalInfo.imageProtocol = previousProtocol;
+	setKittyGraphics(previousGraphics);
+	setCellDimensions(previousCells);
 });
 
 function harness() {
@@ -48,8 +70,8 @@ it("keeps the logo out of history while preserving every retired chat row", asyn
 		expect(all.filter(row => row.startsWith("Chat row "))).toEqual(
 			Array.from({ length: 65 }, (_, i) => `Chat row ${i}`),
 		);
-		expect(all.slice(0, -30).some(row => /[▀▄]/u.test(row))).toBe(false);
-		expect(h.terminal.getViewport()[0]).toMatch(/[▀▄]/u);
+		expect(all.slice(0, -30).some(row => row.includes(KITTY_PLACEHOLDER))).toBe(false);
+		expect(h.terminal.getViewport()[0]).toContain(KITTY_PLACEHOLDER);
 		expect(h.terminal.getViewport()[29]?.trim()).toBe("INPUT");
 		expect(h.composer.viewportClickCandidates(29)).toEqual(["input-owner"]);
 		expect(h.composer.viewportClickCandidates(0)).toEqual([]);
@@ -152,7 +174,7 @@ it("refills retired rows below the logo after replay and retains them across lat
 				.map(row => row.trim())
 				.filter(row => row.startsWith("Retired row ")),
 		).toEqual(Array.from({ length: 45 }, (_, i) => `Retired row ${i}`));
-		expect(h.terminal.getViewport()[0]).toMatch(/[▀▄]/u);
+		expect(h.terminal.getViewport()[0]).toContain(KITTY_PLACEHOLDER);
 	} finally {
 		h.composer.stop();
 	}
@@ -203,7 +225,7 @@ it.each([false, true])("retires short replay chrome on stop (fullscreen overlay:
 		expect(rows.filter(row => row.startsWith("Stop row "))).toEqual(
 			Array.from({ length: 10 }, (_, i) => `Stop row ${i}`),
 		);
-		expect(rows.some(row => /[▀▄]/u.test(row))).toBe(false);
+		expect(rows.some(row => row.includes(KITTY_PLACEHOLDER))).toBe(false);
 		expect(rows.some(row => row.includes("PANEL"))).toBe(false);
 	} finally {
 		h.composer.stop();
@@ -215,7 +237,7 @@ it("removes logo chrome on empty stop without a history batch", async () => {
 	await h.scheduler.settle(h.terminal);
 	h.composer.stop();
 	await h.terminal.flush();
-	expect(h.terminal.getScrollBuffer().some(row => /[▀▄]/u.test(row))).toBe(false);
+	expect(h.terminal.getScrollBuffer().some(row => row.includes(KITTY_PLACEHOLDER))).toBe(false);
 	expect(h.terminal.getScrollBuffer().filter(row => row.trim() === "INPUT")).toHaveLength(1);
 });
 
@@ -237,6 +259,51 @@ it("preserves long retained rows when preserve-mode resize narrows the viewport"
 			.map(row => Bun.stripANSI(row).trimEnd())
 			.join("");
 		expect(visible).toContain(text);
+	} finally {
+		h.composer.stop();
+	}
+});
+
+it("limits the smooth logo to one row and four columns without using a chat-image slot", async () => {
+	const h = harness();
+	try {
+		h.composer.ui.imageBudget.setCap(1);
+		const image = new Image(
+			RAVENS_LOGO_PNG_BASE64,
+			"image/png",
+			{ fallbackColor: text => text },
+			{
+				budget: h.composer.ui.imageBudget,
+				imageKey: "chat-image",
+				maxHeightCells: 3,
+			},
+			RAVENS_LOGO_DIMENSIONS,
+		);
+		h.composer.setRuntimeChildren([image, new Text("INPUT", 0, 0)]);
+		await h.scheduler.settle(h.terminal);
+		const header = h.composer.renderViewportTop({ columns: 80, rows: 30 });
+		expect(header).toHaveLength(1);
+		expect(header[0]!.split(KITTY_PLACEHOLDER).length - 1).toBeLessThanOrEqual(4);
+		expect(header[0]).not.toMatch(/[▀▄]/u);
+		expect(image.debugState().suppressed).toBe(false);
+		expect(h.terminal.getViewport().filter(row => row.includes(KITTY_PLACEHOLDER)).length).toBeGreaterThan(1);
+	} finally {
+		h.composer.stop();
+	}
+});
+
+it.each([null, ImageProtocol.Kitty])("does not reserve logo space without safe image support (%s)", async protocol => {
+	terminalInfo.imageProtocol = protocol;
+	setKittyGraphics({ unicodePlaceholders: false });
+	const h = harness();
+	try {
+		await h.scheduler.settle(h.terminal);
+		const frame = h.composer.renderFrame({ columns: 80, rows: 30 });
+		expect(h.composer.getViewportTopInset()).toBe(0);
+		expect(frame.viewport.length).toBeLessThan(30);
+		expect(frame.viewport.join("")).not.toContain(KITTY_PLACEHOLDER);
+		expect(frame.viewport.join("")).not.toMatch(/[▀▄]/u);
+		expect(frame.viewport.at(-1)).toBe("INPUT");
 	} finally {
 		h.composer.stop();
 	}

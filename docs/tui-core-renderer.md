@@ -80,9 +80,10 @@ Ordinary renders never audit or rewrite terminal history.
 ### Reserved top chrome (personal fork)
 
 `ComposerOptions.ravensLogo` opts the personal interactive application into a
-responsive corner logo. The composer reserves the logo's rows, renders the body
-against the remaining height, and returns a full-height viewport. Hit-test spans
-include both the header and any body padding. The logo is never a history batch.
+tiny corner image. On supported terminals the composer reserves one row,
+renders the body against the remaining height, and returns a full-height
+viewport. Hit-test spans include the header and body padding. The logo is never
+a history batch. Unsupported terminals use the ordinary layout with no inset.
 
 `TerminalFrameProvider.getViewportTopInset()` reports reserved rows to modal
 layout and replay placement. With an inset, the writer retains replayed history
@@ -101,10 +102,13 @@ are translated back to panel-local rows. New presses and wheel events on the
 logo are ignored; motion and releases clamp to the panel's first row so a drag
 started inside the panel can finish over the header.
 
-The artwork uses colored half-block cells sourced from the official NFL Ravens
-logo, with dark colors lifted for terminal contrast. It has 24-, 16-, and 8-column
-rasters and a one-row `BAL` fallback; a one-row terminal prioritizes the input.
-This is ANSI terminal chrome, not a new TSP surface region.
+The official NFL Ravens artwork is bundled as a transparent, antialiased PNG
+and displayed with Kitty Unicode placeholders, at most four columns by one row.
+It uses a stable graphics ID but no chat-image budget slot. Cached rows contain
+their transmission so replay and fresh alternate buffers remain self-contained;
+shutdown deletes only the logo's image. Terminals without Kitty placeholders
+hide it rather than displaying block art or a text fallback. A one-row terminal
+prioritizes the input. This is terminal chrome, not a new TSP surface region.
 
 Visible overlays are screen-coordinate content. They composite over the
 viewport and never become history. Showing, updating, or closing an overlay

@@ -2568,9 +2568,9 @@ export class TUI extends Container {
 		if (provider?.beginHistoryFlush === undefined) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
-		if (width <= 0 || height <= 0) return;
 		const retireChrome = (provider.getViewportTopInset?.() ?? 0) > 0 || this.#insetHistoryRows.length > 0;
 		provider.beginHistoryFlush();
+		if (width <= 0 || height <= 0) return;
 		while (true) {
 			let plan: TerminalFramePlan;
 			let viewport: string[];

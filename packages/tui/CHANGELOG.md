@@ -30,7 +30,7 @@
 
 ### Added
 
-- Optional personal Ravens corner artwork reserves responsive top chrome without taking focus. Modal layout respects the reserved rows, and replayed history refills below the decoration with retained click ownership.
+- Optional personal Ravens corner artwork is a smooth, bundled PNG at most four columns by one row, using Kitty Unicode placeholders without consuming a chat-image slot. Unsupported terminals omit it. Modal layout respects the reserved row, and replayed history refills below the decoration with retained click ownership.
 
 - Added `dark-claude`, a low-key Claude-inspired dark theme with muted sage success/diffs, slate and lavender links/status accents, gray selection and prompt borders, untinted collapsed tools, and Claude Code's gray user bubbles and expanded tool blocks. Success/error markers use solid dots in the existing muted green/red instead of checkmarks/crosses.
 - `render/render-utils` exports `taskSummaryLine(text)`: one summary line of a Markdown task brief (first non-heading line, list/quote markers stripped; heading text as fallback).
