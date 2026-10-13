@@ -66,6 +66,34 @@ describe("openai-models-list discovery honors advertised model capabilities", ()
 		expect(plain?.thinking).toBeUndefined();
 	});
 
+	test("advertised efforts on a Messages gateway use Claude's adaptive thinking", async () => {
+		fs.writeFileSync(
+			modelsPath,
+			JSON.stringify({
+				providers: {
+					gateway: {
+						baseUrl: "https://gateway.example/anthropic",
+						apiKey: "gateway-key",
+						authHeader: true,
+						api: "anthropic-messages",
+						discovery: { type: "openai-models-list" },
+					},
+				},
+			}),
+		);
+		const efforts = ["low", "medium", "high", "xhigh", "max"];
+		const registry = new ModelRegistry(authStorage, modelsPath, {
+			fetch: async () =>
+				Response.json({
+					data: [{ id: "claude-model-next", supports_reasoning: true, reasoning_efforts: efforts }],
+				}),
+		});
+		await registry.refreshProvider("gateway", "online");
+		const model = registry.find("gateway", "claude-model-next");
+		expect(model?.thinking?.mode).toBe("anthropic-adaptive");
+		expect(model?.thinking?.efforts).toEqual(efforts as Effort[]);
+	});
+
 	// Sprilicred's OpenRouter listing (`/openrouter/v1/models`) names and prices
 	// each row itself; the model browser must show those, through a cache restore too.
 	test("a gateway's display name, microcredit prices and efforts survive discovery and the cache", async () => {

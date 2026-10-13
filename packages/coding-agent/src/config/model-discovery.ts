@@ -1060,8 +1060,9 @@ export async function discoverOpenAIModelsList(
 				provider: providerConfig.provider,
 				baseUrl,
 				reasoning: advertisedReasoning ?? reference?.reasoning ?? false,
+				// Claude over Messages takes adaptive effort, as the Sprilicred installer writes it.
 				thinking: efforts
-					? { mode: "effort", efforts }
+					? { mode: api === "anthropic-messages" ? "anthropic-adaptive" : "effort", efforts }
 					: inheritReferenceThinking(undefined, reference, providerConfig.provider),
 				input,
 				...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),

@@ -142,6 +142,23 @@ describe("AgentSession.cycleModelPatterns", () => {
 		expect(active.model?.id).toBe("alpha");
 	});
 
+	// Sprilicred's OpenRouter models (`vendor/model` ids) are picked in /model, never by Ctrl+P:
+	// a provider scope `p/*` stops at the `/`, so only `p/**` (the enabledModels scope) reaches them.
+	test("a provider scope cycles past vendor/model ids that only a ** scope reaches", async () => {
+		listed = ["alpha", "meta/muse-wonder", "beta", "openai/gpt-5"];
+		await registry.refreshProvider("gateway", "online");
+		expect(registry.find("gateway", "meta/muse-wonder")).toBeDefined();
+		const active = start("gateway", "alpha");
+		const cycled = await active.cycleModelPatterns(["other/*", "gateway/*"]);
+		expect(cycled?.models.map(model => `${model.provider}/${model.id}`)).toEqual([
+			"other/other-model",
+			"gateway/alpha",
+			"gateway/beta",
+		]);
+		const scoped = await active.cycleModelPatterns(["gateway/**"]);
+		expect(scoped?.models.map(model => model.id)).toContain("meta/muse-wonder");
+	});
+
 	test("a press asks the provider for its list, so a newly offered model joins from a later press", async () => {
 		const active = start("gateway", "alpha");
 		const before = fetches;
