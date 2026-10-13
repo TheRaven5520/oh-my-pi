@@ -550,9 +550,13 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		this.#settleFinalized();
 		let total = 0;
+		let previous: Component | undefined;
 		for (const { entry, index } of this.#liveEntries()) {
 			const block = this.#liveBlockRows(entry, index, width);
-			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
+			if (block.length > 0) {
+				total += block.length + (separatesBlocks(previous, entry.component) ? 1 : 0);
+				previous = entry.component;
+			}
 			if (total > limit) break;
 		}
 		return total;

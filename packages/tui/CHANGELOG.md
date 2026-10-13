@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Live transcript height uses the same compact tool separators as rendering, preventing adjacent tools from squeezing the viewport or retiring early. Failed edits with structured details no longer report successful diff counts or qualify as compact receipts.
 - Pooled Claude/Codex gauges follow the active subscription route; non-subscription routes such as OpenRouter show neither unrelated weekly totals nor fabricated five-hour/weekly placeholders. Route changes invalidate cached quota displays and reject late refreshes.
 - Fixed personal corner chrome leaving a panel drag active when released over the logo, truncating retained history on preserve-mode width changes, and leaking decoration into the shell transcript at exit.
 - Model pickers honor the forward/backward model-cycle shortcuts (`Ctrl+P` / `Ctrl+Shift+P`), including remaps and wrapping through filtered results without changing the search query.

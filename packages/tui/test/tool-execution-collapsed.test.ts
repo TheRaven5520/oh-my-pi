@@ -11,6 +11,7 @@ import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import type { AgentProgress, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
+import { editToolRenderer } from "@oh-my-pi/pi-tui/tools/edit";
 
 const ui: ToolExecutionUi = {
 	requestRender() {},
@@ -85,6 +86,30 @@ describe("collapsed tool cards", () => {
 		for (const width of [1, 8, 20, 40]) {
 			expect(card.render(width).every(row => visibleWidth(row) <= width)).toBe(true);
 		}
+		card.seal();
+	});
+
+	it("does not report successful edit deltas when an edit fails with details", () => {
+		const card = new ToolExecutionComponent(
+			"edit",
+			{ path: "report.txt", oldText: "before", newText: "after" },
+			{},
+			undefined,
+			ui,
+			"/tmp",
+		);
+		const result = { ...textResult("Permission denied"), isError: true, details: { diff: "" } };
+		card.updateResult(result, false);
+		expect(
+			editToolRenderer.activitySummary(
+				{ path: "report.txt", oldText: "before", newText: "after" },
+				{ expanded: false, isPartial: false, result },
+			).receipt,
+		).toBe(false);
+		const failed = plain(card.render(80)).join("\n");
+		expect(failed).toContain("Permission denied");
+		expect(failed).not.toContain("+0");
+		expect(failed).not.toContain("−0");
 		card.seal();
 	});
 

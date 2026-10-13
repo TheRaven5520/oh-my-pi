@@ -177,6 +177,8 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(second);
 		transcript.addChild(answer);
 		expect(transcript.render(80)).toEqual(["read source", "grep pattern", "", "final answer"]);
+		expect(transcript.liveRowCount(80)).toBe(4);
+		expect(transcript.liveRowCount(80, 4)).toBe(4);
 		expect(transcript.renderViewport(80, 4, frame)).toEqual(transcript.render(80));
 		expect(transcript.getChildStartRow(second)).toBe(1);
 		expect(transcript.getLastViewportSpans().map(span => [span.start, span.end])).toEqual([
@@ -188,6 +190,7 @@ describe("TranscriptContainer", () => {
 		expect(retired.rows).toEqual(["read source"]);
 		transcript.acknowledgeFinalizedBatch(retired.id);
 		expect(transcript.renderViewport(80, 3, frame)).toEqual(["grep pattern", "", "final answer"]);
+		expect(transcript.liveRowCount(80)).toBe(3);
 		transcript.beginReplay();
 		const replay = transcript.peekReplayBatch(60)!;
 		expect(replay.rows).toEqual(["read source"]);

@@ -1100,8 +1100,11 @@ export const editToolRenderer = {
 		return {
 			label,
 			detail,
-			meta: details ? `+${added} −${removed}${failed ? ` · ${failed} failed` : ""}` : undefined,
-			receipt: details !== undefined && failed === 0,
+			meta:
+				details && !context.result?.isError
+					? `+${added} −${removed}${failed ? ` · ${failed} failed` : ""}`
+					: undefined,
+			receipt: details !== undefined && failed === 0 && !context.result?.isError,
 		};
 	},
 
