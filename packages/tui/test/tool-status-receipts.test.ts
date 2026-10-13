@@ -193,7 +193,7 @@ describe("structured status receipts in compact cards", () => {
 		expect(rendered[0]).not.toContain("applied");
 	});
 
-	it("keeps the actual running roster in the head without duplicating the status body", () => {
+	it("shows the actual running roster without repeating the raw status body", () => {
 		const rendered = rows(
 			"task",
 			{ tasks: [{ name: "Requested" }] },
@@ -201,9 +201,12 @@ describe("structured status receipts in compact cards", () => {
 			taskDetails(progress("Second", 1), progress("First", 0)),
 			true,
 		);
-		expect(rendered).toHaveLength(1);
-		expect(rendered[0]).toContain("First, Second");
 		expect(rendered[0]).toContain("2 running");
+		const content = rendered.join("\n");
+		expect(content.indexOf("First")).toBeLessThan(content.indexOf("Second"));
+		expect(content).toContain("First");
+		expect(content).toContain("Second");
+		expect(content).not.toContain("Running agent Second...");
 		expect(rendered[0]).not.toContain("Requested");
 	});
 

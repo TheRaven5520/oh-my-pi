@@ -371,7 +371,8 @@ describe("learn tool (local backend)", () => {
 	});
 
 	it("execute writes the lesson to learned.md", async () => {
-		await new LearnTool(localSession()).execute("1", { memory: "A local tool lesson" });
+		const result = await new LearnTool(localSession()).execute("1", { memory: "A local tool lesson" });
+		expect(result.details).toEqual({ skill: null, memory: { status: "stored", backend: "local", scope: "project" } });
 		expect(await Bun.file(learnedFile).text()).toContain("- A local tool lesson");
 	});
 

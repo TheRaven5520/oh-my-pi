@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
-import type { TaskParams } from "@oh-my-pi/pi-tui/tools/task";
+import type { AgentProgress, TaskParams, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 import { taskToolRenderer } from "@oh-my-pi/pi-tui/tools/task";
 
 describe("task renderer: streaming call preview", () => {
@@ -18,10 +18,7 @@ describe("task renderer: streaming call preview", () => {
 		return Bun.stripANSI(component.render(160).join("\n"));
 	}
 
-	// The preview must surface the dispatched agent type + name while args
-	// stream in: the flat header carries the agent type, and the agent row's
-	// secondary text is the FIRST line of the task brief only.
-	it("shows the agent type in the header and the first task line on the agent row", () => {
+	it("keeps the header compact and the agent identity and assignment on its row", () => {
 		const args: TaskParams = {
 			agent: "reviewer",
 			name: "ReviewAuth",
@@ -30,13 +27,12 @@ describe("task renderer: streaming call preview", () => {
 		const out = render(args);
 		const lines = out.split("\n");
 
-		expect(lines[0]).toContain("reviewer");
+		expect(lines[0]).toContain("requested");
 		const row = lines.find(line => line.includes("ReviewAuth"));
 		expect(row).toBeDefined();
 		expect(row).toContain("Review packages/server/src/auth for missing 401 handling.");
 		expect(row).not.toContain("Report findings.");
-		// A non-default agent type also badges the row itself.
-		expect(row).toContain(`${theme.format.bracketLeft}reviewer${theme.format.bracketRight}`);
+		expect(row).toContain("reviewer");
 	});
 
 	it("caps the agent-row brief to a single preview line", () => {
@@ -70,12 +66,11 @@ describe("task renderer: streaming call preview", () => {
 			task: taskLines.join("\n"),
 		};
 
-		// Collapsed, the brief is a short preview with a count of the rest, so a
-		// batch of long briefs does not fill the screen; Ctrl+O shows all of it.
+		// Collapsed cards show one assignment summary; expansion keeps every line.
 		const collapsed = render(args, false);
 		expect(collapsed).toContain("Step 1");
 		expect(collapsed).not.toContain("Step 6");
-		expect(collapsed).toContain("2 more lines");
+		expect(collapsed).not.toContain("Step 2");
 
 		const expanded = render(args, true);
 		expect(expanded).toContain("Step 1");
@@ -99,12 +94,7 @@ describe("task renderer: streaming call preview", () => {
 		expect(lines[0]).toContain("isolated");
 	});
 
-	// The batch schema streams `context` before `tasks`, and `renderResult`
-	// draws context/assignment above the agent rows. The call preview must use
-	// the same order: agent rows above the context would shift the whole brief
-	// down on every streamed item, then visibly jump below it once the first
-	// progress snapshot replaces the call view.
-	it("renders the per-agent list below the context brief, one row per item", () => {
+	it("renders the roster first and keeps shared context behind expansion", () => {
 		const args: TaskParams = {
 			context: "# Goal\nFix the bench branches.",
 			tasks: [
@@ -116,8 +106,10 @@ describe("task renderer: streaming call preview", () => {
 
 		const contextAt = out.indexOf("Fix the bench branches.");
 		const firstAgentAt = out.indexOf("Fix01Foundation");
-		expect(contextAt).toBeGreaterThanOrEqual(0);
-		expect(firstAgentAt).toBeGreaterThan(contextAt);
+		expect(contextAt).toBe(-1);
+		expect(firstAgentAt).toBeGreaterThanOrEqual(0);
+		const expanded = render(args, true);
+		expect(expanded.indexOf("Fix the bench branches.")).toBeGreaterThan(expanded.indexOf("Fix01Foundation"));
 		expect(out.indexOf("Fix02Setup")).toBeGreaterThan(firstAgentAt);
 		// Each item row carries its own first task line as secondary text.
 		const row = out.split("\n").find(line => line.includes("Fix01Foundation"));
@@ -134,8 +126,8 @@ describe("task renderer: streaming call preview", () => {
 		};
 		const out = render(args);
 
-		expect(out).toContain(`${theme.format.bracketLeft}scout${theme.format.bracketRight}`);
-		expect(out).not.toContain(`${theme.format.bracketLeft}task${theme.format.bracketRight}`);
+		expect(out.split("\n").find(line => line.includes("Scouty"))).toContain("scout");
+		expect(out.split("\n").find(line => line.includes("Worker"))).toContain("task");
 		// Agent types live on the item rows; the batch header no longer joins them.
 		expect(out.split("\n")[0]).not.toContain("scout");
 	});
@@ -147,7 +139,8 @@ describe("task renderer: streaming call preview", () => {
 		const out = render(args);
 		const lines = out.split("\n");
 
-		expect(out).toContain("Shared brief.");
+		expect(out).not.toContain("Shared brief.");
+		expect(render(args, true)).toContain("Shared brief.");
 		// Interior divider bars start with the tee glyph; only the header (top)
 		// and bottom border may exist.
 		const tee = theme.boxRound.teeRight;
@@ -173,5 +166,104 @@ describe("task renderer: streaming call preview", () => {
 
 		expect(out).not.toContain("Review the auth module.");
 		expect(out).not.toContain("ReviewAuth");
+	});
+
+	it("exposes a semantic roster without treating incomplete requests as launches", () => {
+		const summary = taskToolRenderer.activitySummary(
+			{
+				context: "Long shared context",
+				tasks: [
+					{},
+					{ name: "Draft" },
+					{
+						name: "Ready",
+						agent: "scout",
+						model: "@smol",
+						task: "# Target\nMap the parser.\n# Change\nMore detail",
+						solutionSpace: "one path",
+					},
+				],
+			},
+			{ expanded: false, isPartial: true },
+		);
+		expect(summary.detail).toBe("1 agent");
+		expect(summary.meta).toBe("requested");
+		expect(summary.preview).toHaveLength(2);
+		expect(summary.preview?.[0]).toContain("Draft");
+		expect(summary.preview?.[1]).toContain("Ready · scout · requested @smol");
+		expect(summary.preview?.[1]).toContain("Map the parser.");
+		expect(summary.preview?.join("\n")).not.toContain("# Target");
+		expect(summary.preview?.join("\n")).not.toContain("Long shared context");
+	});
+
+	it("expands every batch assignment and its dispatch details after the roster", () => {
+		const args = {
+			context: "Shared background",
+			tasks: Array.from({ length: 6 }, (_, i) => ({
+				name: `Worker${i}`,
+				task: `# Target\nAssignment${i}\nFull instructions${i}`,
+				solutionSpace: `Choice${i}`,
+				model: ["@smol", "@default"],
+				tools: ["lookup"],
+				outputSchema: { type: "object" },
+				schemaMode: "strict" as const,
+			})),
+		};
+		const collapsed = render(args);
+		expect(collapsed).toContain("2 more agents");
+		expect(collapsed).not.toContain("Full instructions");
+		const expanded = render(args, true);
+		expect(expanded).toContain("Full instructions5");
+		expect(expanded).toContain("Choice5");
+		expect(expanded).toContain("lookup");
+		expect(expanded).toContain("strict");
+		expect(expanded).toContain("object");
+		expect(expanded.indexOf("Worker5")).toBeLessThan(expanded.indexOf("Shared background"));
+		const native = taskToolRenderer.describeCall(args, { expanded: false, isPartial: true });
+		expect(JSON.stringify(native)).not.toContain("Shared background");
+		expect(JSON.stringify(native)).not.toContain("Full instructions");
+		const nativeExpanded = taskToolRenderer.describeCall(args, { expanded: true, isPartial: true });
+		expect(JSON.stringify(nativeExpanded)).toContain("Full instructions5");
+		expect(JSON.stringify(nativeExpanded)).toContain("Choice5");
+	});
+
+	it("uses actual live identities, without hiding meaningful progress or failures", () => {
+		const entry: AgentProgress = {
+			index: 0,
+			id: "ActualWorker",
+			agent: "task",
+			agentSource: "bundled",
+			status: "running",
+			task: "Inspect parser",
+			recentTools: [],
+			recentOutput: [],
+			toolCount: 0,
+			requests: 0,
+			tokens: 0,
+			cost: 0,
+			durationMs: 0,
+		};
+		const details: TaskToolDetails = { projectAgentsDir: null, results: [], totalDurationMs: 0, progress: [entry] };
+		const summarize = (text: string, isError = false) =>
+			taskToolRenderer.activitySummary(
+				{ name: "RequestedName" },
+				{
+					expanded: false,
+					isPartial: true,
+					result: { content: [{ type: "text", text }], details, isError },
+				},
+			);
+		const live = summarize("Running agent ActualWorker...");
+		expect(live.detail).toBe("1 agent");
+		expect(live.meta).toBe("1 running");
+		expect(live.preview?.[0]).toContain("ActualWorker · running");
+		expect(live.preview?.[0]).not.toContain("RequestedName");
+		expect(summarize("Important finding").preview).toBeUndefined();
+		expect(summarize("Running agent ActualWorker...", true).preview).toBeUndefined();
+		entry.recentOutput = ["Retry failed"];
+		expect(summarize("Running agent ActualWorker...").preview).toBeUndefined();
+		entry.recentOutput = [];
+		entry.extractedToolData = { yield: [{ type: "finding", data: "Keep this" }] };
+		expect(summarize("Running agent ActualWorker...").preview).toBeUndefined();
 	});
 });

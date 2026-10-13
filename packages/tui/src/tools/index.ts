@@ -17,6 +17,7 @@ import { goalToolRenderer } from "./goal";
 import { grepToolRenderer } from "./grep";
 import { waitToolRenderer } from "./wait";
 import { lspToolRenderer } from "./lsp";
+import { learnToolRenderer } from "./learn";
 import { recallToolRenderer, reflectToolRenderer, retainToolRenderer } from "./memory";
 import { readToolRenderer } from "./read";
 import type { ToolRenderer } from "./renderer";
@@ -45,6 +46,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	glob: globToolRenderer,
 	grep: grepToolRenderer,
 	lsp: lspToolRenderer,
+	learn: learnToolRenderer,
 	wait: waitToolRenderer,
 	read: readToolRenderer,
 	// Keyed by xd:// resolution-device names: the write dispatch delegates here

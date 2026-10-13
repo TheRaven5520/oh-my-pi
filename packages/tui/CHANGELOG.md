@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Task creation shows a compact agent roster and assignment summaries before shared context; full dispatch details remain expandable. Learn has a dedicated lesson/skill card with observed stored/queued and partial-error outcomes. Flat tool, Bash and Eval preview connectors now use the same dim, theme-aware tree shape and inset as Read.
 - Native tmux copy mode now refreshes incoming output while preserving its scroll anchor, including short chats and deliberate copy mode. Refresh clears residual selections rather than freezing messages. Drag entry uses a bounded snapshot handshake with the matching helper, so a one-character selection no longer disables the next expand/collapse click.
 - Tool headers use structured operations, targets and observed facts across file/search, coordination, developer, mounted and generic tools. Bash retains `$` with automatic common-command actions and optional concise overrides; expansion retains the exact command. Consecutive tools have no blank gap, while text boundaries retain one row. Individually expanded `dark-claude` panels now use `#252525` for stronger text/diff contrast.
 - With the companion tmux header configuration enabled, the Ravens image lives in the fixed pane border rather than scrollable text. A private raw-image cache supports reconnect/window replay; shutdown clears only the owning process's pane options. Native scrolling and selection remain unchanged.

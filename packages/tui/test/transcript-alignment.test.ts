@@ -117,7 +117,6 @@ describe("transcript content column", () => {
 								rows.map(row => row.toLowerCase()),
 								name,
 							);
-							expect(rows[1]?.search(/\S/)).toBe(2);
 						}
 					}
 				}
@@ -134,7 +133,6 @@ describe("transcript content column", () => {
 				const cellRows = surface(cell, width, `cell expanded=${expanded}`);
 				expectColumn(cellRows, ">>>");
 				if (expanded) expectColumn(cellRows, "Output first");
-				else expect(cellRows[1]?.search(/\S/)).toBe(2);
 				const read = new ReadToolGroupComponent();
 				read.updateArgs({ path: "example.txt" }, "read");
 				read.updateResult({ content: [{ type: "text", text: output }] }, false, "read");

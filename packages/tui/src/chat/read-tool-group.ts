@@ -16,7 +16,7 @@ import {
 } from "../tools/read";
 import { PREVIEW_LIMITS, shortenPath } from "../render/render-utils";
 import { fileHyperlink, renderCodeCell } from "../render";
-import { expandedToolRows } from "../render/utils";
+import { compactOutputIndent, expandedToolRows } from "../render/utils";
 import { TranscriptMarkerText } from "./transcript-content";
 import { truncateToWidth } from "../utils";
 import { canonicalizeMessage } from "./thinking-display";
@@ -420,10 +420,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 						.replace(/^Error:\s*/, "")
 						.trim() || "Read failed";
 				lines.push(
-					theme.fg("error", `  └ ${rows.length > 1 ? `${entry.path}: ` : ""}${error.replace(/\s+/g, " ")}`),
+					`${compactOutputIndent(theme).lead}${theme.fg("error", `${rows.length > 1 ? `${entry.path}: ` : ""}${error.replace(/\s+/g, " ")}`)}`,
 				);
 			}
-			if (entry.warningText) lines.push(`  └ ${entry.warningText}`);
+			if (entry.warningText) lines.push(`${compactOutputIndent(theme).lead}${entry.warningText}`);
 		}
 		return lines.map(line => truncateToWidth(line, width));
 	}

@@ -96,9 +96,14 @@ describe("task progress rendering", () => {
 		for (const call of [true, false]) {
 			const collapsed = render(false, call);
 			const expanded = render(true, call);
-			expect(collapsed).toContain("Goal item 1");
+			if (call) {
+				expect(collapsed).not.toContain("Goal item 1");
+				expect(collapsed).not.toContain("more lines");
+			} else {
+				expect(collapsed).toContain("Goal item 1");
+				expect(collapsed).toContain("more lines");
+			}
 			expect(collapsed).not.toContain("Goal item 12");
-			expect(collapsed).toContain("more lines");
 			expect(collapsed).toContain("Briefed");
 			expect(collapsed).not.toMatch(/#1: #/);
 			expect(collapsed.split("\n").length).toBeLessThan(20);

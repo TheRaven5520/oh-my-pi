@@ -467,66 +467,85 @@ export function agentTypeBadge(agent: string | undefined, theme: Theme): string 
 	return ` ${theme.fg("dim", `${theme.format.bracketLeft}${trimmed}${theme.format.bracketRight}`)}`;
 }
 
-/**
- * Render the call preview lines for the single spawned agent. The
- * args stream in token by token, so every field access is defensive.
- */
-function renderTaskCallLines(args: Partial<TaskParams> | undefined, theme: Theme): string[] {
-	if (!args) return [];
-	const bullet = theme.fg("dim", "•");
-	const lines: string[] = [];
-
-	const rawName = typeof args.name === "string" ? args.name.trim() : "";
-	const idLabel = rawName ? formatTaskId(rawName) : "";
-	const brief = typeof args.task === "string" ? taskSummaryLine(args.task) : "";
-	if (idLabel || brief) {
-		let line = `${bullet} ${theme.fg("accent", theme.bold(idLabel || "agent"))}`;
-		if (brief) {
-			line += `: ${theme.fg("muted", previewLine(brief, 64))}`;
-		}
-		line += agentTypeBadge(args.agent, theme);
-		lines.push(line);
-	}
-	lines.push(...renderTaskItemLines(args.tasks, theme));
-	return lines;
+/** Streaming arguments are requests, not evidence that any agent has launched. */
+function requestedTasks(args: Partial<TaskParams> | undefined): TaskItem[] {
+	const entries = Array.isArray(args?.tasks) ? args.tasks : args ? [args] : [];
+	return entries.filter(
+		item =>
+			item &&
+			[item.name, item.agent, item.task, item.model, item.solutionSpace].some(value =>
+				typeof value === "string" ? value.trim().length > 0 : Array.isArray(value) && value.length > 0,
+			),
+	);
 }
 
-/**
- * Agent rows shown per collapsed task list; the rest fold into a single
- * `… N more agents` summary line (expand uncaps).
- */
+function creationBrief(task: string | undefined): string {
+	return typeof task === "string"
+		? taskSummaryLine(
+				task
+					.split("\n")
+					.filter(line => !/^\s*#{1,6}\s/.test(line))
+					.join("\n"),
+			)
+		: "";
+}
+
+function requestedModel(item: TaskItem): string | undefined {
+	const model = Array.isArray(item.model) ? item.model.join(" → ") : item.model;
+	return typeof model === "string" && model.trim() ? `requested ${oneLineLabel(model, 100)}` : undefined;
+}
+
+function requestCount(args: Partial<TaskParams> | undefined): number {
+	return requestedTasks(args).filter(
+		item =>
+			typeof item.task === "string" &&
+			item.task.trim() &&
+			typeof item.solutionSpace === "string" &&
+			item.solutionSpace.trim(),
+	).length;
+}
+
+function creationRows(args: Partial<TaskParams> | undefined): string[] {
+	return requestedTasks(args).map((item, index) => {
+		const name =
+			typeof item.name === "string" && item.name.trim() ? formatTaskId(oneLineLabel(item.name)) : `#${index + 1}`;
+		const agent = typeof item.agent === "string" && item.agent.trim() ? oneLineLabel(item.agent) : undefined;
+		const brief = creationBrief(item.task);
+		return [
+			name,
+			agent,
+			requestedModel(item),
+			item.isolated ? "isolated" : undefined,
+			brief ? previewLine(brief, 64) : "assignment pending",
+		]
+			.filter(Boolean)
+			.join(" · ");
+	});
+}
+
+/** Full request details live behind expansion, never before the roster. */
+function assignmentDetails(item: TaskItem): string {
+	const metadata = [
+		item.solutionSpace ? `## Solution space\n${item.solutionSpace}` : undefined,
+		requestedModel(item),
+		item.effort ? `Effort: ${item.effort}` : undefined,
+		item.tools ? `Tools: ${item.tools.join(", ")}` : undefined,
+		item.schemaMode ? `Schema mode: ${item.schemaMode}` : undefined,
+		item.outputSchema !== undefined
+			? `## Output schema\n\`\`\`json\n${JSON.stringify(item.outputSchema, null, 2)}\n\`\`\``
+			: undefined,
+	];
+	return [item.task, ...metadata].filter(Boolean).join("\n\n");
+}
+
+/** Agent rows shown before an expand hint in a collapsed card. */
 const COLLAPSED_AGENT_LIMIT = 4;
 
-/**
- * Render the per-item list (`name` + `task` brief) for a batch call's
- * streaming preview. The args stream in token by token, so the array grows
- * over time and trailing entries may be partially parsed — every field access
- * is defensive.
- */
-function renderTaskItemLines(tasks: TaskItem[] | undefined, theme: Theme): string[] {
-	if (!Array.isArray(tasks) || tasks.length === 0) return [];
-
-	const bullet = theme.fg("dim", "•");
-	const cap = Math.min(tasks.length, COLLAPSED_AGENT_LIMIT);
-	const lines: string[] = [];
-	for (let i = 0; i < cap; i++) {
-		const item = tasks[i] as Partial<TaskItem> | undefined;
-		const rawName = typeof item?.name === "string" ? item.name.trim() : "";
-		const idLabel = rawName ? formatTaskId(rawName) : `#${i + 1}`;
-		let line = `${bullet} ${theme.fg("accent", theme.bold(idLabel))}`;
-		const brief = typeof item?.task === "string" ? taskSummaryLine(item.task) : "";
-		if (brief) {
-			line += `: ${theme.fg("muted", previewLine(brief, 64))}`;
-		}
-		line += agentTypeBadge(item?.agent, theme);
-		if (item?.isolated === true) {
-			line += theme.fg("dim", " [isolated]");
-		}
-		lines.push(line);
-	}
-	if (cap < tasks.length) {
-		lines.push(`${bullet} ${theme.fg("dim", formatMoreItems(tasks.length - cap, "agent"))}`);
-	}
+function renderTaskCallLines(args: Partial<TaskParams> | undefined, theme: Theme, expanded = false): string[] {
+	const rows = creationRows(args);
+	const shown = expanded ? rows : rows.slice(0, COLLAPSED_AGENT_LIMIT);
+	const lines = shown.map(row => `${theme.fg("dim", "•")} ${theme.fg("muted", row)}`);
+	if (shown.length < rows.length) lines.push(theme.fg("dim", formatMoreItems(rows.length - shown.length, "agent")));
 	return lines;
 }
 
@@ -619,11 +638,10 @@ export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: 
 		{
 			iconOverride: theme.styledSymbol("tool.task", "accent"),
 			title: "Task",
-			description: formatAgentHeaderLabel(args),
+			description: `${requestCount(args) ? `${agentCountLabel(requestCount(args))} · ` : ""}requested`,
 		},
 		theme,
 	);
-	const assignmentSection = createAssignmentSectionRenderer(args, theme);
 	const contextSection = createContextSectionRenderer(args, theme);
 	return framedToolCard(theme, ({ width }) => {
 		const sections: TaskRenderSection[] = [];
@@ -633,18 +651,21 @@ export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: 
 		// same agent (and the assignment brief) itself, so showing it here would
 		// repeat what the result frame already shows.
 		if (!options.renderContext?.hasResult) {
-			// Mirror renderResult's layout — context, assignment, then the
-			// per-agent list — so the agent rows do not jump from above the
-			// brief to below it when the first progress snapshot replaces the
-			// call view. This also matches the schema's field order (`context`
-			// streams before `tasks`), so the streaming preview grows
-			// append-only instead of inserting agent rows above the
-			// already-rendered markdown and pushing it down on every item.
-			if (contextSection) sections.push(contextSection(width, options.expanded === true));
-			if (assignmentSection) sections.push(assignmentSection(width, options.expanded === true));
-			const callLines = renderTaskCallLines(args, theme);
-			// Guarded: an empty trailing section would still draw its divider.
-			if (callLines.length > 0) sections.push({ separator: true, content: callLines });
+			const callLines = renderTaskCallLines(args, theme, options.expanded);
+			if (callLines.length > 0) sections.push({ content: callLines });
+			if (options.expanded) {
+				if (contextSection)
+					sections.push({ ...contextSection(width, true), label: "Shared context", separator: true });
+				for (const [index, item] of requestedTasks(args).entries()) {
+					const text = assignmentDetails(item);
+					if (text)
+						sections.push({
+							...createMarkdownSectionRenderer(text, theme)(width, true),
+							label: typeof item.name === "string" ? oneLineLabel(item.name) : `#${index + 1}`,
+							separator: true,
+						});
+				}
+			}
 		}
 
 		return {
@@ -1320,6 +1341,12 @@ export function renderResult(
 	const agentLabel = formatAgentHeaderLabel(args);
 	const assignmentSection = createAssignmentSectionRenderer(args, theme);
 	const contextSection = createContextSectionRenderer(args, theme);
+	const requestSections = options.expanded
+		? requestedTasks(args).map((item, index) => ({
+				label: `Requested ${typeof item.name === "string" ? oneLineLabel(item.name) : `#${index + 1}`}`,
+				render: createMarkdownSectionRenderer(assignmentDetails(item), theme),
+			}))
+		: [];
 
 	if (!details) {
 		const text = result.content.find(c => c.type === "text")?.text || "";
@@ -1340,6 +1367,11 @@ export function renderResult(
 				...(contextSection ? [contextSection(width, options.expanded === true)] : []),
 				...(assignmentSection ? [assignmentSection(width, options.expanded === true)] : []),
 				...(text ? [{ separator: true, content: [theme.fg("dim", truncateToWidth(text, width))] }] : []),
+				...requestSections.map(section => ({
+					...section.render(width, true),
+					label: section.label,
+					separator: true,
+				})),
 			],
 			phase: errored ? "error" : "success",
 			borderColor: errored ? "error" : "borderMuted",
@@ -1499,6 +1531,11 @@ export function renderResult(
 					...(contextSection ? [contextSection(width, options.expanded === true)] : []),
 					...(assignmentSection ? [assignmentSection(width, options.expanded === true)] : []),
 					{ separator: true, content: [theme.fg("dim", truncateToWidth(text, width))] },
+					...requestSections.map(section => ({
+						...section.render(width, true),
+						label: section.label,
+						separator: true,
+					})),
 				],
 				phase,
 				borderColor,
@@ -1529,6 +1566,11 @@ export function renderResult(
 				...(contextSection ? [contextSection(width, options.expanded === true)] : []),
 				...(assignmentSection ? [assignmentSection(width, options.expanded === true)] : []),
 				...(lines.length > 0 ? [{ separator: true, content: lines }] : []),
+				...requestSections.map(section => ({
+					...section.render(width, true),
+					label: section.label,
+					separator: true,
+				})),
 			],
 			phase,
 			borderColor,
@@ -1964,51 +2006,33 @@ function agentCountLabel(count: number): string {
 	return `${count} ${pluralize("agent", count)}`;
 }
 
-/** Streaming call: the context line, then a pending agent per requested spawn. */
-function describeTaskCall(args: TaskParams | undefined): NativeToolView {
-	const agents: NativeNode[] = [];
-	const pending = (name: string, agent: unknown, brief: unknown, isolated: unknown, key: string): NativeNode =>
+/** Requested agents precede shared context; full assignments are expansion-only. */
+function describeTaskCall(args: TaskParams | undefined, expanded: boolean): NativeToolView {
+	const agents = requestedTasks(args).map((item, index) =>
 		agentNode(
 			{
-				name,
-				agent: typeof agent === "string" && agent.trim() ? agent.trim() : undefined,
-				task: typeof brief === "string" ? taskSummary(brief) || undefined : undefined,
+				name:
+					typeof item.name === "string" && item.name.trim()
+						? formatTaskId(oneLineLabel(item.name))
+						: `#${index + 1}`,
+				agent: typeof item.agent === "string" ? item.agent : undefined,
+				task: [creationBrief(item.task), requestedModel(item)].filter(Boolean).join(" · ") || undefined,
 				status: "pending",
-				badges: agentBadges(false, isolated === true),
+				badges: agentBadges(false, item.isolated === true),
 			},
-			[],
-			key,
-		);
-	const flatName = typeof args?.name === "string" ? args.name.trim() : "";
-	if (flatName || (typeof args?.task === "string" ? taskSummaryLine(args.task) : "")) {
-		agents.push(
-			pending(
-				flatName ? formatTaskId(flatName) : "agent",
-				args?.agent,
-				args?.task,
-				args?.isolated,
-				flatName || "agent",
-			),
-		);
-	}
-	if (Array.isArray(args?.tasks)) {
-		args.tasks.forEach((entry, index) => {
-			const name = typeof entry?.name === "string" ? entry.name.trim() : "";
-			agents.push(
-				pending(
-					name ? formatTaskId(name) : `#${index + 1}`,
-					entry?.agent,
-					entry?.task,
-					entry?.isolated,
-					name || `#${index + 1}`,
-				),
-			);
-		});
-	}
-	const target = agents.length > 1 ? agentCountLabel(agents.length) : formatAgentHeaderLabel(args);
+			expanded ? [describeAssignment(assignmentDetails(item))] : [],
+			`request-${index}`,
+		),
+	);
+	const count = requestCount(args);
 	return {
-		tool: { title: "Task", target, targetKind: target ? "text" : undefined },
-		body: compact([describeContext(args?.context), ...agents]),
+		tool: {
+			title: "Task",
+			target: count ? agentCountLabel(count) : undefined,
+			targetKind: count ? "text" : undefined,
+			note: "requested",
+		},
+		body: compact([...agents, expanded ? describeAssignment(args?.context) : undefined]),
 	};
 }
 
@@ -2020,18 +2044,25 @@ function describeTaskResult(
 	const details = result.details;
 	const context = describeContext(args?.context);
 	const agentLabel = formatAgentHeaderLabel(args);
+	const requestSections = options.expanded
+		? requestedTasks(args).map((item, index) =>
+				describeAssignment(
+					`## Requested ${typeof item.name === "string" ? oneLineLabel(item.name) : `#${index + 1}`}\n\n${assignmentDetails(item)}`,
+				),
+			)
+		: [];
 	if (!details) {
 		const fallback = resultText(result).trim();
 		if (result.isError) {
 			return {
 				tool: { title: "Task", target: agentLabel, targetKind: "text" },
 				tone: "error",
-				body: compact([context, errorText(fallback || "Task failed")]),
+				body: compact([context, errorText(fallback || "Task failed"), ...requestSections]),
 			};
 		}
 		return {
 			tool: { title: "Task", target: agentLabel, targetKind: agentLabel ? "text" : undefined },
-			body: compact([context, fallback ? noteText(fallback, "dim") : undefined]),
+			body: compact([context, fallback ? noteText(fallback, "dim") : undefined, ...requestSections]),
 		};
 	}
 	// Ages are sampled once per snapshot; the terminal advances them.
@@ -2096,6 +2127,7 @@ function describeTaskResult(
 			...agents,
 			count === 0 ? noteText(fallback.trim() || "No results", "dim") : undefined,
 			trailer ? text([span(plainText(trailer), "muted")], { wrap: "word", role: "omp.tool.stats" }) : undefined,
+			...requestSections,
 		]),
 	};
 }
@@ -2119,20 +2151,58 @@ export const taskToolRenderer = {
 			progress.filter(entry => entry.status === "completed").length;
 		const running = progress.filter(entry => entry.status === "running").length;
 		const pending = progress.filter(entry => entry.status === "pending").length;
+		const active = progress.filter(entry => entry.status === "running");
+		const output =
+			context.result?.content
+				.filter(block => block.type === "text")
+				.map(block => block.text ?? "")
+				.join("\n") ?? "";
+		const rosterOnly =
+			output === `Running ${active.length} agents: ${active.map(entry => entry.id).join(", ")}` ||
+			output === `Running ${active.length} agents...` ||
+			active.some(
+				entry =>
+					output === `Running agent ${entry.id}` ||
+					output === `Running agent ${entry.id}...` ||
+					output === `Running background task ${entry.id}...`,
+			);
+		const plainProgress =
+			progress.length > 0 &&
+			results.length === 0 &&
+			progress.every(
+				entry =>
+					(entry.status === "running" || entry.status === "pending") &&
+					!entry.recentOutput.length &&
+					!entry.retryFailure &&
+					!entry.retryState &&
+					!entry.currentToolIntent &&
+					!entry.lastIntent &&
+					!entry.extractedToolData &&
+					!entry.inflightTaskDetails,
+			);
+		const preview = !context.result
+			? creationRows(args)
+			: !context.result.isError && rosterOnly && plainProgress
+				? [...progress]
+						.sort((a, b) => a.index - b.index)
+						.map(entry =>
+							[formatTaskId(entry.id), entry.status, entry.resolvedModel, creationBrief(entry.task)]
+								.filter(Boolean)
+								.join(" · "),
+						)
+				: undefined;
+		const count = context.result ? results.length + progress.length : requestCount(args);
 		const names =
-			[...results, ...progress]
-				.sort((a, b) => a.index - b.index)
-				.map(entry => entry.id)
-				.join(", ") ||
-			args?.tasks
-				?.map(task => task.name)
-				.filter(Boolean)
-				.join(", ") ||
-			args?.name ||
-			args?.agent;
+			context.result && !preview
+				? [...results, ...progress]
+						.sort((a, b) => a.index - b.index)
+						.map(entry => entry.id)
+						.join(", ")
+				: undefined;
 		return {
 			label: "Task",
-			detail: names,
+			detail: names || (count ? agentCountLabel(count) : undefined),
+			preview,
 			meta:
 				[
 					running ? `${running} running` : undefined,
@@ -2142,7 +2212,7 @@ export const taskToolRenderer = {
 					cancelled ? `${cancelled} cancelled` : undefined,
 				]
 					.filter(Boolean)
-					.join(" · ") || undefined,
+					.join(" · ") || (!context.result ? "requested" : undefined),
 			// Completed output may include findings, warnings or patch instructions.
 			receipt: false,
 		};
@@ -2180,7 +2250,9 @@ export const taskToolRenderer = {
 			.join("\n");
 	},
 	describeCall(args: TaskParams, options: RenderResultOptions): NativeToolView | undefined {
-		return taskCallMemo.get(args, [options.argsComplete], () => describeTaskCall(args));
+		return taskCallMemo.get(args, [options.argsComplete, options.expanded], () =>
+			describeTaskCall(args, options.expanded),
+		);
 	},
 	describeResult(
 		result: ToolRenderResult<TaskToolDetails>,

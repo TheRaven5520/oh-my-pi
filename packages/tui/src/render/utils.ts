@@ -6,6 +6,13 @@ import type { Theme, ThemeBg } from "../theme/theme";
 import { padding, truncateToWidth, visibleWidth } from "../utils";
 import type { State } from "./types";
 
+/** Match Read's flat summary inset, with continuation aligned by visible columns. */
+export function compactOutputIndent(theme: Theme): { lead: string; continuation: string; width: number } {
+	const lead = `   ${theme.fg("dim", theme.tree.last)} `;
+	const width = visibleWidth(lead);
+	return { lead, continuation: " ".repeat(width), width };
+}
+
 const SGR = /\x1b\[([0-9;:]*)m/g;
 
 /** Preserve combined PTY foreground/style parameters while removing nested fills. */
