@@ -1,0 +1,22 @@
+{
+  "auth.broker.url": "https://sprilicred.example",
+  "cycleModels": [
+    "sprilicred-anthropic/*",
+    "sprilicred-openai/*",
+    "sprilicred-deepseek/*"
+  ],
+  "enabledModels": [],
+  "modelProviderOrder": [],
+  "modelRoles": {
+    "default": "sprilicred-anthropic/claude-sonnet-5",
+    "smol": "sprilicred-anthropic/claude-haiku-4-5",
+    "tiny": "sprilicred-anthropic/claude-haiku-4-5",
+    "judge": "sprilicred-anthropic/claude-haiku-4-5",
+    "slow": "sprilicred-openai/gpt-6.1-sol",
+    "web": "sprilicred-anthropic/claude-haiku-4-5"
+  },
+  "modelPresets": {},
+  "retry.fallbackChains": {},
+  "retry.usageLimitFallbackChains": {},
+  "auth.broker.token": ""
+}

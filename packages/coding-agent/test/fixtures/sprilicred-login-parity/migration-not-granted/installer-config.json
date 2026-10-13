@@ -1,0 +1,45 @@
+{
+  "auth.broker.url": "https://sprilicred.example",
+  "cycleModels": [
+    "sprilicred-anthropic/claude-opus-5-5",
+    "sprilicred-openai/*"
+  ],
+  "enabledModels": [
+    "sprilicred-anthropic/*",
+    "sprilicred-openai/*",
+    "mine/*"
+  ],
+  "modelProviderOrder": [
+    "sprilicred-openai",
+    "personal-openai"
+  ],
+  "modelRoles": {
+    "default": "sprilicred-anthropic/claude-sonnet-5",
+    "smol": "sprilicred-anthropic/claude-haiku-4-5",
+    "tiny": "sprilicred-anthropic/claude-haiku-4-5",
+    "judge": "sprilicred-anthropic/claude-haiku-4-5",
+    "slow": "sprilicred-openai/gpt-6.1-sol",
+    "web": "sprilicred-anthropic/claude-haiku-4-5",
+    "plan": "sprilicred-openai/gpt-6-astra:low"
+  },
+  "modelPresets": {
+    "work": {
+      "modelRoles": {
+        "slow": "sprilicred-openai/gpt-6.1-sol"
+      },
+      "defaultThinkingLevel": "high"
+    },
+    "muse-wonder": {
+      "modelRoles": {
+        "default": "sprilicred-openai/gpt-6-astra"
+      }
+    }
+  },
+  "retry.fallbackChains": {},
+  "retry.usageLimitFallbackChains": {
+    "sprilicred-openai/*": [
+      "personal-openai/*"
+    ]
+  },
+  "auth.broker.token": ""
+}
