@@ -22,6 +22,7 @@ function makeSession(fetchUsageReports: (signal?: AbortSignal) => Promise<unknow
 		state: { messages, model: { contextWindow: 200_000 } },
 		model: { contextWindow: 200_000 },
 		isStreaming: false,
+		isFastModeActive: () => false,
 		sessionManager: {
 			getUsageStatistics: () => ({
 				input: 0,
@@ -153,6 +154,171 @@ describe("StatusLineComponent usage refresh", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		resetSettingsForTest();
+	});
+
+	it("shows only the active route's pool, never a Claude model's unrelated subscription", async () => {
+		const reports = [
+			{
+				provider: "anthropic",
+				metadata: { sprilicredAccountId: "claude-pool" },
+				limits: [
+					{ id: "5h", scope: { windowId: "5h" }, amount: { usedFraction: 0.24 } },
+					{ id: "7d", scope: { windowId: "7d" }, amount: { usedFraction: 0.28 } },
+				],
+			},
+			{
+				provider: "openai-codex",
+				metadata: { sprilicredAccountId: "codex-pool" },
+				limits: [{ id: "7d", scope: { windowId: "7d" }, amount: { usedFraction: 0.61 } }],
+			},
+		];
+		for (const [provider, providerType, identityClass, quota] of [
+			["sprilicred-anthropic", undefined, "anthropic", "28%"],
+			["anthropic", undefined, "anthropic", "28%"],
+			["sprilicred-openai", undefined, "openai", "61%"],
+			["openai-codex", undefined, "openai", "61%"],
+			["openrouter", undefined, "anthropic", undefined],
+			["sprilicred-openrouter", undefined, "anthropic", undefined],
+			["openai", undefined, "openai", undefined],
+			["sprilicred-anthropic", "openrouter", "anthropic", undefined],
+			["sprilicred-openai", undefined, "glm", undefined],
+			["sprilicred-openai", undefined, "deepseek", undefined],
+			["sprilicred-openai", undefined, "unknown", undefined],
+			["sprilicred-openai", undefined, "anthropic", undefined],
+			[undefined, undefined, "anthropic", undefined],
+		]) {
+			const session = makeSession(async () => reports);
+			// The same Anthropic wire API does not establish quota applicability.
+			// Legacy proxy rows must also match the subscription's model lineage.
+			const model = {
+				id: identityClass === "openai" ? "gpt-6-astra" : "claude-opus-5-5",
+				provider,
+				providerType,
+				api: "anthropic-messages",
+				identity: { class: identityClass },
+				contextWindow: 200_000,
+			};
+			Object.assign(session, { model, state: { messages: [], model } });
+			const component = new StatusLineComponent(session, statusLineHost);
+			try {
+				component.updateSettings({ preset: "custom", leftSegments: [], rightSegments: ["usage"] });
+				await refreshUsage(component);
+				const content = plain(component.getTopBorder(200).content);
+				if (quota) expect(content).toContain(quota);
+				else {
+					expect(content).not.toMatch(/5h|7d|28%|61%/);
+					component.updateSettings({ preset: "claude" });
+					expect(plain(component.getTopBorder(200).content)).not.toMatch(/\b5h\b|\bwk\b|\bfable\b/);
+				}
+			} finally {
+				component.dispose();
+			}
+		}
+	});
+
+	it("drops cached pooled totals when only the discovery route changes", async () => {
+		const reports = [
+			{
+				provider: "anthropic",
+				metadata: { sprilicredAccountId: "pool" },
+				limits: [{ id: "7d", scope: { windowId: "7d" }, amount: { usedFraction: 0.28 } }],
+			},
+		];
+		const session = makeSession(async () => reports);
+		const model = {
+			id: "claude-opus-5-5",
+			provider: "sprilicred-anthropic",
+			providerType: "anthropic",
+			contextWindow: 200_000,
+		};
+		Object.assign(session, { model, state: { messages: [], model } });
+		const component = new StatusLineComponent(session, statusLineHost);
+		try {
+			component.updateSettings({ preset: "custom", leftSegments: [], rightSegments: ["usage"] });
+			await refreshUsage(component);
+			expect(plain(component.getTopBorder(200).content)).toContain("28%");
+			model.providerType = "openrouter";
+			component.refreshUsageInBackground();
+			expect(plain(component.getTopBorder(200).content)).not.toContain("28%");
+			await refreshUsage(component);
+			expect(plain(component.getTopBorder(200).content)).not.toContain("28%");
+			model.providerType = "anthropic";
+			await refreshUsage(component);
+			expect(plain(component.getTopBorder(200).content)).toContain("28%");
+			// Mutating a discovery source must also miss the render memo without
+			// an explicit refresh or a replacement model object.
+			expect(JSON.stringify(component.describeComposerFacts())).toContain("28%");
+			model.providerType = "openrouter";
+			expect(JSON.stringify(component.describeComposerFacts())).not.toContain("28%");
+			expect(plain(component.getTopBorder(200).content)).not.toContain("28%");
+		} finally {
+			component.dispose();
+		}
+	});
+
+	it.each(["endpoint", "lineage"])("invalidates quota renders when only %s changes", async change => {
+		const reports = [
+			{
+				provider: "openai-codex",
+				metadata: { sprilicredAccountId: "pool" },
+				limits: [{ id: "7d", scope: { windowId: "7d" }, amount: { usedFraction: 0.61 } }],
+			},
+		];
+		const session = makeSession(async () => reports);
+		const model = {
+			id: "gpt-6-astra",
+			provider: "sprilicred-openai",
+			identity: { class: "openai" },
+			baseUrl: "https://gateway.example/v1",
+			contextWindow: 200_000,
+		};
+		Object.assign(session, { model, state: { messages: [], model } });
+		const component = new StatusLineComponent(session, statusLineHost);
+		try {
+			component.updateSettings({ preset: "custom", leftSegments: [], rightSegments: ["usage"] });
+			await refreshUsage(component);
+			expect(plain(component.getTopBorder(200).content)).toContain("61%");
+			if (change === "endpoint") model.baseUrl = "https://gateway.example/openrouter/v1";
+			else model.identity.class = "deepseek";
+			expect(plain(component.getTopBorder(200).content)).not.toContain("61%");
+			await refreshUsage(component);
+			expect(plain(component.getTopBorder(200).content)).not.toContain("61%");
+		} finally {
+			component.dispose();
+		}
+	});
+
+	it("does not let an old route's in-flight response populate or delay the new route", async () => {
+		const pending = Promise.withResolvers<unknown>();
+		let calls = 0;
+		const session = makeSession(() => (++calls === 1 ? pending.promise : Promise.resolve([])));
+		const model = {
+			id: "claude-opus-5-5",
+			provider: "sprilicred-anthropic",
+			providerType: "anthropic",
+			contextWindow: 200_000,
+		};
+		Object.assign(session, { model, state: { messages: [], model } });
+		const component = new StatusLineComponent(session, statusLineHost);
+		try {
+			component.updateSettings({ preset: "claude" });
+			await refreshUsage(component);
+			model.providerType = "openrouter";
+			component.refreshUsageInBackground();
+			pending.resolve([
+				{
+					provider: "anthropic",
+					metadata: { sprilicredAccountId: "pool" },
+					limits: [{ id: "7d", scope: { windowId: "7d" }, amount: { usedFraction: 0.28 } }],
+				},
+			]);
+			await flushMicrotasks();
+			await refreshUsage(component);
+			expect(calls).toBe(2);
+			expect(plain(component.getTopBorder(200).content)).not.toMatch(/\b5h\b|\bwk\b|\bfable\b/);
+		} finally {
+			component.dispose();
+		}
 	});
 
 	it("does not invoke usage fetching synchronously on the render path", async () => {

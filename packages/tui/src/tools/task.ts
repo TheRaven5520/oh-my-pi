@@ -2,7 +2,7 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ThemeColor } from "../theme/theme";
 import type { ConfiguredThinkingLevel } from "../render/render-utils";
-import type { ToolRenderer } from "./renderer";
+import type { ToolActivityContext, ToolRenderer } from "./renderer";
 /**
  * TUI rendering for task tool.
  *
@@ -2054,14 +2054,14 @@ function describeTaskResult(
 	for (const res of details.results ?? []) {
 		requests += res.requests ?? 0;
 		if (res.aborted) aborted++;
-		else if (res.exitCode !== 0) failed++;
-		else if (!res.error) succeeded++;
+		else if (res.exitCode !== 0 || res.error) failed++;
+		else succeeded++;
 	}
 	const summary: string[] = [];
 	if ((details.results ?? []).length > 0) {
-		if (succeeded) summary.push(`${succeeded} succeeded`);
+		if (succeeded) summary.push(`${succeeded} done`);
 		if (failed) summary.push(`${failed} failed`);
-		if (aborted) summary.push(`${aborted} aborted`);
+		if (aborted) summary.push(`${aborted} cancelled`);
 		if (requests) summary.push(`${formatNumber(requests)} req`);
 		summary.push(formatDuration(details.totalDurationMs));
 	}
@@ -2105,20 +2105,79 @@ const taskResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /** Renders task calls and their live or settled agent results. */
 export const taskToolRenderer = {
+	activitySummary(args: TaskParams, context: ToolActivityContext) {
+		const details = context.result?.details as TaskToolDetails | undefined;
+		const results = details?.results ?? [];
+		const progress = (details?.progress ?? []).filter(entry => !results.some(result => result.id === entry.id));
+		const failed =
+			results.filter(result => !result.aborted && (result.exitCode !== 0 || result.error)).length +
+			progress.filter(entry => entry.status === "failed").length;
+		const cancelled =
+			results.filter(result => result.aborted).length + progress.filter(entry => entry.status === "aborted").length;
+		const done =
+			results.filter(result => !result.aborted && result.exitCode === 0 && !result.error).length +
+			progress.filter(entry => entry.status === "completed").length;
+		const running = progress.filter(entry => entry.status === "running").length;
+		const pending = progress.filter(entry => entry.status === "pending").length;
+		const names =
+			[...results, ...progress]
+				.sort((a, b) => a.index - b.index)
+				.map(entry => entry.id)
+				.join(", ") ||
+			args?.tasks
+				?.map(task => task.name)
+				.filter(Boolean)
+				.join(", ") ||
+			args?.name ||
+			args?.agent;
+		return {
+			label: "Task",
+			detail: names,
+			meta:
+				[
+					running ? `${running} running` : undefined,
+					pending ? `${pending} pending` : undefined,
+					done ? `${done} done` : undefined,
+					failed ? `${failed} failed` : undefined,
+					cancelled ? `${cancelled} cancelled` : undefined,
+				]
+					.filter(Boolean)
+					.join(" · ") || undefined,
+			// Completed output may include findings, warnings or patch instructions.
+			receipt: false,
+		};
+	},
 	renderCall,
 	renderResult,
 	visibleOutput(output: string, details: TaskToolDetails | undefined, options: RenderResultOptions): string {
 		if (!options.isPartial || !details?.progress) return output;
-		// The latest text belongs to whichever child just reported. The compact
-		// card needs the whole live roster, not that interleaved progress tail.
-		const running = details.progress
-			.filter(
-				progress => progress.status === "running" && !details.results.some(result => result.id === progress.id),
-			)
-			.sort((a, b) => a.index - b.index);
+		const running = details.progress.filter(
+			progress => progress.status === "running" && !details.results.some(result => result.id === progress.id),
+		);
 		if (running.length === 0) return output;
 		const names = running.map(progress => progress.id).join(", ");
-		return running.length === 1 ? `Running agent ${names}` : `Running ${running.length} agents: ${names}`;
+		// Match only known roster-only output, not arbitrary child prose. The
+		// activity head carries the actual ids and count; useful progress stays below.
+		const rosterOnly =
+			output === `Running ${running.length} agents: ${names}` ||
+			output === `Running ${running.length} agents...` ||
+			running.some(
+				progress =>
+					output === `Running agent ${progress.id}` ||
+					output === `Running agent ${progress.id}...` ||
+					output === `Running background task ${progress.id}...`,
+			);
+		if (!rosterOnly) return output;
+		return details.progress
+			.flatMap(progress => {
+				const messages = [...progress.recentOutput];
+				const failure = progress.retryFailure?.errorMessage ?? progress.retryState?.errorMessage;
+				if (failure) messages.push(failure);
+				const intent = progress.currentToolIntent ?? progress.lastIntent;
+				if (intent) messages.push(intent);
+				return messages.map(message => `${progress.id}: ${message}`);
+			})
+			.join("\n");
 	},
 	describeCall(args: TaskParams, options: RenderResultOptions): NativeToolView | undefined {
 		return taskCallMemo.get(args, [options.argsComplete], () => describeTaskCall(args));

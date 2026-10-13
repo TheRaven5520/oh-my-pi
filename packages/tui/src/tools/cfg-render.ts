@@ -16,7 +16,7 @@ import {
 } from "../render/render-utils";
 import { highlightCode, type Theme } from "../theme/theme";
 import { parseCfgUrl } from "./cfg-url";
-import type { NativeToolView, RenderResultOptions } from "./renderer";
+import type { NativeToolView, RenderResultOptions, ToolActivitySummary } from "./renderer";
 import { card, type CardToolResult, firstText, safe } from "./result-card";
 import { code, compact, span, text } from "../native/describe";
 import { plainText } from "../native/spans";
@@ -47,6 +47,19 @@ export interface CfgWriteDetails {
 	effective?: string;
 }
 
+/** Shared compact facts for reads of settings or namespaces. */
+export function cfgReadActivity(url: string, details?: CfgReadDetails): ToolActivitySummary {
+	const path = (details?.path ?? parseCfgUrl(url)?.segments.join(".")) || "all settings";
+	return {
+		label: "Config",
+		detail: `read ${path}`,
+		meta: details
+			? `${details.count} ${details.count === 1 ? "setting" : "settings"}${details.modified ? ` · ${details.modified} modified` : ""}`
+			: undefined,
+		receipt: false,
+	};
+}
+
 /** Render `read cfg://…`: pending header, or the highlighted listing with counts. */
 export function renderCfgRead(
 	url: string,
@@ -65,7 +78,7 @@ export function renderCfgRead(
 			{
 				icon: result === undefined ? "pending" : result.isError ? "error" : "info",
 				title: "Config",
-				description: (details?.path ?? parseCfgUrl(url)?.segments.join(".")) || "all settings",
+				description: cfgReadActivity(url, details).detail,
 				meta,
 			},
 			theme,
@@ -86,7 +99,7 @@ export function describeCfgRead(
 	result: CardToolResult | undefined,
 	details: CfgReadDetails | undefined,
 ): NativeToolView {
-	const description = (details?.path ?? parseCfgUrl(url)?.segments.join(".")) || "all settings";
+	const description = cfgReadActivity(url, details).detail;
 	const meta: string[] = [];
 	if (details) {
 		meta.push(details.count === 1 ? "1 setting" : `${details.count} settings`);
@@ -114,8 +127,10 @@ export function describeCfgWrite(
 	const path = details?.path ?? target?.segments.join(".");
 	const save = details?.save ?? target?.save ?? false;
 	if (result?.isError) return errorView("Config", firstText(result) || "Settings write failed.", path);
-	const head = toolHead("Config", path);
+	const head = toolHead("Config", `set ${path || "…"}`);
 	head.push(span(" "), span(save ? "persist" : "session", save ? "accent strong" : "muted"));
+	if (details?.outcome === "applied") head.push(span(" "), span("applied", "success"));
+	if (details?.effective !== undefined) head.push(span(" "), span("shadowed", "warning"));
 	if (details?.outcome === "declined") head.push(span(" "), span("declined", "warning strong"));
 	if (details?.outcome === "unchanged") head.push(span(" "), span("unchanged", "muted"));
 	const next = span(plainText(details?.value ?? content?.trim() ?? "…"), "toolOutput");
@@ -125,20 +140,23 @@ export function describeCfgWrite(
 	return {
 		head,
 		tone: details?.outcome === "declined" ? "warning" : undefined,
-		body: compact([
-			text(change, { wrap: "word" }),
-			details?.effective !== undefined
-				? text(
-						[
-							span(
-								`still ${plainText(details.effective)}: a higher-precedence layer overrides the saved value`,
-								"warning",
-							),
-						],
-						{ wrap: "word" },
-					)
-				: undefined,
-		]),
+		body:
+			result && firstText(result).trim()
+				? [text(plainText(firstText(result)), { wrap: "word" })]
+				: compact([
+						text(change, { wrap: "word" }),
+						details?.effective !== undefined
+							? text(
+									[
+										span(
+											`still ${plainText(details.effective)}: a higher-precedence layer overrides the saved value`,
+											"warning",
+										),
+									],
+									{ wrap: "word" },
+								)
+							: undefined,
+					]),
 	};
 }
 
@@ -163,10 +181,19 @@ export function renderCfgWrite(
 						? "warning"
 						: "success";
 		const badges = [formatBadge(save ? "persist" : "session", save ? "accent" : "muted", theme)];
+		if (details?.outcome === "applied") badges.push(formatBadge("applied", "success", theme));
+		if (details?.effective !== undefined) badges.push(formatBadge("shadowed", "warning", theme));
 		if (details?.outcome === "declined") badges.push(formatBadge("declined", "warning", theme));
 		if (details?.outcome === "unchanged") badges.push(formatBadge("unchanged", "muted", theme));
-		const header = `${renderStatusLine({ icon, title: "Config", description: details?.path ?? target?.segments.join(".") }, theme)} ${badges.join(" ")}`;
+		const header = `${renderStatusLine({ icon, title: "Config", description: `set ${details?.path ?? target?.segments.join(".") ?? "…"}` }, theme)} ${badges.join(" ")}`;
 		if (result?.isError) return [header, formatErrorDetail(firstText(result) || "Settings write failed.", theme)];
+		if (result && firstText(result).trim())
+			return [
+				header,
+				...safe(firstText(result))
+					.split("\n")
+					.map(line => `  ${line}`),
+			];
 		const arrow = theme.fg("dim", "→");
 		const next = theme.fg("toolOutput", details?.value ?? content?.trim() ?? "…");
 		const lines = [

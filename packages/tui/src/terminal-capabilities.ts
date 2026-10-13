@@ -946,10 +946,11 @@ export function setCellDimensions(dims: CellDimensions): void {
 	cellDimensions = dims;
 }
 
-function chunkKittyApc(leadParams: string, base64Data: string): string {
+function chunkKittyApc(leadParams: string, base64Data: string, passthrough = isInsideTmux()): string {
 	const CHUNK_SIZE = 4096;
+	const wrap = (apc: string) => (passthrough ? wrapTmuxPassthrough(apc) : apc);
 	if (base64Data.length <= CHUNK_SIZE) {
-		return wrapTmuxPassthroughIfNeeded(`\x1b_G${leadParams};${base64Data}\x1b\\`);
+		return wrap(`\x1b_G${leadParams};${base64Data}\x1b\\`);
 	}
 
 	const chunks: string[] = [];
@@ -961,12 +962,12 @@ function chunkKittyApc(leadParams: string, base64Data: string): string {
 		const isLast = offset + CHUNK_SIZE >= base64Data.length;
 
 		if (isFirst) {
-			chunks.push(wrapTmuxPassthroughIfNeeded(`\x1b_G${leadParams},m=1;${chunk}\x1b\\`));
+			chunks.push(wrap(`\x1b_G${leadParams},m=1;${chunk}\x1b\\`));
 			isFirst = false;
 		} else if (isLast) {
-			chunks.push(wrapTmuxPassthroughIfNeeded(`\x1b_Gq=2,m=0;${chunk}\x1b\\`));
+			chunks.push(wrap(`\x1b_Gq=2,m=0;${chunk}\x1b\\`));
 		} else {
-			chunks.push(wrapTmuxPassthroughIfNeeded(`\x1b_Gq=2,m=1;${chunk}\x1b\\`));
+			chunks.push(wrap(`\x1b_Gq=2,m=1;${chunk}\x1b\\`));
 		}
 
 		offset += CHUNK_SIZE;
@@ -996,10 +997,11 @@ export function encodeKitty(
  * Sent once per image; the data then persists in the terminal's store (it
  * survives scroll-off and text clears for images with a non-zero id), so
  * subsequent frames display it with the tiny {@link encodeKittyPlacement}
- * sequence instead of re-sending the base64.
+ * sequence instead of re-sending the base64. `passthrough` defaults to the
+ * current tmux envelope; `false` yields raw APCs for direct client delivery.
  */
-export function encodeKittyTransmit(base64Data: string, imageId: number): string {
-	return chunkKittyApc(`a=t,f=100,q=2,i=${imageId}`, base64Data);
+export function encodeKittyTransmit(base64Data: string, imageId: number, passthrough = isInsideTmux()): string {
+	return chunkKittyApc(`a=t,f=100,q=2,i=${imageId}`, base64Data, passthrough);
 }
 
 /**
@@ -1163,7 +1165,7 @@ export function calculateImageRows(
 	return Math.max(1, rows);
 }
 
-function calculateImageFit(
+export function calculateImageFit(
 	imageDimensions: ImageDimensions,
 	options: ImageRenderOptions,
 	cellDims: CellDimensions,

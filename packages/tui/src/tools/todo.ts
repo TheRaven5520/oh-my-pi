@@ -1,4 +1,4 @@
-import type { ToolRenderer } from "./renderer";
+import type { ToolActivityContext, ToolActivitySummary, ToolRenderer } from "./renderer";
 
 import type { Component } from "../index";
 import { Text } from "../index";
@@ -213,6 +213,8 @@ type TodoRenderOp = {
 	task?: string;
 	phase?: string;
 	items?: string[];
+	list?: Array<{ phase: string; items: string[] }>;
+	reason?: string;
 };
 
 /** New single-op shape `{op,...}`; legacy `{ops:[...]}` still seen in old transcripts. */
@@ -232,6 +234,37 @@ function normalizeTodoArg(args: TodoRenderArgs | undefined): TodoRenderOp[] {
 		return args.ops.filter((entry): entry is TodoRenderOp => !!entry && typeof entry === "object");
 	}
 	return typeof args.op === "string" ? [args] : [];
+}
+
+function todoActivity(args: TodoRenderArgs | undefined, details?: TodoToolDetails): ToolActivitySummary {
+	const ops = normalizeTodoArg(args);
+	const detail =
+		ops
+			.map(op => {
+				const operation = typeof op.op === "string" ? op.op : "update";
+				const target = typeof op.task === "string" ? op.task : typeof op.phase === "string" ? op.phase : "";
+				const count = Array.isArray(op.items)
+					? op.items.length
+					: Array.isArray(op.list)
+						? op.list.reduce((total, phase) => total + (Array.isArray(phase?.items) ? phase.items.length : 0), 0)
+						: undefined;
+				return [operation, target, count !== undefined ? `${count} tasks` : ""].filter(Boolean).join(" ");
+			})
+			.join(", ") ||
+		details?.op ||
+		"update";
+	const tasks = details?.phases?.flatMap(phase => phase.tasks);
+	const meta: string[] = [];
+	if (tasks) {
+		meta.push(`${tasks.filter(task => task.status === "completed").length}/${tasks.length} completed`);
+		const blocked = tasks.filter(task => task.status === "blocked").length;
+		const dropped = tasks.filter(task => task.status === "abandoned").length;
+		if (blocked) meta.push(`${blocked} blocked`);
+		if (dropped) meta.push(`${dropped} dropped`);
+		if (details?.completedTasks?.length) meta.push(`+${details.completedTasks.length} completed`);
+	}
+	// Blocker reasons and backend notices are not captured by progress counts.
+	return { label: "Todo", detail, meta: meta.join(" · ") || undefined, receipt: false };
 }
 
 // =============================================================================
@@ -470,13 +503,14 @@ export function todoChecklistPhases(
 const todoResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /**
- * Native todo result: head `Todo closed/total`, body one `checklist` node.
+ * Native todo result: operation and completion counts above one `checklist` node.
  * Renderers get no describe context, so the checklist is always emitted;
  * terminals that do not list the kind draw its unknown-kind fallback (§3).
  */
 function describeTodoResult(
 	result: ToolRenderResult<TodoToolDetails>,
 	options: RenderResultOptions,
+	args?: TodoRenderArgs,
 ): NativeToolView | undefined {
 	if (result.isError) {
 		return {
@@ -487,15 +521,28 @@ function describeTodoResult(
 	}
 	const phases = (result.details?.phases ?? []).filter(phase => phase.tasks.length > 0);
 	const total = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
+	const summary = todoActivity(args, result.details);
 	if (total === 0) {
-		return { tool: { title: "Todo" }, body: [noteText(forDisplay(resultText(result) || "No todos"))] };
+		return {
+			tool: {
+				title: "Todo",
+				target: summary.detail,
+				targetKind: "text",
+				meta: summary.meta ? [summary.meta] : undefined,
+			},
+			body: [noteText(forDisplay(resultText(result) || "No todos"))],
+		};
 	}
-	const closed = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
 	const activeDescs = options.expanded ? [] : activeTodoDescriptionsProvider();
 	const isMatched = (task: TodoItem): boolean =>
 		activeDescs.length > 0 && todoMatchesAnyDescription(task.content, activeDescs);
 	return {
-		tool: { title: "Todo", target: `${closed}/${total}`, targetKind: "text" },
+		tool: {
+			title: "Todo",
+			target: summary.detail,
+			targetKind: "text",
+			meta: summary.meta ? [summary.meta] : undefined,
+		},
 		body: [node("checklist", { mode: "full", phases: todoChecklistPhases(phases, isMatched) }, [], "checklist")],
 		preview: "none",
 	};
@@ -503,6 +550,9 @@ function describeTodoResult(
 
 /** Render todo operations and phased task snapshots. */
 export const todoToolRenderer = {
+	activitySummary(args: TodoRenderArgs, context: ToolActivityContext) {
+		return todoActivity(args, context.result?.details as TodoToolDetails | undefined);
+	},
 	renderCall(args: TodoRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		// `args` is the raw partially-parsed JSON from the streaming tool-call
 		// delta and may not satisfy `TodoRenderArgs` at runtime:
@@ -563,11 +613,13 @@ export const todoToolRenderer = {
 			keys.add(task.content);
 		}
 		const allTasks = phases.flatMap(phase => phase.tasks);
+		const summary = todoActivity(args, result.details);
 		const header = renderStatusLine(
 			{
 				iconOverride: uiTheme.styledSymbol("tool.todo", "accent"),
 				title: "Todo",
-				meta: [`${allTasks.length} tasks`],
+				description: summary.detail,
+				meta: summary.meta ? [summary.meta] : [],
 			},
 			uiTheme,
 		);
@@ -661,8 +713,14 @@ export const todoToolRenderer = {
 		return { tool: { title: "Todo", target: ops.length === 0 ? "update" : ops.join(", "), targetKind: "text" } };
 	},
 
-	describeResult(result: ToolRenderResult<TodoToolDetails>, options: RenderResultOptions): NativeToolView | undefined {
-		return todoResultMemo.get(result, [options.expanded], () => describeTodoResult(result, options));
+	describeResult(
+		result: ToolRenderResult<TodoToolDetails>,
+		options: RenderResultOptions,
+		args?: TodoRenderArgs,
+	): NativeToolView | undefined {
+		return todoResultMemo.get(result, [options.expanded, JSON.stringify(args)], () =>
+			describeTodoResult(result, options, args),
+		);
 	},
 
 	mergeCallAndResult: true,

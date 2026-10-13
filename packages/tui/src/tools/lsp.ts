@@ -8,7 +8,15 @@
  * - Collapsible/expandable views
  */
 import type { TspSpan, TspText, TspTone, TspTreeNode } from "@oh-my-pi/pi-wire";
-import type { NativeToolHead, NativeToolView, RenderResultOptions, ToolRenderer, ToolRenderResult } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+	ToolRenderResult,
+} from "./renderer";
 import type { Component } from "../tui";
 import { Text } from "../components/text";
 import { getLanguageFromPath } from "../lang-from-path";
@@ -1002,6 +1010,23 @@ const lspResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /** Render LSP requests and responses in the transcript. */
 export const lspToolRenderer = {
+	activitySummary(args: LspParams, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as LspToolDetails | undefined;
+		const head = lspNativeHead(args ?? details?.request, details?.action ?? "request");
+		const output = context.result?.content?.find(block => block.type === "text")?.text?.slice(0, 4096) ?? "";
+		const references = output.match(/(\d+)\s+reference\(s\)/);
+		const meta = head.meta?.filter((value): value is string => typeof value === "string") ?? [];
+		if (references && !context.result?.isError) meta.push(formatCount("reference", Number(references[1])));
+		return {
+			label: typeof head.title === "string" ? head.title : "LSP",
+			detail: typeof head.target === "string" ? head.target : undefined,
+			meta: meta.join(" · ") || undefined,
+			error:
+				details?.success === false && !context.isPartial && !context.result?.isError
+					? output.split("\n", 1)[0] || "LSP request failed"
+					: undefined,
+		};
+	},
 	renderCall,
 	renderResult,
 	describeCall(args: LspParams): NativeToolView {

@@ -16,7 +16,7 @@
  */
 
 import { isInsideHerdr, isInsideTerminalMultiplexer } from "./terminal-multiplexer";
-import { wrapTmuxPassthroughIfNeeded } from "./tmux";
+import { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
 
 /** Kitty Unicode placeholder base character (U+10EEEE, Plane 16 PUA). */
 export const KITTY_PLACEHOLDER = "\u{10eeee}";
@@ -119,17 +119,28 @@ function diacritic(index: number): string {
  * Virtual placement APC (`a=p,U=1`): tells the terminal that placeholder cells
  * carrying image id `i` should display the transmitted image, scaled to fit the
  * `c`×`r` cell box. Re-emitting with a stable `placementId` replaces in place.
+ * `passthrough` defaults to the current tmux envelope; `false` yields the raw APC.
  */
 export function encodeKittyVirtualPlacement(opts: {
 	imageId: number;
 	placementId?: number;
 	columns: number;
 	rows: number;
+	passthrough?: boolean;
 }): string {
 	const params = ["a=p", "U=1", "q=2", `i=${opts.imageId}`];
 	if (opts.placementId) params.push(`p=${opts.placementId}`);
 	params.push(`c=${opts.columns}`, `r=${opts.rows}`);
-	return wrapTmuxPassthroughIfNeeded(`\x1b_G${params.join(",")}\x1b\\`);
+	const apc = `\x1b_G${params.join(",")}\x1b\\`;
+	return (opts.passthrough ?? isInsideTmux()) ? wrapTmuxPassthrough(apc) : apc;
+}
+
+/** Placeholder cells (U+10EEEE plus explicit row and column diacritics) for one image row, without colors. */
+export function encodeKittyPlaceholderCells(row: number, columns: number): string {
+	const rowDiacritic = diacritic(row);
+	let cells = "";
+	for (let c = 0; c < columns; c++) cells += KITTY_PLACEHOLDER + rowDiacritic + diacritic(c);
+	return cells;
 }
 
 /**
@@ -152,12 +163,7 @@ export function encodeKittyPlaceholderGrid(opts: {
 	const lead = fg + underline;
 	const out: string[] = [];
 	for (let r = 0; r < opts.rows; r++) {
-		const rowDiacritic = diacritic(r);
-		let row = lead;
-		for (let c = 0; c < opts.columns; c++) {
-			row += KITTY_PLACEHOLDER + rowDiacritic + diacritic(c);
-		}
-		out.push(row + reset);
+		out.push(lead + encodeKittyPlaceholderCells(r, opts.columns) + reset);
 	}
 	return out;
 }

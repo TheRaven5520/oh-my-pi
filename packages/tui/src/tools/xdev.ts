@@ -3,17 +3,24 @@ import { parseStreamingJson } from "@oh-my-pi/pi-utils";
 import { type Component, Container, Text } from "../index";
 import type { Theme } from "../theme/theme";
 import { replaceTabs } from "../render/render-utils";
-import type { RenderResultOptions, ToolActivitySummary, ToolRenderer } from "./renderer";
-import { describeDefaultToolExecution, renderDefaultToolExecution } from "./default-renderer";
+import type { RenderResultOptions, ToolActivityContext, ToolActivitySummary, ToolRenderer } from "./renderer";
+import {
+	defaultToolActivityDetail,
+	describeDefaultToolExecution,
+	renderDefaultToolExecution,
+} from "./default-renderer";
 import type { NativeToolView } from "./renderer";
 import { text } from "../native/describe";
 import { parseMCPToolName } from "./mcp";
+import { isResolutionDeviceName } from "./resolve";
+import { REPORT_ISSUE_DEVICE_NAME } from "./report-tool-issue";
 
 /** Mounted device display callbacks, independent of tool execution state. */
 export interface XdevMountedRenderer {
 	label?: string;
 	describeCall?: ToolRenderer["describeCall"];
 	describeResult?: ToolRenderer["describeResult"];
+	activitySummary?: ToolRenderer["activitySummary"];
 	renderCall?(...args: Parameters<ToolRenderer["renderCall"]>): unknown;
 	renderResult?(...args: Parameters<ToolRenderer["renderResult"]>): unknown;
 	mergeCallAndResult?: boolean;
@@ -82,10 +89,6 @@ function displayDeviceLabel(name: string, mounted?: { label?: string }): string 
 	if (parsed) return `${parsed.serverName}/${parsed.toolName}`;
 	return name;
 }
-/** Salient inner-arg keys for the compact activity line: the verb first, then its object. */
-const ACTIVITY_VERB_KEYS = ["action", "op", "command"] as const;
-const ACTIVITY_OBJECT_KEYS = ["query", "symbol", "path", "file", "pattern", "url", "name"] as const;
-
 /**
  * Compact `label · verb object` activity summary for a device write, so a
  * squeezed transcript row reads `LSP · references foo` instead of
@@ -96,21 +99,25 @@ export function xdevActivitySummary(
 	name: string,
 	content: unknown,
 	resolveMounted?: (name: string) => XdevMountedRenderer | undefined,
+	context: ToolActivityContext = { expanded: false, isPartial: false },
 ): ToolActivitySummary {
 	const mounted = resolveMounted?.(name);
-	const args = decodeInnerArgs(content);
-	const pick = (keys: readonly string[]): string | undefined => {
-		for (const key of keys) {
-			const value = args[key];
-			if (typeof value === "string" && value.length > 0) return value.split("\n", 1)[0];
-		}
-		return undefined;
-	};
-	let detail = [pick(ACTIVITY_VERB_KEYS), pick(ACTIVITY_OBJECT_KEYS)].filter(Boolean).join(" ");
-	if (!detail && typeof content === "string" && !content.trimStart().startsWith("{")) {
-		detail = content.trim().split("\n", 1)[0];
+	if (isResolutionDeviceName(name) || name === REPORT_ISSUE_DEVICE_NAME) {
+		return {
+			label: name === REPORT_ISSUE_DEVICE_NAME ? "Report Tool Issue" : name.charAt(0).toUpperCase() + name.slice(1),
+			detail: typeof content === "string" ? content.slice(0, 512).trim().split("\n", 1)[0] : undefined,
+		};
 	}
-	return { label: displayDeviceLabel(name, mounted), detail: detail || undefined };
+	const dispatch = (context.result?.details as { xdev?: XdevRenderDispatch } | undefined)?.xdev;
+	const args = dispatch?.args ?? decodeInnerArgs(content);
+	const renderer = mounted?.activitySummary ? mounted : resolveDeviceRenderer(name, mounted);
+	if (renderer?.activitySummary && dispatch?.mode !== "help") {
+		return renderer.activitySummary(args, {
+			...context,
+			result: context.result && dispatch ? { ...context.result, details: dispatch.inner } : undefined,
+		});
+	}
+	return { label: displayDeviceLabel(name, mounted), detail: defaultToolActivityDetail(args) };
 }
 
 /** Drop the streaming-decode bookkeeping key before showing inner args. */

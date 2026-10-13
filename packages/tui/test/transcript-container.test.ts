@@ -168,6 +168,176 @@ const finalAnswer: AssistantMessage = {
 const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
+	it("groups adjacent tools and separates text in measurements, retirement, replay and span mapping", () => {
+		const transcript = new TranscriptContainer();
+		const first = new ToolBlock(["read source"], true);
+		const second = new ToolBlock(["grep pattern"], true);
+		const answer = new Block(["final answer"], false);
+		transcript.addChild(first);
+		transcript.addChild(second);
+		transcript.addChild(answer);
+		const rows = ["read source", "grep pattern", "", "final answer"];
+		expect(transcript.render(80)).toEqual(rows);
+		expect(transcript.liveRowCount(80)).toBe(4);
+		expect(transcript.liveRowCount(80, 4)).toBe(4);
+		expect(transcript.liveRowCount(80, 1)).toBe(2);
+		expect(transcript.peekFinalizedBatch(80, 4)).toBeUndefined();
+		expect(transcript.renderViewport(80, 4, frame)).toEqual(rows);
+		expect(transcript.getChildStartRow(second)).toBe(1);
+		expect(transcript.getChildStartRow(answer)).toBe(3);
+		expect(transcript.getLastViewportSpans()).toEqual([
+			{ component: first, start: 0, end: 1 },
+			{ component: second, start: 1, end: 2 },
+			{ component: answer, start: 3, end: 4 },
+		]);
+		const retired = transcript.peekFinalizedBatch(80, 3)!;
+		expect(retired.rows).toEqual(["read source"]);
+		expect(retired.owners).toEqual([first]);
+		expect(transcript.rerenderOfferedBatch(60)?.rows).toEqual(["read source"]);
+		transcript.acknowledgeFinalizedBatch(retired.id);
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(["grep pattern", "", "final answer"]);
+		expect(transcript.liveRowCount(80)).toBe(3);
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(60)!;
+		expect(replay.rows).toEqual(["read source"]);
+		expect(replay.owners).toEqual([first]);
+		transcript.acknowledgeFinalizedBatch(replay.id);
+		expect(transcript.renderTail(60, 3)).toEqual(["grep pattern", "", "final answer"]);
+		expect(transcript.renderViewport(60, 3, frame)).toEqual(["grep pattern", "", "final answer"]);
+		expect(transcript.getLastViewportSpans()).toEqual([
+			{ component: second, start: 0, end: 1 },
+			{ component: answer, start: 2, end: 3 },
+		]);
+		const next = transcript.peekFinalizedBatch(60, 1)!;
+		expect(next.rows).toEqual(["grep pattern", ""]);
+		expect(next.owners).toEqual([second, undefined]);
+		transcript.acknowledgeFinalizedBatch(next.id);
+		transcript.beginReplay();
+		expect(transcript.peekReplayBatch(60)?.rows).toEqual(["read source", "grep pattern", ""]);
+	});
+
+	it("skips empty blocks while grouping tools and preserving both text boundaries", () => {
+		const transcript = new TranscriptContainer();
+		const prompt = new Block(["prompt"], true);
+		const first = new ToolBlock(["", "read", "preview", ""], true);
+		const hidden = new Block(["", " "], true);
+		const second = new ToolBlock(["grep", "match"], true);
+		const answer = new Block(["answer"], false);
+		for (const block of [prompt, first, hidden, second, answer]) transcript.addChild(block);
+		const rows = ["prompt", "", "read", "preview", "grep", "match", "", "answer"];
+		expect(transcript.render(80)).toEqual(rows);
+		expect(transcript.liveRowCount(80)).toBe(rows.length);
+		expect(transcript.renderViewport(80, rows.length, frame)).toEqual(rows);
+		expect(transcript.getChildStartRow(hidden)).toBeUndefined();
+		for (let cap = 0; cap <= rows.length + 1; cap++) {
+			expect(transcript.renderTail(60, cap)).toEqual(cap === 0 ? [] : rows.slice(-cap));
+		}
+		const retired = transcript.peekFinalizedBatch(80, 4)!;
+		expect(retired.rows).toEqual(["prompt", "", "read", "preview"]);
+		expect(retired.owners).toEqual([prompt, undefined, first, first]);
+		transcript.acknowledgeFinalizedBatch(retired.id);
+		expect(transcript.liveRowCount(80)).toBe(4);
+		expect(transcript.renderViewport(80, 4, frame)).toEqual(["grep", "match", "", "answer"]);
+		transcript.beginReplay();
+		expect(transcript.peekReplayBatch(60)?.rows).toEqual(retired.rows);
+	});
+
+	it("measures progressive tool emission without reserving a tool-to-tool separator", () => {
+		const transcript = new TranscriptContainer();
+		const first = new (class extends AppendBlock {
+			setToolActivityVisible(): void {}
+		})(["stable one", "stable two", "partial"], ["stable one", "stable two"]);
+		const second = new ToolBlock(["next tool"], true);
+		const answer = new Block(["answer"], false);
+		for (const block of [first, second, answer]) transcript.addChild(block);
+		expect(transcript.liveRowCount(80)).toBe(6);
+		const emitted = transcript.peekFinalizedBatch(80, 5)!;
+		expect(emitted.rows).toEqual(["stable one"]);
+		expect(transcript.liveRowCount(80)).toBe(5);
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["stable two", "partial", "next tool", "", "answer"]);
+		transcript.acknowledgeFinalizedBatch(emitted.id);
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(60)!;
+		expect(replay.rows).toEqual(["stable one"]);
+		transcript.acknowledgeFinalizedBatch(replay.id);
+		first.finalize(["stable one", "stable two", "final"]);
+		const remainingStable = transcript.peekFinalizedBatch(60, 3)!;
+		expect(remainingStable.rows).toEqual(["stable two"]);
+		transcript.acknowledgeFinalizedBatch(remainingStable.id);
+		const retired = transcript.peekFinalizedBatch(60, 3)!;
+		expect(retired.rows).toEqual(["final"]);
+		expect(retired.owners).toEqual([first]);
+		transcript.acknowledgeFinalizedBatch(retired.id);
+		transcript.beginReplay();
+		expect(transcript.peekReplayBatch(60)?.rows).toEqual(["stable one", "stable two", "final"]);
+	});
+
+	it("preserves the grouped boundary before an emitted active head during replay", () => {
+		const transcript = new TranscriptContainer();
+		const first = new ToolBlock(["completed tool"], true);
+		const streaming = new (class extends AppendBlock {
+			setToolActivityVisible(): void {}
+		})(["stable", "partial"], ["stable"]);
+		transcript.addChild(first);
+		transcript.addChild(streaming);
+		const retired = transcript.peekFinalizedBatch(80, 2)!;
+		expect(retired.rows).toEqual(["completed tool"]);
+		transcript.acknowledgeFinalizedBatch(retired.id);
+		const emitted = transcript.peekFinalizedBatch(80, 1)!;
+		expect(emitted.rows).toEqual(["stable"]);
+		transcript.acknowledgeFinalizedBatch(emitted.id);
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(60)!;
+		expect(replay.rows).toEqual(["completed tool", "stable"]);
+		expect(replay.owners).toEqual([first, streaming]);
+		expect(transcript.rerenderOfferedBatch(40)?.rows).toEqual(replay.rows);
+		transcript.acknowledgeFinalizedBatch(replay.id);
+		expect(transcript.liveRowCount(40)).toBe(1);
+		expect(transcript.renderViewport(40, 1, frame)).toEqual(["partial"]);
+		expect(transcript.getLastViewportSpans()).toEqual([{ component: streaming, start: 0, end: 1 }]);
+	});
+
+	it("spends grouped squeeze space on explicit inspection before text and keeps emergency bounds", () => {
+		const transcript = new TranscriptContainer();
+		const inspected = new (class extends ToolBlock {
+			prioritizeTranscriptAllocation(): boolean {
+				return true;
+			}
+		})(["read", "preview one", "preview two"], false);
+		const second = new ToolBlock(["grep", "match one", "match two"], false);
+		const answer = new Block(["answer one", "answer two"], false);
+		for (const block of [inspected, second, answer]) transcript.addChild(block);
+		expect(transcript.renderViewport(80, 7, frame)).toEqual([
+			"read",
+			"preview one",
+			"preview two",
+			"match two",
+			"",
+			"answer one",
+			"answer two",
+		]);
+		expect(inspected.allocations.at(-1)).toBe(3);
+		expect(second.allocations.at(-1)).toBe(1);
+		expect(answer.allocations.at(-1)).toBe(2);
+		expect(transcript.getLastViewportSpans()).toEqual([
+			{ component: inspected, start: 0, end: 3 },
+			{ component: second, start: 3, end: 4 },
+			{ component: answer, start: 5, end: 7 },
+		]);
+		expect(transcript.renderViewport(80, 4, frame)).toEqual(["preview two", "match two", "", "answer two"]);
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(["preview two", "match two", "answer two"]);
+		for (const capacity of [0, 1, 2]) {
+			expect(transcript.renderViewport(80, capacity, frame).length).toBeLessThanOrEqual(capacity);
+			for (const span of transcript.getLastViewportSpans()) {
+				expect(span.start).toBeGreaterThanOrEqual(0);
+				expect(span.end).toBeLessThanOrEqual(capacity);
+			}
+		}
+		for (const block of [inspected, second, answer]) {
+			expect(block.allocations.every(Number.isInteger)).toBe(true);
+		}
+	});
+
 	it("preserves retirement while externally reordered and replaced live children settle", () => {
 		const transcript = new TranscriptContainer();
 		const archived = new Block(["archived"], true);
@@ -559,11 +729,15 @@ describe("TranscriptContainer", () => {
 			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
 			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
 		}
-		// Emergency path: more non-empty blocks than rows. Every row carries real
-		// text — no block's tail is dropped as blank padding.
+		// Under pressure every row carries real text, apart from single
+		// separators between real blocks — no block's tail is dropped as blank padding.
 		const out = transcript.renderViewport(80, 12, frame);
 		expect(out).toHaveLength(12);
-		expect(out.every(row => /\S/.test(row))).toBe(true);
+		expect(
+			out.every(
+				(row, index) => /\S/.test(row) || (/\S/.test(out[index - 1] ?? "") && /\S/.test(out[index + 1] ?? "")),
+			),
+		).toBe(true);
 	});
 
 	it("empty blocks do not reserve capacity from real text under pressure (issue 9483)", () => {
@@ -573,10 +747,39 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
-		// Capacity 10 fits all real content once the two empty blocks stop
-		// stealing a base row each; the older block keeps its tail rows.
+		// Capacity 10 fits every real block plus its separator once the two
+		// empty blocks stop stealing a base row each; older blocks keep their tails.
 		const out = transcript.renderViewport(80, 10, frame);
-		expect(out).toEqual(["A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4"]);
+		expect(out).toEqual(["A4", "", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
+	});
+
+	it("keeps tool groups contiguous with full previews and when squeezed", () => {
+		const transcript = new TranscriptContainer();
+		for (let index = 0; index < 6; index++) {
+			transcript.addChild(
+				new ToolBlock(
+					Array.from({ length: 6 }, (_, row) => `tool ${index} row ${row}`),
+					false,
+				),
+			);
+		}
+		// No tool separators: all six previews fit without squeezing.
+		const out = transcript.renderViewport(80, 36, frame);
+		expect(out).toHaveLength(36);
+		expect(out.every(row => row !== "")).toBe(true);
+		expect(transcript.liveRowCount(80)).toBe(36);
+		const tight = transcript.renderViewport(80, 8, frame);
+		expect(tight).toEqual([
+			"tool 0 row 5",
+			"tool 1 row 5",
+			"tool 2 row 5",
+			"tool 3 row 5",
+			"tool 4 row 5",
+			"tool 5 row 3",
+			"tool 5 row 4",
+			"tool 5 row 5",
+		]);
+		expect(tight.every(row => row !== "")).toBe(true);
 	});
 
 	it("keeps a completed assistant answer visible behind an active prefix", () => {
@@ -599,12 +802,11 @@ describe("TranscriptContainer", () => {
 		const tool = new ToolBlock(["T1", "T2", "T3", "T4"], false);
 		transcript.addChild(assistant);
 		transcript.addChild(tool);
-		// Capacity 5 cannot fit both blocks in full. Surplus (3 rows) goes to the
-		// assistant block first; the tool card collapses to its one-row minimum
-		// instead of clipping already-visible assistant text.
+		// Capacity 5 keeps one separator and one row per block. The remaining
+		// two rows go to assistant text before the growing tool card.
 		const out = transcript.renderViewport(80, 5, frame);
-		expect(out).toEqual(["A1", "A2", "A3", "A4", "T4"]);
-		expect(assistant.allocations.at(-1)).toBe(4);
+		expect(out).toEqual(["A2", "A3", "A4", "", "T4"]);
+		expect(assistant.allocations.at(-1)).toBe(3);
 		expect(tool.allocations.at(-1)).toBe(1);
 	});
 
@@ -809,10 +1011,10 @@ describe("TranscriptContainer viewport click spans", () => {
 		transcript.addChild(first);
 		transcript.addChild(second);
 
-		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "b1", "b2", "b3", "b4"]);
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "", "b2", "b3", "b4"]);
 		expect(transcript.getLastViewportSpans()).toEqual([
 			{ component: first, start: 0, end: 1 },
-			{ component: second, start: 1, end: 5 },
+			{ component: second, start: 2, end: 5 },
 		]);
 	});
 

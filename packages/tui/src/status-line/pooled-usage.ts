@@ -1,4 +1,6 @@
 import { resolveUsedFraction, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
+import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
+import type { Model } from "@oh-my-pi/pi-catalog/types";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 
 /**
@@ -58,16 +60,42 @@ export function isPooledUsageReport(report: unknown): report is UsageReport {
 	);
 }
 
-/**
- * Whether pooled reports for `reportProvider` back the session's `activeProvider`.
- * Sprilicred models are catalogued as `sprilicred-anthropic` / `sprilicred-openai`
- * while its reports carry the upstream provider (`anthropic`, `openai-codex`).
- */
+/** Subscription pools are explicit routes, not model families or wire APIs. */
+export function pooledUsageProvider(
+	model: (Pick<Model, "provider" | "providerType"> & Partial<Pick<Model, "identity" | "baseUrl">>) | undefined,
+): "anthropic" | "openai-codex" | undefined {
+	// Discovery source wins over a credential alias: Claude on OpenRouter is
+	// metered OpenRouter traffic, even when the alias says "anthropic".
+	if (!model) return undefined;
+	if (
+		hostMatchesUrl(model.baseUrl, "openrouter") ||
+		(model.baseUrl !== undefined && /\/(?:openrouter|glm|deepseek|muse)(?:\/|$)/i.test(model.baseUrl))
+	)
+		return undefined;
+	const provider = model.providerType ?? model.provider;
+	// Sprilicred's generic /v1 route has also served GLM and DeepSeek. Its
+	// credential alias alone cannot establish a model's subscription pool.
+	if (provider === "sprilicred-openai" && model.identity?.class !== "openai") return undefined;
+	if (provider === "sprilicred-anthropic" && model.identity?.class !== "anthropic") return undefined;
+	return resolvePooledProvider(provider);
+}
+
+function resolvePooledProvider(provider: string | undefined): "anthropic" | "openai-codex" | undefined {
+	switch (provider) {
+		case "anthropic":
+		case "sprilicred-anthropic":
+			return "anthropic";
+		case "openai-codex":
+		case "sprilicred-openai":
+			return "openai-codex";
+		default:
+			return undefined;
+	}
+}
+
+/** Whether a known subscription route is backed by this exact pooled provider. */
 export function pooledProviderMatches(activeProvider: string | undefined, reportProvider: string): boolean {
-	if (!activeProvider) return true;
-	if (reportProvider === activeProvider) return true;
-	const base = activeProvider.replace(/^sprilicred-/, "");
-	return reportProvider === base || reportProvider.startsWith(`${base}-`);
+	return resolvePooledProvider(activeProvider) === reportProvider;
 }
 
 function remainingPercent(limit: object): number | undefined {

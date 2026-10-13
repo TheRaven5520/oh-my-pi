@@ -24,7 +24,7 @@ import {
 	type ConfiguredThinkingLevel,
 } from "../render/render-utils";
 import type { StructuredSubagentOutput } from "./task";
-import type { RenderResultOptions, ToolRenderer, ToolActivitySummary } from "./renderer";
+import type { RenderResultOptions, ToolRenderer, ToolActivitySummary, ToolActivityContext } from "./renderer";
 import type { ForkReport, IrcDeliveryReceipt, IrcMessage } from "./irc";
 import type { TspSpan } from "@oh-my-pi/pi-wire";
 import { card as cardNode, compact, elapsed, md, node, row, span, text } from "../native/describe";
@@ -689,7 +689,7 @@ function describeJobsResult(
 					? `waiting on ${jobs.length} ${noun}`
 					: `waiting on ${counts.running} of ${jobs.length} ${noun}`
 				: `${jobs.length} ${noun} settled`;
-	const head: TspSpan[] = [span(title, "toolTitle strong")];
+	const head: TspSpan[] = [span("Wait", "toolTitle strong"), span(` ${title}`, "muted")];
 	if (counts.completed > 0) head.push(span(` ${counts.completed} done`, "success"));
 	if (counts.failed > 0) head.push(span(` ${counts.failed} failed`, "error"));
 	if (counts.cancelled > 0) head.push(span(` ${counts.cancelled} cancelled`, "warning"));
@@ -714,6 +714,11 @@ function describeJobsResult(
 				],
 				`agent:${agent.id}`,
 			),
+		);
+	}
+	if (result.details?.meta?.artifactError) {
+		body.push(
+			text([span(formatArtifactErrorNotice(result.details.meta.artifactError), "warning")], { wrap: "word" }),
 		);
 	}
 	return {
@@ -755,8 +760,39 @@ const waitResultMemo = new OwnerMemo<NativeToolView | undefined>();
 export const waitToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
-	activitySummary(): ToolActivitySummary {
-		return { label: "Wait", detail: "Background work or peer message" };
+	activitySummary(_args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as CoordinationDetails | undefined;
+		if (details?.waited)
+			return {
+				label: "IRC ←",
+				detail: details.waited.from,
+				meta: details.waited.replyTo ? "reply" : undefined,
+				receipt: false,
+			};
+		if (!details?.jobs)
+			return { label: "Wait", detail: details?.interrupted ? "interrupted" : "background work", receipt: false };
+		const counts = { completed: 0, failed: 0, cancelled: 0, running: 0 };
+		for (const job of details.jobs) counts[job.status]++;
+		const meta = [
+			counts.running ? `${counts.running} running` : undefined,
+			counts.completed ? `${counts.completed} done` : undefined,
+			counts.failed ? `${counts.failed} failed` : undefined,
+			counts.cancelled ? `${counts.cancelled} cancelled` : undefined,
+			details.agents?.length ? `${details.agents.length} agents` : undefined,
+		]
+			.filter(Boolean)
+			.join(" · ");
+		const ids = [...details.jobs.map(job => job.id), ...(details.agents ?? []).map(agent => agent.id)];
+		return {
+			label: "Wait",
+			detail: ids.length
+				? `${ids.slice(0, 3).join(", ")}${ids.length > 3 ? ` +${ids.length - 3}` : ""}`
+				: details.interrupted
+					? "interrupted"
+					: "no jobs",
+			meta: meta || undefined,
+			receipt: false,
+		};
 	},
 	renderCall: waitRenderCall,
 	describeCall(): NativeToolView {

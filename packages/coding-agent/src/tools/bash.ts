@@ -323,8 +323,11 @@ async function saveBashOriginalArtifact(session: ToolSession, originalText: stri
 }
 
 const BASH_TIMEOUT_DESCRIPTION = `timeout in seconds; 0 disables the command deadline; nonzero values are clamped to ${TOOL_TIMEOUTS.bash.min}-${TOOL_TIMEOUTS.bash.max}`;
+const BASH_TITLE_DESCRIPTION =
+	"Optional action ID or concise custom purpose; omit when the command's automatic label is sufficient.";
 
 const bashSchemaBase = type({
+	"title?": type("string").describe(BASH_TITLE_DESCRIPTION),
 	command: type("string"),
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
@@ -332,6 +335,7 @@ const bashSchemaBase = type({
 });
 
 const bashSchemaWithAsync = type({
+	"title?": type("string").describe(BASH_TITLE_DESCRIPTION),
 	command: "string",
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
@@ -340,6 +344,7 @@ const bashSchemaWithAsync = type({
 });
 
 const bashSchemaWithService = type({
+	"title?": type("string").describe(BASH_TITLE_DESCRIPTION),
 	command: "string",
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
@@ -354,6 +359,7 @@ const bashSchemaWithService = type({
 });
 
 const bashSchemaWithAsyncAndService = type({
+	"title?": type("string").describe(BASH_TITLE_DESCRIPTION),
 	command: "string",
 	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
 	"cwd?": "string",
@@ -375,6 +381,7 @@ type BashToolSchema =
 	| typeof bashSchemaWithAsyncAndService;
 
 export interface BashToolInput {
+	title?: string;
 	command: string;
 	timeout?: number;
 	cwd?: string;

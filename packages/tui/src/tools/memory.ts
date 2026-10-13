@@ -1,4 +1,4 @@
-import type { NativeToolView, ToolRenderer } from "./renderer";
+import type { NativeToolView, ToolActivityContext, ToolActivitySummary, ToolRenderer } from "./renderer";
 /**
  * Inline TUI renderers for the long-term memory tools (`retain`, `recall`,
  * `reflect`).
@@ -17,6 +17,7 @@ import type { Theme } from "../theme/theme";
 import { Ellipsis, renderStatusLine, truncateToWidth } from "../render";
 import {
 	createCachedComponent,
+	formatCount,
 	formatErrorMessage,
 	formatExpandHint,
 	PREVIEW_LIMITS,
@@ -105,6 +106,15 @@ const reflectResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /** Render retained memory items and their storage summary. */
 export const retainToolRenderer = {
+	activitySummary(args: RetainRenderArgs, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as MemoryRetainDetails | undefined;
+		const count = !context.result?.isError ? details?.count : undefined;
+		return {
+			label: "Retain memory",
+			detail: Array.isArray(args.items) ? formatCount("item", args.items.length) : undefined,
+			meta: count !== undefined ? `${count} retained` : undefined,
+		};
+	},
 	inline: true,
 	mergeCallAndResult: true,
 	renderCall(args: RetainRenderArgs, options: RenderResultOptions, theme: Theme): Component {
@@ -154,6 +164,9 @@ export const retainToolRenderer = {
 
 /** Render recalled memories with an expandable body. */
 export const recallToolRenderer = {
+	activitySummary(args: QueryRenderArgs): ToolActivitySummary {
+		return { label: "Recall memory", detail: args.query };
+	},
 	inline: true,
 	mergeCallAndResult: true,
 	renderCall(args: QueryRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
@@ -230,6 +243,9 @@ export const recallToolRenderer = {
 
 /** Render synthesized memory reflections. */
 export const reflectToolRenderer = {
+	activitySummary(args: QueryRenderArgs): ToolActivitySummary {
+		return { label: "Reflect on memory", detail: args.query };
+	},
 	inline: true,
 	mergeCallAndResult: true,
 	renderCall(args: QueryRenderArgs, _options: RenderResultOptions, theme: Theme): Component {

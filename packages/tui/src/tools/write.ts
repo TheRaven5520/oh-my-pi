@@ -36,6 +36,7 @@ import { registerNativeBlob } from "../native/blobs";
 import type { NativeChild, NativeNode } from "../native/node";
 import { diagnosticsBadge, diagnosticsSection, displayPath, errorText, fileHref, resultText } from "./native-view";
 import { describeCfgWrite, renderCfgWrite, type CfgWriteDetails } from "./cfg-render";
+import { parseCfgUrl } from "./cfg-url";
 import type { FileDiagnosticsResult } from "./lsp";
 import type { OutputMeta } from "./output-meta";
 import type { CardToolResult } from "./result-card";
@@ -410,7 +411,7 @@ interface WriteUrlCard {
 const WRITE_URL_CARDS: Record<string, WriteUrlCard> = {
 	agent: {
 		detailsKey: "message",
-		activity: target => ({ label: "Message", detail: target === "all" ? "broadcast" : target }),
+		activity: target => ({ label: "IRC →", detail: target, receipt: false }),
 		render: (_url, target, content, result, details, options, uiTheme) =>
 			renderAgentWrite(
 				target,
@@ -425,7 +426,11 @@ const WRITE_URL_CARDS: Record<string, WriteUrlCard> = {
 		detailsKey: "proc",
 		activity: target => {
 			const { id, action } = procWriteTarget(target);
-			return { label: "Process", detail: `${action} ${shortenPath(id)}` };
+			return {
+				label: "Proc",
+				detail: `${action === "stdin" ? "input" : action === "kill" ? "stop" : action} ${shortenPath(id)}`,
+				receipt: false,
+			};
 		},
 		render: (_url, target, content, result, details, options, uiTheme) => {
 			const { id, action } = procWriteTarget(target);
@@ -442,7 +447,15 @@ const WRITE_URL_CARDS: Record<string, WriteUrlCard> = {
 	},
 	cfg: {
 		detailsKey: "cfg",
-		activity: target => ({ label: "Config", detail: target }),
+		activity: target => {
+			const cfg = parseCfgUrl(`cfg://${target}`);
+			return {
+				label: "Config",
+				detail: `set ${cfg?.segments.join(".") || target}`,
+				meta: cfg?.save ? "persist" : "session",
+				receipt: false,
+			};
+		},
 		render: (url, _target, content, result, details, options, uiTheme) =>
 			renderCfgWrite(url, typeof content === "string" ? content : undefined, result, details?.cfg, options, uiTheme),
 	},
@@ -463,6 +476,91 @@ function writeUrlCard(rawPath: string, details?: WriteToolDetails): { card: Writ
 	}
 	if (!url || !Object.hasOwn(WRITE_URL_CARDS, url.scheme)) return undefined;
 	return { card: WRITE_URL_CARDS[url.scheme], target };
+}
+
+/** Only collapse receipts whose complete output is represented by structured facts. */
+function writeUrlActivity(
+	routed: { card: WriteUrlCard; target: string },
+	context: ToolActivityContext,
+	details: WriteToolDetails | undefined,
+): ToolActivitySummary {
+	const summary = routed.card.activity(routed.target);
+	const result = context.result;
+	if (!result || result.isError || context.isPartial) return summary;
+	const output = resultText(result).trim();
+	if (routed.card.detailsKey === "message") {
+		const message = details?.message;
+		const receipts = message?.receipts;
+		if (!receipts?.length) return summary;
+		const delivered = receipts.filter(
+			receipt => receipt.outcome === "injected" || receipt.outcome === "woken",
+		).length;
+		const revived = receipts.filter(receipt => receipt.outcome === "revived").length;
+		const failed = receipts.filter(receipt => receipt.outcome === "failed").length;
+		const clean =
+			!message?.meta &&
+			!details?.meta &&
+			receipts.every(receipt => (receipt.outcome === "injected" || receipt.outcome === "woken") && !receipt.error);
+		const expected =
+			message?.to === "all"
+				? `Broadcast delivered to ${delivered} of ${receipts.length} peer(s).\n${receipts.map(receipt => `- ${receipt.to}: ${receipt.outcome}`).join("\n")}`
+				: `Delivered to ${message?.to}.`;
+		return {
+			...summary,
+			detail: message?.to || routed.target,
+			meta: [
+				delivered ? `${delivered} delivered` : undefined,
+				revived ? `${revived} revived` : undefined,
+				failed ? `${failed} failed` : undefined,
+			]
+				.filter(Boolean)
+				.join(" · "),
+			receipt: clean && output === expected,
+		};
+	}
+	if (routed.card.detailsKey === "cfg") {
+		const cfg = details?.cfg;
+		if (!cfg) return summary;
+		// Approval, persistence instructions and shadowing warnings remain in the body.
+		return {
+			...summary,
+			detail: `set ${cfg.path}`,
+			meta: `${cfg.save ? "persist" : "session"} · ${cfg.outcome}${cfg.effective !== undefined ? " · shadowed" : ""}`,
+			receipt: false,
+		};
+	}
+	const proc = details?.proc;
+	if (!proc) return summary;
+	if ("daemon" in proc) {
+		const operation = proc.action === "stdin" ? "input" : proc.action === "stop" ? "stop" : "mode";
+		const outcome = proc.action === "stdin" ? "sent" : proc.action === "mode" ? proc.mode : undefined;
+		return {
+			...summary,
+			detail: `${operation} ${proc.daemon.name}`,
+			meta: [outcome, proc.daemon.state].filter(Boolean).join(" · "),
+			receipt: false,
+		};
+	}
+	if (proc.cancelled?.length) {
+		const cancelled = proc.cancelled.filter(outcome => outcome.status === "cancelled").length;
+		const other = proc.cancelled.length - cancelled;
+		const id = proc.cancelled[0]?.id;
+		return {
+			...summary,
+			meta:
+				proc.cancelled.length === 1
+					? proc.cancelled[0]!.status.replaceAll("_", " ")
+					: [cancelled ? `${cancelled} cancelled` : undefined, other ? `${other} not cancelled` : undefined]
+							.filter(Boolean)
+							.join(" · "),
+			receipt:
+				proc.cancelled.length === 1 &&
+				other === 0 &&
+				(output === `Cancelled background job ${id}.` ||
+					output === `Cancelled agent ${id} (killed session, dropped registration).`),
+		};
+	}
+	return summary;
 }
 
 /** Whether a streaming lowercased path is, or could still become, a URL with its own write card. */
@@ -528,14 +626,32 @@ export const writeToolRenderer = {
 					? writeArgs.path
 					: "";
 		if (!rawPath) return { label: "Write" };
-		const routed = writeUrlCard(rawPath);
-		if (routed) return routed.card.activity(routed.target);
+		const details = context.result?.details as WriteToolDetails | undefined;
+		const routed = writeUrlCard(rawPath, details);
+		if (routed) return writeUrlActivity(routed, context, details);
 		const xdev = parseXdUrl(rawPath);
 		if (xdev?.name) {
 			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
-			return xdevActivitySummary(xdev.name, writeArgs.content, resolveMounted);
+			return xdevActivitySummary(xdev.name, writeArgs.content, resolveMounted, context);
 		}
-		return { label: "Write", detail: shortenPath(rawPath) };
+		const result = context.result;
+		const lines = typeof writeArgs.content === "string" ? countLines(writeArgs.content) : undefined;
+		return {
+			label: "Write",
+			detail: shortenPath(rawPath),
+			meta:
+				result && !result.isError && !context.isPartial && lines !== undefined
+					? `${lines} line${lines === 1 ? "" : "s"} written`
+					: undefined,
+			receipt:
+				result !== undefined &&
+				lines !== undefined &&
+				!result.isError &&
+				!context.isPartial &&
+				!details?.diagnostics &&
+				!details?.madeExecutable &&
+				!details?.meta,
+		};
 	},
 
 	renderCall(

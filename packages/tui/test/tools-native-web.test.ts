@@ -71,23 +71,26 @@ describe("ask native view", () => {
 });
 
 describe("generic / MCP native views", () => {
-	it("default renderer summarizes args in the head and renders JSON output as a tree", () => {
+	it("keeps generic output and arguments accessible without dumping payloads in the header", () => {
 		const view = describeDefaultToolExecution({
 			label: "custom",
-			args: { a: 1 },
+			args: { path: "src/item.ts", payload: "body-only" },
 			result: { output: '{"x":1}', isError: false },
 		} as never);
 		expect(view.tool).toMatchObject({ title: "custom", targetKind: "text" });
-		expect(view.tool?.target).toContain("a");
 		expect(nodes(view.body)[0]?.k).toBe("tree");
+		expect(String(view.tool?.target)).not.toContain("body-only");
+		expect(JSON.stringify(view.body)).toContain("body-only");
 	});
 
-	it("MCP call is head-only; result shows JSON as a tree without an args section", () => {
-		const call = describeMCPCall({ q: "hi" }, "srv/tool");
-		expect(call.body).toBeUndefined();
+	it("keeps MCP arguments expandable while its header shows the structured target", () => {
+		const args = { query: "hi", payload: "body-only" };
+		const call = describeMCPCall(args, "srv/tool");
 		expect(call.tool?.target).toContain("hi");
-		const res = describeMCPResult({ content: [{ type: "text", text: "[1,2]" }] }, opts, { q: "hi" });
-		expect(nodes(res?.body).map(n => n.k)).toEqual(["tree"]);
-		expect(res?.tool?.target).toContain("hi");
+		expect(call.tool?.target).not.toContain("body-only");
+		expect(JSON.stringify(call.body)).toContain("body-only");
+		const res = describeMCPResult({ content: [{ type: "text", text: "[1,2]" }] }, opts, args);
+		expect(nodes(res?.body)[0]?.k).toBe("tree");
+		expect(JSON.stringify(res?.body)).toContain("body-only");
 	});
 });

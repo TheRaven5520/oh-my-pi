@@ -824,6 +824,7 @@ export class TUI extends Container {
 	#insetHistoryWidth = 0;
 	#historyLimit = SCREEN_HISTORY_MIN_ROWS;
 	#historyEpoch = 0;
+	#historyOffset = 0;
 	#historyBridge: TmuxHistoryBridge | undefined;
 	#historyBridgeStarting = false;
 	#historyPaused = false;
@@ -1494,11 +1495,12 @@ export class TUI extends Container {
 					: undefined,
 			);
 		}
+		const anchors = owners.slice();
 		for (let index = 0; index < owners.length; index++) {
 			const candidate = owners[index];
 			if (candidate && !this.#frameProvider?.isHistoryTool?.(candidate)) owners[index] = undefined;
 		}
-		return { owners, screenTop, columns, rows, valid, release };
+		return { owners, anchors, screenTop, historyOffset: this.#historyOffset, epoch, columns, rows, valid, release };
 	}
 
 	/** Transition mouse reporting, emitting only the sequences a change needs. */
@@ -2659,6 +2661,12 @@ export class TUI extends Container {
 		this.#clearScrollbackOnNextRender = false;
 		// The surface already holds the transcript; there's no row history to retire.
 		if (!nativeWasLive) this.#flushHistoryBeforeStop();
+		// Retired chrome ids are never painted again; a stop without a final
+		// normal-screen paint must still blank their native-history copies.
+		const screenPurgeIds = this.#imageBudget.takeScreenPurgeIds();
+		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
+			for (const id of screenPurgeIds) this.terminal.write(encodeKittyDeleteImage(id));
+		}
 		// Deliberately leave transmitted images in the terminal's graphics store:
 		// placeholder cells committed to native scrollback render only while their
 		// image data lives, so a delete-by-id here blanks every transcript image
@@ -3611,6 +3619,7 @@ export class TUI extends Container {
 			// Erased, or rewrapped by the terminal at the new width: either way the
 			// rows above the viewport no longer line up with what was written.
 			this.#screenHistory = [];
+			this.#historyOffset = 0;
 			this.#historyEpoch++;
 		}
 		// The viewport stays anchored directly below whatever history remains on
@@ -3621,6 +3630,11 @@ export class TUI extends Container {
 		const startTop = destructiveReset ? 0 : Math.min(this.#providerViewportTop, Math.max(0, height - 1));
 		const newTop = Math.max(0, Math.min(startTop + historyRows.length, height - rows));
 		const pendingAltExit = this.#pendingAltExit;
+		const outputChanged =
+			history !== undefined ||
+			destructiveReset ||
+			prepared.lines.length !== this.#providerWindow.length ||
+			prepared.lines.some((line, index) => line !== this.#providerWindow[index]);
 		let buffer = this.#paintBeginSequence + pendingAltExit;
 		const renewSync =
 			destructiveReset &&
@@ -3651,8 +3665,10 @@ export class TUI extends Container {
 		}
 		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
 			for (const id of this.#imageBudget.takePurgeIds()) buffer += encodeKittyDeleteImage(id);
+			for (const id of this.#imageBudget.takeScreenPurgeIds()) buffer += encodeKittyDeleteImage(id);
 		} else {
 			this.#imageBudget.takePurgeIds();
+			this.#imageBudget.takeScreenPurgeIds();
 		}
 		// ED2 MUST precede ED3: tmux implements ED2 by scrolling the live screen
 		// into pane history (so cleared content stays reachable), so erasing
@@ -3828,6 +3844,7 @@ export class TUI extends Container {
 			columns: width,
 			rows: height,
 		});
+		if (outputChanged) this.#historyBridge?.notifyOutput();
 		if (history !== undefined) {
 			this.#acceptedHistoryBatchId = history.id;
 			provider?.acknowledgeHistory(history.id);
@@ -3845,7 +3862,11 @@ export class TUI extends Container {
 			tail.push(owners?.[index]);
 		}
 		const keep = Math.max(this.#historyLimit, height * 2);
-		if (tail.length > keep * 2) tail.splice(0, tail.length - keep);
+		if (tail.length > keep * 2) {
+			const dropped = tail.length - keep;
+			tail.splice(0, dropped);
+			this.#historyOffset += dropped;
+		}
 	}
 
 	/** Render one frame: alt-screen modal, provider plan, or children fallback. */

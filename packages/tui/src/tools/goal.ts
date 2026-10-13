@@ -8,7 +8,14 @@ import type { TspSpan } from "@oh-my-pi/pi-wire";
 import { compact, node, span, text } from "../native/describe";
 import { OwnerMemo } from "../native/memo";
 import { errorView, noteText, resultText, toolHead } from "./native-view";
-import type { NativeToolView, RenderResultOptions, ToolRenderer, ToolRenderResult } from "./renderer";
+import type {
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+	ToolRenderResult,
+} from "./renderer";
 /** Lifecycle state of a tracked goal. */
 export type GoalStatus = "active" | "paused" | "budget-limited" | "complete" | "dropped";
 
@@ -68,18 +75,46 @@ interface GoalRenderArgs {
 	token_budget?: number;
 }
 
+function goalActivity(
+	args: GoalRenderArgs | undefined,
+	context: Pick<ToolActivityContext, "result">,
+): ToolActivitySummary {
+	const details = context.result?.details as GoalToolDetails | undefined;
+	const goal = details?.goal;
+	if (goal && !context.result?.isError) {
+		const tokens =
+			goal.tokenBudget === undefined
+				? `${formatNumber(goal.tokensUsed)} tokens`
+				: `${formatNumber(goal.tokensUsed)}/${formatNumber(goal.tokenBudget)} tokens`;
+		return { label: "Goal", detail: goal.objective, meta: `${goal.status} · ${tokens}`, receipt: false };
+	}
+	return {
+		label: "Goal",
+		detail:
+			details?.goal === null && !context.result?.isError
+				? "no active goal"
+				: [describeOp(args?.op), typeof args?.objective === "string" ? args.objective.trim() : ""]
+						.filter(Boolean)
+						.join(" "),
+		meta:
+			!context.result && args?.token_budget !== undefined ? `budget ${formatNumber(args.token_budget)}` : undefined,
+		receipt: false,
+	};
+}
+
 function describeGoalResult(result: ToolRenderResult<GoalToolDetails>, args?: GoalRenderArgs): NativeToolView {
 	const details = result.details;
 	const description = describeOp(details?.op ?? args?.op);
 	if (result.isError) return errorView("Goal", resultText(result) || "Goal tool failed", description);
 	const goal = details?.goal ?? null;
-	if (!goal) return { head: toolHead("Goal", description, "no active goal"), tone: "warning" };
+	if (!goal)
+		return {
+			tool: { title: "Goal", target: goalActivity(args, { result }).detail, targetKind: "text" },
+			tone: "warning",
+			body: resultText(result).trim() ? [noteText(resultText(result))] : undefined,
+		};
 
-	const head = [
-		...toolHead("Goal", description),
-		span(" "),
-		span(goal.status, `${goalBadgeColor(goal.status)} strong`),
-	];
+	const summary = goalActivity(args, { result });
 	const used = formatNumber(goal.tokensUsed);
 	const left = goal.tokenBudget !== undefined ? Math.max(0, goal.tokenBudget - goal.tokensUsed) : 0;
 	const tokens =
@@ -90,9 +125,13 @@ function describeGoalResult(result: ToolRenderResult<GoalToolDetails>, args?: Go
 	if (goal.timeUsedSeconds > 0) meta.push(`${formatDuration(goal.timeUsedSeconds * 1000)} elapsed`);
 	const report = details?.completionBudgetReport;
 	return {
-		head,
+		tool: {
+			title: "Goal",
+			target: summary.detail,
+			targetKind: "text",
+			meta: summary.meta ? [summary.meta] : undefined,
+		},
 		body: compact([
-			text([span(`"${goal.objective.trim()}"`, "muted")], { wrap: "word" }),
 			text([span(meta.join(" · "), "dim")], { wrap: "word" }),
 			report ? node("section", { head: [span("Report", "toolTitle")] }, [noteText(report)], "report") : undefined,
 		]),
@@ -103,6 +142,7 @@ const goalResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /** Renders goal creation, status, and lifecycle results. */
 export const goalToolRenderer = {
+	activitySummary: goalActivity,
 	renderCall(args: GoalRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const description = describeOp(args.op);
 		const meta: string[] = [];
@@ -140,26 +180,24 @@ export const goalToolRenderer = {
 
 		const goal = details?.goal ?? null;
 		if (!goal) {
-			return new Text(
-				renderStatusLine({ icon: "warning", title: "Goal", description, meta: ["no active goal"] }, uiTheme),
-				0,
-				0,
+			const header = renderStatusLine(
+				{ icon: "warning", title: "Goal", description: goalActivity(args, { result }).detail },
+				uiTheme,
 			);
+			return new Text(`${header}${fallbackText.trim() ? `\n${fallbackText}` : ""}`, 0, 0);
 		}
 
 		const header = renderStatusLine(
 			{
 				iconOverride: uiTheme.styledSymbol("tool.goal", "accent"),
 				title: "Goal",
-				description,
+				description: goal.objective,
 				badge: { label: goal.status, color: goalBadgeColor(goal.status) },
 			},
 			uiTheme,
 		);
 
 		const lines: string[] = [];
-		const objectiveText = truncateToWidth(goal.objective.trim(), TRUNCATE_LENGTHS.LONG);
-		lines.push(uiTheme.italic(uiTheme.fg("muted", `"${objectiveText}"`)));
 
 		const used = formatNumber(goal.tokensUsed);
 		const tokensLine =

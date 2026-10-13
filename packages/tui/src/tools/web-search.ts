@@ -1,4 +1,10 @@
-import type { NativeToolView, ToolRenderer, ToolRenderResult } from "./renderer";
+import type {
+	NativeToolView,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+	ToolRenderResult,
+} from "./renderer";
 /**
  * Web Search TUI Rendering
  *
@@ -345,6 +351,20 @@ const searchResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /** Render web search queries, answers, and cited sources. */
 export const webSearchToolRenderer = {
+	activitySummary(args: SearchRenderArgs, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as SearchRenderDetails | undefined;
+		const response = details?.response;
+		const head = searchHead(args.query || response?.searchQueries?.[0]);
+		return {
+			label: head.title,
+			detail: head.target,
+			meta:
+				response && !context.result?.isError && !details?.error && Array.isArray(response.sources)
+					? formatCount("source", response.sources.length)
+					: undefined,
+			error: details?.error,
+		};
+	},
 	renderCall: renderSearchCall,
 	renderResult: renderSearchResult,
 	describeCall(args: SearchRenderArgs): NativeToolView {

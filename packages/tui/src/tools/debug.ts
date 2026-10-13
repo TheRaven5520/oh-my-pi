@@ -11,7 +11,14 @@ import {
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "../render/render-utils";
-import type { NativeToolView, RenderResultOptions, ToolRenderer, ToolRenderResult } from "./renderer";
+import type {
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+	ToolRenderResult,
+} from "./renderer";
 import { ansi, kv } from "../native/describe";
 import type { NativeChild } from "../native/node";
 import { OwnerMemo } from "../native/memo";
@@ -125,7 +132,7 @@ function debugCallParts(args: DebugRenderArgs | undefined, fallbackAction: strin
 	if (!args) return [action, undefined];
 	const target =
 		args.program ||
-		(args.file && args.line !== undefined ? `${args.file}:${args.line}` : undefined) ||
+		(args.file ? (args.line !== undefined ? `${args.file}:${args.line}` : args.file) : undefined) ||
 		args.function ||
 		args.expression ||
 		args.command ||
@@ -183,6 +190,22 @@ const debugResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /** Renders debugger calls and captured execution snapshots. */
 export const debugToolRenderer = {
+	activitySummary(args: DebugRenderArgs, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as DebugToolDetails | undefined;
+		const [action, target] = debugCallParts(args, details?.action ?? "debug");
+		return {
+			label: action === "debug" ? "Debug" : `Debug ${action}`,
+			detail: target,
+			meta: details?.snapshot?.status,
+			error:
+				details?.success === false && !context.isPartial && !context.result?.isError
+					? context.result?.content
+							?.find(block => block.type === "text")
+							?.text?.slice(0, 512)
+							.split("\n", 1)[0] || "Debug request failed"
+					: undefined,
+		};
+	},
 	animatedPartialResult: true,
 	renderCall(args: DebugRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
 		const text = renderStatusLine({ icon: "pending", title: "Debug", description: summarizeDebugCall(args) }, theme);

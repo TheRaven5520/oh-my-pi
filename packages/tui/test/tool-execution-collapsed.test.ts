@@ -11,6 +11,7 @@ import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 import type { AgentProgress, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
+import { editToolRenderer } from "@oh-my-pi/pi-tui/tools/edit";
 
 const ui: ToolExecutionUi = {
 	requestRender() {},
@@ -41,20 +42,140 @@ describe("collapsed tool cards", () => {
 		await initTheme();
 	});
 
+	it("keeps search counts distinct from output lines and retains partial-result warnings", () => {
+		const card = new ToolExecutionComponent("grep", { pattern: "needle", path: "src" }, {}, undefined, ui, "/tmp");
+		card.updateResult(
+			{ ...textResult("header\ncontext\nmatch\ncontext"), details: { matchCount: 1, fileCount: 1 } },
+			false,
+		);
+		const receipt = plain(card.render(80));
+		expect(receipt).toHaveLength(1);
+		expect(receipt[0]).toContain('"needle" in src');
+		expect(receipt[0]).toContain("1 match");
+		expect(receipt[0]).toContain("1 file");
+		card.updateResult(
+			{
+				...textResult("header\ncontext\nmatch\ncontext"),
+				details: { matchCount: 1, fileCount: 1, truncated: true, missingPaths: ["missing"] },
+			},
+			false,
+		);
+		const limited = plain(card.render(100))[0]!;
+		expect(limited).toContain("truncated");
+		card.setExpanded(true);
+		expect(plain(card.render(100)).join("\n")).toContain("missing");
+		card.seal();
+	});
+
+	describe.each(["glob", "grep"] as const)("%s search failures", toolName => {
+		it.each(["isError", "details.error"] as const)("preserves %s errors across expansion and recovery", channel => {
+			const card = new ToolExecutionComponent(
+				toolName,
+				{ pattern: "needle", path: "src" },
+				{},
+				undefined,
+				ui,
+				"/tmp",
+			);
+			const error = "Permission denied searching src";
+			card.updateResult(
+				{
+					...textResult(
+						channel === "isError" ? `${error}\nCheck directory access` : "Search stopped\nCheck access",
+					),
+					isError: channel === "isError",
+					details: {
+						fileCount: 0,
+						matchCount: 0,
+						truncated: true,
+						missingPaths: ["missing"],
+						...(channel === "details.error" ? { error } : {}),
+					},
+				},
+				false,
+			);
+			for (const expanded of [false, true, false]) {
+				card.setExpanded(expanded);
+				const failed = plain(card.render(120)).join("\n");
+				expect(failed).toContain(error);
+				expect(failed).not.toContain("0 files");
+				expect(failed).not.toContain("0 matches");
+				expect(failed).not.toContain("truncated");
+				expect(failed).not.toContain("paths skipped");
+			}
+			const emptyMessage = toolName === "glob" ? "No files found" : "No matches found";
+			card.updateResult({ ...textResult(emptyMessage), details: { fileCount: 0, matchCount: 0 } }, false);
+			const recovered = plain(card.render(120));
+			expect(recovered).toHaveLength(1);
+			expect(recovered[0]).toContain(toolName === "glob" ? "0 files" : "0 matches");
+			expect(recovered[0]).not.toContain(error);
+			card.setExpanded(true);
+			expect(plain(card.render(120)).join("\n")).toContain(emptyMessage);
+			card.setExpanded(false);
+			expect(plain(card.render(120))).toEqual(recovered);
+			card.seal();
+		});
+	});
+
+	it("does not replace failed write output with a successful receipt", () => {
+		const card = new ToolExecutionComponent(
+			"write",
+			{ path: "report.txt", content: "one\ntwo" },
+			{},
+			undefined,
+			ui,
+			"/tmp",
+		);
+		card.updateResult({ ...textResult("Permission denied"), isError: true }, false);
+		expect(plain(card.render(80)).join("\n")).toContain("Permission denied");
+		card.updateResult(textResult("Saved"), false);
+		const saved = plain(card.render(80));
+		expect(saved).toHaveLength(1);
+		expect(saved[0]).toContain("2 lines written");
+		for (const width of [1, 8, 20, 40]) {
+			expect(card.render(width).every(row => visibleWidth(row) <= width)).toBe(true);
+		}
+		card.seal();
+	});
+
+	it("does not report successful edit deltas when an edit fails with details", () => {
+		const card = new ToolExecutionComponent(
+			"edit",
+			{ path: "report.txt", oldText: "before", newText: "after" },
+			{},
+			undefined,
+			ui,
+			"/tmp",
+		);
+		const result = { ...textResult("Permission denied"), isError: true, details: { diff: "" } };
+		card.updateResult(result, false);
+		expect(
+			editToolRenderer.activitySummary(
+				{ path: "report.txt", oldText: "before", newText: "after" },
+				{ expanded: false, isPartial: false, result },
+			).receipt,
+		).toBe(false);
+		const failed = plain(card.render(80)).join("\n");
+		expect(failed).toContain("Permission denied");
+		expect(failed).not.toContain("+0");
+		expect(failed).not.toContain("−0");
+		card.seal();
+	});
+
 	it("retains the Eval title or code excerpt after expansion and collapse", () => {
 		const code = "print('first visible line')\nprint('second line')";
 		const card = new ToolExecutionComponent("eval", { code }, {}, undefined, ui, "/tmp");
 		card.updateResult(textResult("first visible line\nsecond line"), false);
 		card.seal();
-		expect(plain(card.render(100))[0]).toContain(" · print('first visible line')");
+		expect(plain(card.render(100))[0]).toContain("print('first visible line')");
 		card.toggleClickExpansion();
 		card.render(100);
 		card.toggleClickExpansion();
-		expect(plain(card.render(100))[0]).toContain(" · print('first visible line')");
+		expect(plain(card.render(100))[0]).toContain("print('first visible line')");
 		card.updateArgs({ code, title: "Summarizing the output of both printed lines" });
-		expect(plain(card.render(100))[0]).toContain(" · Summarizing the output of both printed lines");
+		expect(plain(card.render(100))[0]).toContain("Summarizing the output of both printed lines");
 		const cropped = plain(card.render(24))[0]!;
-		expect(cropped).toContain(" · Summarizing");
+		expect(cropped).toContain("Summarizing");
 		expect(visibleWidth(cropped)).toBeLessThanOrEqual(24);
 	});
 
@@ -138,7 +259,7 @@ describe("collapsed tool cards", () => {
 		// result, unlike the transient progress above, and may condense normally.
 		card.updateResult(result, false);
 		const completed = plain(card.render(120));
-		expect(completed).toHaveLength(2);
+		expect(completed.join("\n")).toContain("10 running");
 		expect(completed.join("\n")).not.toContain("Visible progress");
 		const finished = plain(transcript.renderViewport(120, 40, frame)).join("\n");
 		expect(finished).toContain("Surrounding text 38");
@@ -213,7 +334,7 @@ describe("collapsed tool cards", () => {
 		expect(plain(card.render(40)).map(row => row.trim())).toEqual(["header", "body"]);
 	});
 
-	it("counts every hidden output line, not the collapsed preview", () => {
+	it("previews the first output lines and counts the rest, not the model-facing notice", () => {
 		for (const [command, lines] of [
 			["seq 1 40", 40],
 			["ls /usr/bin | head -60", 60],
@@ -227,43 +348,108 @@ describe("collapsed tool cards", () => {
 				false,
 			);
 			card.seal();
-			const rows = plain(card.render(120));
-			expect(rows).toHaveLength(2);
+			const rows = plain(card.render(120)).map(row => row.trimEnd());
+			expect(rows).toHaveLength(4);
 			expect(rows[0]).toContain(command);
-			expect(rows[1]).toEndWith(` ${lines} lines`);
+			expect(rows[1]).toEndWith(" out 1");
+			expect(rows[2]).toEndWith(" out 2");
+			expect(rows[3]).toContain(`${lines - 2} more lines`);
+			expect(rows.join("\n")).not.toContain("Wall time");
 		}
 	});
 
-	it("shows a one-line output whole instead of counting it", () => {
-		const card = new ToolExecutionComponent("bash", { command: "echo hi" }, {}, undefined, ui, "/tmp");
-		card.updateResult(
-			{ content: [{ type: "text", text: "hi\n\nWall time: 0.01 seconds" }], details: { wallTimeMs: 10 } },
-			false,
-		);
-		card.seal();
-		expect(plain(card.render(120))[1]).toEndWith(" hi");
-	});
-
-	it("recounts hidden lines when the same output gains notice details", () => {
+	it("shows short multi-line output whole and drops a notice once details identify it", () => {
 		const card = new ToolExecutionComponent("bash", { command: "echo a" }, {}, undefined, ui, "/tmp");
 		const text = "a\nb\n\nWall time: 0.02 seconds";
 		card.updateResult({ content: [{ type: "text", text }], details: {} }, false);
 		card.seal();
-		expect(plain(card.render(120))[1]).toEndWith(" 3 lines");
+		expect(plain(card.render(120)).slice(1)).toEqual(["  └ a", "    b", "    Wall time: 0.02 seconds"]);
 		// Same output string, new details: the notice is now known and hidden.
 		card.updateResult({ content: [{ type: "text", text }], details: { wallTimeMs: 20 } }, false);
-		expect(plain(card.render(120))[1]).toEndWith(" 2 lines");
+		expect(plain(card.render(120)).slice(1)).toEqual(["  └ a", "    b"]);
 	});
 
-	it("keeps only the header in a one-row allocation", () => {
-		const card = new ToolExecutionComponent("bash", { command: "seq 1 3" }, {}, undefined, ui, "/tmp");
-		card.updateResult(textResult("1\n2\n3"), false);
+	it("wraps a long multi-line command into the head instead of cutting it to one row", () => {
+		const command =
+			"cd packages/tui && bun test test/tool-execution-collapsed.test.ts --timeout 20000\ngit status --short";
+		const card = new ToolExecutionComponent("bash", { command }, {}, undefined, ui, "/tmp");
+		card.updateResult(textResult("ok\nclean"), false);
 		card.seal();
-		expect(plain(card.render(120))).toHaveLength(2);
+		for (const width of [48, 80]) {
+			const rows = card.render(width);
+			expect(rows.every(row => visibleWidth(row) <= width)).toBe(true);
+			const text = plain(rows).map(row => row.trimEnd());
+			const outputStart = text.findIndex(row => row.startsWith("  └ "));
+			expect(outputStart).toBeGreaterThan(1);
+			expect(outputStart).toBeLessThanOrEqual(3);
+			const head = text.slice(0, outputStart);
+			expect(head[0]).toContain("$ cd packages/tui");
+			// Continuations line up under the command text, apart from the output's column.
+			const commandColumn = visibleWidth(head[0]!.slice(0, head[0]!.indexOf("cd packages/tui")));
+			for (const row of head.slice(1)) expect(row.search(/\S/)).toBe(commandColumn);
+			expect(head.join(" ")).toContain("--timeout");
+			expect(text.slice(outputStart)).toEqual(["  └ ok", "    clean"]);
+		}
+		// The head is capped; a command beyond it ends in an ellipsis.
+		const long = new ToolExecutionComponent(
+			"bash",
+			{ command: Array.from({ length: 8 }, (_, index) => `echo step-${index}`).join("\n") },
+			{},
+			undefined,
+			ui,
+			"/tmp",
+		);
+		long.updateResult(textResult("done"), false);
+		long.seal();
+		const rows = plain(long.render(80)).map(row => row.trimEnd());
+		expect(rows[0]).toEndWith("Bash  $ echo step-0");
+		const indent = " ".repeat(visibleWidth(rows[0]!.slice(0, rows[0]!.indexOf("echo"))));
+		expect(rows.slice(1)).toEqual([`${indent}echo step-1`, `${indent}echo step-2…`, "  └ done"]);
+	});
+
+	it("previews failed output from its tail, where the error lands", () => {
+		const card = new ToolExecutionComponent("bash", { command: "bun test" }, {}, undefined, ui, "/tmp");
+		const output = ["running 40 tests", "pass a", "pass b", "pass c", "error: expected 1 to be 2"].join("\n");
+		card.updateResult({ ...textResult(output), isError: true, details: { exitCode: 1 } }, false);
+		card.seal();
+		const rows = plain(card.render(100)).map(row => row.trimEnd());
+		expect(rows[1]).toContain("3 earlier lines");
+		expect(rows.slice(2)).toEqual(["    pass c", "    error: expected 1 to be 2"]);
+	});
+
+	it("keeps the first head row free for a /time label", () => {
+		const command = Array.from({ length: 6 }, (_, index) => `step-${index}`).join(" && ");
+		const card = new ToolExecutionComponent("bash", { command }, {}, undefined, ui, "/tmp");
+		card.updateResult(textResult("ok"), false);
+		card.seal();
+		const width = 60;
+		const free = plain(card.render(width))[0]!;
+		setChatTranscriptDisplayPreferences({ showTimestamps: true });
+		try {
+			const stamped = plain(card.render(width));
+			expect(width - visibleWidth(stamped[0]!.trimEnd())).toBeGreaterThanOrEqual(20);
+			expect(stamped.join(" ")).toContain("step-5");
+			expect(stamped[0]).not.toEqual(free);
+		} finally {
+			setChatTranscriptDisplayPreferences({ showTimestamps: false });
+		}
+	});
+
+	it("degrades to the head's first row, then one output row, under a squeeze", () => {
+		const card = new ToolExecutionComponent("bash", { command: "seq 1 5" }, {}, undefined, ui, "/tmp");
+		card.updateResult(textResult("1\n2\n3\n4\n5"), false);
+		card.seal();
+		expect(plain(card.render(120))).toHaveLength(4);
+		card.setTranscriptAllocation(2, { tick: 0, now: 0 });
+		const two = plain(card.render(120));
+		expect(two).toHaveLength(2);
+		expect(two[0]).toContain("seq 1 5");
+		expect(two[1]).toContain("1");
+		expect(two[1]).toContain("4 more lines");
 		card.setTranscriptAllocation(1, { tick: 0, now: 0 });
 		const rows = plain(card.render(120));
 		expect(rows).toHaveLength(1);
-		expect(rows[0]).toContain("seq 1 3");
+		expect(rows[0]).toContain("seq 1 5");
 	});
 
 	it("keeps a collapsed card off its child tree on unchanged frames", () => {
@@ -278,7 +464,7 @@ describe("collapsed tool cards", () => {
 		card.seal();
 
 		const first = card.render(80);
-		expect(plain(first)[1]).toEndWith(" 12 lines");
+		expect(plain(first).join("\n")).toContain("10 more lines");
 		const second = card.render(80);
 		expect(body.renders).toBe(0);
 		expect(second).toBe(first);
@@ -297,19 +483,24 @@ describe("collapsed tool cards", () => {
 
 		// A new result invalidates the memo.
 		card.updateResult(textResult("only\nthree\nlines"), false);
-		expect(plain(card.render(80))[1]).toEndWith(" 3 lines");
+		expect(plain(card.render(80)).at(-1)).toEndWith(" lines");
 		expect(body.renders).toBe(1);
 	});
 
-	it("follows a running block's streamed tail while collapsed", () => {
+	it("follows a running block's streamed tail while collapsed, then previews the head", () => {
 		const card = new ToolExecutionComponent("counted", { path: "x" }, {}, undefined, ui, "/tmp");
 		card.updateResult(textResult("first\nsecond"), true);
-		expect(plain(card.render(80))[1]).toEndWith(" second");
-		card.updateResult(textResult("first\nsecond\nthird"), true);
-		expect(plain(card.render(80))[1]).toEndWith(" third");
-		card.updateResult(textResult("first\nsecond\nthird"), false);
+		expect(plain(card.render(80)).slice(1)).toEqual(["  └ first", "    second"]);
+		const streamed = "first\nsecond\nthird\nfourth\nfifth";
+		card.updateResult(textResult(streamed), true);
+		const live = plain(card.render(80)).slice(1);
+		expect(live[0]).toContain("3 earlier lines");
+		expect(live.slice(1)).toEqual(["    fourth", "    fifth"]);
+		card.updateResult(textResult(streamed), false);
 		card.seal();
-		expect(plain(card.render(80))[1]).toEndWith(" 3 lines");
+		const settled = plain(card.render(80)).slice(1);
+		expect(settled.slice(0, 2)).toEqual(["  └ first", "    second"]);
+		expect(settled[2]).toContain("3 more lines");
 	});
 
 	it("keeps every running task agent in spawn order across interleaved updates", () => {
@@ -347,7 +538,11 @@ describe("collapsed tool cards", () => {
 		try {
 			for (const index of [0, 2, 1]) {
 				update(index);
-				expect(plain(card.render(100))[1]).toEndWith(` Running 3 agents: ${names.join(", ")}`);
+				const rendered = plain(card.render(160));
+				expect(rendered[0]).toContain(names.join(", "));
+				expect(rendered[0]).toContain("3 running");
+				expect(rendered.join("\n")).toContain("Update from");
+				expect(rendered.join("\n")).not.toContain("Running 3 agents:");
 				// Native task cards already carry all agent nodes, not the text tail.
 				const nativeNames = card
 					.describe()
@@ -355,7 +550,7 @@ describe("collapsed tool cards", () => {
 				expect(nativeNames).toEqual([names[2], names[0], names[1]]);
 			}
 			const narrow = card.render(40);
-			expect(plain(narrow)[1]).toEndWith("…");
+			expect(plain(narrow).join("\n")).not.toContain("Running 3 agents:");
 			expect(narrow.every(row => visibleWidth(row) <= 40)).toBe(true);
 			card.setExpanded(true);
 			const expanded = plain(card.render(100)).join("\n");
@@ -364,10 +559,12 @@ describe("collapsed tool cards", () => {
 			card.setExpanded(false);
 			progress[1]!.status = "completed";
 			update(2);
-			expect(plain(card.render(100))[1]).toEndWith(" Running 2 agents: AdvisorOneLine2, CardsReview");
+			expect(plain(card.render(160))[0]).toContain("2 running");
+			expect(plain(card.render(160))[0]).toContain("1 done");
 			progress[0]!.status = "failed";
 			const lastUpdate = update(2);
-			expect(plain(card.render(100))[1]).toEndWith(" Running agent CardsReview");
+			expect(plain(card.render(160))[0]).toContain("1 running");
+			expect(plain(card.render(160))[0]).toContain("1 failed");
 			// The same payload settling must invalidate the live-summary cache.
 			card.updateResult(lastUpdate, false);
 			expect(plain(card.render(100))[1]).toEndWith(" Running agent CardsReview...");
@@ -377,6 +574,46 @@ describe("collapsed tool cards", () => {
 		} finally {
 			card.seal();
 		}
+	});
+
+	it("retains a failed shell command's exit metadata alongside its error", () => {
+		const card = new ToolExecutionComponent("bash", { command: "exit 7" }, {}, undefined, ui, "/tmp");
+		card.updateResult(
+			{ ...textResult("Command failed\nDiagnostic detail"), isError: true, details: { exitCode: 7 } },
+			false,
+		);
+		const failed = plain(card.render(80));
+		expect(failed[0]).toContain("exit 7");
+		expect(failed[0]).toContain("· exit 7");
+		expect(failed[1]).toContain("Command failed");
+		expect(failed[2]).toContain("Diagnostic detail");
+		card.seal();
+	});
+
+	it("groups back-to-back Bash, Eval, Grep and Read cards without blank rows", () => {
+		const bash = new ToolExecutionComponent("bash", { command: "git status --short" }, {}, undefined, ui, "/tmp");
+		bash.updateResult(textResult(" M one.ts\n M two.ts"), false);
+		const cell = new ToolExecutionComponent("eval", { code: "print(1)\nprint(2)" }, {}, undefined, ui, "/tmp");
+		cell.updateResult(textResult("1\n2"), false);
+		const grep = new ToolExecutionComponent("grep", { pattern: "needle", path: "src" }, {}, undefined, ui, "/tmp");
+		grep.updateResult({ ...textResult("src/a.ts:1:needle"), details: { matchCount: 1, fileCount: 1 } }, false);
+		const read = new ReadToolGroupComponent();
+		read.updateArgs({ path: "example.txt" }, "read");
+		read.updateResult(textResult("contents"), false, "read");
+		const transcript = new TranscriptContainer();
+		for (const card of [bash, cell, grep, read]) transcript.addChild(card);
+		const frame = { tick: 0, now: 0 };
+		for (const width of [40, 100]) {
+			const rows = plain(transcript.renderViewport(width, 60, frame)).map(row => row.trimEnd());
+			const starts = ["Bash", "Eval", "Grep", "Read"].map(text => rows.findIndex(row => row.includes(text)));
+			for (let index = 1; index < starts.length; index++) {
+				expect(starts[index]).toBeGreaterThan(starts[index - 1]!);
+				expect(rows[starts[index]! - 1]).not.toBe("");
+			}
+			expect(rows).not.toContain("");
+		}
+		transcript.dispose();
+		for (const card of [bash, cell, grep]) card.seal();
 	});
 
 	it("ticks elapsed seconds on a running collapsed header and drops them once settled", () => {
@@ -399,5 +636,32 @@ describe("collapsed tool cards", () => {
 		card.seal();
 		card.setTranscriptAllocation(2, { tick: 4, now: started + 6000 });
 		expect(plain(card.render(80))[0]).not.toMatch(/\d+s$/);
+	});
+	it("keeps the shell prompt on action headers and reveals the exact command on expansion", () => {
+		const command = "git push origin feature";
+		const card = new ToolExecutionComponent("bash", { command, cwd: "/tmp/project" }, {}, undefined, ui, "/tmp");
+		card.updateResult(textResult("Everything up-to-date"), false);
+		const collapsed = plain(card.render(100)).join("\n");
+		expect(collapsed).toContain("$ ");
+		expect(collapsed).not.toContain(command);
+		card.setExpanded(true);
+		expect(plain(card.render(100)).join("\n")).toContain(command);
+		card.seal();
+	});
+
+	it("summarizes unknown tool operations without exposing body payloads in the header", () => {
+		const card = new ToolExecutionComponent(
+			"custom_tool",
+			{ op: "update", path: "src/item.ts", input: "private payload" },
+			{},
+			undefined,
+			ui,
+			"/tmp",
+		);
+		const header = plain(card.render(100))[0]!;
+		expect(header).toContain("update");
+		expect(header).toContain("src/item.ts");
+		expect(header).not.toContain("private payload");
+		card.seal();
 	});
 });

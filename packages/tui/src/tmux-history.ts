@@ -8,6 +8,9 @@ import { isBunTestRuntime } from "@oh-my-pi/pi-utils/env";
 
 export interface TmuxHistorySnapshot {
 	owners: readonly (object | undefined)[];
+	anchors: readonly (object | undefined)[];
+	historyOffset: number;
+	epoch: number;
 	screenTop: number;
 	columns: number;
 	rows: number;
@@ -21,7 +24,7 @@ export interface TmuxHistoryHost {
 }
 
 interface HistoryRequest {
-	op: "wheel" | "click";
+	op: "wheel" | "click" | "drag-prepare" | "drag-commit";
 	pane: string;
 	generation: number;
 	token?: string;
@@ -42,11 +45,15 @@ interface PaneState {
 	scroll: number;
 	historyLimit: number;
 	socket: string;
+	historySize: number;
+	frozenHistorySize?: number;
+	press: string;
+	modeName: string;
 }
 
 const execute = promisify(execFile);
 const STATE_FORMAT =
-	"#{pane_in_mode}\t#{@scrollback}\t#{@omp-history-generation}\t#{@omp-history-snapshot}\t#{pane_width}\t#{pane_height}\t#{scroll_position}\t#{history_limit}\t#{@omp-history-socket}";
+	"#{pane_in_mode}\t#{@scrollback}\t#{@omp-history-generation}\t#{@omp-history-snapshot}\t#{pane_width}\t#{pane_height}\t#{scroll_position}\t#{history_limit}\t#{@omp-history-socket}\t#{history_size}\t#{@omp-history-press}\t#{@omp-history-size}\t#{pane_mode}";
 
 /** Native tmux history owns scrolling/selection; only immutable row identities cross this socket. */
 export class TmuxHistoryBridge {
@@ -57,6 +64,18 @@ export class TmuxHistoryBridge {
 	#pending = 0;
 	#snapshot?: { value: TmuxHistorySnapshot; token: string; generation: number };
 	#sequence = 0;
+	#outputTimer?: NodeJS.Timeout;
+	#outputDirty = false;
+	#outputQueued = false;
+	#capturing = false;
+	#lifetime = new AbortController();
+	#drag?: {
+		value: TmuxHistorySnapshot;
+		token: string;
+		generation: number;
+		timer: NodeJS.Timeout;
+		controller: AbortController;
+	};
 
 	private constructor(
 		private readonly host: TmuxHistoryHost,
@@ -113,6 +132,9 @@ export class TmuxHistoryBridge {
 	stop(): void {
 		if (this.#stopped) return;
 		this.#stopped = true;
+		this.#lifetime.abort();
+		clearTimeout(this.#outputTimer);
+		this.#releaseDrag();
 		this.#snapshot = undefined;
 		for (const [client, controller] of this.#clients) {
 			controller.abort();
@@ -159,6 +181,10 @@ export class TmuxHistoryBridge {
 			scroll: Number(values[6] || 0),
 			historyLimit: Number(values[7]),
 			socket: values[8] ?? "",
+			historySize: Number(values[9]),
+			frozenHistorySize: values[11] ? Number(values[11]) : undefined,
+			press: values[10] ?? "",
+			modeName: values[12] ?? "",
 		};
 	}
 
@@ -202,7 +228,7 @@ export class TmuxHistoryBridge {
 				!request ||
 				request.pane !== this.pane ||
 				!Number.isSafeInteger(request.generation) ||
-				(request.op !== "wheel" && request.op !== "click") ||
+				!["wheel", "click", "drag-prepare", "drag-commit"].includes(request.op) ||
 				this.#stopped
 			) {
 				socket.end('{"ok":false}\n');
@@ -238,13 +264,218 @@ export class TmuxHistoryBridge {
 			`#{==:#{pane_height},${state.rows}}`,
 			"#{==:#{alternate_on},0}",
 		];
-		if (state.mode) clauses.push("#{==:#{@scrollback},1}", `#{==:#{@omp-history-snapshot},${token}}`);
+		if (state.mode) clauses.push(`#{==:#{@omp-history-snapshot},${token}}`);
 		return clauses.reduce((left, right) => `#{&&:${left},${right}}`);
+	}
+
+	/** Coalesce paints; no child process or polling remains after stop/mode exit. */
+	notifyOutput(): void {
+		if (this.#stopped || this.#capturing) return;
+		this.#outputDirty = true;
+		this.#scheduleOutput();
+	}
+
+	#scheduleOutput(): void {
+		if (this.#stopped || this.#outputTimer || this.#outputQueued) return;
+		this.#outputTimer = setTimeout(() => {
+			this.#outputTimer = undefined;
+			this.#outputQueued = true;
+			this.#queue = this.#queue.then(async () => {
+				try {
+					if (this.#outputDirty && !this.#stopped) await this.#refreshOutput(this.#lifetime.signal);
+				} catch {
+					// Retain the frozen view on failure; only a successful refresh publishes identities.
+				} finally {
+					this.#outputQueued = false;
+					if (this.#outputDirty) this.#scheduleOutput();
+				}
+			});
+		}, 250);
+		this.#outputTimer.unref();
+	}
+
+	async #capture(owner: object | undefined, signal: AbortSignal): Promise<TmuxHistorySnapshot | undefined> {
+		this.#capturing = true;
+		try {
+			return await this.host.capture(owner, signal);
+		} finally {
+			this.#capturing = false;
+		}
+	}
+
+	async #refreshOutput(signal: AbortSignal): Promise<void> {
+		this.#outputDirty = false;
+		const state = await this.#state(signal);
+		if (!state.mode || state.modeName !== "copy-mode" || state.socket !== this.socketPath) return;
+		const saved = this.#snapshot;
+		const matched =
+			saved &&
+			state.token === saved.token &&
+			state.generation === saved.generation &&
+			state.columns === saved.value.columns &&
+			state.rows === saved.value.rows;
+		// An empty token is ordinary native copy mode, which also receives output.
+		// A foreign token belongs to a different transaction and must not be adopted.
+		if (!matched && state.token) return;
+		if (state.press) {
+			this.#outputDirty = true;
+			return;
+		}
+		const snapshot = await this.#capture(undefined, signal);
+		if (!snapshot) return;
+		try {
+			if (!snapshot.valid() || snapshot.columns !== state.columns || snapshot.rows !== state.rows) return;
+			const current = await this.#state(signal);
+			// Raw native coordinates also cover blank/ownerless rows and explicit
+			// copy-mode entry. Growth below the view increases its offset, not its top.
+			let desired = Math.max(0, state.scroll + current.historySize - (state.frozenHistorySize ?? state.historySize));
+			if (matched) {
+				let anchor = saved.value.screenTop - state.scroll;
+				if (snapshot.epoch === saved.value.epoch) {
+					anchor += saved.value.historyOffset - snapshot.historyOffset;
+					desired = Math.max(0, snapshot.screenTop - anchor);
+				} else {
+					// Prefer a retained visible owner across a replay. If none survives,
+					// refresh at the raw top row rather than freezing an obsolete view.
+					for (let y = 0; y < state.rows; y++) {
+						const owner = saved.value.anchors[anchor + y];
+						if (!owner) continue;
+						const next = snapshot.anchors.indexOf(owner);
+						if (next < 0) continue;
+						anchor += y;
+						let first = anchor;
+						while (first > 0 && saved.value.anchors[first - 1] === owner) first--;
+						let end = next + 1;
+						while (snapshot.anchors[end] === owner) end++;
+						anchor = Math.min(next + anchor - first, end - 1);
+						desired = Math.max(0, snapshot.screenTop + y - anchor);
+						break;
+					}
+				}
+			}
+			const token = `${process.pid}-${++this.#sequence}`;
+			const guard = [
+				this.#guard(state),
+				`#{==:#{scroll_position},${state.scroll}}`,
+				"#{==:#{pane_mode},copy-mode}",
+				"#{==:#{@omp-history-press},}",
+			].reduce((a, b) => `#{&&:${a},${b}}`);
+			// The user wants incoming output to clear residual selections, exactly as
+			// native refresh-from-pane does. Never cancel mode or force tail-follow.
+			await this.#tmux(
+				signal,
+				"if",
+				"-F",
+				"-t",
+				this.pane,
+				guard,
+				`send -t ${this.pane} -X history-bottom ; send -t ${this.pane} -X refresh-from-pane ; ` +
+					(desired > 0 ? `send -t ${this.pane} -X -N ${desired} scroll-up ; ` : "") +
+					`set -p -t ${this.pane} @omp-history-snapshot ${token} ; ` +
+					`set -p -t ${this.pane} @omp-history-size ${current.historySize}`,
+			);
+			const after = await this.#state(signal);
+			if (after.mode && after.token === token && after.generation === state.generation && snapshot.valid()) {
+				this.#snapshot = { value: snapshot, token, generation: after.generation };
+			} else if (after.mode && after.token === state.token && after.generation === state.generation) {
+				this.#outputDirty = true;
+			}
+		} finally {
+			snapshot.release();
+		}
+	}
+
+	#releaseDrag(): void {
+		const drag = this.#drag;
+		if (!drag) return;
+		this.#drag = undefined;
+		clearTimeout(drag.timer);
+		drag.value.release();
+		drag.controller.abort();
+	}
+
+	async #prepareDrag(state: PaneState, request: HistoryRequest, signal: AbortSignal): Promise<boolean> {
+		if (state.mode || state.generation !== request.generation) return true;
+		this.#releaseDrag();
+		const controller = new AbortController();
+		const abort = () => controller.abort();
+		signal.addEventListener("abort", abort, { once: true });
+		let snapshot: TmuxHistorySnapshot | undefined;
+		let held = false;
+		try {
+			snapshot = await this.#capture(undefined, controller.signal);
+			if (
+				!snapshot ||
+				!snapshot.valid() ||
+				this.#stopped ||
+				signal.aborted ||
+				snapshot.columns !== state.columns ||
+				snapshot.rows !== state.rows
+			)
+				return false;
+			const token = `${process.pid}-${++this.#sequence}`;
+			await this.#tmux(
+				signal,
+				"if",
+				"-F",
+				"-t",
+				this.pane,
+				this.#guard(state),
+				`set -p -t ${this.pane} @omp-history-snapshot ${token}`,
+			);
+			const timer = setTimeout(() => {
+				this.#releaseDrag();
+				void this.#tmux(
+					undefined,
+					"if",
+					"-F",
+					"-t",
+					this.pane,
+					`#{&&:#{==:#{@omp-history-socket},${this.socketPath}},#{==:#{@omp-history-snapshot},${token}}}`,
+					`set -pu -t ${this.pane} @omp-history-snapshot`,
+				).catch(() => {});
+			}, 3000);
+			timer.unref();
+			this.#drag = { value: snapshot, token, generation: state.generation + 1, timer, controller };
+			held = true;
+			return true;
+		} finally {
+			signal.removeEventListener("abort", abort);
+			if (!held) {
+				snapshot?.release();
+				controller.abort();
+			}
+		}
+	}
+
+	#commitDrag(state: PaneState, request: HistoryRequest): boolean {
+		const drag = this.#drag;
+		if (!drag) return true;
+		if (
+			state.mode &&
+			state.scrollback &&
+			state.token === drag.token &&
+			request.token === drag.token &&
+			// A blocking helper in the original copy-mode command list runs before
+			// its queued pane-mode-changed hook. Adopt the exact prepared token now,
+			// but retain the post-hook generation used by subsequent mouse events.
+			(state.generation === drag.generation || state.generation + 1 === drag.generation) &&
+			(request.generation === state.generation || request.generation + 1 === state.generation) &&
+			state.columns === drag.value.columns &&
+			state.rows === drag.value.rows &&
+			drag.value.valid()
+		) {
+			this.#snapshot = { value: drag.value, token: drag.token, generation: drag.generation };
+		}
+		this.#releaseDrag();
+		return true;
 	}
 
 	async #handle(request: HistoryRequest, signal: AbortSignal): Promise<boolean> {
 		const state = await this.#state(signal);
 		if (state.socket !== this.socketPath || this.#stopped || signal.aborted) return false;
+		if (request.op === "drag-prepare") return this.#prepareDrag(state, request, signal);
+		if (request.op === "drag-commit") return this.#commitDrag(state, request);
 		if (request.op === "wheel") {
 			// Wheel requests captured before entry can arrive after its mode-change hook.
 			if (state.mode) {
@@ -308,7 +539,7 @@ export class TmuxHistoryBridge {
 	}
 
 	async #enter(state: PaneState, signal: AbortSignal): Promise<boolean> {
-		const snapshot = await this.host.capture(undefined, signal);
+		const snapshot = await this.#capture(undefined, signal);
 		if (!snapshot) return false;
 		const token = `${process.pid}-${++this.#sequence}`;
 		let committed = false;
@@ -331,7 +562,8 @@ export class TmuxHistoryBridge {
 				this.pane,
 				this.#guard(state),
 				`set -p -t ${this.pane} @scrollback 1 ; copy-mode -e -t ${this.pane} ; ` +
-					`set -p -t ${this.pane} @omp-history-snapshot ${token} ; send -t ${this.pane} -X -N 3 scroll-up`,
+					`set -p -t ${this.pane} @omp-history-snapshot ${token} ; ` +
+					`set -pF -t ${this.pane} @omp-history-size '#{history_size}' ; send -t ${this.pane} -X -N 3 scroll-up`,
 			);
 			const entered = await this.#state(signal);
 			if (
@@ -406,7 +638,7 @@ export class TmuxHistoryBridge {
 		try {
 			// capture(owner) can mutate before returning or throwing: every failure below
 			// must reveal the live grid instead of retaining the old frozen copy.
-			snapshot = await this.host.capture(owner, signal);
+			snapshot = await this.#capture(owner, signal);
 			if (
 				!snapshot ||
 				this.#stopped ||
@@ -449,7 +681,8 @@ export class TmuxHistoryBridge {
 				this.pane,
 				`#{&&:${this.#guard(state)},#{==:#{scroll_position},${state.scroll}}}`,
 				`send -t ${this.pane} -X history-bottom ; send -t ${this.pane} -X refresh-from-pane ; ` +
-					`send -t ${this.pane} -X -N ${desired} scroll-up ; set -p -t ${this.pane} @omp-history-snapshot ${token}`,
+					`send -t ${this.pane} -X -N ${desired} scroll-up ; set -p -t ${this.pane} @omp-history-snapshot ${token} ; ` +
+					`set -p -t ${this.pane} @omp-history-size ${current.historySize}`,
 			);
 			const refreshed = await this.#state(signal);
 			if (

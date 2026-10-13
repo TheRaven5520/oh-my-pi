@@ -1,4 +1,5 @@
 import { activityOneLine, compareActivityRows } from "@oh-my-pi/pi-tui/overlays/agent-activity";
+import { inferCommandTitle, resolveCommandTitle } from "@oh-my-pi/pi-tui/tools/command-action";
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import type { AgentActivityRow, AgentActivityQuery } from "@oh-my-pi/pi-tui/overlays/agent-activity";
@@ -91,8 +92,14 @@ function argumentsSummary(toolName: string, value: unknown): string {
 		}
 		case "glob":
 			return firstString(args, "path") ?? "Map files";
-		case "bash":
-			return firstString(args, "command") ?? "Run command";
+		case "bash": {
+			const action =
+				resolveCommandTitle(args.title) ??
+				inferCommandTitle(typeof args.command === "string" ? args.command : undefined);
+			return action
+				? [action, firstString(args, "cwd")].filter(Boolean).join(" · ")
+				: (firstString(args, "command") ?? "Run command");
+		}
 		case "write":
 		case "edit":
 			return firstString(args, "path") ?? `${toolName === "write" ? "Write" : "Edit"} files`;

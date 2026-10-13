@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setImmediate as nextTurn } from "node:timers/promises";
+import { setImmediate as nextTurn, setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import * as environment from "@oh-my-pi/pi-utils/env";
 import { TmuxHistoryBridge, type TmuxHistoryHost, type TmuxHistorySnapshot } from "../src/tmux-history";
@@ -17,8 +17,8 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-async function until(check: () => boolean | Promise<boolean>): Promise<void> {
-	const deadline = performance.now() + 3000;
+async function until(check: () => boolean | Promise<boolean>, timeout = 3000): Promise<void> {
+	const deadline = performance.now() + timeout;
 	while (!(await check())) {
 		if (performance.now() >= deadline) throw new Error("Bridge state did not settle");
 		await nextTurn();
@@ -52,7 +52,9 @@ async function rig() {
 		"-t",
 		pane,
 		"pane-mode-changed",
-		`set -pF -t ${pane} @omp-history-generation '#{e|+:#{@omp-history-generation},1}'`,
+		`set -pF -t ${pane} @omp-history-generation '#{e|+:#{@omp-history-generation},1}' ; ` +
+			`if -F -t ${pane} '#{pane_in_mode}' 'set -pF -t ${pane} @omp-history-size "#{history_size}"' ` +
+			`'set -pu -t ${pane} @omp-history-size ; set -pu -t ${pane} @omp-history-snapshot'`,
 	);
 	await until(async () => Number(await tmux("display", "-p", "-t", pane, "#{history_size}")) > 30);
 	const [columns, rows] = (await tmux("display", "-p", "-t", pane, "#{pane_width},#{pane_height}"))
@@ -62,6 +64,9 @@ async function rig() {
 	let released = 0;
 	const snapshot = (): TmuxHistorySnapshot => ({
 		owners: Array.from({ length: 200 }, () => owner),
+		anchors: Array.from({ length: 200 }, () => owner),
+		historyOffset: 0,
+		epoch: 0,
 		screenTop: 100,
 		columns,
 		rows,
@@ -130,6 +135,8 @@ async function rig() {
 	};
 	return {
 		bridge,
+		directory,
+		socketPath,
 		captures,
 		snapshot,
 		state,
@@ -356,4 +363,210 @@ describe.skipIf(!Bun.which("tmux"))("tmux history request lifetime", () => {
 		await until(() => r.released === 1);
 		expect((await r.state()).mode).toBe(false);
 	}, 10000);
+
+	it("adopts a native drag snapshot after the prepare socket closes", async () => {
+		const r = await rig();
+		expect(await r.request({ op: "drag-prepare", generation: 0 }).response).toContain('"ok":true');
+		const prepared = await r.state();
+		expect(prepared.token).not.toBe("");
+		expect(r.released).toBe(0);
+		expect(r.captures[0]?.signal?.aborted).toBe(false);
+		await r.tmux("set", "-p", "-t", r.pane, "@scrollback", "1");
+		await r.tmux("copy-mode", "-t", r.pane);
+		const entered = await r.state();
+		expect(
+			await r.request({ op: "drag-commit", generation: entered.generation, token: prepared.token }).response,
+		).toContain('"ok":true');
+		expect(r.released).toBe(1);
+		expect(await (await r.click()).response).toContain('"ok":true');
+		expect(r.captures[1]?.owner).toBe(r.owner);
+	});
+
+	it("adopts a blocking drag commit before the queued mode-entry hook runs", async () => {
+		const r = await rig();
+		await r.request({ op: "drag-prepare", generation: 0 }).response;
+		const helper = join(r.directory, "commit.js");
+		await writeFile(
+			helper,
+			`
+			const { createConnection } = require("node:net");
+			const [path, pane, generation, token] = process.argv.slice(2);
+			const socket = createConnection(path);
+			socket.on("connect", () => socket.write(JSON.stringify({
+				op: "drag-commit", pane, generation: Number(generation), token
+			}) + "\\n"));
+			socket.on("data", () => socket.end());
+			socket.on("error", () => process.exit(1));
+		`,
+		);
+		await r.tmux("set", "-p", "-t", r.pane, "@scrollback", "1");
+		// The real root binding commits on this same command queue: tmux delays
+		// pane-mode-changed until the blocking run-shell has returned.
+		await r.tmux(
+			"copy-mode",
+			"-t",
+			r.pane,
+			";",
+			"run-shell",
+			`${JSON.stringify(process.execPath)} ${JSON.stringify(helper)} ` +
+				`${JSON.stringify(r.socketPath)} ${JSON.stringify(r.pane)} ` +
+				`'#{@omp-history-generation}' '#{@omp-history-snapshot}'`,
+		);
+		expect((await r.state()).generation).toBe(1);
+		expect(r.released).toBe(1);
+		expect(await (await r.click()).response).toContain('"ok":true');
+		expect(r.captures[1]?.owner).toBe(r.owner);
+	});
+
+	it("expires an uncommitted drag without cancelling its native selection", async () => {
+		const r = await rig();
+		await r.request({ op: "drag-prepare", generation: 0 }).response;
+		await r.tmux("copy-mode", "-t", r.pane);
+		await r.tmux("send", "-t", r.pane, "-X", "begin-selection");
+		await until(() => r.released === 1, 5000);
+		expect((await r.state()).mode).toBe(true);
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{selection_present}")).toBe("1");
+	}, 6000);
+
+	it("coalesces live output and keeps the same top row instead of following bottom", async () => {
+		const r = await rig();
+		await r.enter();
+		const before = await r.state();
+		r.setCapture(async () => ({ ...r.snapshot(), screenTop: 108 }));
+		for (let i = 0; i < 20; i++) r.bridge.notifyOutput();
+		await until(async () => (await r.state()).token !== before.token);
+		expect((await r.state()).scroll).toBe(before.scroll + 8);
+		expect(r.captures).toHaveLength(2);
+		expect(r.captures[1]?.owner).toBeUndefined();
+		expect(r.released).toBe(2);
+	});
+
+	it("makes appended PTY output available in the same native copy mode", async () => {
+		const r = await rig();
+		const tty = await r.tmux("display", "-p", "-t", r.pane, "#{pane_tty}");
+		r.setCapture(async () => {
+			const screenTop = Number(await r.tmux("display", "-p", "-t", r.pane, "#{history_size}"));
+			return { ...r.snapshot(), screenTop };
+		});
+		await r.enter();
+		const before = await r.state();
+		await writeFile(tty, "\r\nLIVE_COPY_OUTPUT_NEW_LINE\r\n");
+		await until(async () => (await r.tmux("capture-pane", "-p", "-t", r.pane)).includes("LIVE_COPY_OUTPUT_NEW_LINE"));
+		r.bridge.notifyOutput();
+		await until(async () => (await r.state()).token !== before.token);
+		const after = await r.state();
+		expect(after.generation).toBe(before.generation);
+		expect(after.scroll).toBeGreaterThan(before.scroll);
+		for (const action of ["history-top", "begin-selection", "history-bottom"]) {
+			await r.tmux("send", "-t", r.pane, "-X", action);
+		}
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{selection_present}")).toBe("1");
+		await r.tmux("send", "-t", r.pane, "-X", "copy-selection");
+		// copy-selection's optional argument is a generated-name prefix, not -b.
+		// This isolated server's newest native buffer is the selection just copied.
+		expect(await r.tmux("show-buffer")).toContain("LIVE_COPY_OUTPUT_NEW_LINE");
+	});
+
+	it("reserves a pressed click token until the click helper completes", async () => {
+		const r = await rig();
+		await r.enter();
+		const before = await r.state();
+		await r.tmux("set", "-p", "-t", r.pane, "@omp-history-press", "pending-click");
+		r.bridge.notifyOutput();
+		// Real timer tick verifies the cross-process press guard, not a mock state.
+		await delay(350);
+		expect((await r.state()).token).toBe(before.token);
+		expect(await (await r.click()).response).toContain('"ok":true');
+		expect(r.captures[1]?.owner).toBe(r.owner);
+		await r.tmux("set", "-pu", "-t", r.pane, "@omp-history-press");
+	});
+
+	it("clears residual selection on output without moving the visible anchor", async () => {
+		const r = await rig();
+		await r.enter();
+		await r.tmux("send", "-t", r.pane, "-X", "begin-selection");
+		await r.tmux("send", "-t", r.pane, "-X", "cursor-right");
+		const before = await r.state();
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{selection_present}")).toBe("1");
+		r.bridge.notifyOutput();
+		await until(async () => (await r.state()).token !== before.token);
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{selection_present}")).toBe("0");
+		expect((await r.state()).scroll).toBe(before.scroll);
+		expect(r.captures).toHaveLength(2);
+	});
+
+	it("refreshes even when a residual selection starts during an output fence", async () => {
+		const r = await rig();
+		await r.enter();
+		const before = await r.state();
+		r.setCapture(async () => {
+			await r.tmux("send", "-t", r.pane, "-X", "begin-selection");
+			return r.snapshot();
+		});
+		r.bridge.notifyOutput();
+		await until(() => r.released === 2);
+		expect((await r.state()).token).not.toBe(before.token);
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{selection_present}")).toBe("0");
+	});
+
+	it("retains the frozen token when output arrives in a replacement mode", async () => {
+		const r = await rig();
+		await r.enter();
+		await r.tmux("send", "-t", r.pane, "-X", "cancel");
+		await r.tmux("copy-mode", "-t", r.pane);
+		await r.tmux("set", "-p", "-t", r.pane, "@omp-history-snapshot", "replacement");
+		r.bridge.notifyOutput();
+		await delay(600);
+		expect((await r.state()).token).toBe("replacement");
+		expect(r.captures).toHaveLength(1);
+	});
+
+	it("stops a pending coalesced output refresh with the bridge", async () => {
+		const r = await rig();
+		await r.enter();
+		r.bridge.notifyOutput();
+		r.bridge.stop();
+		// A real tick establishes no late native mutation escapes lifecycle cleanup.
+		await delay(350);
+		expect(r.captures).toHaveLength(1);
+	});
+
+	it("refreshes short explicit copy mode into unused screen rows without leaving native navigation", async () => {
+		const r = await rig();
+		const tty = await r.tmux("display", "-p", "-t", r.pane, "#{pane_tty}");
+		await writeFile(tty, "\x1b[2J\x1b[3J\x1b[HNEW_CHAT_FIRST\r\n");
+		await until(async () => Number(await r.tmux("display", "-p", "-t", r.pane, "#{history_size}")) === 0);
+		r.setCapture(async () => ({ ...r.snapshot(), screenTop: 0, owners: [], anchors: [] }));
+		await r.tmux("copy-mode", "-t", r.pane);
+		await r.tmux("send", "-t", r.pane, "-X", "scroll-up");
+		await r.tmux("send", "-t", r.pane, "-X", "begin-selection");
+		const before = await r.state();
+		await writeFile(tty, "NEW_CHAT_SECOND\r\n");
+		await until(async () => (await r.tmux("capture-pane", "-p", "-t", r.pane)).includes("NEW_CHAT_SECOND"));
+		r.bridge.notifyOutput();
+		await until(async () => (await r.state()).token !== before.token);
+		const after = await r.state();
+		expect(after.mode).toBe(true);
+		expect(after.generation).toBe(before.generation);
+		expect(after.scroll).toBe(0);
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{@scrollback}")).not.toBe("1");
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{selection_present}")).toBe("0");
+		for (const action of ["history-top", "begin-selection", "history-bottom"]) {
+			await r.tmux("send", "-t", r.pane, "-X", action);
+		}
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{selection_present}")).toBe("1");
+		await r.tmux("send", "-t", r.pane, "-X", "copy-selection");
+		expect(await r.tmux("show-buffer")).toContain("NEW_CHAT_SECOND");
+	});
+
+	it("refreshes an ownerless replay rather than leaving an obsolete frozen grid", async () => {
+		const r = await rig();
+		r.setCapture(async () => ({ ...r.snapshot(), owners: [], anchors: [] }));
+		await r.enter();
+		const before = await r.state();
+		r.setCapture(async () => ({ ...r.snapshot(), owners: [], anchors: [], epoch: 1 }));
+		r.bridge.notifyOutput();
+		await until(async () => (await r.state()).token !== before.token);
+		expect((await r.state()).scroll).toBe(before.scroll);
+	});
 });

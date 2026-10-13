@@ -27,7 +27,13 @@ import {
 import type { Theme, ThemeColor } from "../theme/theme";
 import type { Component } from "../tui";
 import type { OutputMeta } from "./output-meta";
-import type { NativeToolHead, NativeToolView, RenderResultOptions, ToolRenderer } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolRenderer,
+} from "./renderer";
 import type { TspTone } from "@oh-my-pi/pi-wire";
 import { code, col, compact, keyed, node, span, text } from "../native/describe";
 import type { NativeChild, NativeNode } from "../native/node";
@@ -202,6 +208,33 @@ function quoteQuery(query: string | undefined): string | undefined {
 
 /** Render find calls and results in the transcript. */
 export const findToolRenderer = {
+	activitySummary(args: FindRenderArgs, context: ToolActivityContext) {
+		const result = context.result;
+		const details = result?.details as FindToolDetails | undefined;
+		const scope = details?.scopePath ?? args?.path ?? ".";
+		return {
+			label: "Find",
+			detail: `${JSON.stringify(details?.query ?? args?.query ?? "?")} in ${scope}`,
+			meta: details
+				? compact([
+						formatCount("hit", details.hits.length),
+						`${formatCount("file", details.stats.filesRead)} read`,
+						details.stats.errors > 0 && `${details.stats.errors} failed`,
+					]).join(" · ")
+				: undefined,
+			error: result?.isError
+				? result.content.find(block => block.type === "text")?.text || "Find failed"
+				: undefined,
+			// Ranked passages and individual request failures are not success receipts.
+			receipt: false,
+		};
+	},
+	visibleOutput(output: string, details: FindToolDetails | undefined, options: RenderResultOptions): string {
+		// Compact cards preview raw output rather than renderResult; keep partial
+		// search failures ahead of successful hits and the empty-result message.
+		if (!options.isPartial && details?.stats.failures.length) return details.stats.failures.join("\n");
+		return output;
+	},
 	renderCall(args: FindRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const keywords = args.grep_keywords ?? [];
 		const meta = keywords.length > 0 ? [keywords.join(" ")] : [];
@@ -334,7 +367,7 @@ export const findToolRenderer = {
 	): NativeToolView {
 		const details = result.details;
 		const progress = result.content?.find(c => c.type === "text")?.text ?? "";
-		const query = args?.query ?? details?.query;
+		const query = details?.query ?? args?.query;
 		if (result.isError) return inlineErrorView(findNativeHead(query, []), progress || "Unknown error");
 		if (options.isPartial || details === undefined) {
 			return {

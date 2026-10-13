@@ -20,7 +20,11 @@ import {
 	type ToolRenderer,
 	toolRenderers,
 } from "../tools/index";
-import { describeDefaultToolExecution, formatDefaultToolExecution } from "../tools/default-renderer";
+import {
+	defaultToolActivityDetail,
+	describeDefaultToolExecution,
+	formatDefaultToolExecution,
+} from "../tools/default-renderer";
 import { INTENT_FIELD, type TspCardStatus, type TspPreview, type TspText, type TspTone } from "@oh-my-pi/pi-wire";
 import { card, col, EMPTY_NODE, node, span, text, withHidden } from "../native/describe";
 import {
@@ -42,6 +46,8 @@ import { isNativeRendering } from "../native/state";
 import { isWaitingPollDetails } from "../tools/wait";
 import {
 	DEFAULT_TERMINAL_PREVIEW_LINES,
+	formatExpandHint,
+	formatMoreItems,
 	formatStatusIcon,
 	replaceTabs,
 	resolveImageOptions,
@@ -54,6 +60,7 @@ import { cachedPngConversion, convertImageToPngShared, imagePayloadKey } from ".
 import { sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import { renderDiff } from "../chrome/diff";
 import { type AnimationFrame, trimBlankEdges } from "../chrome/transcript-container";
+import { visibleWidth, wrapTextWithAnsi } from "../utils";
 
 /** Resolves the canonical renderer key while retaining the provider's wire name in message history. */
 export function toolRenderName(wireName: string, tool: AgentTool | undefined): string {
@@ -292,11 +299,138 @@ export function stopSharedSpinnerTicker(): void {
 // graphics id that survives child re-creation (the image budget keys off it).
 let toolExecutionInstanceSeq = 0;
 
-/** Non-blank result output lines behind a collapsed card's summary row. */
+/** Non-blank result output lines behind a collapsed card's summary. */
 interface OutputSummary {
 	count: number;
-	first: string | undefined;
-	last: string | undefined;
+	/** First {@link COMPACT_PREVIEW_ROWS} non-blank lines. */
+	head: readonly string[];
+	/** Last {@link COMPACT_PREVIEW_ROWS} non-blank lines. */
+	tail: readonly string[];
+}
+
+/** Rows a collapsed card's head may wrap a long command or code target onto. */
+const COMPACT_HEAD_ROWS = 3;
+/** Output rows a collapsed card previews, the truncation marker included. */
+const COMPACT_PREVIEW_ROWS = 3;
+/** Head continuation column when the target's own column leaves too little room. */
+const COMPACT_FALLBACK_INDENT = 4;
+const COMPACT_OUTPUT_LEAD = "  └ ";
+const COMPACT_OUTPUT_INDENT = "    ";
+/** Below this many target columns a wrapped target reads worse than a cut one. */
+const COMPACT_MIN_WRAP_WIDTH = 12;
+/**
+ * Columns kept free at the end of the first head row while `/time` labels
+ * show: a same-day `12:04 PM · 1m 5s` label plus the stamp's gap and edge.
+ */
+const COMPACT_STAMP_RESERVE = 22;
+
+/** First `limit` non-blank lines of `text`, each cut to `maxUnits` code units, without splitting all of it. */
+function leadingLines(text: string, limit: number, maxUnits: number): string[] {
+	const lines: string[] = [];
+	let start = 0;
+	while (start < text.length && lines.length < limit) {
+		let end = text.indexOf("\n", start);
+		if (end === -1) end = text.length;
+		const line = replaceTabs(plainText(text.slice(start, Math.min(end, start + maxUnits)))).trimEnd();
+		if (line.trim()) lines.push(line);
+		start = end + 1;
+	}
+	return lines;
+}
+
+/**
+ * Collapsed head rows: `prefix` + target on the first row, wrapping targets
+ * continued on rows aligned under the target, `suffix` (meta, elapsed)
+ * closing the last row. A target cut short ends in an ellipsis. `reserve`
+ * columns stay free at the end of the first row for the transcript stamp.
+ */
+function compactHeadRows(
+	prefix: string,
+	lines: readonly string[],
+	suffix: string,
+	width: number,
+	maxRows: number,
+	reserve: number,
+): string[] {
+	const prefixWidth = visibleWidth(prefix);
+	const indent = width - prefixWidth >= COMPACT_MIN_WRAP_WIDTH * 2 ? prefixWidth : COMPACT_FALLBACK_INDENT;
+	const continuation = " ".repeat(indent);
+	const contWidth = width - indent;
+	const firstReserve = width - prefixWidth - reserve >= COMPACT_MIN_WRAP_WIDTH ? reserve : 0;
+	const firstWidth = width - prefixWidth - firstReserve;
+	const contents: string[] = [];
+	let overflow = false;
+	if (maxRows <= 1 || lines.length === 0 || contWidth < COMPACT_MIN_WRAP_WIDTH) {
+		contents.push(lines[0] ?? "");
+		overflow = lines.length > 1;
+	} else {
+		// Pad the first logical line so one uniform wrap width leaves the first
+		// row exactly the room the prefix and the stamp reserve do not take.
+		const pad = " ".repeat(Math.max(0, prefixWidth + firstReserve - indent));
+		outer: for (let index = 0; index < lines.length; index++) {
+			const wrapped = wrapTextWithAnsi(index === 0 ? `${pad}${lines[index]}` : lines[index]!, contWidth);
+			for (let row = 0; row < wrapped.length; row++) {
+				if (contents.length === maxRows) {
+					overflow = true;
+					break outer;
+				}
+				let piece = wrapped[row]!;
+				if (index === 0 && row === 0) piece = piece.startsWith(pad) ? piece.slice(pad.length) : piece.trimStart();
+				contents.push(piece.trimEnd());
+			}
+		}
+	}
+	const suffixWidth = visibleWidth(suffix);
+	const last = contents.length - 1;
+	return contents.map((content, index) => {
+		const lead = index === 0 ? prefix : continuation;
+		if (index !== last) return truncateToWidth(`${lead}${content}`, width);
+		const room = Math.max(0, (index === 0 ? firstWidth : contWidth) - suffixWidth);
+		return truncateToWidth(`${lead}${truncateToWidth(overflow ? `${content}…` : content, room)}${suffix}`, width);
+	});
+}
+
+/**
+ * Output preview rows, at most `maxRows`: whole when it fits, otherwise the
+ * first (or, following a live tail, the last) lines with a count of the rest.
+ */
+function compactPreviewRows(
+	lines: readonly string[],
+	count: number,
+	fromTail: boolean,
+	maxRows: number,
+	width: number,
+	color: "error" | "toolOutput",
+): string[] {
+	if (maxRows <= 0 || count === 0) return [];
+	const style = (line: string) => theme.fg(color, replaceTabs(line).trimEnd());
+	const rows: string[] = [];
+	if (count <= maxRows) {
+		for (const line of lines.slice(0, count)) rows.push(style(line));
+	} else if (maxRows === 1) {
+		const marker = theme.fg("dim", ` ${formatMoreItems(count - 1, "line")}`);
+		const room = Math.max(0, width - COMPACT_OUTPUT_LEAD.length - visibleWidth(marker));
+		rows.push(`${truncateToWidth(style(fromTail ? lines.at(-1)! : lines[0]!), room)}${marker}`);
+	} else {
+		const shown = maxRows - 1;
+		const hidden = count - shown;
+		const hint = formatExpandHint(theme);
+		const marker = theme.fg(
+			"dim",
+			fromTail ? `… ${hidden} earlier ${hidden === 1 ? "line" : "lines"}` : formatMoreItems(hidden, "line"),
+		);
+		const markerRow = hint ? `${marker} ${hint}` : marker;
+		if (fromTail) {
+			rows.push(markerRow);
+			for (const line of lines.slice(lines.length - shown)) rows.push(style(line));
+		} else {
+			for (const line of lines.slice(0, shown)) rows.push(style(line));
+			rows.push(markerRow);
+		}
+	}
+	return rows.map((row, index) =>
+		truncateToWidth(`${index === 0 ? COMPACT_OUTPUT_LEAD : COMPACT_OUTPUT_INDENT}${row}`, width),
+	);
 }
 
 /**
@@ -367,7 +501,7 @@ export class ToolExecutionComponent extends Container {
 	#outputSummarySource: string | undefined;
 	#outputSummaryDetails: unknown;
 	#outputSummaryPartial: boolean | undefined;
-	#outputSummary: OutputSummary = { count: 0, first: undefined, last: undefined };
+	#outputSummary: OutputSummary = { count: 0, head: [], tail: [] };
 	#tool?: AgentTool;
 	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
@@ -1332,7 +1466,7 @@ export class ToolExecutionComponent extends Container {
 		return lines;
 	}
 
-	/** Header plus one dim summary row (header only in a one-row allocation), memoized until an input it reads changes. */
+	/** Head (wrapping long commands) plus a short output preview, memoized until an input it reads changes. */
 	#renderCompact(width: number): readonly string[] {
 		// Elapsed ticks only while the call is genuinely running; a settled card
 		// must not read as live ("Bash · running 0s"). With `/time` on, the
@@ -1346,12 +1480,14 @@ export class ToolExecutionComponent extends Container {
 		// The display key covers args, result, expansion and partial state (the
 		// summary's render context is rebuilt with the display); spinner ticks,
 		// elapsed seconds and sealing change the card without a display rebuild.
-		const key = `${width}|${this.#allocation === 1 ? 1 : 2}|${this.#lastDisplayKey}|${this.#sealed ? 1 : 0}|${this.#spinnerFrame ?? "-"}|${elapsed ?? "-"}|${getThemeEpoch()}|${TERMINAL.imageProtocol ?? "-"}`;
+		const rowBudget = Math.min(this.#allocation, COMPACT_HEAD_ROWS + COMPACT_PREVIEW_ROWS);
+		const stamped = chatTranscriptDisplayPreferences.showTimestamps;
+		const key = `${width}|${rowBudget}|${stamped ? 1 : 0}|${this.#lastDisplayKey}|${this.#sealed ? 1 : 0}|${this.#spinnerFrame ?? "-"}|${elapsed ?? "-"}|${getThemeEpoch()}|${TERMINAL.imageProtocol ?? "-"}`;
 		if (key === this.#compactKey) return this.#compactRows;
 		const summary = this.#activitySummary();
 		const status =
 			this.#result !== undefined && !this.#isPartial
-				? this.#result.isError
+				? this.#result.isError || summary.error
 					? "error"
 					: "success"
 				: this.#isRunning()
@@ -1365,23 +1501,62 @@ export class ToolExecutionComponent extends Container {
 			? super.render(width).find(row => Bun.stripANSI(row).trim().length > 0)
 			: undefined;
 		const elapsedText = elapsed === undefined ? "" : theme.fg("dim", ` ${elapsed}s`);
-		const headerText =
-			customHeader ?? `${icon} ${this.#toolLabel}${summary.detail ? ` · ${summary.detail}` : ""}${elapsedText}`;
 		const output = this.#summarizeOutput();
-		const error = this.#result?.isError ? output.first?.trim() : undefined;
-		const outputTail = this.#isRunning() ? output.last : undefined;
-		const hidden =
-			error ||
-			outputTail ||
-			// A one-line output is shown whole rather than counted.
-			(output.count === 1 ? output.first : output.count > 1 ? `${output.count} lines` : undefined) ||
-			(this.#isExpandableState() ? "arguments hidden" : undefined);
-		const detail = hidden ? hidden.replace(/\s+/g, " ") : "";
+		// A renderer-recognized error reads from its start; failed output and a
+		// running call read from their tail, where tracebacks and live progress
+		// land; a receipt already states its result in the head.
+		const errorLines = summary.error
+			? plainText(summary.error)
+					.split("\n")
+					.filter(line => line.trim())
+			: undefined;
+		const failed = errorLines !== undefined || this.#result?.isError === true;
+		const fromTail = errorLines === undefined && (failed || this.#isRunning());
+		const previewed = failed || fromTail || !summary.receipt || customHeader !== undefined;
+		const previewLines = errorLines ?? (fromTail ? output.tail : output.head);
+		const previewCount = errorLines?.length ?? (previewed ? output.count : 0);
+		const wantedPreview = Math.min(previewCount, COMPACT_PREVIEW_ROWS);
+		// Priority under a squeeze: the head's first row, one output row, the
+		// head's continuation rows, then the rest of the preview. The allocator
+		// keeps a block's last rows, so the card itself must fit its budget.
+		const headBudget = Math.min(COMPACT_HEAD_ROWS, Math.max(1, rowBudget - Math.min(wantedPreview, 1)));
+		let head: string[];
+		if (customHeader !== undefined) {
+			head = [truncateToWidth(customHeader, width)];
+		} else {
+			const wraps = summary.command === true || summary.wrap === true;
+			// Only the rows the head can show are scanned: a long heredoc costs
+			// no more per spinner tick than a one-liner. Code units bound the
+			// cut generously (a column is at most two units) so a cut line still
+			// overflows the head and earns its ellipsis.
+			const lines = !summary.detail
+				? []
+				: wraps
+					? leadingLines(summary.detail, COMPACT_HEAD_ROWS + 1, 2 * COMPACT_HEAD_ROWS * width + 2)
+					: [plainText(summary.detail).replace(/\s+/g, " ")];
+			const label = theme.fg("toolTitle", theme.bold(summary.label));
+			const meta = summary.meta ? theme.fg("dim", ` · ${plainText(summary.meta)}`) : "";
+			const prompt = (summary.command || summary.shellPrompt) && lines.length > 0 ? "$ " : "";
+			head = compactHeadRows(
+				`${icon} ${label}${lines.length > 0 ? "  " : ""}${prompt}`,
+				lines,
+				`${meta}${elapsedText}`,
+				width,
+				wraps ? headBudget : 1,
+				stamped ? COMPACT_STAMP_RESERVE : 0,
+			);
+		}
 		this.#compactKey = key;
 		this.#compactRows = [
-			truncateToWidth(headerText, width),
-			// The allocator shows a block's last rows: a one-row squeeze keeps the header.
-			...(detail && this.#allocation !== 1 ? [truncateToWidth(theme.fg("dim", `  └ ${detail}`), width)] : []),
+			...head,
+			...compactPreviewRows(
+				previewLines,
+				previewCount,
+				fromTail,
+				Math.min(wantedPreview, rowBudget - head.length),
+				width,
+				failed ? "error" : "toolOutput",
+			),
 		];
 		return this.#compactRows;
 	}
@@ -1407,7 +1582,7 @@ export class ToolExecutionComponent extends Container {
 		return Boolean(resolve(name)?.renderCall);
 	}
 
-	/** Count of non-blank output lines with the first and last, for the collapsed summary. */
+	/** Count of non-blank output lines with the leading and trailing preview lines, for the collapsed summary. */
 	#summarizeOutput(): OutputSummary {
 		const output = this.#getTextOutput();
 		const details = this.#result?.details;
@@ -1418,20 +1593,21 @@ export class ToolExecutionComponent extends Container {
 		)
 			return this.#outputSummary;
 		let count = 0;
-		let first: string | undefined;
-		let last: string | undefined;
+		const head: string[] = [];
+		const tail: string[] = [];
 		// Renderers can hide model-facing notices or summarize structured progress.
 		const visible = this.#renderer?.visibleOutput?.(output, details, this.#renderState) ?? output;
 		for (const line of visible.split("\n")) {
 			if (!line.trim()) continue;
 			count++;
-			first ??= line;
-			last = line;
+			if (head.length < COMPACT_PREVIEW_ROWS) head.push(line);
+			tail.push(line);
+			if (tail.length > COMPACT_PREVIEW_ROWS) tail.shift();
 		}
 		this.#outputSummarySource = output;
 		this.#outputSummaryDetails = details;
 		this.#outputSummaryPartial = this.#isPartial;
-		this.#outputSummary = { count, first, last };
+		this.#outputSummary = { count, head, tail };
 		return this.#outputSummary;
 	}
 
@@ -1448,23 +1624,19 @@ export class ToolExecutionComponent extends Container {
 			isPartial: this.#isPartial,
 			spinnerFrame: this.#spinnerFrame,
 			renderContext: this.#renderState.renderContext,
+			result: this.#result,
 		});
 		if (summary !== undefined) {
 			if (summary.detail) return summary;
 			// A detail-less custom summary (e.g. wait before its result
 			// parse) must not fold to a bare `╭─ Label` frame under viewport
 			// pressure — keep the generic liveness hint for in-flight calls.
-			return this.#isRunning() ? { ...summary, detail: "running" } : summary;
+			return this.#isRunning() ? { ...summary, detail: "running", command: false, receipt: false } : summary;
 		}
-		if (isRecord(this.#args)) {
-			for (const key of ["command", "path", "input"] as const) {
-				const value = this.#args[key];
-				if (typeof value === "string" && value.length > 0) {
-					return { label: this.#toolLabel, detail: value.split("\n", 1)[0] };
-				}
-			}
-		}
-		return { label: this.#toolLabel, detail: this.#isRunning() ? "running" : undefined };
+		return {
+			label: this.#toolLabel,
+			detail: defaultToolActivityDetail(this.#args) ?? (this.#isRunning() ? "running" : undefined),
+		};
 	}
 	/** Still executing: no settled result yet and the turn has not sealed it. */
 	#isRunning(): boolean {

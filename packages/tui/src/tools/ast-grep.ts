@@ -18,7 +18,13 @@ import { code, compact, node, span } from "../native/describe";
 import type { NativeChild } from "../native/node";
 import { errorText, noteText, resultText, toolHead } from "./native-view";
 import type { OutputMeta } from "./output-meta";
-import type { NativeToolView, RenderResultOptions, ToolRenderer } from "./renderer";
+import type {
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolActivitySummary,
+	ToolRenderer,
+} from "./renderer";
 
 /** Display metadata returned by ast-grep. */
 export interface AstGrepToolDetails {
@@ -56,6 +62,20 @@ const COLLAPSED_MATCH_LIMIT = PREVIEW_LIMITS.COLLAPSED_LINES * 2;
 
 /** Render AST grep calls and results. */
 export const astGrepToolRenderer = {
+	activitySummary(args: AstGrepRenderArgs, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as AstGrepToolDetails | undefined;
+		const paths = toPathList(args.path ?? args.paths);
+		const scope = details?.scopePath ?? paths.slice(0, 3).join(", ");
+		const meta: string[] = [];
+		if (scope) meta.push(`in ${scope}${paths.length > 3 ? ` +${paths.length - 3} paths` : ""}`);
+		if (details && !context.result?.isError) {
+			meta.push(`${formatCount("match", details.matchCount)} in ${formatCount("file", details.fileCount)}`);
+			if (details.limitReached) meta.push("limit reached");
+			if (details.parseErrors?.length)
+				meta.push(formatParseErrorsCountLabel(details.parseErrors, details.parseErrorsTotal));
+		}
+		return { label: "AST Grep", detail: args.pat, meta: meta.join(" · ") || undefined };
+	},
 	inline: true,
 	renderCall(args: AstGrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];

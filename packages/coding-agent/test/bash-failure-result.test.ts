@@ -33,6 +33,24 @@ function makeSession(): ToolSession {
 }
 
 describe("BashTool execution results", () => {
+	for (const asyncEnabled of [false, true]) {
+		for (const launchEnabled of [false, true]) {
+			it(`accepts optional purpose titles with async=${asyncEnabled}, launch=${launchEnabled}`, () => {
+				const tool = new BashTool({
+					...makeSession(),
+					settings: Settings.isolated({ "async.enabled": asyncEnabled, "launch.enabled": launchEnabled }),
+				});
+				const titled = { title: "Inspecting repository changes", command: "git status --short" };
+				expect(tool.parameters.assert(titled)).toEqual(titled);
+				expect(tool.parameters.assert({ command: titled.command })).toEqual({ command: titled.command });
+				expect(() => tool.parameters.assert({ title: 42, command: titled.command })).toThrow();
+				expect(tool.parameters.toJsonSchema()).toMatchObject({
+					properties: { title: { type: "string" } },
+				});
+			});
+		}
+	}
+
 	it("resolves with an error result carrying execution details instead of throwing", async () => {
 		const tool = new BashTool(makeSession());
 		const result = await tool.execute("call-fail", { command: "exit 3" });
@@ -87,7 +105,10 @@ describe("BashTool execution results", () => {
 
 	it("returns a success result with no exit-code detail for a zero exit", async () => {
 		const tool = new BashTool(makeSession());
-		const result = await tool.execute("call-ok", { command: "printf hi" });
+		const result = await tool.execute("call-ok", {
+			title: "This prose is not a shell command",
+			command: "printf hi",
+		});
 
 		expect(result.isError).toBeUndefined();
 		expect(result.details?.exitCode).toBeUndefined();

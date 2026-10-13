@@ -11,7 +11,7 @@ import {
 	type ToolUIColor,
 } from "../render/render-utils";
 import type { Theme } from "../theme/theme";
-import type { NativeToolView, RenderResultOptions } from "./renderer";
+import type { NativeToolView, RenderResultOptions, ToolActivitySummary } from "./renderer";
 import type { TspSpan, TspTone } from "@oh-my-pi/pi-wire";
 import { ansi, compact, node, span, text } from "../native/describe";
 import type { NativeChild, NativeNode } from "../native/node";
@@ -38,6 +38,26 @@ export type ProcWriteDetails =
 
 /** Process operation selected by a write URL, independent of its content. */
 export type ProcWriteAction = "stdin" | "mode" | "kill";
+
+/** Process identities and observed state shared by read headers. */
+export function procReadActivity(id: string, details?: ProcReadDetails): ToolActivitySummary {
+	const job = details?.job;
+	const daemon = details?.daemon;
+	const meta = job
+		? `${job.status} · ${formatDuration(job.durationMs)}`
+		: daemon
+			? daemonMetaText(daemon)
+			: details
+				? [
+						`${details.jobs?.length ?? 0} jobs`,
+						`${details.daemons?.length ?? 0} services`,
+						details.agents?.length ? `${details.agents.length} agents` : "",
+					]
+						.filter(Boolean)
+						.join(" · ")
+				: undefined;
+	return { label: "Proc", detail: job?.id || daemon?.name || id || "jobs & services", meta, receipt: false };
+}
 
 function preview(body: string, expanded: boolean, theme: Theme, tone: "dim" | "toolOutput" = "dim"): string[] {
 	if (!body.trim()) return [];
@@ -71,14 +91,18 @@ export function renderAgentWrite(
 		const recipient = safe(details?.to || to || "…");
 		const title = `IRC ${theme.nav.selected} ${recipient}`;
 		const receipts = details?.receipts ?? [];
-		const delivered = receipts.filter(receipt => receipt.outcome !== "failed").length;
-		const failed = receipts.length - delivered;
-		const error = result?.isError || (failed > 0 && delivered === 0);
+		const delivered = receipts.filter(
+			receipt => receipt.outcome === "injected" || receipt.outcome === "woken",
+		).length;
+		const revived = receipts.filter(receipt => receipt.outcome === "revived").length;
+		const failed = receipts.filter(receipt => receipt.outcome === "failed").length;
+		const error = result?.isError || (failed > 0 && delivered + revived === 0);
 		const meta: string[] = [];
 		if (recipient === "all") meta.push("broadcast");
 		if (receipts.length === 1) meta.push(theme.fg(receiptColor(receipts[0]!.outcome), receipts[0]!.outcome));
 		else if (receipts.length > 1) {
 			if (delivered) meta.push(theme.fg("success", `${delivered} delivered`));
+			if (revived) meta.push(theme.fg("warning", `${revived} revived`));
 			if (failed) meta.push(theme.fg("error", `${failed} failed`));
 		}
 		const header = renderStatusLine(
@@ -155,14 +179,23 @@ export function renderProcWrite(
 	theme: Theme,
 ): Component {
 	return card((_width, expanded) => {
-		const title = `Proc ${action} ${safe(id || "…")}`;
+		const title = `Proc ${action === "stdin" ? "input" : action === "kill" ? "stop" : action} ${safe(id || "…")}`;
 		const daemon = details && "daemon" in details ? details.daemon : undefined;
+		const outcomes =
+			details && "cancelled" in details
+				? details.cancelled?.map(outcome => outcome.status.replaceAll("_", " "))
+				: undefined;
 		const header = renderStatusLine(
 			{
-				icon:
-					result === undefined ? "pending" : result.isError ? "error" : action === "kill" ? "aborted" : "success",
+				icon: result === undefined ? "pending" : result.isError ? "error" : "info",
 				title,
-				meta: daemon ? daemonMeta(daemon, theme) : action === "mode" && content ? [safe(content)] : [],
+				meta: daemon
+					? daemonMeta(daemon, theme)
+					: outcomes?.length
+						? outcomes
+						: action === "mode" && content
+							? [safe(content)]
+							: [],
 			},
 			theme,
 		);
@@ -188,6 +221,7 @@ export function renderProcWrite(
 				),
 			);
 		}
+		if (result && firstText(result).trim()) lines.push(...preview(firstText(result), expanded, theme, "toolOutput"));
 		return lines;
 	}, options);
 }
@@ -202,11 +236,12 @@ export function renderProcRead(
 	return card((_width, expanded) => {
 		const title = id ? `Proc ${safe(id)}` : "Proc jobs & services";
 		const daemon = details?.daemon;
+		const summary = procReadActivity(id, details);
 		const header = renderStatusLine(
 			{
 				icon: result === undefined ? "pending" : result.isError ? "error" : "info",
 				title,
-				meta: daemon ? daemonMeta(daemon, theme) : [],
+				meta: summary.meta ? [summary.meta] : [],
 			},
 			theme,
 		);
@@ -333,17 +368,19 @@ export function describeAgentWrite(
 ): NativeToolView {
 	const recipient = safe(details?.to || to || "…");
 	const receipts = details?.receipts ?? [];
-	const delivered = receipts.filter(receipt => receipt.outcome !== "failed").length;
-	const failed = receipts.length - delivered;
+	const delivered = receipts.filter(receipt => receipt.outcome === "injected" || receipt.outcome === "woken").length;
+	const revived = receipts.filter(receipt => receipt.outcome === "revived").length;
+	const failed = receipts.filter(receipt => receipt.outcome === "failed").length;
 	const meta: TspSpan[] = [];
 	if (recipient === "all") meta.push(span("broadcast", "muted"));
 	if (receipts.length === 1) meta.push(span(receipts[0]!.outcome, RECEIPT_TONE[receipts[0]!.outcome]));
 	else if (receipts.length > 1) {
 		if (delivered) meta.push(span(`${delivered} delivered`, "success"));
+		if (revived) meta.push(span(`${revived} revived`, "warning"));
 		if (failed) meta.push(span(`${failed} failed`, "error"));
 	}
-	const head = toolHead("IRC", span(recipient, "accent"), ...meta);
-	const error = result?.isError === true || (failed > 0 && delivered === 0);
+	const head = toolHead("IRC →", span(recipient, "accent"), ...meta);
+	const error = result?.isError === true || (failed > 0 && delivered + revived === 0);
 	if (result?.isError && receipts.length === 0) {
 		return { head, tone: "error", body: [errorText(firstText(result) || "Message delivery failed.")] };
 	}
@@ -381,10 +418,20 @@ export function describeProcWrite(
 	details: ProcWriteDetails | undefined,
 ): NativeToolView {
 	const daemon = details && "daemon" in details ? details.daemon : undefined;
+	const outcomes =
+		details && "cancelled" in details
+			? details.cancelled?.map(outcome => outcome.status.replaceAll("_", " "))
+			: undefined;
 	const head = toolHead(
-		`Proc ${action}`,
+		`Proc ${action === "stdin" ? "input" : action === "kill" ? "stop" : action}`,
 		span(safe(id || "…"), "accent"),
-		daemon ? daemonMetaText(daemon) : action === "mode" && content ? safe(content) : undefined,
+		daemon
+			? daemonMetaText(daemon)
+			: outcomes?.length
+				? outcomes.join(" · ")
+				: action === "mode" && content
+					? safe(content)
+					: undefined,
 	);
 	if (result?.isError) {
 		return { head, tone: "error", body: [errorText(firstText(result) || "Process operation failed.")] };
@@ -414,6 +461,7 @@ export function describeProcWrite(
 			),
 		);
 	}
+	if (result && firstText(result).trim()) body.push(noteText(firstText(result)));
 	return { head, tone: result !== undefined && action === "kill" ? "warning" : undefined, body };
 }
 
@@ -425,7 +473,7 @@ export function describeProcRead(
 ): NativeToolView {
 	const daemon = details?.daemon;
 	const title = id ? "Proc" : "Proc jobs & services";
-	const head = toolHead(title, id ? span(safe(id), "accent") : undefined, daemon ? daemonMetaText(daemon) : undefined);
+	const head = toolHead(title, id ? span(safe(id), "accent") : undefined, procReadActivity(id, details).meta);
 	if (result?.isError) {
 		return { head, tone: "error", body: [errorText(firstText(result) || "Process read failed.")] };
 	}

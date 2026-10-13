@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { pooledProviderMatches, summarizePooledUsage } from "../src/status-line/pooled-usage";
+import { pooledProviderMatches, pooledUsageProvider, summarizePooledUsage } from "../src/status-line/pooled-usage";
 
 function pooledReport(
 	provider: string,
@@ -137,5 +137,54 @@ describe("pooledProviderMatches", () => {
 		expect(pooledProviderMatches("sprilicred-openai", "openai-codex")).toBe(true);
 		expect(pooledProviderMatches("sprilicred-anthropic", "openai-codex")).toBe(false);
 		expect(pooledProviderMatches("anthropic", "anthropic")).toBe(true);
+	});
+
+	it("does not treat missing, metered, or prefix-related providers as subscription pools", () => {
+		for (const provider of [undefined, "openai", "openrouter", "sprilicred-openrouter", "sprilicred-glm"]) {
+			expect(pooledProviderMatches(provider, "anthropic")).toBe(false);
+			expect(pooledProviderMatches(provider, "openai-codex")).toBe(false);
+		}
+		expect(pooledProviderMatches("anthropic", "anthropic-other")).toBe(false);
+	});
+
+	it("uses discovery source instead of a misleading credential alias", () => {
+		expect(pooledUsageProvider({ provider: "sprilicred-anthropic", providerType: "openrouter" })).toBeUndefined();
+		expect(pooledUsageProvider({ provider: "sprilicred-openai", providerType: "openai" })).toBeUndefined();
+		expect(pooledUsageProvider({ provider: "personal-claude", providerType: "anthropic" })).toBe("anthropic");
+		expect(pooledUsageProvider({ provider: "personal-codex", providerType: "openai-codex" })).toBe("openai-codex");
+	});
+
+	it("requires matching model lineage on generic Sprilicred routes", () => {
+		expect(pooledUsageProvider({ provider: "sprilicred-openai", identity: { class: "openai" } })).toBe(
+			"openai-codex",
+		);
+		expect(pooledUsageProvider({ provider: "sprilicred-anthropic", identity: { class: "anthropic" } })).toBe(
+			"anthropic",
+		);
+		for (const identity of [
+			undefined,
+			{ class: "unknown" },
+			{ class: "glm" },
+			{ class: "deepseek" },
+			{ class: "anthropic" },
+		]) {
+			expect(pooledUsageProvider({ provider: "sprilicred-openai", identity })).toBeUndefined();
+		}
+	});
+
+	it("does not inherit subscription quotas after an endpoint reroute", () => {
+		for (const baseUrl of [
+			"https://openrouter.ai/api/v1",
+			"https://gateway.example/openrouter/v1",
+			"https://gateway.example/glm/v1",
+			"https://gateway.example/deepseek/v1",
+		]) {
+			expect(
+				pooledUsageProvider({ provider: "anthropic", baseUrl, identity: { class: "anthropic" } }),
+			).toBeUndefined();
+			expect(
+				pooledUsageProvider({ provider: "openai-codex", baseUrl, identity: { class: "openai" } }),
+			).toBeUndefined();
+		}
 	});
 });

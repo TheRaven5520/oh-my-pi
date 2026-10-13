@@ -53,6 +53,18 @@ export type FirstResultViewportRepaint<TArgs = unknown> =
 export interface ToolActivitySummary {
 	label: string;
 	detail?: string;
+	/** Small result fact kept visible even when the target is long. */
+	meta?: string;
+	/** Renderer-recognized failure; displayed instead of an output preview or receipt. */
+	error?: string;
+	/** Receipts need no output preview once their result is represented in the head. */
+	receipt?: boolean;
+	/** Shell targets use a prompt marker and keep their lines, wrapping onto continuation rows. */
+	command?: boolean;
+	/** Show the shell prompt for semantic action text without enabling code wrapping. */
+	shellPrompt?: boolean;
+	/** Code targets keep their lines and wrap onto continuation rows instead of being cut to one row. */
+	wrap?: boolean;
 }
 
 /** Live execution fields that are safe for compact transcript presentation. */
@@ -62,6 +74,8 @@ export interface ToolActivityContext {
 	readonly spinnerFrame?: number;
 	/** Tool-specific render context (same shape `renderCall` receives), when available. */
 	readonly renderContext?: Record<string, unknown>;
+	/** Current result, absent while arguments are streaming or execution is queued. */
+	readonly result?: ToolRenderResult;
 }
 
 /**

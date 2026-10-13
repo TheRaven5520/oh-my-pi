@@ -1,4 +1,5 @@
 Persistent shell: one fact command/pipeline; dependencies use `&&`.
+Omit `title` when the automatic command label suffices. Otherwise use a concise custom purpose or action ID (`git.sync`, `test`, `build`, `inspect`, `run`).
 {{#if hasEval}}Scripts/heredocs/`$(…)`/complex pipelines → `eval`.{{else}}Scripts/heredocs/`$(…)`/complex flow → dedicated tool or checked-in script.{{/if}}
 `cwd`, not `cd`; `pty` only interactive.
 Internal URIs work as paths for builtins/coreutils, redirects, globs.
