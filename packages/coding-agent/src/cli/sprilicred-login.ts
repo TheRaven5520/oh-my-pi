@@ -63,7 +63,7 @@ const MUSE_ID = "muse-wonder";
 const MUSE_OPENROUTER_ID = "meta/muse-wonder";
 const MUSE_REF = `${OPENROUTER_PROVIDER}/${MUSE_OPENROUTER_ID}`;
 // The search /model runs on the OpenRouter provider (`<baseUrl>/models?search=<q>&limit=25`).
-const OPENROUTER_SEARCH = { type: "openai-models-list", param: "search", limit: 25 };
+const OPENROUTER_SEARCH = { type: "openai-models-list", param: "search", limit: 25, label: "OpenRouter" };
 // Muse Wonder's DEDICATED row in pricing.rs (connect.py MODEL_LIMITS, BUILT_IN_CAPABILITIES,
 // OPENROUTER_EFFORTS), for the entry a moved Muse reference gets when the listing can't be read.
 const MUSE_BUILT_IN = {

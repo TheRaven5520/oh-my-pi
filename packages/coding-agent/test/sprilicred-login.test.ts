@@ -272,7 +272,7 @@ describe("Sprilicred login", () => {
 			auth: "apiKey",
 			authHeader: true,
 			api: "openai-responses",
-			modelSearch: { type: "openai-models-list", param: "search", limit: 25 },
+			modelSearch: { type: "openai-models-list", param: "search", limit: 25, label: "OpenRouter" },
 			models: [
 				{
 					id: "meta/muse-wonder",
@@ -835,7 +835,7 @@ describe("Sprilicred login", () => {
 	});
 
 	// Each case is deploy/fixtures/omp-parity/<case> from Sprilicred's installer (deploy/connect.py,
-	// or-installer 922c290), written by install_omp from the same listings and the same
+	// or-installer e38e2a8), written by install_omp from the same listings and the same
 	// before-files: catalog.json (listing bodies per route), models/config/state.before.json
 	// (migration cases), installer-{models,config,state}.json. `$HOME` is the scratch home and
 	// https://sprilicred.example the server.

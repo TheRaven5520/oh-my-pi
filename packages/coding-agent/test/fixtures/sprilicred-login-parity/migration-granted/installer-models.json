@@ -235,7 +235,8 @@
       "modelSearch": {
         "type": "openai-models-list",
         "param": "search",
-        "limit": 25
+        "limit": 25,
+        "label": "OpenRouter"
       },
       "models": [
         {
