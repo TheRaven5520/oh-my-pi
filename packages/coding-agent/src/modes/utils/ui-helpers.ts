@@ -8,7 +8,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
-import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
+import { appendAdvisorNotes, createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { createBackgroundTanDispatchBlock } from "@oh-my-pi/pi-tui/chat/background-tan-message";
 import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
@@ -253,6 +253,9 @@ export class UiHelpers {
 					}
 					if (message.customType === "advisor") {
 						const details = (message as CustomMessage<AdvisorMessageDetails>).details;
+						const notes = details?.notes ?? [];
+						const previous = this.ctx.chatContainer.children.at(-1);
+						if (appendAdvisorNotes(previous, notes)) break;
 						this.ctx.chatContainer.addChild(
 							createAdvisorMessageCard(details, () => this.ctx.toolOutputExpanded, theme),
 						);

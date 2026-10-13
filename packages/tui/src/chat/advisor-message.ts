@@ -44,9 +44,9 @@ function severityColor(severity: AdvisorSeverity | undefined): ToolUIColor {
 
 /** Always-visible header tag: `Advisor <n> notes [· <k> blockers]`. */
 class AdvisorHeader implements Component {
-	readonly #meta: readonly string[];
+	#meta: readonly string[];
+	#compactNote: AdvisorNote | undefined;
 	readonly #uiTheme: Theme;
-	readonly #compactNote: AdvisorNote | undefined;
 	#expanded = false;
 	#cache: { width: number; lines: readonly string[] } | undefined;
 
@@ -54,6 +54,12 @@ class AdvisorHeader implements Component {
 		this.#meta = meta;
 		this.#uiTheme = uiTheme;
 		this.#compactNote = compactNote;
+	}
+
+	setContent(meta: readonly string[], compactNote?: AdvisorNote): void {
+		this.#meta = meta;
+		this.#compactNote = compactNote;
+		this.#cache = undefined;
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -66,6 +72,7 @@ class AdvisorHeader implements Component {
 	invalidate(): void {
 		this.#cache = undefined;
 	}
+
 	render(width: number): readonly string[] {
 		width = Math.max(1, width);
 		if (this.#cache?.width === width) return this.#cache.lines;
@@ -90,8 +97,8 @@ class AdvisorHeader implements Component {
 
 /** One branch of advisor notes: the entries plus an optional hidden-note count. */
 class AdvisorNotes implements Component {
-	readonly #entries: readonly AdvisorNote[];
-	readonly #hidden: number;
+	#entries: readonly AdvisorNote[];
+	#hidden: number;
 	readonly #uiTheme: Theme;
 	#cache: { width: number; lines: readonly string[] } | undefined;
 
@@ -99,6 +106,12 @@ class AdvisorNotes implements Component {
 		this.#entries = entries;
 		this.#hidden = hidden;
 		this.#uiTheme = uiTheme;
+	}
+
+	setEntries(entries: readonly AdvisorNote[], hidden: number): void {
+		this.#entries = entries;
+		this.#hidden = hidden;
+		this.#cache = undefined;
 	}
 
 	invalidate(): void {
@@ -167,13 +180,40 @@ function advisorNoteSpans(entry: AdvisorNote): TspSpan[] {
 }
 
 /** The advisor card: shared by the controlled expansion getter and native toggles. */
+function advisorCardSummary(notes: readonly AdvisorNote[]): {
+	blockers: number;
+	compactNote: AdvisorNote | undefined;
+	meta: string[];
+} {
+	const blockers = notes.filter(note => note.severity === "blocker").length;
+	const compactNote = blockers === 0 ? notes[0] : undefined;
+	const severityCounts = new Map<AdvisorSeverity, number>();
+	for (const note of notes)
+		if (note.severity) severityCounts.set(note.severity, (severityCounts.get(note.severity) ?? 0) + 1);
+	const severityMeta = [...severityCounts.entries()].map(
+		([severity, count]) => `${count} ${severity}${count === 1 ? "" : "s"}`,
+	);
+	const meta: string[] = [`${notes.length} ${notes.length === 1 ? "note" : "notes"}`];
+	if (severityMeta.length > 0) meta.push(...severityMeta);
+	return { blockers, compactNote, meta };
+}
+
 export interface AdvisorMessageCard extends Component {
 	/** Transcript-wide expansion (`Ctrl+O`); clears a toggle made in the terminal. */
 	setExpanded(expanded: boolean): void;
+	/** Merge a later non-blocking tail batch into this card. */
+	appendNotes(notes: readonly AdvisorNote[]): boolean;
 	getClickToolId(): string;
 	toggleClickExpansion(): boolean;
 	handleNativeEvent(event: NativeUiEvent): void;
 }
+
+/** Try to merge notes into a card only when the previous transcript row is one. */
+export function appendAdvisorNotes(component: Component | undefined, notes: readonly AdvisorNote[]): boolean {
+	if (!component || typeof (component as Partial<AdvisorMessageCard>).appendNotes !== "function") return false;
+	return (component as AdvisorMessageCard).appendNotes(notes);
+}
+
 /**
  * Display-only transcript card for advisor notes injected into the primary
  * session. Styled as a distinct voice so notes never blend into thinking
@@ -189,18 +229,9 @@ export function createAdvisorMessageCard(
 	getExpanded: () => boolean,
 	uiTheme: Theme,
 ): AdvisorMessageCard {
-	const notes = details?.notes ?? [];
-	const blockers = notes.filter(note => note.severity === "blocker").length;
-	const compactNote = blockers === 0 ? notes[0] : undefined;
+	const notes = [...(details?.notes ?? [])];
+	let { blockers, compactNote, meta } = advisorCardSummary(notes);
 	const clickId = `advisor:${++advisorCardCounter}`;
-	const severityCounts = new Map<AdvisorSeverity, number>();
-	for (const note of notes)
-		if (note.severity) severityCounts.set(note.severity, (severityCounts.get(note.severity) ?? 0) + 1);
-	const severityMeta = [...severityCounts.entries()].map(
-		([severity, count]) => `${count} ${severity}${count === 1 ? "" : "s"}`,
-	);
-	const meta: string[] = [`${notes.length} ${notes.length === 1 ? "note" : "notes"}`];
-	if (severityMeta.length > 0) meta.push(...severityMeta);
 	let override: boolean | undefined;
 	let lastGlobal = getExpanded();
 	const expanded = (): boolean => {
@@ -241,19 +272,46 @@ export function createAdvisorMessageCard(
 		);
 	};
 
-	const shown = notes.slice(0, COLLAPSED_NOTES);
 	const summary = new AdvisorHeader(meta, uiTheme, compactNote);
+	let collapsedBody: AdvisorNotes | undefined;
+	let body: AdvisorNotes | undefined;
 	const disclosure = new Disclosure({
 		summary,
-		collapsedBody: () =>
-			compactNote ? new AdvisorNotes([], 0, uiTheme) : new AdvisorNotes(shown, notes.length - shown.length, uiTheme),
-		body: () => new AdvisorNotes(notes, 0, uiTheme),
+		collapsedBody: () => {
+			if (!collapsedBody) {
+				const shown = notes.slice(0, COLLAPSED_NOTES);
+				collapsedBody = new AdvisorNotes(
+					compactNote ? [] : shown,
+					compactNote ? 0 : notes.length - shown.length,
+					uiTheme,
+				);
+			}
+			return collapsedBody;
+		},
+		body: () => {
+			body ??= new AdvisorNotes(notes, 0, uiTheme);
+			return body;
+		},
 		expanded: getExpanded(),
 		paddingX: 1,
 	});
-	// The tool-output toggle owns expansion state; synchronize the controlled
-	// disclosure from the callback on every render.
+	// The tool-output toggle owns expansion state; synchronize the controlled disclosure from the callback on every render.
 	return {
+		appendNotes(additions: readonly AdvisorNote[]): boolean {
+			if (additions.length === 0 || blockers > 0 || additions.some(note => note.severity === "blocker"))
+				return false;
+			notes.push(...additions);
+			({ blockers, compactNote, meta } = advisorCardSummary(notes));
+			summary.setContent(meta, compactNote);
+			if (collapsedBody) {
+				const shown = notes.slice(0, COLLAPSED_NOTES);
+				collapsedBody.setEntries(compactNote ? [] : shown, compactNote ? 0 : notes.length - shown.length);
+			}
+			body?.setEntries(notes, 0);
+			disclosure.invalidate();
+			nativeMemo.clear();
+			return true;
+		},
 		render(width: number): readonly string[] {
 			const isExpanded = expanded();
 			summary.setExpanded(isExpanded);

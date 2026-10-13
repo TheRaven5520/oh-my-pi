@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Consecutive non-blocking advisor deliveries at the transcript tail now merge into the preceding advisor card, while blockers and separated notes remain distinct.
 - Fix blank conversation space after AeroSpace shrinks and restores a direct Kitty window. Settled Kitty height growth refills from the transcript in rebuild mode, and replay releases stale inline-panel input pins instead of padding over restored history. Width rewrap and native history retain one complete copy.
 - Confirmed native-link sessions retain the normal arrow through expand/collapse redraws instead of briefly reverting to a text cursor. Kitty still handles link hover and text-selection cursors; the previous pointer is restored on exit, including from fullscreen overlays.
 - Direct Kitty sessions can keep native wheel scrolling and selection together with mouse tool expansion through the companion OSC 8 link handler. A per-start handshake precedes release of DEC mouse capture; tool identities survive native history and clicks return in-band for local and SSH sessions. Tmux and fullscreen mouse handling remain unchanged.
