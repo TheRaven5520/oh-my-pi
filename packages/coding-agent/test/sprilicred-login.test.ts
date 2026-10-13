@@ -1,16 +1,20 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effort } from "@oh-my-pi/pi-ai";
 import {
 	cfgAuthBrokerUrl,
 	cfgCycleModels,
 	cfgEnabledModels,
+	cfgModelPresets,
 	cfgModelProviderOrder,
 	cfgModelRoles,
 } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runSprilicredLogin } from "@oh-my-pi/pi-coding-agent/cli/sprilicred-login";
+import { getModelPreset } from "@oh-my-pi/pi-coding-agent/config/model-presets";
 import { cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 
 describe("Sprilicred login", () => {
@@ -296,7 +300,7 @@ describe("Sprilicred login", () => {
 		expect(cfgEnabledModels.get(settings)).toEqual(["sprilicred-openai/*", "mine/*"]);
 	});
 
-	test("keeps a custom cycle free of OpenRouter, pinning Muse Wonder by its exact id", async () => {
+	test("keeps every Muse Wonder entry out of a custom cycle, scope or exact id", async () => {
 		await fs.writeFile(
 			path.join(agentDir, "models.yml"),
 			JSON.stringify({
@@ -315,7 +319,8 @@ describe("Sprilicred login", () => {
 		]);
 		await settings.flush();
 		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
-		expect(cfgCycleModels.get(settings)).toEqual(["other/keep", "sprilicred-openai/*", MUSE, `${MUSE}:high`]);
+		// Muse Wonder's old entries go; an OpenRouter entry the person put there themselves stays.
+		expect(cfgCycleModels.get(settings)).toEqual(["other/keep", "sprilicred-openai/*", `${MUSE}:high`]);
 	});
 
 	test("keeps a listed or unverifiable OpenRouter default, and drops the provider when nothing is listed", async () => {
@@ -572,20 +577,116 @@ describe("Sprilicred login", () => {
 		expect(second.providers["sprilicred-openai"].models[0].compat).toEqual({ reasoningDisableMode: "omit" });
 	});
 
+	test("adds OpenRouter to lists the person set without the sprilicred-openai scope, never to a cycle", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgCycleModels.set(settings, ["other/keep"]);
+		cfgEnabledModels.set(settings, ["mine/*"]);
+		cfgModelProviderOrder.set(settings, ["personal"]);
+		await settings.flush();
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		// DeepSeek joins only a list holding the sprilicred-openai scope.
+		expect(cfgCycleModels.get(settings)).toEqual(["other/keep"]);
+		expect(cfgEnabledModels.get(settings)).toEqual(["mine/*", "sprilicred-openrouter/**"]);
+		expect(cfgModelProviderOrder.get(settings)).toEqual(["personal", "sprilicred-openrouter"]);
+	});
+
+	test("migrates or withdraws bare model ids like provider-qualified ones", async () => {
+		await fs.writeFile(path.join(agentDir, "models.yml"), JSON.stringify({ defaultModel: "muse-wonder:high" }));
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgModelRoles.setEntry(settings, "plan", "muse-wonder");
+		cfgModelRoles.setEntry(settings, "commit", "abliterated-model-large-v2:low");
+		cfgModelRoles.setEntry(settings, "task", "deepseek-v4.1-flash");
+		cfgRetryFallbackChains.set(settings, {
+			"muse-wonder:high": ["deepseek-v4.1-flash", "abliterated-model-large-v2"],
+			"abliterated-model-large-v2": ["other/keep"],
+		});
+		await settings.flush();
+		const paths = { home: root, agentDir, tokenPath };
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		expect(JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8")).defaultModel).toBe(
+			`${MUSE}:high`,
+		);
+		expect(cfgModelRoles.get(settings).plan).toBe(MUSE);
+		expect(cfgModelRoles.get(settings).commit).toBeUndefined();
+		expect(cfgModelRoles.get(settings).task).toBe("deepseek-v4.1-flash");
+		expect(cfgRetryFallbackChains.get(settings)).toEqual({ [`${MUSE}:high`]: ["deepseek-v4.1-flash"] });
+
+		// Without a grant the bare DeepSeek id goes too, and the default falls back like a qualified one.
+		dedicated.openrouter = [];
+		dedicated.deepseek = [];
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		expect(JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8")).defaultModel).toBe(
+			"sprilicred-anthropic/claude-sonnet-5",
+		);
+		expect(cfgModelRoles.get(settings).task).toBeUndefined();
+		expect(cfgRetryFallbackChains.get(settings)).toEqual({});
+	});
+
+	test("a migrated fallback chain never replaces the one already under its new key", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		for (const chains of [cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains]) {
+			chains.set(settings, {
+				// The person's own chain comes first, so the legacy one would overwrite it.
+				[MUSE]: ["other/keep"],
+				"sprilicred-muse/muse-wonder": ["sprilicred-openai/gpt-6-astra"],
+			});
+		}
+		await settings.flush();
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		expect(cfgRetryFallbackChains.get(settings)).toEqual({ [MUSE]: ["other/keep"] });
+		expect(cfgRetryUsageLimitFallbackChains.get(settings)).toEqual({ [MUSE]: ["other/keep"] });
+	});
+
+	test("migrates the role maps of global model presets and leaves project presets in their file", async () => {
+		await fs.writeFile(
+			path.join(agentDir, "config.yml"),
+			[
+				"modelPresets:",
+				"  mine:",
+				"    defaultThinkingLevel: high",
+				"    modelRoles:",
+				"      default: sprilicred-muse/muse-wonder:high",
+				"      plan: sprilicred-glm/abliterated-model-large-v2",
+				"      smol: other/keep",
+				"",
+			].join("\n"),
+		);
+		await fs.mkdir(path.join(root, ".omp"), { recursive: true });
+		const project =
+			"modelPresets:\n  team:\n    modelRoles:\n      default: sprilicred-glm/abliterated-model-large-v2\n";
+		await fs.writeFile(path.join(root, ".omp", "config.yml"), project);
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		expect(getModelPreset(settings, "mine")).toEqual({
+			kind: "found",
+			preset: { defaultThinkingLevel: Effort.High, modelRoles: { default: `${MUSE}:high`, smol: "other/keep" } },
+		});
+		const global = await fs.readFile(path.join(agentDir, "config.yml"), "utf8");
+		expect(global).not.toContain("team");
+		expect(global).not.toContain("sprilicred-glm");
+		expect(await fs.readFile(path.join(root, ".omp", "config.yml"), "utf8")).toBe(project);
+	});
+
+	test("fills a standard role the migration emptied in the same login", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgModelRoles.setEntry(settings, "slow", "sprilicred-glm/abliterated-model-large-v2");
+		await settings.flush();
+		const paths = { home: root, agentDir, tokenPath };
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		const first = await fs.readFile(path.join(agentDir, "config.yml"), "utf8");
+		expect(cfgModelRoles.get(settings).slow).toBe("sprilicred-openai/gpt-6-astra");
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		expect(await fs.readFile(path.join(agentDir, "config.yml"), "utf8")).toBe(first);
+	});
+
 	// Each case is deploy/fixtures/omp-parity/<case> from Sprilicred's installer (deploy/connect.py,
-	// or-installer e1f8c6f), written by install_omp from the same listings and the same
+	// or-installer f7b4c59), written by install_omp from the same listings and the same
 	// before-files: catalog.json (listing bodies per route), models/config/state.before.json
 	// (migration cases), installer-{models,config,state}.json. `$HOME` is the scratch home and
 	// https://sprilicred.example the server.
-	const PARITY_CASES = [
-		"granted",
-		"not-granted",
-		"migration-untouched-granted",
-		"migration-untouched-not-granted",
-		"migration-granted",
-		"migration-not-granted",
-	];
-	for (const parityCase of PARITY_CASES) {
+	// Every case the installer recorded, so a new one is never skipped.
+	const PARITY_DIR = path.join(import.meta.dir, "fixtures", "sprilicred-login-parity");
+	for (const parityCase of readdirSync(PARITY_DIR).sort()) {
 		test(`writes what the Sprilicred installer writes: ${parityCase}`, async () => {
 			const dir = path.join(import.meta.dir, "fixtures", "sprilicred-login-parity", parityCase);
 			const load = async (name: string) => {
@@ -626,6 +727,7 @@ describe("Sprilicred login", () => {
 					if (Object.keys(configBefore[name] ?? {}).length) setting.set(settings, configBefore[name]);
 				}
 				cfgModelRoles.set(settings, configBefore.modelRoles ?? {});
+				cfgModelPresets.set(settings, configBefore.modelPresets ?? {});
 				if (configBefore["auth.broker.url"]) cfgAuthBrokerUrl.set(settings, configBefore["auth.broker.url"]);
 				await settings.flush();
 			}
@@ -646,6 +748,7 @@ describe("Sprilicred login", () => {
 				"auth.broker.url": cfgAuthBrokerUrl.get(settings),
 				...Object.fromEntries(Object.entries(lists).map(([name, setting]) => [name, setting.get(settings)])),
 				modelRoles: cfgModelRoles.get(settings),
+				modelPresets: cfgModelPresets.get(settings),
 				...Object.fromEntries(Object.entries(chains).map(([name, setting]) => [name, setting.get(settings)])),
 			}).toEqual(expectedConfig);
 

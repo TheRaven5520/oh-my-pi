@@ -3,15 +3,17 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type * as readline from "node:readline";
 import { getAuthBrokerTokenFilePath } from "@oh-my-pi/pi-ai/auth-broker/discover";
-import { getAgentDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, isRecord } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import {
 	cfgAuthBrokerToken,
 	cfgAuthBrokerUrl,
 	cfgCycleModels,
 	cfgEnabledModels,
+	cfgModelPresets,
 	cfgModelProviderOrder,
 	cfgModelRoles,
+	type ModelPreset,
 } from "../config/model-settings";
 import type { Settings } from "../config/settings";
 import { cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains } from "../session/settings";
@@ -251,19 +253,29 @@ async function fetchListing(
 }
 
 /**
- * Where an old reference goes now; undefined when it points at a withdrawn provider. Muse
- * Wonder (`sprilicred-muse/` or the older `sprilicred-openai/`) moves to its OpenRouter id when
- * OpenRouter is written, and a `sprilicred-openai/<dedicated id>[:level]` to its own provider.
+ * Where an old reference goes now (connect.py move_omp_selector); undefined when it names a
+ * withdrawn provider or a retired model. Bare ids (`muse-wonder:high`) count as their provider's.
+ * Muse Wonder (`sprilicred-muse/`, the older `sprilicred-openai/`, or bare) moves to its OpenRouter
+ * id, level kept, when OpenRouter is written, except in a cycle: OpenRouter never joins Ctrl+P.
+ * A `sprilicred-openai/<dedicated id>[:level]` moves to its own provider.
  */
-function migrateRef(ref: string, migration: Migration): string | undefined {
+function migrateRef(ref: string, migration: Migration, cycle = false): string | undefined {
 	const slash = ref.indexOf("/");
-	// A bare provider name (modelProviderOrder).
-	if (slash <= 0) return migration.withdrawn.has(ref) ? undefined : ref;
+	if (slash <= 0) {
+		const colon = ref.indexOf(":");
+		const id = colon < 0 ? ref : ref.slice(0, colon);
+		if (id === MUSE_ID) return cycle || !migration.muse ? undefined : `${MUSE_REF}${ref.slice(id.length)}`;
+		if (Object.hasOwn(RETIRED_OPENAI_MODELS, id)) return undefined;
+		if (Object.hasOwn(DEDICATED_MODELS, id) && migration.withdrawn.has(DEEPSEEK_PROVIDER)) return undefined;
+		// modelProviderOrder names providers bare.
+		return migration.withdrawn.has(ref) ? undefined : ref;
+	}
 	const provider = ref.slice(0, slash);
 	const rest = ref.slice(slash + 1);
 	const id = rest.split(":")[0];
-	if ((provider === MUSE_PROVIDER || provider === OPENAI_PROVIDER) && id === MUSE_ID) {
-		return migration.muse ? `${MUSE_REF}${rest.slice(MUSE_ID.length)}` : undefined;
+	if (provider === MUSE_PROVIDER || (provider === OPENAI_PROVIDER && id === MUSE_ID)) {
+		if (cycle || !migration.muse || id !== MUSE_ID) return undefined;
+		return `${MUSE_REF}${rest.slice(MUSE_ID.length)}`;
 	}
 	if (migration.withdrawn.has(provider)) return undefined;
 	if (provider !== OPENAI_PROVIDER) return ref;
@@ -538,39 +550,42 @@ async function writeModels(
 }
 
 /**
- * Adds newly written dedicated providers to a scoped list (cycleModels, enabledModels,
- * modelProviderOrder) after the Sprilicred group, like the installer's scope migration.
- * Lists without the sprilicred-openai scope are left alone.
+ * Adds newly written providers to a non-empty scoped list (cycleModels, enabledModels,
+ * modelProviderOrder), like the installer's scope migration: DeepSeek joins a list that holds
+ * the sprilicred-openai scope, OpenRouter joins any list the person set (or /model would hide
+ * it) but never a cycle. They go after the Sprilicred group, or at the end without one.
  */
-function addScopes(list: string[], added: string[], providerOnly: boolean): string[] {
+function addScopes(list: string[], added: string[], providerOnly: boolean, cycle = false): string[] {
+	if (list.length === 0) return list;
 	const scope = (provider: string) =>
 		providerOnly ? provider : provider === OPENROUTER_PROVIDER ? OPENROUTER_SCOPE : `${provider}/*`;
-	if (!list.includes(scope(OPENAI_PROVIDER))) return list;
+	const anchored = list.includes(scope(OPENAI_PROVIDER));
+	const additions = added
+		.filter(provider => (provider === OPENROUTER_PROVIDER ? !cycle : anchored))
+		.map(scope)
+		.filter(item => !list.includes(item));
 	const ours = new Set(
 		[OPENAI_PROVIDER, ...DEDICATED_ROUTES.map(route => `sprilicred-${route}`), OPENROUTER_PROVIDER].map(scope),
 	);
-	const index = list.findLastIndex(item => ours.has(item)) + 1;
-	const additions = added.map(scope).filter(item => !list.includes(item));
+	const last = list.findLastIndex(item => ours.has(item));
+	const index = last < 0 ? list.length : last + 1;
 	return [...list.slice(0, index), ...additions, ...list.slice(index)];
 }
 
 /**
- * Moves a scoped list's references to where their models live now. When Muse Wonder moves,
- * its retired provider scope is dropped (or, in a cycle the person chose, becomes Muse
- * Wonder's exact OpenRouter id); other refs go through {@link migrateRef}. Duplicates keep the first.
- * References to withdrawn providers are dropped and recorded in `removed` as `setting=value`.
+ * Moves a scoped list's references to where their models live now ({@link migrateRef}).
+ * Duplicates keep the first. Dropped references are recorded in `removed` as `setting=value`.
  */
 function migrateScopes(
 	setting: string,
 	list: string[],
 	migration: Migration,
-	museScope: "drop" | "exact",
 	removed: string[],
+	cycle = false,
 ): string[] {
 	const next: string[] = [];
 	for (const item of list) {
-		const isMuseScope = migration.muse && (item === MUSE_PROVIDER || item === `${MUSE_PROVIDER}/*`);
-		const migrated = isMuseScope ? (museScope === "drop" ? undefined : MUSE_REF) : migrateRef(item, migration);
+		const migrated = migrateRef(item, migration, cycle);
 		if (migrated === undefined) removed.push(`${setting}=${item}`);
 		else if (!next.includes(migrated)) next.push(migrated);
 	}
@@ -579,7 +594,8 @@ function migrateScopes(
 
 /**
  * Migrates fallback-chain keys and entries (`retry.fallbackChains`, `retry.usageLimitFallbackChains`):
- * withdrawn references go, and so does a chain whose key or every entry went.
+ * withdrawn references go, and so does a chain whose key or every entry went. A chain whose key
+ * moved never replaces one the person already keeps under the new key.
  */
 function migrateChains(
 	setting: string,
@@ -589,14 +605,43 @@ function migrateChains(
 ): Record<string, string[]> | undefined {
 	let changed = false;
 	const next: Record<string, string[]> = {};
+	const movedKeys: [string, string[]][] = [];
 	for (const [key, chain] of Object.entries(chains)) {
 		const migratedKey = migrateRef(key, migration);
-		const migrated = migrateScopes(`${setting}.${key}`, chain, migration, "exact", removed);
+		const migrated = migrateScopes(`${setting}.${key}`, chain, migration, removed);
 		if (migratedKey !== key || !Bun.deepEquals(migrated, chain)) changed = true;
 		if (migratedKey === undefined) removed.push(`${setting}=${key}`);
-		else if (migrated.length > 0) next[migratedKey] = migrated;
+		else if (migrated.length === 0) continue;
+		else if (migratedKey === key) next[key] = migrated;
+		else movedKeys.push([migratedKey, migrated]);
+	}
+	for (const [key, chain] of movedKeys) {
+		if (!Object.hasOwn(next, key)) next[key] = chain;
 	}
 	return changed ? next : undefined;
+}
+
+/**
+ * Migrates the role maps of the presets saved in the global config (`modelPresets.<name>.modelRoles`);
+ * project presets are never copied into the global file. Other preset fields stay as they are.
+ */
+function migratePresets(settings: Settings, migration: Migration, removed: string[]): void {
+	const presets: unknown = settings.getGlobalSettings().modelPresets;
+	if (!isRecord(presets)) return;
+	for (const [name, preset] of Object.entries(presets)) {
+		if (!isRecord(preset) || !isRecord(preset.modelRoles)) continue;
+		const nextRoles: Record<string, unknown> = {};
+		let changed = false;
+		for (const [role, value] of Object.entries(preset.modelRoles)) {
+			const migrated = typeof value === "string" ? migrateRef(value, migration) : value;
+			if (migrated !== value) changed = true;
+			if (migrated === undefined) removed.push(`modelPresets.${name}.modelRoles.${role}=${value}`);
+			else nextRoles[role] = migrated;
+		}
+		// Written back as it was read, only the role map changed: omp validates presets when it applies them.
+		const next = { ...preset, modelRoles: nextRoles } as unknown as ModelPreset;
+		if (changed) cfgModelPresets.setEntry(settings, name, next);
+	}
 }
 
 /** Writes a migrated list; one that withdrawal emptied goes back to omp's default (unset). */
@@ -653,36 +698,29 @@ async function writeOwnedSettings(
 	const removed: string[] = [];
 
 	// Only the installer's exact old or current defaults are ours to replace; a cycle that
-	// withdrawal empties counts as unset. The OpenRouter provider never joins the cycle: its
-	// models are picked in the model browser.
+	// withdrawal empties counts as unset. Nothing OpenRouter joins the cycle, Muse Wonder
+	// included: its models are picked in the model browser.
 	const currentCycle = cfgCycleModels.get(settings);
 	const ownCycle = OWNED_CYCLES.some(owned => Bun.deepEquals(currentCycle, owned));
-	const migratedCycle = ownCycle ? [] : migrateScopes("cycleModels", currentCycle, migration, "exact", removed);
+	const migratedCycle = ownCycle ? [] : migrateScopes("cycleModels", currentCycle, migration, removed, true);
 	if (currentCycle.length === 0 || (!ownCycle && migratedCycle.length === 0)) {
 		const cycleState = path.join(paths.home, CYCLE_STATE);
 		if (!(await exists(cycleState))) await privateWrite(cycleState, `${JSON.stringify({ before: [] })}\n`);
 	}
 	const defaultCycle = models.deepseek ? [...BASE_CYCLE, `${DEEPSEEK_PROVIDER}/*`] : BASE_CYCLE;
-	const nextCycle =
-		migratedCycle.length === 0
-			? defaultCycle
-			: addScopes(
-					migratedCycle,
-					models.added.filter(provider => provider !== OPENROUTER_PROVIDER),
-					false,
-				);
+	const nextCycle = migratedCycle.length === 0 ? defaultCycle : addScopes(migratedCycle, models.added, false, true);
 	if (!Bun.deepEquals(currentCycle, nextCycle)) cfgCycleModels.set(settings, nextCycle);
 
 	const currentEnabled = cfgEnabledModels.get(settings);
 	const nextEnabled = addScopes(
-		migrateScopes("enabledModels", currentEnabled, migration, "drop", removed),
+		migrateScopes("enabledModels", currentEnabled, migration, removed),
 		models.added,
 		false,
 	);
 	writeList(cfgEnabledModels, settings, currentEnabled, nextEnabled);
 	const currentOrder = cfgModelProviderOrder.get(settings);
 	const nextOrder = addScopes(
-		migrateScopes("modelProviderOrder", currentOrder, migration, "drop", removed),
+		migrateScopes("modelProviderOrder", currentOrder, migration, removed),
 		models.added,
 		true,
 	);
@@ -694,6 +732,7 @@ async function writeOwnedSettings(
 		const next = migrateChains(name, chains.get(settings), migration, removed);
 		if (next) chains.set(settings, next);
 	}
+	migratePresets(settings, migration, removed);
 
 	const currentRoles = cfgModelRoles.get(settings);
 	const rolesStatePath = path.join(paths.home, ROLES_STATE);
@@ -709,14 +748,14 @@ async function writeOwnedSettings(
 	}
 	const written: Record<string, string> = {};
 	for (const [role, value] of Object.entries(desired)) {
-		// Ours while it holds what the last login wrote; a role the person set to a withdrawn
-		// model is removed, not taken over.
+		// Ours while it holds what the last login wrote. A role this login's migration emptied
+		// is filled now, so one run reaches the final state.
 		const owned = rolesState.roles?.[role];
 		const isOwned =
 			owned !== undefined &&
 			(currentRoles[role] === owned ||
 				(nextRoles[role] !== undefined && nextRoles[role] === migrateRef(owned, migration)));
-		if (currentRoles[role] === undefined || isOwned) {
+		if (nextRoles[role] === undefined || isOwned) {
 			nextRoles[role] = value;
 			written[role] = value;
 		}

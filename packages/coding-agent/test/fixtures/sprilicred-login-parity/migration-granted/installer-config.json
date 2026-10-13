@@ -2,7 +2,6 @@
   "auth.broker.url": "https://sprilicred.example",
   "cycleModels": [
     "sprilicred-anthropic/claude-opus-5-5",
-    "sprilicred-openrouter/meta/muse-wonder",
     "sprilicred-openai/*"
   ],
   "enabledModels": [
@@ -27,6 +26,20 @@
     "web": "sprilicred-anthropic/claude-haiku-4-5",
     "mine": "sprilicred-openrouter/meta/muse-wonder:high",
     "plan": "sprilicred-openai/gpt-6-astra:low"
+  },
+  "modelPresets": {
+    "work": {
+      "modelRoles": {
+        "default": "sprilicred-openrouter/meta/muse-wonder:high",
+        "slow": "sprilicred-openai/gpt-6.1-sol"
+      },
+      "defaultThinkingLevel": "high"
+    },
+    "muse-wonder": {
+      "modelRoles": {
+        "default": "sprilicred-openai/gpt-6-astra"
+      }
+    }
   },
   "retry.fallbackChains": {
     "sprilicred-openrouter/meta/muse-wonder": [

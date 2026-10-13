@@ -32,6 +32,21 @@
     "odd": "sprilicred-glm/abliterated-model-large-v2",
     "plan": "sprilicred-openai/gpt-6-astra:low"
   },
+  "modelPresets": {
+    "work": {
+      "modelRoles": {
+        "default": "sprilicred-muse/muse-wonder:high",
+        "smol": "sprilicred-glm/abliterated-model-large-v2",
+        "slow": "sprilicred-openai/gpt-6.1-sol"
+      },
+      "defaultThinkingLevel": "high"
+    },
+    "muse-wonder": {
+      "modelRoles": {
+        "default": "sprilicred-openai/gpt-6-astra"
+      }
+    }
+  },
   "retry.fallbackChains": {
     "sprilicred-muse/muse-wonder": [
       "sprilicred-glm/abliterated-model-large-v2",
