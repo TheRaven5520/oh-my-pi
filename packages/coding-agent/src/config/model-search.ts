@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Api, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
+import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { JSONC, YAML } from "bun";
 import { advertisedEfforts, type DiscoveryContext, discoverOpenAIModelsList } from "./model-discovery";
 import type { ProviderAuthMode, ProviderModelSearch } from "./models-config-schema";
@@ -112,28 +113,37 @@ export async function searchProviderModels(
 
 /**
  * Append `entry` to `providers[provider].models` in the models config at
- * `configPath`, re-reading the file so concurrent installer/login rewrites are
- * kept. Returns false (and writes nothing) when the id is already listed. A
- * file holding JSON stays JSON. The write is atomic (temp file + rename).
+ * `configPath`. The file is re-read and rewritten under the same `withFileLock`
+ * other omp config writers use, so another omp process's change in between is
+ * kept (writers that skip the lock, such as the installer, are not covered).
+ * Resolves false (and writes nothing) when the id is already listed. The file
+ * is rewritten from its parsed form: a file holding JSON stays JSON, and YAML
+ * comments are not kept. The write is atomic (temp file + rename).
  */
-export function appendSearchedModel(configPath: string, provider: string, entry: Record<string, unknown>): boolean {
+export async function appendSearchedModel(
+	configPath: string,
+	provider: string,
+	entry: Record<string, unknown>,
+): Promise<boolean> {
 	const targetPath = fs.realpathSync(configPath);
-	const raw = fs.readFileSync(targetPath, "utf-8");
-	const isJson = raw.trimStart().startsWith("{");
-	const config = (isJson ? JSONC.parse(raw) : YAML.parse(raw)) as {
-		providers?: Record<string, { models?: Array<Record<string, unknown>> }>;
-	} | null;
-	const providerConfig = config?.providers?.[provider];
-	if (!config || !providerConfig) {
-		throw new Error(`Provider ${provider} is no longer configured in ${configPath}`);
-	}
-	const models = providerConfig.models ?? [];
-	if (models.some(existing => existing.id === entry.id)) return false;
-	providerConfig.models = [...models, entry];
-	const content = isJson ? `${JSON.stringify(config, null, 2)}\n` : `${YAML.stringify(config, null, 2)}\n`;
-	const tmpPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${process.pid}.tmp`);
-	const mode = fs.statSync(targetPath).mode & 0o777;
-	fs.writeFileSync(tmpPath, content, { mode });
-	fs.renameSync(tmpPath, targetPath);
-	return true;
+	return withFileLock(targetPath, async () => {
+		const raw = fs.readFileSync(targetPath, "utf-8");
+		const isJson = raw.trimStart().startsWith("{");
+		const config = (isJson ? JSONC.parse(raw) : YAML.parse(raw)) as {
+			providers?: Record<string, { models?: Array<Record<string, unknown>> }>;
+		} | null;
+		const providerConfig = config?.providers?.[provider];
+		if (!config || !providerConfig) {
+			throw new Error(`Provider ${provider} is no longer configured in ${configPath}`);
+		}
+		const models = providerConfig.models ?? [];
+		if (models.some(existing => existing.id === entry.id)) return false;
+		providerConfig.models = [...models, entry];
+		const content = isJson ? `${JSON.stringify(config, null, 2)}\n` : `${YAML.stringify(config, null, 2)}\n`;
+		const tmpPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${process.pid}.tmp`);
+		const mode = fs.statSync(targetPath).mode & 0o777;
+		fs.writeFileSync(tmpPath, content, { mode });
+		fs.renameSync(tmpPath, targetPath);
+		return true;
+	});
 }

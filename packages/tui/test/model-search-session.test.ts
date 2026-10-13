@@ -237,4 +237,20 @@ describe("model hub search scope", () => {
 		await flush();
 		expect(body()).toContain("Search failed: HTTP 403");
 	});
+
+	test("leaving the remote search scope recounts local matches for the current query", async () => {
+		const { body, hub, type } = createHub(async () => [muse]);
+		const allModelsCount = () => body().match(/All models\s+(\d+)/)?.[1];
+		type("fast");
+		expect(allModelsCount()).toBe("1");
+		hub.handleInput("\x1b[D"); // focus the sidebar (typing focused the list)
+		hub.handleInput("\x1b[B"); // All models → Search OpenRouter…
+		for (let i = 0; i < 4; i++) hub.handleInput("\x7f");
+		type("muse");
+		await flush();
+		expect(body()).toContain("type to search; Enter adds");
+		hub.handleInput("\x1b[D");
+		hub.handleInput("\x1b[A"); // back to All models, query still "muse"
+		expect(allModelsCount()).toBe("0");
+	});
 });

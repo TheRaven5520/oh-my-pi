@@ -2863,7 +2863,9 @@ export class ModelRegistry {
 	async searchModels(provider: string, query: string, signal?: AbortSignal): Promise<ModelSearchResult[]> {
 		const config = this.#searchableProviders.find(candidate => candidate.provider === provider);
 		if (!config) throw new Error(`Provider ${provider} has no modelSearch configured`);
-		return searchProviderModels(config, this.#discoveryContext(), query, signal);
+		// `!command` header values resolve here, exactly as discovery requests resolve them.
+		const headers = await resolveConfigHeaders(config.headers);
+		return searchProviderModels({ ...config, headers }, this.#discoveryContext(), query, signal);
 	}
 
 	/**
@@ -2876,7 +2878,7 @@ export class ModelRegistry {
 		if (!this.#searchableProviders.some(candidate => candidate.provider === model.provider)) {
 			throw new Error(`Provider ${model.provider} has no modelSearch configured`);
 		}
-		appendSearchedModel(this.#modelsConfigFile.path(), model.provider, entry);
+		await appendSearchedModel(this.#modelsConfigFile.path(), model.provider, entry);
 		// Same in-process reload as runtime provider registration: forced past the mtime guard, runtime discoveries kept.
 		this.#reloadStaticModels({ force: true, preserveRuntimeDiscovery: true });
 		const registered = this.find(model.provider, model.id);

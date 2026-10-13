@@ -793,8 +793,11 @@ export class ModelHubComponent implements Component {
 
 	#setActiveEntry(id: string): void {
 		if (!this.#entries.some(entry => entry.id === id)) return;
+		const wasRemote = this.#activeEntry()?.kind === "search";
 		this.#activeEntryId = id;
 		this.#sidebarFollowActive = true;
+		// Local match counts mean nothing in a remote search scope; recount on crossing that boundary.
+		if (wasRemote !== (this.#activeEntry().kind === "search")) this.#recountLocalMatches(this.#browser.query);
 		this.#applyScope();
 		const entry = this.#activeEntry();
 		// Hops must never steal arrow focus: landing on a scope keeps provider
@@ -963,16 +966,32 @@ export class ModelHubComponent implements Component {
 	 * Recompute per-provider match counts for the active query. Providers
 	 * without matches gray out and the scope hop skips them; a provider scope
 	 * that just lost its last match falls back to All models so the results
-	 * never silently vanish.
+	 * never silently vanish. In a remote search scope the query goes to the
+	 * remote search instead and local counts are cleared.
 	 */
 	#onQueryChanged(query: string): void {
 		this.#nativeVersion++;
 		const active = this.#activeEntry();
+		this.#recountLocalMatches(query);
 		if (active.kind === "search") {
 			this.#searchSession(active).setQuery(query);
 			return;
 		}
-		if (!query.trim()) {
+		const counts = this.#searchCounts;
+		if (
+			counts &&
+			this.#assigning === null &&
+			active.kind === "provider" &&
+			(active.locked || (counts.get(active.providerId ?? "") ?? 0) === 0)
+		) {
+			this.#setActiveEntry("all");
+		}
+	}
+
+	/** Per-provider local fuzzy match counts for `query`; none for a blank query or a remote search scope. */
+	#recountLocalMatches(query: string): void {
+		this.#nativeVersion++;
+		if (!query.trim() || this.#activeEntry().kind === "search") {
 			this.#searchCounts = null;
 			this.#composeEntries();
 			return;
@@ -990,14 +1009,6 @@ export class ModelHubComponent implements Component {
 		this.#searchTotal = matches.length;
 		this.#searchCounts = counts;
 		this.#composeEntries();
-		const entry = this.#activeEntry();
-		if (
-			this.#assigning === null &&
-			entry.kind === "provider" &&
-			(entry.locked || (counts.get(entry.providerId ?? "") ?? 0) === 0)
-		) {
-			this.#setActiveEntry("all");
-		}
 	}
 
 	/**

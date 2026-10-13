@@ -16,6 +16,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { acquireFileLock } from "@oh-my-pi/pi-utils/file-lock";
 
 // Providers with `modelSearch` (Sprilicred's OpenRouter catalog) are searched
 // from /model instead of discovered: the search hits `<baseUrl>/models?search=`,
@@ -254,6 +255,56 @@ describe("ModelRegistry model search", () => {
 	test("an HTTP error surfaces as an error", async () => {
 		respond = () => new Response("nope", { status: 503 });
 		await expect(makeRegistry().searchModels("sprilicred-openrouter", "muse")).rejects.toThrow("503");
+	});
+
+	test("!command headers are resolved before the search request, never sent as command text", async () => {
+		fs.writeFileSync(
+			modelsPath,
+			JSON.stringify({
+				providers: {
+					"sprilicred-openrouter": openRouterProvider({ headers: { "X-Team-Key": "!printf team-secret" } }),
+				},
+			}),
+		);
+		const sent: (string | null)[] = [];
+		const registry = new ModelRegistry(authStorage, modelsPath, {
+			fetch: async (_input, init) => {
+				sent.push(new Headers(init?.headers).get("x-team-key"));
+				return Response.json({ data: [MUSE_ROW] });
+			},
+		});
+		await registry.searchModels("sprilicred-openrouter", "muse");
+		expect(sent).toEqual(["team-secret"]);
+	});
+
+	test("a pick waits for another writer holding the models.yml lock and keeps its change", async () => {
+		const registry = makeRegistry();
+		const [hit] = await registry.searchModels("sprilicred-openrouter", "muse");
+		const realPath = fs.realpathSync(modelsPath);
+		// Another omp process is mid read-modify-write of models.yml.
+		const lock = await acquireFileLock(realPath);
+		const before = JSON.parse(fs.readFileSync(realPath, "utf-8"));
+		const pick = registry.addSearchedModel(hit);
+		before.providers["sprilicred-openrouter"].models = [{ id: "other/picked-elsewhere" }];
+		fs.writeFileSync(realPath, JSON.stringify(before, null, 2));
+		lock.release();
+		await pick;
+		const after = JSON.parse(fs.readFileSync(realPath, "utf-8"));
+		expect(after.providers["sprilicred-openrouter"].models.map((model: { id: string }) => model.id)).toEqual([
+			"other/picked-elsewhere",
+			"meta/muse-wonder",
+		]);
+	});
+
+	test("a pick rewrites models.yml from its parsed form, so YAML comments are not kept", async () => {
+		fs.writeFileSync(
+			modelsPath,
+			`# my providers\nproviders:\n  sprilicred-openrouter:\n    baseUrl: https://gateway.example/openrouter/v1\n    apiKey: ${GATEWAY_KEY}\n    api: openai-responses\n    modelSearch: { type: openai-models-list, param: search, limit: 25 }\n`,
+		);
+		const registry = makeRegistry();
+		const [hit] = await registry.searchModels("sprilicred-openrouter", "muse");
+		await registry.addSearchedModel(hit);
+		expect(fs.readFileSync(modelsPath, "utf-8")).not.toContain("# my providers");
 	});
 
 	test("a pick appends the entry once, keeps JSON, never writes the key, and loads without restart", async () => {
