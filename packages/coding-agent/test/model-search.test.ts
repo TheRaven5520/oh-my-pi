@@ -76,6 +76,19 @@ describe("models.yml modelSearch schema", () => {
 			openRouterProvider({ modelSearch: { type: "openai-models-list", param: " ", limit: 25 } }),
 		);
 		expect(String(noParam)).toContain("modelSearch.param a non-empty string");
+		const emptyLabel = validate(
+			openRouterProvider({ modelSearch: { type: "openai-models-list", param: "search", limit: 25, label: " " } }),
+		);
+		expect(String(emptyLabel)).toContain("modelSearch.label a non-empty string");
+		expect(
+			ModelsConfigSchema.allows(
+				config(
+					openRouterProvider({
+						modelSearch: { type: "openai-models-list", param: "search", limit: 25, label: "OpenRouter" },
+					}),
+				),
+			),
+		).toBe(true);
 		for (const limit of [0, -1, 2.5]) {
 			const bad = validate(
 				openRouterProvider({ modelSearch: { type: "openai-models-list", param: "search", limit } }),
@@ -145,7 +158,17 @@ describe("ModelRegistry model search", () => {
 
 	test("offers search for a provider with modelSearch but no models yet", () => {
 		const registry = makeRegistry();
-		expect(registry.getModelSearchProviders()).toEqual(["sprilicred-openrouter"]);
+		expect(registry.getModelSearchProviders()).toEqual([{ provider: "sprilicred-openrouter", label: undefined }]);
+		const search = createModelHubSearch(
+			registry,
+			{ scopedModels: [], setScopedModels: () => {} },
+			{
+				showStatus: () => {},
+				showError: () => {},
+			},
+		);
+		// Without modelSearch.label the entry falls back to the formatted provider id.
+		expect(search?.providers).toEqual([{ providerId: "sprilicred-openrouter", label: "Sprilicred Openrouter" }]);
 		expect(registry.find("sprilicred-openrouter", "meta/muse-wonder")).toBeUndefined();
 	});
 
@@ -331,7 +354,9 @@ describe("a picked search model and Ctrl+P", () => {
 							api: "openai-responses",
 							models: [{ id: "fast" }, { id: "small" }],
 						},
-						"sprilicred-openrouter": openRouterProvider(),
+						"sprilicred-openrouter": openRouterProvider({
+							modelSearch: { type: "openai-models-list", param: "search", limit: 25, label: "OpenRouter" },
+						}),
 					},
 				}),
 			);
@@ -365,7 +390,7 @@ describe("a picked search model and Ctrl+P", () => {
 				},
 			});
 			if (!search) throw new Error("no search offered");
-			expect(search.providers).toEqual([{ providerId: "sprilicred-openrouter", label: "Sprilicred Openrouter" }]);
+			expect(search.providers).toEqual([{ providerId: "sprilicred-openrouter", label: "OpenRouter" }]);
 			const [hit] = await search.search("sprilicred-openrouter", "muse", new AbortController().signal);
 			const picked = await search.onPick(hit);
 			expect(picked?.id).toBe("meta/muse-wonder");

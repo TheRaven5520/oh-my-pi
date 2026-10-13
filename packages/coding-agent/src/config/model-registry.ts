@@ -2852,11 +2852,11 @@ export class ModelRegistry {
 	}
 
 	/** Providers whose models.yml entry offers `modelSearch` (disabled providers excluded). */
-	getModelSearchProviders(): string[] {
+	getModelSearchProviders(): Array<{ provider: string; label?: string }> {
 		const disabledProviders = getDisabledProviderIdsFromSettings(this.#settings);
 		return this.#searchableProviders
 			.filter(provider => !disabledProviders.has(provider.provider))
-			.map(provider => provider.provider);
+			.map(provider => ({ provider: provider.provider, label: provider.modelSearch.label }));
 	}
 
 	/** Run a provider's `modelSearch` query with the provider's own credential resolution. */

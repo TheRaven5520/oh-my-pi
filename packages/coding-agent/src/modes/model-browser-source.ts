@@ -81,7 +81,10 @@ export function createModelHubSearch(
 	const providers = registry.getModelSearchProviders();
 	if (providers.length === 0) return undefined;
 	return {
-		providers: providers.map(providerId => ({ providerId, label: formatProviderName(providerId) })),
+		providers: providers.map(({ provider, label }) => ({
+			providerId: provider,
+			label: label?.trim() || formatProviderName(provider),
+		})),
 		search: (providerId, query, signal) => registry.searchModels(providerId, query, signal),
 		onPick: async hit => {
 			try {

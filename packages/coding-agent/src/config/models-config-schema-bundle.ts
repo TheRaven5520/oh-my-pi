@@ -333,6 +333,8 @@ export const getModelsConfigSchemaBundle = once(() => {
 		type: "string",
 		param: "string",
 		limit: "number",
+		/** Name in the "Search <label>…" entry; defaults to the formatted provider id. */
+		"label?": "string",
 	}).narrow((value, ctx) => {
 		if (value.type !== "openai-models-list") {
 			return ctx.mustBe('a supported modelSearch type ("openai-models-list")');
@@ -342,6 +344,9 @@ export const getModelsConfigSchemaBundle = once(() => {
 		}
 		if (!Number.isSafeInteger(value.limit) || value.limit <= 0) {
 			return ctx.mustBe("modelSearch.limit a positive integer");
+		}
+		if (value.label !== undefined && value.label.trim().length === 0) {
+			return ctx.mustBe("modelSearch.label a non-empty string");
 		}
 		return true;
 	});
