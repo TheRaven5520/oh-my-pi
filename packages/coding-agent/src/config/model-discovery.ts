@@ -283,7 +283,7 @@ function advertisedMicrocreditCost(pricing: unknown): DiscoveryCost | "unknown" 
 }
 
 /** Recognised `reasoning_efforts` in canonical order; unknown entries (e.g. `none`) are dropped, undefined when none remain. */
-function advertisedEfforts(value: unknown): Effort[] | undefined {
+export function advertisedEfforts(value: unknown): Effort[] | undefined {
 	if (!Array.isArray(value)) return undefined;
 	const efforts = THINKING_EFFORTS.filter(effort => value.includes(effort));
 	return efforts.length > 0 ? efforts : undefined;
@@ -893,9 +893,18 @@ function extractOpenAIModelsListOutputTask(item: {
 	}
 }
 
+/** Query appended to an `openai-models-list` request (`modelSearch` in /model), with the caller's cancellation. */
+export interface OpenAIModelsListQuery {
+	searchParams: Record<string, string>;
+	signal?: AbortSignal;
+	/** Receives each chat row that produced a model, keyed by id (search records the row's own fields). */
+	onRow?: (id: string, row: Record<string, unknown>) => void;
+}
+
 export async function discoverOpenAIModelsList(
 	providerConfig: DiscoveryProviderConfig,
 	ctx: DiscoveryContext,
+	query?: OpenAIModelsListQuery,
 ): Promise<Model<Api>[]> {
 	const injectV1 = providerConfig.discovery.injectV1 ?? true;
 	// `injectV1: false` resolves `/models` against the configured base URL
@@ -907,7 +916,7 @@ export async function discoverOpenAIModelsList(
 	const baseUrl = injectV1
 		? normalizeOpenAIModelsListBaseUrl(providerConfig.baseUrl)
 		: normalizeBareDiscoveryBaseUrl(providerConfig.baseUrl);
-	const modelsUrl = appendModelsPath(baseUrl);
+	const modelsUrl = appendModelsPath(baseUrl, query?.searchParams);
 
 	const baseHeaders: Record<string, string> = { ...providerConfig.headers };
 	let headers = baseHeaders;
@@ -930,10 +939,10 @@ export async function discoverOpenAIModelsList(
 					)
 				: Promise.resolve(null);
 		const [payload, nativeMetadata] = await Promise.all([
-			withTimeoutSignal(timeoutMs, async signal => {
+			withTimeoutSignal(timeoutMs, async timeoutSignal => {
 				const res = await ctx.fetch(modelsUrl, {
 					headers: h,
-					signal,
+					signal: query?.signal ? AbortSignal.any([timeoutSignal, query.signal]) : timeoutSignal,
 				});
 				if (!res.ok) {
 					throw new DiscoveryHttpError(res.status, modelsUrl);
@@ -968,12 +977,14 @@ export async function discoverOpenAIModelsList(
 	const [payload, nativeMetadata] = apiKey
 		? await withAuth(apiKey, key => attempt({ ...baseHeaders, Authorization: `Bearer ${key}` }))
 		: await attempt(baseHeaders);
-	const models = payload.data ?? [];
+	// A search listing is remote input shown in the picker: skip rows that are not objects with a string id.
+	const models = Array.isArray(payload?.data) ? payload.data : [];
 	const references = getBundledModelReferenceIndex();
 	const discovered: Model<Api>[] = [];
 	for (const item of models) {
+		if (!isRecord(item)) continue;
 		const id = item.id;
-		if (!id) continue;
+		if (typeof id !== "string" || !id) continue;
 		if (providerConfig.discovery.type === "litellm" && !isSelectableLiteLLMModelMode(item.mode)) continue;
 		const nativeMetadataForModel = nativeMetadata?.get(id);
 		// Thin OpenAI-compatible proxies frequently omit `context_length`/
@@ -1112,6 +1123,7 @@ export async function discoverOpenAIModelsList(
 				},
 			} as ModelSpec<Api>),
 		);
+		query?.onRow?.(id, item);
 	}
 	return discovered;
 }
@@ -1351,13 +1363,15 @@ export function normalizeBareDiscoveryBaseUrl(baseUrl: string | undefined): stri
  * query parameters survive (`https://host/root?token=x` must become
  * `https://host/root/models?token=x`, not `https://host/root?token=x/models`).
  */
-function appendModelsPath(baseUrl: string): string {
+function appendModelsPath(baseUrl: string, searchParams?: Record<string, string>): string {
 	try {
 		const url = new URL(baseUrl);
 		url.pathname = `${url.pathname.replace(/\/+$/g, "")}/models`;
+		for (const [key, value] of Object.entries(searchParams ?? {})) url.searchParams.set(key, value);
 		return url.toString();
 	} catch {
-		return `${baseUrl}/models`;
+		const query = new URLSearchParams(searchParams).toString();
+		return query ? `${baseUrl}/models?${query}` : `${baseUrl}/models`;
 	}
 }
 

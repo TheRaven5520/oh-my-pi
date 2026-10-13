@@ -871,6 +871,8 @@ export class ModelBrowser implements Component {
 	#emptyText?: () => string | undefined;
 	/** Keep role-like virtual rows in their host-defined order during search. */
 	#preserveQueryOrder = false;
+	/** Items already answer the query (a remote search): list them as given, never re-filtered locally. */
+	#remoteResults = false;
 	/** First visible list row; panned by the wheel, snapped to the selection on keyboard navigation. */
 	#windowStart = 0;
 	#windowCount = 0;
@@ -994,6 +996,12 @@ export class ModelBrowser implements Component {
 	setPreserveQueryOrder(preserve: boolean): void {
 		this.#preserveQueryOrder = preserve;
 	}
+	/** Items are a remote search's answer to the query: show them in order without local fuzzy filtering. */
+	setRemoteResults(remote: boolean): void {
+		if (remote === this.#remoteResults) return;
+		this.#remoteResults = remote;
+		this.#applyQuery();
+	}
 	/** Allow hosts to toggle context-window flagging between browser modes. */
 	setMarkOverContext(mark: boolean): void {
 		if (mark !== this.#markOverContext) this.#bumpPickerEpoch();
@@ -1050,6 +1058,7 @@ export class ModelBrowser implements Component {
 	 */
 	#filterItems(items: readonly ModelBrowserItem[], query: string): readonly ModelBrowserItem[] {
 		const base = items.filter(item => !this.#isDisabled(item));
+		if (this.#remoteResults) return this.#insertSeparator(base);
 		const ranked = this.#preserveQueryOrder
 			? query.trim()
 				? fuzzyRank(base, query, modelSearchText).map(result => result.item)
@@ -1557,7 +1566,8 @@ export class ModelBrowser implements Component {
 			this.#nativeList = cached;
 		}
 		const selected = this.getSelected()?.selector ?? null;
-		const filter = this.query.trim();
+		// Remote search results already answer the query; the native list must not filter them again.
+		const filter = this.#remoteResults ? "" : this.query.trim();
 		const empty =
 			items.length > 0
 				? ""

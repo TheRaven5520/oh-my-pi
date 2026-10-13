@@ -4,7 +4,7 @@
 
 import type { Api, ModelSpec } from "@oh-my-pi/pi-ai/types";
 import { ConfigFile } from "./config-file";
-import type { ModelsConfig, ProviderAuthMode, ProviderDiscovery } from "./models-config-schema";
+import type { ModelsConfig, ProviderAuthMode, ProviderDiscovery, ProviderModelSearch } from "./models-config-schema";
 import { getModelsConfigSchema } from "./models-config-schema-bundle";
 
 export type ProviderValidationMode = "models-config" | "runtime-register";
@@ -25,6 +25,7 @@ export interface ProviderValidationConfig {
 	auth?: ProviderAuthMode;
 	oauthConfigured?: boolean;
 	discovery?: ProviderDiscovery;
+	modelSearch?: ProviderModelSearch;
 	compat?: ModelSpec<Api>["compat"];
 	remoteCompaction?: unknown;
 	disableStrictTools?: boolean;
@@ -84,6 +85,9 @@ export function validateProviderConfiguration(
 		throw new Error(`Provider ${providerName}: "api" is required when discovery is enabled at provider level.`);
 	}
 
+	if (mode === "models-config" && config.modelSearch && (!config.baseUrl || !config.api)) {
+		throw new Error(`Provider ${providerName}: "baseUrl" and "api" are required when modelSearch is enabled.`);
+	}
 	for (const modelDef of models) {
 		if (!hasProviderApi && !modelDef.api) {
 			throw new Error(
@@ -122,6 +126,7 @@ export const ModelsConfigFile = new ConfigFile<ModelsConfig>("models", {
 				api: providerConfig.api as Api | undefined,
 				auth: (providerConfig.auth ?? "apiKey") as ProviderAuthMode,
 				discovery: providerConfig.discovery as ProviderDiscovery | undefined,
+				modelSearch: providerConfig.modelSearch,
 				compat: providerConfig.compat,
 				remoteCompaction: providerConfig.remoteCompaction,
 				disableStrictTools: providerConfig.disableStrictTools,

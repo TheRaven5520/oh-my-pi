@@ -62,6 +62,7 @@ import {
 	resolveRoleAssignments,
 	sortModelItems,
 } from "./model-browser";
+import { ModelSearchSession, type ModelSearchHit } from "./model-search-session";
 import {
 	describeHubFrame,
 	describeHubSidebar,
@@ -178,9 +179,24 @@ export interface ModelHubOptions {
 	initialProviderId?: string;
 	/** `provider/id` of the session's model, marked current in the native picker. */
 	currentSelector?: string;
+	/** Providers searched remotely from the hub ("Search <provider>…" scopes). */
+	modelSearch?: ModelHubSearch;
 }
 
-interface SidebarEntry extends HubSidebarEntry<"recent" | "roles" | "all" | "separator" | "provider"> {
+/** Remote model search offered as sidebar scopes; the host owns fetching and persisting picks. */
+export interface ModelHubSearch {
+	providers: ReadonlyArray<{ providerId: string; label: string }>;
+	search(providerId: string, query: string, signal: AbortSignal): Promise<ModelSearchHit[]>;
+	/**
+	 * Persist a picked hit so it resolves like any configured model and return
+	 * the registered model (undefined when the host reported a failure). The
+	 * hub then selects it, or assigns it when a role assignment is in progress.
+	 */
+	onPick(hit: ModelSearchHit): Promise<Model | undefined>;
+	debounceMs?: number;
+}
+
+interface SidebarEntry extends HubSidebarEntry<"recent" | "roles" | "all" | "separator" | "provider" | "search"> {
 	providerId?: string;
 	locked?: boolean;
 	oauth?: boolean;
@@ -379,6 +395,9 @@ export class ModelHubComponent implements Component {
 	#disposed = false;
 	/** Per-provider fuzzy match counts while a query is active; null when not searching. */
 	#searchCounts: Map<string, number> | null = null;
+	#modelSearch: ModelHubSearch | undefined;
+	/** One remote search per "Search <provider>…" scope, created on first use. */
+	#searchSessions = new Map<string, ModelSearchSession>();
 
 	// Provider discovery refresh (debounced per sidebar selection, with spinner).
 	#refreshingProviders = new Set<string>();
@@ -446,6 +465,7 @@ export class ModelHubComponent implements Component {
 		this.#scopedModels = scopedModels;
 		this.#callbacks = callbacks;
 		this.#currentSelector = options.currentSelector;
+		this.#modelSearch = options.modelSearch;
 
 		this.#browser = new ModelBrowser(settings, {
 			emptyText: () => this.#emptyStateMessage(),
@@ -489,6 +509,8 @@ export class ModelHubComponent implements Component {
 	/** Cancel pending provider refresh timers and the spinner. Host calls this on overlay close. */
 	dispose(): void {
 		this.#disposed = true;
+		for (const session of this.#searchSessions.values()) session.dispose();
+		this.#searchSessions.clear();
 		for (const [, timer] of this.#scheduledProviderRefreshes) clearTimeout(timer);
 		this.#scheduledProviderRefreshes.clear();
 		this.#refreshingProviders.clear();
@@ -675,6 +697,12 @@ export class ModelHubComponent implements Component {
 				annotation: `${assignedCount}/${visibleRoles.length}`,
 			},
 			{ id: "all", kind: "all", label: "All models", annotation: String(availableModels.length) },
+			...(this.#modelSearch?.providers ?? []).map(({ providerId, label }): SidebarEntry => ({
+				id: `search:${providerId}`,
+				kind: "search",
+				label: `Search ${label}…`,
+				providerId,
+			})),
 		];
 
 		this.#fixedEntries = fixed;
@@ -782,7 +810,15 @@ export class ModelHubComponent implements Component {
 	/** Push the active scope's items into the browser. */
 	#applyScope(): void {
 		const entry = this.#activeEntry();
+		this.#browser.setRemoteResults(entry.kind === "search");
 		switch (entry.kind) {
+			case "search": {
+				const session = this.#searchSession(entry);
+				this.#browser.setShowProvider(false);
+				session.setQuery(this.#browser.query);
+				this.#setCandidateItems(buildBrowserItems(session.hits.map(hit => hit.model)));
+				break;
+			}
 			case "recent":
 				this.#browser.setShowProvider(true);
 				this.#setCandidateItems(this.#recentItems);
@@ -931,6 +967,11 @@ export class ModelHubComponent implements Component {
 	 */
 	#onQueryChanged(query: string): void {
 		this.#nativeVersion++;
+		const active = this.#activeEntry();
+		if (active.kind === "search") {
+			this.#searchSession(active).setQuery(query);
+			return;
+		}
 		if (!query.trim()) {
 			this.#searchCounts = null;
 			this.#composeEntries();
@@ -1091,6 +1132,7 @@ export class ModelHubComponent implements Component {
 	#emptyStateMessage(): string | undefined {
 		if (this.#configError) return `  ${this.#configError}`;
 		const entry = this.#activeEntry();
+		if (entry.kind === "search") return `  ${this.#searchSession(entry).message() ?? ""}`;
 		if (entry.kind === "recent") return "  No recently used models yet";
 		if (entry.kind !== "provider" || entry.locked) return undefined;
 		if (this.#browser.query.trim()) {
@@ -1128,9 +1170,79 @@ export class ModelHubComponent implements Component {
 	// Assignment flow
 	// ═══════════════════════════════════════════════════════════════════════
 
+	#searchSession(entry: SidebarEntry): ModelSearchSession {
+		const providerId = entry.providerId ?? "";
+		let session = this.#searchSessions.get(providerId);
+		if (!session) {
+			const search = this.#modelSearch;
+			const label = search?.providers.find(provider => provider.providerId === providerId)?.label ?? providerId;
+			session = new ModelSearchSession(
+				label,
+				(query, signal) =>
+					search ? search.search(providerId, query, signal) : Promise.reject(new Error("search unavailable")),
+				{
+					debounceMs: search?.debounceMs,
+					onChange: () => {
+						if (this.#disposed) return;
+						if (this.#activeEntry().id === entry.id) this.#applyScope();
+						this.#requestRender();
+					},
+				},
+			);
+			this.#searchSessions.set(providerId, session);
+		}
+		return session;
+	}
+
+	/**
+	 * Persist a picked search hit through the host, then continue with the
+	 * registered model (never the hit's parsed copy, which carries request
+	 * headers): finish an in-progress assignment, or open the role strip as
+	 * activating any configured model does.
+	 */
+	#pickSearchHit(entry: SidebarEntry, item: ModelBrowserItem): void {
+		const search = this.#modelSearch;
+		const hit = this.#searchSession(entry).hits.find(candidate => candidate.model === item.model);
+		if (!search || !hit) return;
+		this.#assignmentPending = true;
+		this.#requestRender();
+		const settle = (): boolean => {
+			this.#assignmentPending = false;
+			if (this.#disposed) return false;
+			this.#requestRender();
+			return true;
+		};
+		void search.onPick(hit).then(registered => {
+			if (!settle() || !registered) return;
+			// A scoped hub lists its scope pool; the picked model joins it like the host's session scope.
+			if (
+				this.#scopedModels.length > 0 &&
+				!this.#scopedModels.some(scoped => modelsAreEqual(scoped.model, registered))
+			) {
+				this.#scopedModels = [...this.#scopedModels, { model: registered }];
+			}
+			this.#syncFromRegistryState();
+			const selector = `${registered.provider}/${registered.id}`;
+			const registeredItem =
+				this.#availableItems.find(candidate => candidate.selector === selector) ??
+				buildBrowserItems([registered])[0];
+			const target = this.#assigning;
+			this.#assigning = null;
+			if (!target) this.#openRoleStrip(registeredItem);
+			else if (target.kind === "role") this.#assignRole(registeredItem, target.role, true);
+			else if (target.kind === "fallbackKey") this.#openFallbackKeyStrip(registeredItem);
+			else this.#commitFallback(registeredItem, target);
+		}, settle);
+	}
+
 	#activateItem(item: ModelBrowserItem): void {
 		// Also reached from the browser's own native list events, which bypass handleInput.
 		this.#nativeVersion++;
+		const active = this.#activeEntry();
+		if (active.kind === "search" && !this.#assignmentPending) {
+			this.#pickSearchHit(active, item);
+			return;
+		}
 		if (this.#assigning) {
 			const target = this.#assigning;
 			this.#assigning = null;
@@ -1977,7 +2089,12 @@ export class ModelHubComponent implements Component {
 
 	#isBrowserView(entry: SidebarEntry): boolean {
 		if (this.#assigning !== null) return true;
-		return entry.kind === "recent" || entry.kind === "all" || (entry.kind === "provider" && !entry.locked);
+		return (
+			entry.kind === "recent" ||
+			entry.kind === "all" ||
+			entry.kind === "search" ||
+			(entry.kind === "provider" && !entry.locked)
+		);
 	}
 
 	#handleStripInput(data: string): void {
@@ -2399,6 +2516,9 @@ export class ModelHubComponent implements Component {
 		const scopedSuffix = this.#scopedModels.length > 0 ? " · --models scope" : "";
 		let text: string;
 		switch (entry.kind) {
+			case "search":
+				text = `${entry.label} · type to search; Enter adds the model to models.yml`;
+				break;
 			case "recent":
 				text = `Recently used models${scopedSuffix}`;
 				break;
@@ -2913,6 +3033,9 @@ export class ModelHubComponent implements Component {
 		}
 		const scopedSuffix = this.#scopedModels.length > 0 ? " · --models scope" : "";
 		switch (entry.kind) {
+			case "search":
+				spans = [span(`${entry.label} · type to search; Enter adds the model to models.yml`, "muted")];
+				break;
 			case "recent":
 				spans = [span(`Recently used models${scopedSuffix}`, "muted")];
 				break;
@@ -3185,7 +3308,7 @@ export class ModelHubComponent implements Component {
 		const query = this.#browser.query.trim();
 		const view = this.#browser.pickerOrder({
 			providers: entry.kind === "all" && query.length === 0,
-			rest: entry.kind === "provider" ? entry.label : query ? "Matches" : "All models",
+			rest: entry.kind === "provider" || entry.kind === "search" ? entry.label : query ? "Matches" : "All models",
 		});
 		const refreshing =
 			this.#catalogRefreshing ||
@@ -3275,6 +3398,9 @@ export class ModelHubComponent implements Component {
 						icon: "list",
 						count: counts ? this.#searchTotal : this.#availableItems.length,
 					});
+					break;
+				case "search":
+					scopes.push({ id: entry.id, label: entry.label, icon: "search", group: "Search" });
 					break;
 				case "recent":
 					scopes.push({

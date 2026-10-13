@@ -109,7 +109,7 @@ import type {
 	ModelHubComponent as ModelHubComponentType,
 	ModelRoleSelectionScope,
 } from "@oh-my-pi/pi-tui/overlays/model-hub";
-import { createModelBrowserSource } from "../model-browser-source";
+import { createModelBrowserSource, createModelHubSearch } from "../model-browser-source";
 import type { ModelPickerComponent as ModelPickerComponentType } from "@oh-my-pi/pi-tui/overlays/model-picker";
 import type { OAuthSelectorComponent as OAuthSelectorComponentType } from "@oh-my-pi/pi-tui/overlays/oauth-selector";
 import { PluginSelectorComponent } from "@oh-my-pi/pi-tui/overlays/plugin-selector";
@@ -1047,6 +1047,10 @@ export class SelectorController {
 				currentSelector: this.ctx.session.model
 					? `${this.ctx.session.model.provider}/${this.ctx.session.model.id}`
 					: undefined,
+				modelSearch: createModelHubSearch(this.ctx.session.modelRegistry, this.ctx.session, {
+					showStatus: message => this.ctx.showStatus(message),
+					showError: message => this.ctx.showError(message),
+				}),
 			},
 		);
 		const overlayHandle = this.#showFullscreenMenu(hub);

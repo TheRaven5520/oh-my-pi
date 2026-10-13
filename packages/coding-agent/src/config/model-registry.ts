@@ -125,6 +125,12 @@ export {
 	type ProviderDiscoveryStatus,
 } from "./model-provider-discovery";
 
+import {
+	appendSearchedModel,
+	type ModelSearchProviderConfig,
+	type ModelSearchResult,
+	searchProviderModels,
+} from "./model-search";
 import { ModelsConfigFile, type ProviderValidationModel, validateProviderConfiguration } from "./models-config";
 import type { ModelOverride, ModelsConfig, ProviderAuthMode } from "./models-config-schema";
 import { type Settings, settings } from "./settings";
@@ -180,6 +186,7 @@ interface CustomModelsResult {
 	modelOverrides?: Map<string, Map<string, ModelOverride>>;
 	keylessProviders?: Set<string>;
 	discoverableProviders?: DiscoveryProviderConfig[];
+	searchableProviders?: ModelSearchProviderConfig[];
 	configuredProviders?: Set<string>;
 	error?: ConfigError;
 	found: boolean;
@@ -278,6 +285,7 @@ export class ModelRegistry {
 	#commandConfigsByProvider: Map<string, Set<string>> = new Map();
 	#keylessProviders: Set<string> = new Set();
 	#discoverableProviders: DiscoveryProviderConfig[] = [];
+	#searchableProviders: ModelSearchProviderConfig[] = [];
 	#customModelOverlays: CustomModelOverlay[] = [];
 	#providerOverrides: Map<string, ProviderOverride> = new Map();
 	#modelOverrides: Map<string, Map<string, ModelOverride>> = new Map();
@@ -904,12 +912,14 @@ export class ModelRegistry {
 			modelOverrides = new Map(),
 			keylessProviders = new Set<string>(),
 			discoverableProviders = [],
+			searchableProviders = [],
 			configuredProviders = new Set<string>(),
 			error: configError,
 		} = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
 		this.#configError = configError;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
+		this.#searchableProviders = searchableProviders;
 		this.#customModelOverlays = customModels;
 		this.#providerOverrides = overrides;
 		this.#modelOverrides = modelOverrides;
@@ -1614,6 +1624,7 @@ export class ModelRegistry {
 		const allModelOverrides = new Map<string, Map<string, ModelOverride>>();
 		const keylessProviders = new Set<string>();
 		const discoverableProviders: DiscoveryProviderConfig[] = [];
+		const searchableProviders: ModelSearchProviderConfig[] = [];
 		const providerEntries = Object.entries(value.providers ?? {});
 		const configuredProviders = new Set(Object.keys(value.providers ?? {}));
 		for (const [providerName, providerConfig] of providerEntries) {
@@ -1692,6 +1703,17 @@ export class ModelRegistry {
 					optional: false,
 				});
 			}
+			if (providerConfig.modelSearch && providerConfig.api && providerConfig.baseUrl) {
+				searchableProviders.push({
+					provider: providerName,
+					api: providerConfig.api as Api,
+					baseUrl: providerConfig.baseUrl,
+					headers: providerConfig.headers,
+					compat: providerConfig.compat,
+					auth: providerConfig.auth as ProviderAuthMode | undefined,
+					modelSearch: providerConfig.modelSearch,
+				});
+			}
 
 			// Store API key for fallback resolver AND register as config override
 			// so it wins over OAuth tokens from the broker — when the user pins a
@@ -1721,6 +1743,7 @@ export class ModelRegistry {
 			modelOverrides: allModelOverrides,
 			keylessProviders,
 			discoverableProviders,
+			searchableProviders,
 			configuredProviders,
 			found: true,
 		};
@@ -2826,6 +2849,43 @@ export class ModelRegistry {
 		return this.#discoverableProviders
 			.filter(provider => !disabledProviders.has(provider.provider))
 			.map(provider => provider.provider);
+	}
+
+	/** Providers whose models.yml entry offers `modelSearch` (disabled providers excluded). */
+	getModelSearchProviders(): string[] {
+		const disabledProviders = getDisabledProviderIdsFromSettings(this.#settings);
+		return this.#searchableProviders
+			.filter(provider => !disabledProviders.has(provider.provider))
+			.map(provider => provider.provider);
+	}
+
+	/** Run a provider's `modelSearch` query with the provider's own credential resolution. */
+	async searchModels(provider: string, query: string, signal?: AbortSignal): Promise<ModelSearchResult[]> {
+		const config = this.#searchableProviders.find(candidate => candidate.provider === provider);
+		if (!config) throw new Error(`Provider ${provider} has no modelSearch configured`);
+		return searchProviderModels(config, this.#discoveryContext(), query, signal);
+	}
+
+	/**
+	 * Add a picked search result's entry to its provider's `models` in this
+	 * registry's models config (no duplicate ids), reload, and return the
+	 * registered model.
+	 */
+	async addSearchedModel(result: ModelSearchResult): Promise<Model<Api>> {
+		const { model, entry } = result;
+		if (!this.#searchableProviders.some(candidate => candidate.provider === model.provider)) {
+			throw new Error(`Provider ${model.provider} has no modelSearch configured`);
+		}
+		appendSearchedModel(this.#modelsConfigFile.path(), model.provider, entry);
+		// Same in-process reload as runtime provider registration: forced past the mtime guard, runtime discoveries kept.
+		this.#reloadStaticModels({ force: true, preserveRuntimeDiscovery: true });
+		const registered = this.find(model.provider, model.id);
+		if (!registered) {
+			throw new Error(
+				`${model.provider}/${model.id} was added to models.yml but did not load: ${String(this.#configError ?? "unknown error")}`,
+			);
+		}
+		return registered;
 	}
 
 	/** Canonical id of a configured or extension-backed discovery provider. */

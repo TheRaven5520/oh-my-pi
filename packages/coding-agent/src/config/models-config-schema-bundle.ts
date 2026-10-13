@@ -324,6 +324,28 @@ export const getModelsConfigSchemaBundle = once(() => {
 		return true;
 	});
 
+	/**
+	 * In-picker model search: `/model` offers "Search <provider>…", which queries
+	 * `{baseUrl}/models?{param}=<query>&limit={limit}` and appends picked rows to
+	 * the provider's `models`. Only `openai-models-list` rows are understood.
+	 */
+	const ProviderModelSearchSchema = type({
+		type: "string",
+		param: "string",
+		limit: "number",
+	}).narrow((value, ctx) => {
+		if (value.type !== "openai-models-list") {
+			return ctx.mustBe('a supported modelSearch type ("openai-models-list")');
+		}
+		if (value.param.trim().length === 0) {
+			return ctx.mustBe("modelSearch.param a non-empty string");
+		}
+		if (!Number.isSafeInteger(value.limit) || value.limit <= 0) {
+			return ctx.mustBe("modelSearch.limit a positive integer");
+		}
+		return true;
+	});
+
 	const ProviderAuthSchema = type('"apiKey" | "none" | "oauth"');
 
 	const ProviderConfigSchema = type({
@@ -336,6 +358,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"authHeader?": "boolean",
 		"auth?": ProviderAuthSchema,
 		"discovery?": ProviderDiscoverySchema,
+		"modelSearch?": ProviderModelSearchSchema,
 		"models?": ModelDefinitionSchema.array(),
 		"modelOverrides?": { "[string]": ModelOverrideSchema },
 		"disableStrictTools?": "boolean",
@@ -380,6 +403,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		OpenAICompatSchema,
 		ModelOverrideSchema,
 		ProviderDiscoverySchema,
+		ProviderModelSearchSchema,
 		ProviderAuthSchema,
 		ModelsConfigSchema,
 	};
