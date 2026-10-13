@@ -329,6 +329,7 @@ describe("confirmed native tool click adapter", () => {
 			tui.renderNow();
 			expect(terminal.output).toContain(TRACKING_ON);
 			expect(terminal.output).not.toContain("omp-tool://");
+			expect(terminal.output).not.toContain("\x1b]22;>default\x1b\\");
 			const encoded = terminal.output.match(/SetUserVar=omp_tool_instance=([^\x07]+)/)![1]!;
 			const nonce = Buffer.from(encoded, "base64").toString();
 			const wrong = `${nonce[0] === "9" ? "8" : "9"}${nonce.slice(1)}`;
@@ -338,6 +339,7 @@ describe("confirmed native tool click adapter", () => {
 			expect(terminal.output.lastIndexOf(TRACKING_OFF)).toBe(offBefore);
 			terminal.sendInput(`\x1b[>997;1;${nonce}u`);
 			expect(terminal.output.lastIndexOf(TRACKING_OFF)).toBeGreaterThan(offBefore);
+			expect(terminal.output.match(/\x1b\]22;>default\x1b\\/g)).toHaveLength(1);
 			const ids = [...terminal.output.matchAll(new RegExp(`omp-tool://${nonce}/([0-9]+)`, "g"))].map(
 				match => match[1]!,
 			);
@@ -350,6 +352,7 @@ describe("confirmed native tool click adapter", () => {
 			expect(terminal.output.indexOf(ack)).toBeGreaterThan(terminal.output.indexOf("mutable tool"));
 			expect(terminal.output).toContain(`omp-tool://${nonce}/${id}`);
 			expect(input).toEqual([]);
+			expect(terminal.output).not.toContain("\x1b]22;"); // Replay retains the pointer, not pop/push.
 
 			const overlay = tui.showOverlay(new StaticOverlay(), { fullscreen: true });
 			tui.renderNow();
@@ -359,8 +362,10 @@ describe("confirmed native tool click adapter", () => {
 			overlay.hide();
 			tui.renderNow();
 			expect(terminal.output.lastIndexOf(TRACKING_OFF)).toBeGreaterThan(terminal.output.lastIndexOf(TRACKING_ON));
+			expect(terminal.output).not.toContain("\x1b]22;"); // Alternate buffer has its own pointer stack.
 			enabled.current = false;
 			tui.renderNow();
+			expect(terminal.output).toContain("\x1b]22;<\x1b\\");
 			const beforeEnable = batch;
 			enabled.current = true;
 			tui.renderNow();
@@ -371,8 +376,14 @@ describe("confirmed native tool click adapter", () => {
 			terminal.sendInput(`\x1b[>997;2;${nonce};${id};3u`);
 			expect(toggles).toBe(1);
 			expect(input).toEqual([]);
+			tui.showOverlay(new StaticOverlay(), { fullscreen: true });
+			tui.renderNow();
+			terminal.output = "";
 			tui.stop();
 			expect(terminal.output).toContain("SetUserVar=omp_tool_instance=\x07");
+			expect(terminal.output.lastIndexOf("\x1b]22;<\x1b\\")).toBeGreaterThan(
+				terminal.output.lastIndexOf("\x1b[?1049l"),
+			);
 		} finally {
 			tui.stop();
 			for (const [key, value] of environment) {

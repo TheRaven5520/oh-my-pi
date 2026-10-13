@@ -837,6 +837,7 @@ export class TUI extends Container {
 	#nativeToolLinks: NativeToolLinks | undefined;
 	#nativeToolClick: NativeToolClick | undefined;
 	#nativeToolLinksEnabled = false;
+	#nativeToolPointer = false;
 	#terminalStarted = false;
 	#historyPaused = false;
 	#historyFence = new TerminalOutputFence(data => this.terminal.write(data));
@@ -2781,6 +2782,10 @@ export class TUI extends Container {
 			}
 			this.terminal.write(targetRow <= viewportBottom ? "\r" : "\r\n");
 		}
+		if (this.#nativeToolPointer) {
+			this.terminal.write("\x1b]22;<\x1b\\");
+			this.#nativeToolPointer = false;
+		}
 
 		// Force: the parent shell needs the cursor back regardless of what the
 		// terminal-level dedupe believes was last written.
@@ -3732,6 +3737,14 @@ export class TUI extends Container {
 			prepared.lines.length !== this.#providerWindow.length ||
 			prepared.lines.some((line, index) => line !== this.#providerWindow[index]);
 		let buffer = this.#paintBeginSequence + pendingAltExit;
+		// Native links briefly disappear during replay. Retain the same arrow
+		// as mouse-captured OMP; Kitty still supplies link/selection cursors.
+		// Emit after the pending main-buffer restore: pointer stacks are per-buffer.
+		const nativeToolPointer = this.#nativeToolLinks?.ready === true && this.#inlineMouseProvider?.() === true;
+		if (nativeToolPointer !== this.#nativeToolPointer) {
+			buffer += nativeToolPointer ? "\x1b]22;>default\x1b\\" : "\x1b]22;<\x1b\\";
+			this.#nativeToolPointer = nativeToolPointer;
+		}
 		const renewSync =
 			destructiveReset &&
 			this.#resizeScrollbackMode === "rebuild" &&
