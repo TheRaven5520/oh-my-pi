@@ -553,7 +553,8 @@ async function writeModels(
  * Adds newly written providers to a non-empty scoped list (cycleModels, enabledModels,
  * modelProviderOrder), like the installer's scope migration: DeepSeek joins a list that holds
  * the sprilicred-openai scope, OpenRouter joins any list the person set (or /model would hide
- * it) but never a cycle. They go after the Sprilicred group, or at the end without one.
+ * it) but never a cycle. They go after the Sprilicred group, else after the last `sprilicred-`
+ * entry, else at the end (connect.py move_omp_settings).
  */
 function addScopes(list: string[], added: string[], providerOnly: boolean, cycle = false): string[] {
 	if (list.length === 0) return list;
@@ -567,7 +568,8 @@ function addScopes(list: string[], added: string[], providerOnly: boolean, cycle
 	const ours = new Set(
 		[OPENAI_PROVIDER, ...DEDICATED_ROUTES.map(route => `sprilicred-${route}`), OPENROUTER_PROVIDER].map(scope),
 	);
-	const last = list.findLastIndex(item => ours.has(item));
+	let last = list.findLastIndex(item => ours.has(item));
+	if (last < 0) last = list.findLastIndex(item => item.startsWith("sprilicred-"));
 	const index = last < 0 ? list.length : last + 1;
 	return [...list.slice(0, index), ...additions, ...list.slice(index)];
 }

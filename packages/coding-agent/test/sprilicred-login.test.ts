@@ -590,6 +590,20 @@ describe("Sprilicred login", () => {
 		expect(cfgModelProviderOrder.get(settings)).toEqual(["personal", "sprilicred-openrouter"]);
 	});
 
+	test("puts OpenRouter after the person's last Sprilicred entry when the list has no Sprilicred group", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgEnabledModels.set(settings, ["sprilicred-anthropic/*", "mine/*"]);
+		cfgModelProviderOrder.set(settings, ["sprilicred-anthropic", "personal"]);
+		await settings.flush();
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		expect(cfgEnabledModels.get(settings)).toEqual(["sprilicred-anthropic/*", "sprilicred-openrouter/**", "mine/*"]);
+		expect(cfgModelProviderOrder.get(settings)).toEqual([
+			"sprilicred-anthropic",
+			"sprilicred-openrouter",
+			"personal",
+		]);
+	});
+
 	test("migrates or withdraws bare model ids like provider-qualified ones", async () => {
 		await fs.writeFile(path.join(agentDir, "models.yml"), JSON.stringify({ defaultModel: "muse-wonder:high" }));
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
@@ -680,7 +694,7 @@ describe("Sprilicred login", () => {
 	});
 
 	// Each case is deploy/fixtures/omp-parity/<case> from Sprilicred's installer (deploy/connect.py,
-	// or-installer f7b4c59), written by install_omp from the same listings and the same
+	// or-installer 3c0f04c), written by install_omp from the same listings and the same
 	// before-files: catalog.json (listing bodies per route), models/config/state.before.json
 	// (migration cases), installer-{models,config,state}.json. `$HOME` is the scratch home and
 	// https://sprilicred.example the server.
