@@ -92,6 +92,38 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		return { terminal, writes, received, queryCount, sentinelCount };
 	}
 
+	it("reports exact default RGB without extra queries, including same-appearance changes", () => {
+		const { terminal, queryCount } = setupTerminal();
+		try {
+			const colors: string[] = [];
+			const queries = queryCount();
+			const unsubscribe = terminal.onBackgroundColorChange(color => colors.push(color));
+			expect(queryCount()).toBe(queries);
+			process.stdin.emit("data", "\x1b]11;rgb:1111/2222/3333\x07");
+			for (let i = 0; i < 8; i++) process.stdin.emit("data", "\x1b[?1;2c");
+			terminal.refreshAppearance(71);
+			process.stdin.emit("data", "\x1b]11;rgb:11/22/33\x07");
+			process.stdin.emit("data", "\x1b[?1;2c");
+			terminal.refreshAppearance(72);
+			process.stdin.emit("data", "\x1b]11;rgb:2222/3333/4444\x07");
+			process.stdin.emit("data", "\x1b[?1;2c");
+			expect(colors).toEqual(["#112233", "#223344"]);
+			const replay: string[] = [];
+			const unsubscribeReplay = terminal.onBackgroundColorChange(color => replay.push(color));
+			expect(replay).toEqual(["#223344"]);
+			expect(queryCount()).toBe(queries + 2);
+			unsubscribe();
+			unsubscribeReplay();
+			terminal.refreshAppearance(73);
+			process.stdin.emit("data", "\x1b]11;rgb:3333/4444/5555\x07");
+			process.stdin.emit("data", "\x1b[?1;2c");
+			expect(colors).toHaveLength(2);
+			expect(replay).toEqual(["#223344"]);
+		} finally {
+			terminal.stop();
+		}
+	});
+
 	it("swallows the DA1 sentinel even when the OSC 11 reply arrives first", () => {
 		const { terminal, writes, received } = setupTerminal();
 

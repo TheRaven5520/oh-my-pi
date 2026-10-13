@@ -608,6 +608,9 @@ export interface Terminal {
 	// Progress indicator (OSC 9;4)
 	setProgress(active: boolean): void;
 
+	/** Exact OSC 11 default background, converted to 8-bit RGB; replayed and deduplicated. */
+	onBackgroundColorChange?(callback: (color: string) => void): () => void;
+
 	/**
 	 * Register a callback for terminal appearance (dark/light) changes.
 	 * Detection uses OSC 11 background color query with Mode 2031 as a change trigger.
@@ -834,6 +837,8 @@ export class ProcessTerminal implements Terminal {
 		(appearance: TerminalAppearance, requestToken?: TerminalAppearanceRequestToken) => void
 	> = [];
 	#appearance: TerminalAppearance | undefined;
+	#backgroundColor: string | undefined;
+	#backgroundColorCallbacks = new Set<(color: string) => void>();
 	#osc11Pending = false;
 	#osc11ActiveToken?: TerminalAppearanceRequestToken;
 	#osc11QueuedQuery?: { route: Osc11QueryRoute; token?: TerminalAppearanceRequestToken };
@@ -908,6 +913,14 @@ export class ProcessTerminal implements Terminal {
 
 	get appearance(): TerminalAppearance | undefined {
 		return this.#appearance;
+	}
+
+	onBackgroundColorChange(callback: (color: string) => void): () => void {
+		this.#backgroundColorCallbacks.add(callback);
+		if (this.#backgroundColor !== undefined) callback(this.#backgroundColor);
+		return () => {
+			this.#backgroundColorCallbacks.delete(callback);
+		};
 	}
 
 	onAppearanceChange(
@@ -1859,6 +1872,23 @@ export class ProcessTerminal implements Terminal {
 			const max = 16 ** hex.length - 1;
 			return max > 0 ? value / max : 0;
 		};
+		const color = `#${[rHex, gHex, bHex]
+			.map(hex =>
+				Math.round(normalize(hex) * 255)
+					.toString(16)
+					.padStart(2, "0"),
+			)
+			.join("")}`;
+		if (color !== this.#backgroundColor) {
+			this.#backgroundColor = color;
+			for (const callback of this.#backgroundColorCallbacks) {
+				try {
+					callback(color);
+				} catch {
+					/* Isolate terminal observers. */
+				}
+			}
+		}
 		const luminance = 0.299 * normalize(rHex) + 0.587 * normalize(gHex) + 0.114 * normalize(bHex);
 		const mode: TerminalAppearance = luminance < 0.5 ? "dark" : "light";
 		const changed = mode !== this.#appearance;
@@ -2193,6 +2223,8 @@ export class ProcessTerminal implements Terminal {
 		}
 		this.#appearanceCallbacks = [];
 		this.#appearanceReportCallbacks = [];
+		this.#backgroundColorCallbacks.clear();
+		this.#backgroundColor = undefined;
 		this.#osc11Pending = false;
 		this.#osc11ActiveToken = undefined;
 		this.#clearWindowsTerminalAppearancePoll();

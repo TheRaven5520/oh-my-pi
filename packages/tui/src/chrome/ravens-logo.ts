@@ -11,7 +11,12 @@ import {
 } from "../terminal-capabilities";
 import { visibleWidth } from "../utils";
 import { RavensHeader, type RavensHeaderTransport, resolveRavensHeaderTransport } from "./ravens-header";
-import { RAVENS_LOGO_DIMENSIONS, RAVENS_LOGO_PNG_BASE64 } from "./ravens-logo-data";
+import {
+	RAVENS_LOGO_COMPACT_DIMENSIONS,
+	RAVENS_LOGO_DIMENSIONS,
+	RAVENS_LOGO_PNG_BASE64,
+	ravensLogoPngForBox,
+} from "./ravens-logo-data";
 
 const EMPTY_ROWS: readonly string[] = [];
 
@@ -56,11 +61,11 @@ export class RavensLogo {
 	render(columns: number, rows: number): readonly string[] {
 		if (this.#header && this.#header.mode !== "inline") {
 			const supported = TERMINAL.imageProtocol === ImageProtocol.Kitty && getKittyGraphics().unicodePlaceholders;
+			const cells = getCellDimensions();
+			const fit = calculateImageFit(RAVENS_LOGO_DIMENSIONS, { maxWidthCells: 4, maxHeightCells: 1 }, cells);
 			this.#header.sync(
-				supported
-					? calculateImageFit(RAVENS_LOGO_DIMENSIONS, { maxWidthCells: 4, maxHeightCells: 1 }, getCellDimensions())
-							.columns
-					: undefined,
+				supported ? fit.columns : undefined,
+				ravensLogoPngForBox(fit.columns * cells.widthPx, cells.heightPx),
 			);
 			return EMPTY_ROWS;
 		}
@@ -100,7 +105,14 @@ export class RavensLogo {
 		this.#cellWidth = cells.widthPx;
 		this.#cellHeight = cells.heightPx;
 		this.#tmux = tmux;
-		const image = renderImage(RAVENS_LOGO_PNG_BASE64, RAVENS_LOGO_DIMENSIONS, {
+		const fit = calculateImageFit(
+			RAVENS_LOGO_DIMENSIONS,
+			{ maxWidthCells: Math.min(4, columns), maxHeightCells: 1 },
+			cells,
+		);
+		const png = ravensLogoPngForBox(fit.columns * cells.widthPx, cells.heightPx);
+		const dimensions = png === RAVENS_LOGO_PNG_BASE64 ? RAVENS_LOGO_DIMENSIONS : RAVENS_LOGO_COMPACT_DIMENSIONS;
+		const image = renderImage(png, dimensions, {
 			maxWidthCells: Math.min(4, columns),
 			maxHeightCells: 1,
 			imageId: this.#imageId,

@@ -29,6 +29,7 @@ import { assumedTspHello, NativeBackend, type NativeHost } from "./native/backen
 import { col } from "./native/describe";
 import { TSP_PREFIX, type TspHello } from "./native/encode";
 import type { DescribeContext, NativeNode, NativeScreen, NativeSurfaceProvider, NativeUiEvent } from "./native/node";
+import { NativeToolLinks, type NativeToolClick } from "./native-tool-links";
 import { STDOUT_BACKLOG_CLEAR_BYTES, setAltScreenActive, type Terminal } from "./terminal";
 import {
 	encodeKittyDeleteAllImages,
@@ -147,6 +148,8 @@ export interface TuiPaint {
 	readonly alt: boolean;
 	readonly columns: number;
 	readonly rows: number;
+	/** Zero-based physical top of a completed ANSI paint; absent on older/custom producers. */
+	readonly viewportTop?: number;
 }
 
 /** Observer of completed terminal paints; see {@link TUI.addPaintListener}. */
@@ -203,6 +206,10 @@ export interface TerminalFrameProvider {
 	beginHistoryReplay?(): void;
 	/** Force every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush?(): void;
+	/** Release pane-local receipts after the final flush, before terminal ownership ends. */
+	onTerminalStop?(): void;
+	/** Observe every completed ANSI paint, including non-streamed transient resize buffers. */
+	onTerminalPaint?(paint: TuiPaint): void;
 	/** Stable component identity for a mutable row used in a native-history snapshot. */
 	viewportHistoryOwner?(index: number): object | undefined;
 	/** Only expandable tool rows are sent through the native-history bridge. */
@@ -827,6 +834,10 @@ export class TUI extends Container {
 	#historyOffset = 0;
 	#historyBridge: TmuxHistoryBridge | undefined;
 	#historyBridgeStarting = false;
+	#nativeToolLinks: NativeToolLinks | undefined;
+	#nativeToolClick: NativeToolClick | undefined;
+	#nativeToolLinksEnabled = false;
+	#terminalStarted = false;
 	#historyPaused = false;
 	#historyFence = new TerminalOutputFence(data => this.terminal.write(data));
 	// Viewport-relative row of the hardware cursor after the last normal paint
@@ -1128,6 +1139,13 @@ export class TUI extends Container {
 		this.#providerWindow = [];
 		this.#providerPreparedRows = [];
 		this.#resizeReplaySize = undefined;
+		if (!provider?.isHistoryTool || !provider.toggleHistoryOwner) {
+			this.#nativeToolLinks?.stop();
+			this.#nativeToolLinks = undefined;
+			this.#nativeToolClick = undefined;
+			this.#nativeToolLinksEnabled = false;
+		}
+		this.#startNativeToolLinks();
 		this.requestRender(true);
 	}
 
@@ -1406,11 +1424,60 @@ export class TUI extends Container {
 	setInlineMouseTrackingProvider(provider: (() => boolean) | undefined): void {
 		this.#inlineMouseProvider = provider;
 		this.#startHistoryBridge();
+		this.#startNativeToolLinks();
 	}
 
 	/** Changes whenever mouse capture or visible-overlay ownership transitions. */
 	getMouseInputGeneration(): number {
 		return this.#mouseInputGeneration;
+	}
+
+	#startNativeToolLinks(): void {
+		if (
+			!this.#terminalStarted ||
+			this.#inputDeferred ||
+			this.#stopped ||
+			this.#nativeToolLinks ||
+			!this.#inlineMouseProvider ||
+			!this.#frameProvider?.isHistoryTool ||
+			!this.#frameProvider.toggleHistoryOwner ||
+			isInsideTerminalMultiplexer()
+		)
+			return;
+		this.#nativeToolLinks = new NativeToolLinks(
+			data => this.terminal.write(data),
+			() => {
+				// Existing scrollback predates the handshake. Replay once to attach
+				// stable links before handing wheel and selection back to Kitty.
+				if (this.#inlineMouseProvider?.()) this.resetDisplay();
+			},
+			click => {
+				if (
+					this.#stopped ||
+					!this.#inlineMouseProvider?.() ||
+					this.hasOverlay() ||
+					this.#nativeLive ||
+					this.#resizeAltActive ||
+					this.#resizeProbe ||
+					this.#resizeInPlaceActive ||
+					this.#nativeToolClick ||
+					!click.owner
+				) {
+					this.#nativeToolLinks?.acknowledge(click);
+					return;
+				}
+				// The provider validates retained ownership and synchronously replays.
+				// Install the receipt first: acknowledge only after its paint is written.
+				this.#nativeToolClick = click;
+				if (!this.#frameProvider?.toggleHistoryOwner?.(click.owner)) {
+					this.#nativeToolClick = undefined;
+					this.#nativeToolLinks?.acknowledge(click);
+				} else {
+					this.renderNow();
+				}
+			},
+		);
+		this.#nativeToolLinks.start();
 	}
 
 	#startHistoryBridge(): void {
@@ -1683,6 +1750,7 @@ export class TUI extends Container {
 			{ deferInput: this.#inputDeferred, isLoopStalled: () => this.#watchdog.isStalled() },
 		);
 		if (this.#stopped) return;
+		this.#terminalStarted = true;
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = postmortem.register("tui-restore", () => this.stop());
 		for (const listener of this.#startListeners) {
@@ -1692,6 +1760,7 @@ export class TUI extends Container {
 				// Startup listeners are feature hooks; one broken hook must not prevent rendering.
 			}
 		}
+		this.#startNativeToolLinks();
 		this.terminal.hideCursor();
 		this.#recordHardwareCursorHidden();
 		if (!this.#inputDeferred) {
@@ -2403,6 +2472,7 @@ export class TUI extends Container {
 		if (!this.#inputDeferred || this.#stopped) return;
 		this.#inputDeferred = false;
 		this.terminal.enableInput?.();
+		this.#startNativeToolLinks();
 		this.#querySixelSupport();
 		this.#queryCellSize();
 	}
@@ -2593,6 +2663,11 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
+		this.#terminalStarted = false;
+		this.#nativeToolLinks?.stop();
+		this.#nativeToolLinks = undefined;
+		this.#nativeToolLinksEnabled = false;
+		this.#nativeToolClick = undefined;
 		this.#historyBridge?.stop();
 		this.#historyBridge = undefined;
 		this.#historyFence.cancel();
@@ -2711,6 +2786,7 @@ export class TUI extends Container {
 		// terminal-level dedupe believes was last written.
 		this.terminal.showCursor(true);
 		this.#forgetHardwareCursorState();
+		this.#frameProvider?.onTerminalStop?.();
 		this.terminal.stop();
 	}
 
@@ -2886,6 +2962,8 @@ export class TUI extends Container {
 	}
 
 	#handleInput(data: string): void {
+		data = this.#nativeToolLinks?.consume(data) ?? data;
+		if (!data) return;
 		data = this.#historyFence.consume(data);
 		if (!data) return;
 		this.#inputRenderPending = true;
@@ -3336,7 +3414,9 @@ export class TUI extends Container {
 		return copied === 0 ? line : output + line.slice(copied);
 	}
 
-	#notifyPaint(paint: TuiPaint): void {
+	#notifyPaint(paint: TuiPaint, notifyListeners = true): void {
+		this.#frameProvider?.onTerminalPaint?.(paint);
+		if (!notifyListeners) return;
 		for (const listener of this.#paintListeners) {
 			try {
 				listener(paint);
@@ -3503,6 +3583,16 @@ export class TUI extends Container {
 		// endPass(): this is the last point before the purge and transmit bytes go
 		// out, and it runs once per emitted frame instead of once per retry.
 		let viewport = viewportRows;
+		const toolLinks =
+			this.#nativeToolLinks?.ready && this.#inlineMouseProvider?.() && !this.hasOverlay()
+				? this.#nativeToolLinks
+				: undefined;
+		if (toolLinks) {
+			viewport = viewportRows.map((line, index) => {
+				const owner = provider?.viewportHistoryOwner?.(index);
+				return owner && provider?.isHistoryTool?.(owner) ? toolLinks.decorate(line, owner) : line;
+			});
+		}
 		this.#imageBudget.limitResidentImages();
 		const history = offered !== undefined && offered.id > this.#acceptedHistoryBatchId ? offered : undefined;
 		if (offered !== undefined && offered.id <= this.#acceptedHistoryBatchId) provider?.acknowledgeHistory(offered.id);
@@ -3535,6 +3625,12 @@ export class TUI extends Container {
 		this.#outerScrollbackStreamTimer = undefined;
 
 		let historyRows = history?.rows ?? [];
+		if (toolLinks && history?.owners) {
+			historyRows = historyRows.map((line, index) => {
+				const owner = history.owners?.[index];
+				return owner && provider?.isHistoryTool?.(owner) ? toolLinks.decorate(line, owner) : line;
+			});
+		}
 		let emittedHistoryOwners = history?.owners;
 		const inset = Math.max(0, Math.min(height - 1, provider?.getViewportTopInset?.() ?? 0));
 		const insetHistory = inset > 0 || this.#insetHistoryRows.length > 0;
@@ -3843,6 +3939,7 @@ export class TUI extends Container {
 			alt: false,
 			columns: width,
 			rows: height,
+			viewportTop: newTop,
 		});
 		if (outputChanged) this.#historyBridge?.notifyOutput();
 		if (history !== undefined) {
@@ -3851,6 +3948,11 @@ export class TUI extends Container {
 			// Normal retirement may hold another ordered batch. Replay is always
 			// complete, so pumping it would create a second visible redraw/write.
 			if (history.kind !== "replay") this.requestRender();
+		}
+		if (this.#nativeToolClick) {
+			const click = this.#nativeToolClick;
+			this.#nativeToolClick = undefined;
+			this.#nativeToolLinks?.acknowledge(click);
 		}
 	}
 
@@ -3902,9 +4004,16 @@ export class TUI extends Container {
 		// modal there; the normal screen and all accounting stay untouched.
 		const topOverlay = this.#getTopmostVisibleOverlay();
 		const wantAlt = topOverlay?.options?.fullscreen === true;
+		if (topOverlay === undefined) {
+			const enabled = this.#nativeToolLinks?.ready === true && this.#inlineMouseProvider?.() === true;
+			// A setting enabled after negotiation must retrofit retained history,
+			// too, before capture is disabled. Ordinary frames never replay it.
+			if (enabled && !this.#nativeToolLinksEnabled) this.#prepareForcedRender(true);
+			this.#nativeToolLinksEnabled = enabled;
+		}
 		const wantMouse: MouseTrackingState =
 			topOverlay === undefined
-				? this.#inlineMouseProvider?.() === true
+				? this.#inlineMouseProvider?.() === true && !this.#nativeToolLinks?.ready
 					? "inline"
 					: "off"
 				: wantAlt && topOverlay.options?.mouseTracking !== false
@@ -4588,16 +4697,18 @@ export class TUI extends Container {
 		if (rowsBuffer === "") return;
 		this.terminal.write(`${this.#paintBeginSequence}${full ? "\x1b[H" : ""}${rowsBuffer}${this.#paintEndSequence}`);
 		this.#debugPaint = { lines: prepared.lines, windowTop: 0, altScreen: true };
-		if (notifyPaint) {
-			this.#notifyPaint({
+		this.#notifyPaint(
+			{
 				history: [],
 				viewport: prepared.lines,
 				reset: false,
 				alt: true,
 				columns: width,
 				rows: height,
-			});
-		}
+				viewportTop: 0,
+			},
+			notifyPaint,
+		);
 		if (full) this.#fullRedrawCount += 1;
 	}
 }

@@ -3765,17 +3765,26 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		);
 	}
 
+	/** Receipt from render(): the last emitted row is the standalone status bar, not hook text. */
+	#lastRenderEndsWithStatusLine = false;
+	get lastRenderEndsWithStatusLine(): boolean {
+		return this.#lastRenderEndsWithStatusLine;
+	}
+
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
+		this.#lastRenderEndsWithStatusLine = false;
 		if (this.#standalone && !this.#autocompleteActiveProbe?.()) {
 			const content = this.renderBottomBar(width, this.#standalone === "left-only" ? "left" : "full");
 			if (content) {
 				if (this.#standaloneGap) lines.push("");
 				lines.push(content);
+				this.#lastRenderEndsWithStatusLine = true;
 			}
 		}
 		const showHooks = this.#settings.showHookStatus ?? true;
 		if (showHooks && this.#sortedHookStatuses.length > 0) {
+			this.#lastRenderEndsWithStatusLine = false;
 			lines.push(...this.#sortedHookStatuses.map(text => truncateToWidth(sanitizeStatusText(text), width)));
 		}
 		return lines;
