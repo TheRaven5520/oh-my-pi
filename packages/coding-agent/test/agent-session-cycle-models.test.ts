@@ -5,11 +5,14 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
+import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 // Ctrl+P with `cycleModels` cycles whatever the patterns match in the registry
 // at the moment of the press: a gateway's discovery adding or withdrawing a
@@ -194,5 +197,105 @@ describe("AgentSession.cycleModelPatterns", () => {
 		const unanswered = start("other", "other-model");
 		const rows = await unanswered.cycleModelPatterns(["gateway/*"]);
 		expect(rows?.models.map(model => model.id)).toEqual(["retired"]);
+	});
+});
+
+// Ctrl+P without `cycleModels` cycles the role models. The Sprilicred installer
+// scopes `enabledModels` to `sprilicred-openrouter/**` so /model lists OpenRouter;
+// that scope must never turn into the Ctrl+P cycle list.
+describe("Ctrl+P (InputController.cycleRoleModel) with cycleModels unset", () => {
+	let tempDir: string;
+	let authStorage: AuthStorage;
+	let session: AgentSession | undefined;
+	const overrides = {
+		enabledModels: ["sprilicred-openrouter/**"],
+		modelRoles: { default: "work/fast", smol: "work/small" },
+		cycleOrder: ["default", "smol"],
+	};
+	beforeEach(async () => {
+		initTheme();
+		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-test-ctrl-p-"));
+		authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+		// Ctrl+P reads the global settings; seed them as the installer leaves them.
+		await Settings.init({ inMemory: true, overrides });
+	});
+	afterEach(async () => {
+		vi.restoreAllMocks();
+		await session?.dispose();
+		session = undefined;
+		resetSettingsForTest();
+		authStorage.close();
+		if (tempDir && fs.existsSync(tempDir)) removeSyncWithRetries(tempDir);
+	});
+	test("cycles the role models through cycleRoleModels; the OpenRouter scope never becomes the cycle", async () => {
+		const modelsPath = path.join(tempDir, "models.yml");
+		fs.writeFileSync(
+			modelsPath,
+			JSON.stringify({
+				providers: {
+					work: {
+						baseUrl: "https://work.example/v1",
+						apiKey: "work-key",
+						api: "openai-responses",
+						models: [{ id: "fast" }, { id: "small" }],
+					},
+					"sprilicred-openrouter": {
+						baseUrl: "https://gateway.example/openrouter/v1",
+						apiKey: "gateway-key",
+						api: "openai-responses",
+						models: [{ id: "meta/muse-wonder" }, { id: "openai/gpt-5" }],
+					},
+				},
+			}),
+		);
+		const registry = new ModelRegistry(authStorage, modelsPath);
+		const initial = registry.find("work", "fast");
+		if (!initial) throw new Error("missing work/fast");
+		const active = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model: initial,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+					thinkingLevel: Effort.High,
+				},
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(overrides),
+			modelRegistry: registry,
+		});
+		session = active;
+		const patterns = vi.spyOn(active, "cycleModelPatterns");
+		const roles = vi.spyOn(active, "cycleRoleModels");
+		const tracks: string[][] = [];
+		const errors: string[] = [];
+		const ctx = {
+			session: active,
+			viewSession: active,
+			statusLine: { invalidate: () => {} },
+			updateEditorBorderColor: () => {},
+			showModelCycleTrack: (chips: { label: string }[]) => {
+				tracks.push(chips.map(chip => chip.label));
+			},
+			showStatus: () => {},
+			showError: (message: string) => {
+				errors.push(message);
+			},
+		} as unknown as InteractiveModeContext;
+		const controller = new InputController(ctx);
+
+		await controller.cycleRoleModel();
+		expect(`${active.model?.provider}/${active.model?.id}`).toBe("work/small");
+		await controller.cycleRoleModel();
+		expect(`${active.model?.provider}/${active.model?.id}`).toBe("work/fast");
+
+		expect(errors).toEqual([]);
+		expect(roles).toHaveBeenCalledTimes(2);
+		expect(patterns).not.toHaveBeenCalled();
+		expect(tracks).toEqual([
+			["default", "smol"],
+			["default", "smol"],
+		]);
 	});
 });

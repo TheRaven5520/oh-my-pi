@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Effort } from "@oh-my-pi/pi-ai";
+import { getModelPricingStatus } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
@@ -92,6 +93,71 @@ describe("openai-models-list discovery honors advertised model capabilities", ()
 		const model = registry.find("gateway", "claude-model-next");
 		expect(model?.thinking?.mode).toBe("anthropic-adaptive");
 		expect(model?.thinking?.efforts).toEqual(efforts as Effort[]);
+	});
+
+	function writeGateway(api: "anthropic-messages" | "openai-responses"): void {
+		fs.writeFileSync(
+			modelsPath,
+			JSON.stringify({
+				providers: {
+					gateway: {
+						baseUrl: "https://gateway.example/anthropic",
+						apiKey: "gateway-key",
+						authHeader: true,
+						api,
+						discovery: { type: "openai-models-list" },
+					},
+				},
+			}),
+		);
+	}
+
+	test("unrecognised advertised efforts such as 'none' are dropped, keeping the known ones", async () => {
+		writeGateway("anthropic-messages");
+		const registry = new ModelRegistry(authStorage, modelsPath, {
+			fetch: async () =>
+				Response.json({
+					data: [
+						{ id: "claude-model-next", supports_reasoning: true, reasoning_efforts: ["none", "medium"] },
+						{ id: "claude-model-odd", supports_reasoning: true, reasoning_efforts: ["none", "turbo"] },
+						{ id: "claude-model-bare", supports_reasoning: true },
+					],
+				}),
+		});
+		await registry.refreshProvider("gateway", "online");
+		expect(registry.find("gateway", "claude-model-next")?.thinking).toEqual({
+			mode: "anthropic-adaptive",
+			efforts: [Effort.Medium],
+		});
+		// Nothing recognised: treated as if no efforts were advertised.
+		expect(registry.find("gateway", "claude-model-odd")?.thinking).toEqual(
+			registry.find("gateway", "claude-model-bare")?.thinking,
+		);
+	});
+
+	test("a catalogued Claude keeps its own thinking mode on a Messages gateway", async () => {
+		writeGateway("anthropic-messages");
+		const registry = new ModelRegistry(authStorage, modelsPath, {
+			fetch: async () =>
+				Response.json({
+					data: [{ id: "claude-sonnet-4-5", supports_reasoning: true, reasoning_efforts: ["low", "high"] }],
+				}),
+		});
+		await registry.refreshProvider("gateway", "online");
+		const known = registry.find("gateway", "claude-sonnet-4-5");
+		expect(known?.thinking).toEqual({ mode: "budget", efforts: [Effort.Low, Effort.High] });
+	});
+
+	test("a catalogued Claude on an OpenAI-wire gateway still takes plain effort", async () => {
+		writeGateway("openai-responses");
+		const registry = new ModelRegistry(authStorage, modelsPath, {
+			fetch: async () =>
+				Response.json({
+					data: [{ id: "claude-sonnet-4-5", supports_reasoning: true, reasoning_efforts: ["low", "high"] }],
+				}),
+		});
+		await registry.refreshProvider("gateway", "online");
+		expect(registry.find("gateway", "claude-sonnet-4-5")?.thinking?.mode).toBe("effort");
 	});
 
 	// Sprilicred's OpenRouter listing (`/openrouter/v1/models`) names and prices
@@ -189,11 +255,13 @@ describe("openai-models-list discovery honors advertised model capabilities", ()
 
 			const free = source.find("sprilicred-openrouter", "vendor/free-model");
 			expect(free?.cost).toMatchObject({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-			expect(free?.pricingStatus).toBeUndefined();
+			expect(free?.pricingStatus).toBe("free");
+			expect(getModelPricingStatus(free!)).toBe("free");
 			expect(free?.thinking).toBeUndefined();
 
 			const unpriced = source.find("sprilicred-openrouter", "vendor/unpriced-model");
 			expect(unpriced?.pricingStatus).toBe("unknown");
+			expect(getModelPricingStatus(unpriced!)).toBe("unknown");
 		}
 	});
 });

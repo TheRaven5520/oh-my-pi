@@ -282,11 +282,11 @@ function advertisedMicrocreditCost(pricing: unknown): DiscoveryCost | "unknown" 
 	};
 }
 
-/** Advertised `reasoning_efforts` in canonical order; undefined unless every entry is a known effort. */
+/** Recognised `reasoning_efforts` in canonical order; unknown entries (e.g. `none`) are dropped, undefined when none remain. */
 function advertisedEfforts(value: unknown): Effort[] | undefined {
-	if (!Array.isArray(value) || value.length === 0) return undefined;
-	if (!value.every(effort => THINKING_EFFORTS.includes(effort as Effort))) return undefined;
-	return THINKING_EFFORTS.filter(effort => value.includes(effort));
+	if (!Array.isArray(value)) return undefined;
+	const efforts = THINKING_EFFORTS.filter(effort => value.includes(effort));
+	return efforts.length > 0 ? efforts : undefined;
 }
 
 function isLlamaCppUnlimitedSentinel(value: unknown): boolean {
@@ -1060,9 +1060,19 @@ export async function discoverOpenAIModelsList(
 				provider: providerConfig.provider,
 				baseUrl,
 				reasoning: advertisedReasoning ?? reference?.reasoning ?? false,
-				// Claude over Messages takes adaptive effort, as the Sprilicred installer writes it.
+				// Non-Messages wires take plain effort. Over Messages a catalogued Messages
+				// model keeps its own mode; an unreferenced Claude takes adaptive effort, as
+				// the Sprilicred installer writes it.
 				thinking: efforts
-					? { mode: api === "anthropic-messages" ? "anthropic-adaptive" : "effort", efforts }
+					? {
+							mode:
+								api !== "anthropic-messages"
+									? "effort"
+									: reference?.api === api && reference.thinking?.mode
+										? reference.thinking.mode
+										: "anthropic-adaptive",
+							efforts,
+						}
 					: inheritReferenceThinking(undefined, reference, providerConfig.provider),
 				input,
 				...(providerConfig.discovery.type === "lm-studio" ? { imageInputDecoder: "stb" as const } : {}),
@@ -1074,7 +1084,12 @@ export async function discoverOpenAIModelsList(
 					typeof advertisedCost === "object"
 						? advertisedCost
 						: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-				...(advertisedCost === "unknown" ? { pricingStatus: "unknown" as const } : {}),
+				// A gateway pricing input and output at 0 says the model is free; a malformed price is unknown.
+				...(advertisedCost === "unknown"
+					? { pricingStatus: "unknown" as const }
+					: advertisedCost && advertisedCost.input === 0 && advertisedCost.output === 0
+						? { pricingStatus: "free" as const }
+						: {}),
 				contextWindow,
 				// Cap a provider-advertised output limit or the reference's output limit at
 				// the discovered context window so a larger limit can never request more
