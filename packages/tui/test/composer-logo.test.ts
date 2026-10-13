@@ -157,3 +157,87 @@ it("refills retired rows below the logo after replay and retains them across lat
 		h.composer.stop();
 	}
 });
+
+it("delivers fullscreen drags and releases over the header without accepting new presses", async () => {
+	const h = harness();
+	try {
+		const received: string[] = [];
+		h.composer.ui.showOverlay(
+			{ render: () => ["PANEL"], handleInput: data => received.push(data) },
+			{
+				fullscreen: true,
+				width: "100%",
+				maxHeight: "100%",
+				anchor: "top-left",
+			},
+		);
+		await h.scheduler.settle(h.terminal);
+		const inset = h.composer.getViewportTopInset();
+		h.terminal.sendInput(`\x1b[<4;3;${inset + 2}M`);
+		h.terminal.sendInput("\x1b[<36;3;1M");
+		h.terminal.sendInput("\x1b[<4;3;1m");
+		h.terminal.sendInput("\x1b[<4;3;1M");
+		h.terminal.sendInput("\x1b[<64;3;1M");
+		expect(received).toEqual(["\x1b[<4;3;2M", "\x1b[<36;3;1M", "\x1b[<4;3;1m"]);
+	} finally {
+		h.composer.stop();
+	}
+});
+
+it.each([false, true])("retires short replay chrome on stop (fullscreen overlay: %s)", async fullscreen => {
+	const h = harness();
+	try {
+		for (let i = 0; i < 10; i++) h.transcript.addChild(new Text(`Stop row ${i}`, 0, 0));
+		h.composer.setRuntimeChildren([h.transcript, new Text(Array(27).fill("Expanded tool").join("\n"), 0, 0)]);
+		await h.scheduler.settle(h.terminal);
+		h.composer.setRuntimeChildren([h.transcript, new Text("INPUT", 0, 0)]);
+		h.composer.ui.resetDisplay();
+		await h.scheduler.settle(h.terminal);
+		if (fullscreen) {
+			h.composer.ui.showOverlay(new Text("PANEL", 0, 0), { fullscreen: true });
+			await h.scheduler.settle(h.terminal);
+		}
+		h.composer.stop();
+		await h.terminal.flush();
+		const rows = h.terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+		expect(rows.filter(row => row.startsWith("Stop row "))).toEqual(
+			Array.from({ length: 10 }, (_, i) => `Stop row ${i}`),
+		);
+		expect(rows.some(row => /[▀▄]/u.test(row))).toBe(false);
+		expect(rows.some(row => row.includes("PANEL"))).toBe(false);
+	} finally {
+		h.composer.stop();
+	}
+});
+
+it("removes logo chrome on empty stop without a history batch", async () => {
+	const h = harness();
+	await h.scheduler.settle(h.terminal);
+	h.composer.stop();
+	await h.terminal.flush();
+	expect(h.terminal.getScrollBuffer().some(row => /[▀▄]/u.test(row))).toBe(false);
+	expect(h.terminal.getScrollBuffer().filter(row => row.trim() === "INPUT")).toHaveLength(1);
+});
+
+it("preserves long retained rows when preserve-mode resize narrows the viewport", async () => {
+	const h = harness();
+	try {
+		h.composer.ui.setResizeScrollback("preserve");
+		const text = "Retained:" + "0123456789".repeat(6) + ":END";
+		h.transcript.addChild(new Text(text, 0, 0));
+		h.composer.setRuntimeChildren([h.transcript, new Text(Array(27).fill("Expanded tool").join("\n"), 0, 0)]);
+		await h.scheduler.settle(h.terminal);
+		h.composer.setRuntimeChildren([h.transcript, new Text("INPUT", 0, 0)]);
+		h.composer.ui.resetDisplay();
+		await h.scheduler.settle(h.terminal);
+		h.terminal.resize(30, 30);
+		await h.scheduler.settle(h.terminal);
+		const visible = h.terminal
+			.getViewport()
+			.map(row => Bun.stripANSI(row).trimEnd())
+			.join("");
+		expect(visible).toContain(text);
+	} finally {
+		h.composer.stop();
+	}
+});

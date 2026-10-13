@@ -821,6 +821,7 @@ export class TUI extends Container {
 	#insetHistoryRows: readonly string[] = [];
 	#insetHistoryOwners: readonly (object | undefined)[] = [];
 	#insetHistoryTop = 0;
+	#insetHistoryWidth = 0;
 	#historyLimit = SCREEN_HISTORY_MIN_ROWS;
 	#historyEpoch = 0;
 	#historyBridge: TmuxHistoryBridge | undefined;
@@ -2568,6 +2569,7 @@ export class TUI extends Container {
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		if (width <= 0 || height <= 0) return;
+		const retireChrome = (provider.getViewportTopInset?.() ?? 0) > 0 || this.#insetHistoryRows.length > 0;
 		provider.beginHistoryFlush();
 		while (true) {
 			let plan: TerminalFramePlan;
@@ -2578,9 +2580,10 @@ export class TUI extends Container {
 				viewport = Array.from(plan.viewport);
 				if (viewport.length > height) viewport = viewport.slice(0, height);
 			} while (this.#imageBudget.endPass());
-			if (plan.history === undefined) return;
+			if (plan.history === undefined && !retireChrome) return;
 			const acceptedBefore = this.#acceptedHistoryBatchId;
-			this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+			this.#emitPlanFrame(width, height, viewport, plan.history, provider, true);
+			if (plan.history === undefined) return;
 			if (plan.history.id > acceptedBefore && this.#acceptedHistoryBatchId === acceptedBefore) {
 				throw new Error("History flush did not accept the offered batch");
 			}
@@ -2988,8 +2991,8 @@ export class TUI extends Container {
 				const inset = this.#frameProvider?.getViewportTopInset?.() ?? 0;
 				const mouse = inset > 0 ? parseSgrMouse(data) : null;
 				if (mouse) {
-					if (mouse.row < inset) return;
-					data = `\x1b[<${mouse.button};${mouse.col + 1};${mouse.row - inset + 1}${mouse.release ? "m" : "M"}`;
+					if (mouse.row < inset && !mouse.release && (mouse.button & 32) === 0) return;
+					data = `\x1b[<${mouse.button};${mouse.col + 1};${Math.max(0, mouse.row - inset) + 1}${mouse.release ? "m" : "M"}`;
 				}
 			}
 			focused.handleInput(data);
@@ -3485,6 +3488,7 @@ export class TUI extends Container {
 		viewportRows: string[],
 		offered: HistoryBatch | undefined,
 		provider: TerminalFrameProvider | undefined,
+		flushing = false,
 	): void {
 		// Callers composite their overlays inside the budget pass, so `viewportRows`
 		// is already the complete frame. Bound the store here rather than at
@@ -3498,6 +3502,7 @@ export class TUI extends Container {
 		// Input, geometry changes, and overlays must also remain immediate.
 		if (
 			this.#outerScrollbackStreamingCoalesce &&
+			!flushing &&
 			history === undefined &&
 			this.#providerWindow.length > 0 &&
 			!this.#inputRenderPending &&
@@ -3525,12 +3530,37 @@ export class TUI extends Container {
 		let emittedHistoryOwners = history?.owners;
 		const inset = Math.max(0, Math.min(height - 1, provider?.getViewportTopInset?.() ?? 0));
 		const insetHistory = inset > 0 || this.#insetHistoryRows.length > 0;
-		if (insetHistory && this.#getTopmostVisibleOverlay() === undefined) {
+		if (insetHistory && (flushing || this.#getTopmostVisibleOverlay() === undefined)) {
 			const reset = this.#clearScrollbackOnNextRender || history?.kind === "replay";
-			const retained = reset ? [] : this.#insetHistoryRows;
-			const retainedOwners = reset ? [] : this.#insetHistoryOwners;
+			let retained = reset ? [] : this.#insetHistoryRows;
+			let retainedOwners = reset ? [] : this.#insetHistoryOwners;
+			// Retained rows have not reached native history: the terminal cannot
+			// reflow our copy. Preserve every column before the writer truncates it,
+			// including on preserve-mode and in-place resizes without ledger replay.
+			if (retained.length > 0 && this.#insetHistoryWidth !== width) {
+				const reflowed: string[] = [];
+				const owners: (object | undefined)[] = [];
+				for (let index = 0; index < retained.length; index++) {
+					const line = retained[index]!;
+					const lineWidth = visibleWidth(line);
+					if (lineWidth <= width || isOsc66Line(line)) {
+						reflowed.push(line);
+						owners.push(retainedOwners[index]);
+						continue;
+					}
+					for (let column = 0; column < lineWidth;) {
+						let slice = sliceWithWidth(line, column, width, true);
+						if (slice.width === 0) slice = sliceWithWidth(line, column, width);
+						reflowed.push(slice.text);
+						owners.push(retainedOwners[index]);
+						column += Math.max(1, slice.width);
+					}
+				}
+				retained = reflowed;
+				retainedOwners = owners;
+			}
 			let end = inset;
-			while (end < viewport.length && !/\S/.test(viewport[end]!)) end++;
+			while (inset > 0 && end < viewport.length && !/\S/.test(viewport[end]!)) end++;
 			const pending = [...retained, ...historyRows];
 			const owners = [...retainedOwners, ...historyRows.map((_, index) => history?.owners?.[index])];
 			const keep = Math.min(end - inset, pending.length);
@@ -3538,6 +3568,7 @@ export class TUI extends Container {
 			this.#insetHistoryRows = pending.slice(split);
 			this.#insetHistoryOwners = owners.slice(split);
 			this.#insetHistoryTop = end - keep;
+			this.#insetHistoryWidth = width;
 			historyRows = pending.slice(0, split);
 			emittedHistoryOwners = owners.slice(0, split);
 			if (keep > 0) viewport = [...viewport.slice(0, end - keep), ...this.#insetHistoryRows, ...viewport.slice(end)];

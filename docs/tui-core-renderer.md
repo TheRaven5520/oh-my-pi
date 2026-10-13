@@ -90,11 +90,16 @@ in the blank space below the header, immediately above the live body. These rows
 remain visible across diff paints, keep their original owners for clicks, and
 enter native scrollback exactly once when displaced. A reset replaces this
 retained suffix from the replay ledger; it must not append the old suffix again.
+Retained physical rows reflow when the width changes without a ledger replay.
+At shutdown the composer removes fixed chrome and padding; the final flush
+commits retained rows ahead of the compact body, including when a modal is open.
 
 On the modal alternate screen, `renderViewportTop()` paints only fixed chrome,
 without advancing the transcript. Height-aware panels receive the remaining row
 budget as `Component.render(width, availableRows)`; full-screen mouse coordinates
-are translated back to panel-local rows, and clicks on the logo are ignored.
+are translated back to panel-local rows. New presses and wheel events on the
+logo are ignored; motion and releases clamp to the panel's first row so a drag
+started inside the panel can finish over the header.
 
 The artwork uses colored half-block cells sourced from the official NFL Ravens
 logo, with dark colors lifted for terminal contrast. It has 24-, 16-, and 8-column

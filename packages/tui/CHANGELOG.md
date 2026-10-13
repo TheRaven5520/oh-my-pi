@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Fixed personal corner chrome leaving a panel drag active when released over the logo, truncating retained history on preserve-mode width changes, and leaking decoration into the shell transcript at exit.
 - Model pickers honor the forward/backward model-cycle shortcuts (`Ctrl+P` / `Ctrl+Shift+P`), including remaps and wrapping through filtered results without changing the search query.
 - Individually expanded tool cards receive viewport space before surrounding text, so clicking a completed ask reveals its questions, options and recorded responses even when an earlier live block prevents history retirement.
 - Pending read-result images and Kitty PNG conversions keep their visible owners repaintable until completion, including conversion failure and late protocol detection. Late grouped-read images no longer disappear behind committed text.

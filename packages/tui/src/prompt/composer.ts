@@ -405,7 +405,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	}
 
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
-		if (!this.#ravensLogo || !this.#started || this.#stopped) return this.#renderBody(viewport);
+		if (!this.#ravensLogo || !this.#started || this.#stopped || this.#historyFlush) return this.#renderBody(viewport);
 		const logo = this.renderViewportTop(viewport);
 		const body = this.#renderBody({ ...viewport, rows: viewport.rows - logo.length });
 		const padding = Math.max(0, viewport.rows - logo.length - body.viewport.length);
@@ -819,6 +819,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	/** Forces every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush(): void {
 		this.#historyFlush = true;
+		this.#logoRows = 0;
 		// A pending replay would re-render and re-stream the entire committed
 		// ledger during shutdown; the terminal already holds that history, so
 		// flush emits only genuinely un-retired rows. An already offered batch
