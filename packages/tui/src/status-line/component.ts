@@ -40,7 +40,7 @@ import {
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { summarizeUsageResetCredits } from "../overlays/usage-display";
 import { getPreset } from "./presets";
-import { pooledProviderMatches, summarizePooledUsage } from "./pooled-usage";
+import { isPooledUsageReport, pooledProviderMatches, pooledUsageProvider, summarizePooledUsage } from "./pooled-usage";
 import { CLAUDE_DIM_ANSI, describeSegment, renderSegment, type SegmentContext } from "./segments";
 import type { TspMeterMark, TspProps } from "@oh-my-pi/pi-wire";
 import type { NativeNode, NativeUiEvent } from "../native/node";
@@ -385,6 +385,9 @@ class StatusLineExternalInputs {
 	modelId: string | undefined = undefined;
 	modelName: string | undefined = undefined;
 	modelProvider: string | undefined = undefined;
+	usageModelProviderType: string | undefined = undefined;
+	usageModelBaseUrl: string | undefined = undefined;
+	usageModelClass: string | undefined = undefined;
 	modelContextWindow: Model["contextWindow"] | undefined = undefined;
 	modelThinking: Model["thinking"] = undefined;
 	thinkingLevel: unknown = undefined;
@@ -1857,14 +1860,14 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	}
 
 	#getUsageContextKey(session: TSession): string {
-		const activeProvider = session.state.model?.provider ?? session.model?.provider;
+		const model = session.state.model ?? session.model;
+		const activeProvider = model?.provider;
 		const identity = activeProvider ? this.host.activeAccount(session, activeProvider) : undefined;
 		// Model id is part of the invalidation key (but not the account-scoped
 		// fireworks key): normalized usage now selects a model-scoped window group,
 		// so switching models must drop the previous model's cached scope instead
 		// of showing it for the rest of the TTL.
-		const activeModelId = session.state.model?.id ?? session.model?.id ?? "";
-		return `${this.#formatUsageContextKey(activeProvider, identity)}\0${activeModelId}`;
+		return `${this.#formatUsageContextKey(activeProvider, identity)}\0${model?.id ?? ""}\0${model?.providerType ?? ""}\0${model?.baseUrl ?? ""}\0${model?.identity?.class ?? ""}`;
 	}
 
 	/**
@@ -1879,6 +1882,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			this.#cachedUsage = null;
 			this.#usageFetchedAt = 0;
 			this.#cachedUsageContextKey = usageContextKey;
+			this.#invalidateStatusLineRenderCache();
 		}
 		if (this.#usageInFlight || this.#usageStartTimer) return;
 		if (this.#usageFetchedAt > 0 && now - this.#usageFetchedAt < 5 * 60_000) return;
@@ -1896,6 +1900,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			return;
 		}
 		const sequence = ++this.#usageRefreshSequence;
+		const usageContextKey = this.#getUsageContextKey(session);
 		const signal = AbortSignal.timeout(STATUS_USAGE_REFRESH_TIMEOUT_MS);
 		let reportsPromise: Promise<unknown> | undefined;
 		try {
@@ -1904,20 +1909,26 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 				session,
 				await this.#raceUsageRefreshWithSignal(reportsPromise, signal),
 				sequence,
+				usageContextKey,
 			);
 		} catch {
-			if (this.session !== session) return;
+			if (this.session !== session || this.#getUsageContextKey(session) !== usageContextKey) return;
 			this.#usageFetchedAt = Date.now();
 			if (signal.aborted && reportsPromise) {
-				this.#observeLateUsageRefresh(session, reportsPromise, sequence);
+				this.#observeLateUsageRefresh(session, reportsPromise, sequence, usageContextKey);
 			}
 		} finally {
 			if (this.session === session) this.#usageInFlight = false;
 		}
 	}
 
-	#applyUsageRefreshReports(session: TSession, reports: unknown, sequence: number): void {
-		if (this.#disposed || this.session !== session || sequence < this.#latestAppliedUsageRefreshSequence) {
+	#applyUsageRefreshReports(session: TSession, reports: unknown, sequence: number, usageContextKey: string): void {
+		if (
+			this.#disposed ||
+			this.session !== session ||
+			sequence < this.#latestAppliedUsageRefreshSequence ||
+			this.#getUsageContextKey(session) !== usageContextKey
+		) {
 			return;
 		}
 		this.#latestAppliedUsageRefreshSequence = sequence;
@@ -1927,6 +1938,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const normalized = this.#normalizeUsageReports(reports, {
 			provider: activeProvider,
 			modelId: activeModelId,
+			pooledProvider: pooledUsageProvider(session.state.model ?? session.model),
 			identity: activeIdentity,
 		});
 		const resetSnapshot =
@@ -1949,13 +1961,23 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		if (event) this.#onCodexResetFireworks?.(event);
 	}
 
-	#observeLateUsageRefresh(session: TSession, reportsPromise: Promise<unknown>, sequence: number): void {
+	#observeLateUsageRefresh(
+		session: TSession,
+		reportsPromise: Promise<unknown>,
+		sequence: number,
+		usageContextKey: string,
+	): void {
 		void reportsPromise
 			.then(reports => {
-				this.#applyUsageRefreshReports(session, reports, sequence);
+				this.#applyUsageRefreshReports(session, reports, sequence, usageContextKey);
 			})
 			.catch(() => {
-				if (this.#disposed || this.session !== session || sequence < this.#latestAppliedUsageRefreshSequence) {
+				if (
+					this.#disposed ||
+					this.session !== session ||
+					sequence < this.#latestAppliedUsageRefreshSequence ||
+					this.#getUsageContextKey(session) !== usageContextKey
+				) {
 					return;
 				}
 				this.#usageFetchedAt = Date.now();
@@ -2042,7 +2064,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 
 	#normalizeUsageReports(
 		reports: unknown,
-		context: { provider?: string; modelId?: string; identity?: OAuthAccountIdentity },
+		context: { provider?: string; modelId?: string; identity?: OAuthAccountIdentity; pooledProvider?: string },
 	): {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
@@ -2059,6 +2081,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		};
 	} | null {
 		if (!Array.isArray(reports)) return null;
+		if (
+			!context.pooledProvider &&
+			(pooledProviderMatches(context.provider, "anthropic") ||
+				pooledProviderMatches(context.provider, "openai-codex"))
+		)
+			return null;
 		const now = Date.now();
 		const resetReports: UsageReport[] = [];
 		const activeModelId = normalizeUsageScopeValue(context.modelId);
@@ -2069,6 +2097,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const scopeGroups = new Map<string, UsageScopeGroup>();
 		for (const report of reports) {
 			if (!report || typeof report !== "object") continue;
+			if (isPooledUsageReport(report) && !pooledProviderMatches(context.pooledProvider, report.provider)) continue;
 			const provider = "provider" in report ? report.provider : undefined;
 			if (context.provider && provider !== context.provider) continue;
 			const reportLimits = "limits" in report ? report.limits : undefined;
@@ -2190,9 +2219,9 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		if (!context.identity || !selectedGroup) {
 			// Without an active OAuth account (Sprilicred-brokered sessions) any
 			// account-scoped group would be an arbitrary pooled account's numbers.
-			// Prefer the pool headline — the best headroom any pooled account for
-			// this provider still has. Non-pooled reports yield null and fall through.
-			const pooled = this.#normalizePooledUsage(reports, context.provider);
+			// Prefer the pool headline for the active subscription route only.
+			// Non-pooled reports yield null and fall through.
+			const pooled = this.#normalizePooledUsage(reports, context.pooledProvider);
 			if (pooled) return resetCredits ? { ...pooled, resetCredits } : pooled;
 		}
 		if (!selectedGroup) return resetCredits ? { resetCredits } : null;
@@ -2278,6 +2307,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		sevenDay?: { percent: number };
 		modelWeekly?: { percent: number };
 	} | null {
+		if (!activeProvider) return null;
 		const summary = summarizePooledUsage(reports);
 		if (!summary) return null;
 		for (const [provider, usage] of summary) {
@@ -2617,6 +2647,9 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		target.modelId = model?.id;
 		target.modelName = model?.name;
 		target.modelProvider = model?.provider;
+		target.usageModelProviderType = (model ?? sessionModel)?.providerType;
+		target.usageModelBaseUrl = (model ?? sessionModel)?.baseUrl;
+		target.usageModelClass = (model ?? sessionModel)?.identity?.class;
 		target.modelContextWindow = model?.contextWindow;
 		target.modelThinking = model?.thinking;
 		target.thinkingLevel = state.thinkingLevel;
@@ -2681,6 +2714,9 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			left.modelId === right.modelId &&
 			left.modelName === right.modelName &&
 			left.modelProvider === right.modelProvider &&
+			left.usageModelProviderType === right.usageModelProviderType &&
+			left.usageModelBaseUrl === right.usageModelBaseUrl &&
+			left.usageModelClass === right.usageModelClass &&
 			left.modelContextWindow === right.modelContextWindow &&
 			left.modelThinking === right.modelThinking &&
 			left.thinkingLevel === right.thinkingLevel &&

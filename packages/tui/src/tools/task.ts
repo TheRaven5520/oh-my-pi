@@ -2,7 +2,7 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ThemeColor } from "../theme/theme";
 import type { ConfiguredThinkingLevel } from "../render/render-utils";
-import type { ToolRenderer } from "./renderer";
+import type { ToolActivityContext, ToolRenderer } from "./renderer";
 /**
  * TUI rendering for task tool.
  *
@@ -2105,6 +2105,38 @@ const taskResultMemo = new OwnerMemo<NativeToolView | undefined>();
 
 /** Renders task calls and their live or settled agent results. */
 export const taskToolRenderer = {
+	activitySummary(args: TaskParams, context: ToolActivityContext) {
+		const details = context.result?.details as TaskToolDetails | undefined;
+		const results = details?.results ?? [];
+		const failed = results.filter(result => !result.aborted && (result.exitCode !== 0 || result.error)).length;
+		const cancelled = results.filter(result => result.aborted).length;
+		const done = results.length - failed - cancelled;
+		const running =
+			details?.progress?.filter(
+				progress => progress.status === "running" && !results.some(result => result.id === progress.id),
+			).length ?? 0;
+		const names =
+			args?.tasks
+				?.map(task => task.name)
+				.filter(Boolean)
+				.join(", ") ||
+			args?.name ||
+			args?.agent;
+		return {
+			label: "Task",
+			detail: names,
+			meta:
+				[
+					running ? `${running} running` : undefined,
+					done ? `${done} done` : undefined,
+					failed ? `${failed} failed` : undefined,
+					cancelled ? `${cancelled} cancelled` : undefined,
+				]
+					.filter(Boolean)
+					.join(" · ") || undefined,
+			receipt: results.length > 0 && running === 0 && failed === 0 && cancelled === 0,
+		};
+	},
 	renderCall,
 	renderResult,
 	visibleOutput(output: string, details: TaskToolDetails | undefined, options: RenderResultOptions): string {

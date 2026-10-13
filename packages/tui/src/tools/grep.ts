@@ -1,6 +1,12 @@
 import type { Component } from "../tui";
 import { Text } from "../components/text";
-import type { NativeToolHead, NativeToolView, RenderResultOptions, ToolRenderer } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolRenderer,
+} from "./renderer";
 import { getLanguageFromPath } from "../lang-from-path";
 import { compact } from "../native/describe";
 import type { NativeChild } from "../native/node";
@@ -247,6 +253,31 @@ function grepStatusIcon(uiTheme: Theme): string {
 /** Render grep calls and results in the transcript. */
 export const grepToolRenderer = {
 	inline: true,
+	activitySummary(args: GrepRenderArgs, context: ToolActivityContext) {
+		const details = context.result?.details as GrepToolDetails | undefined;
+		const scope = details?.scopePath ?? toPathList(args?.path ?? args?.paths).join(", ");
+		const counts =
+			details?.matchCount === undefined
+				? undefined
+				: `${formatCount("match", details.matchCount)}${details.fileCount === undefined ? "" : ` · ${formatCount("file", details.fileCount)}`}`;
+		const limited =
+			details?.truncated ||
+			details?.meta?.truncation ||
+			details?.fileLimitReached ||
+			details?.perFileLimitReached ||
+			details?.linesTruncated;
+		const notes = [
+			counts,
+			limited ? "truncated" : undefined,
+			details?.missingPaths?.length ? "paths skipped" : undefined,
+		].filter(Boolean);
+		return {
+			label: "Grep",
+			detail: `${JSON.stringify(args?.pattern ?? "?")}${scope ? ` in ${scope}` : ""}`,
+			meta: notes.join(" · ") || undefined,
+			receipt: counts !== undefined,
+		};
+	},
 	renderCall(args: GrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const paths = toPathList(args.path ?? args.paths);
 		const meta: string[] = [];

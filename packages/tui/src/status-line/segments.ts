@@ -19,7 +19,7 @@ import { getSessionAccentAnsi, getSessionAccentHex } from "../theme/session-colo
 import { summarizeLoopCondition } from "./loop";
 import { formatMetric } from "../components/metric";
 import { formatBillingSummary } from "./metrics";
-import { pooledProviderMatches } from "./pooled-usage";
+import { pooledUsageProvider } from "./pooled-usage";
 import { sanitizeStatusText } from "../chrome/shared";
 import {
 	formatContextUsage,
@@ -1362,11 +1362,12 @@ const usageSegment: StatusLineSegment = {
 	render(ctx) {
 		const u = ctx.usage;
 		if (ctx.claudeStyle) {
+			const provider = pooledUsageProvider(ctx.session.state?.model ?? ctx.session.model);
+			if (!u && !provider) return { content: "", visible: false };
 			// Claude prints 5h and wk. OpenAI Codex only reports the weekly ChatGPT
 			// meter, so do not invent a `5h —` gauge for it.
 			const week = u?.sevenDay?.percent ?? u?.monthly?.percent;
-			const provider = ctx.session.model?.provider;
-			if (provider !== undefined && pooledProviderMatches(provider, "openai-codex")) {
+			if (provider === "openai-codex") {
 				let content = claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week);
 				if (u?.modelWeekly)
 					content += ` ${CLAUDE_DIM_ANSI}|\x1b[39m ${claudeGauge(ctx, CLAUDE_COLORS.fable, "ultrafast", u.modelWeekly.percent)}`;
@@ -1426,8 +1427,7 @@ const usageSegment: StatusLineSegment = {
 		const u = ctx.usage;
 		if (!u) return null;
 		if (ctx.claudeStyle) {
-			const provider = ctx.session.model?.provider;
-			const codex = provider !== undefined && pooledProviderMatches(provider, "openai-codex");
+			const codex = pooledUsageProvider(ctx.session.state?.model ?? ctx.session.model) === "openai-codex";
 			const week = u.sevenDay ?? u.monthly;
 			const fiveHour = u.fiveHour ?? u.daily;
 			const describeClaudeGauge = (label: string, usedPercent: number): TspSpan[] => {

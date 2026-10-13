@@ -23,6 +23,7 @@ import type {
 	NativeToolView,
 	RenderResultContextOptions,
 	RenderResultOptions,
+	ToolActivityContext,
 	ToolRenderer,
 } from "./renderer";
 import { ansi, compact, keyed } from "../native/describe";
@@ -417,6 +418,21 @@ function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererC
 /** Builds a shell transcript renderer with caller-supplied command labels. */
 export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 	return {
+		activitySummary(args: TArgs, context: ToolActivityContext) {
+			const details = context.result?.details as BashToolDetails | undefined;
+			return {
+				label: config.resolveTitle(args, context),
+				detail: formatBashCommandText(toBashRenderArgs(args, config)).split("\n", 1)[0],
+				command: true,
+				meta: details?.timedOut
+					? "timed out"
+					: details?.exitCode
+						? `exit ${details.exitCode}`
+						: details?.async?.state === "running"
+							? `job ${details.async.jobId}`
+							: undefined,
+			};
+		},
 		visibleOutput(output: string, details: BashToolDetails | undefined): string {
 			return stripBashNotices(output, details).text;
 		},

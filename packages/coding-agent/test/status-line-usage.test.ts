@@ -3,7 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
-import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
+import { describeSegment, renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
 import type { SegmentContext } from "@oh-my-pi/pi-tui/status-line/types";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { StatusLineTestComponents } from "./helpers/status-line";
@@ -81,6 +81,33 @@ async function flushUsageRefresh(): Promise<void> {
 }
 
 describe("usage status-line segment", () => {
+	it("hides nonquota placeholders without hiding session spend, tokens, or context", () => {
+		const model = { provider: "sprilicred-openrouter", id: "anthropic/claude-opus-5-5", api: "anthropic-messages" };
+		const context = {
+			claudeStyle: true,
+			session: { model, state: { model }, modelRegistry: { isUsingOAuth: () => false } },
+			usage: null,
+			usageStats: {
+				input: 1000,
+				output: 200,
+				cacheWrite: 0,
+				orchestrationInput: 0,
+				orchestrationOutput: 0,
+				cost: 1.23,
+				premiumRequests: 0,
+			},
+			contextPercent: 25,
+			contextWindow: 200_000,
+		} as unknown as SegmentContext;
+		expect(renderSegment("usage", context)).toEqual({ content: "", visible: false });
+		expect(describeSegment("usage", context)).toBeNull();
+		expect(stripVTControlCharacters(renderSegment("cost", context).content)).toContain("$1.23");
+		expect(renderSegment("token_total", context).visible).toBe(true);
+		expect(stripVTControlCharacters(renderSegment("context_pct", context).content)).toContain("ctx 75%");
+		expect(describeSegment("cost", context)).not.toBeNull();
+		expect(describeSegment("context_pct", context)).not.toBeNull();
+	});
+
 	it("renders untiered five-hour and seven-day limits", () => {
 		const result = renderSegment("usage", {
 			usage: { fiveHour: { percent: 24, resetMinutes: 30 }, sevenDay: { percent: 8, resetHours: 141 } },
@@ -99,7 +126,7 @@ describe("usage status-line segment", () => {
 	it("hides the nonexistent five-hour gauge for OpenAI pools", () => {
 		const result = renderSegment("usage", {
 			claudeStyle: true,
-			session: { model: { provider: "sprilicred-openai" } },
+			session: { model: { provider: "sprilicred-openai", identity: { class: "openai" } } },
 			usage: {
 				fiveHour: { percent: 12 },
 				sevenDay: { percent: 40 },
@@ -118,7 +145,7 @@ describe("usage status-line segment", () => {
 			stripVTControlCharacters(
 				renderSegment("usage", {
 					claudeStyle: true,
-					session: { model: { provider: "sprilicred-openai" } },
+					session: { model: { provider: "sprilicred-openai", identity: { class: "openai" } } },
 					usage: { sevenDay: { percent: 40 }, modelWeekly },
 				} as unknown as SegmentContext).content,
 			);

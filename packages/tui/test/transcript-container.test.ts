@@ -168,6 +168,33 @@ const finalAnswer: AssistantMessage = {
 const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
+	it("keeps tool runs adjacent through retirement, replay and resize without merging prose", () => {
+		const transcript = new TranscriptContainer();
+		const first = new ToolBlock(["read source"], true);
+		const second = new ToolBlock(["grep pattern"], true);
+		const answer = new Block(["final answer"], false);
+		transcript.addChild(first);
+		transcript.addChild(second);
+		transcript.addChild(answer);
+		expect(transcript.render(80)).toEqual(["read source", "grep pattern", "", "final answer"]);
+		expect(transcript.renderViewport(80, 4, frame)).toEqual(transcript.render(80));
+		expect(transcript.getChildStartRow(second)).toBe(1);
+		expect(transcript.getLastViewportSpans().map(span => [span.start, span.end])).toEqual([
+			[0, 1],
+			[1, 2],
+			[3, 4],
+		]);
+		const retired = transcript.peekFinalizedBatch(80, 3)!;
+		expect(retired.rows).toEqual(["read source"]);
+		transcript.acknowledgeFinalizedBatch(retired.id);
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(["grep pattern", "", "final answer"]);
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(60)!;
+		expect(replay.rows).toEqual(["read source"]);
+		transcript.acknowledgeFinalizedBatch(replay.id);
+		expect(transcript.renderTail(60, 3)).toEqual(["grep pattern", "", "final answer"]);
+		expect(transcript.renderViewport(60, 3, frame)).toEqual(["grep pattern", "", "final answer"]);
+	});
 	it("preserves retirement while externally reordered and replaced live children settle", () => {
 		const transcript = new TranscriptContainer();
 		const archived = new Block(["archived"], true);

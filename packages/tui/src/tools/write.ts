@@ -535,7 +535,17 @@ export const writeToolRenderer = {
 			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
 			return xdevActivitySummary(xdev.name, writeArgs.content, resolveMounted);
 		}
-		return { label: "Write", detail: shortenPath(rawPath) };
+		const result = context.result;
+		const lines = typeof writeArgs.content === "string" ? countLines(writeArgs.content) : undefined;
+		return {
+			label: "Write",
+			detail: shortenPath(rawPath),
+			meta:
+				result && !result.isError && !context.isPartial && lines !== undefined
+					? `${lines} line${lines === 1 ? "" : "s"} written`
+					: undefined,
+			receipt: result !== undefined && lines !== undefined && !result.isError && !context.isPartial,
+		};
 	},
 
 	renderCall(

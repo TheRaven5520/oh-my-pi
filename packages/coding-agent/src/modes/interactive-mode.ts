@@ -120,7 +120,7 @@ import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compa
 import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
 import { modelChip } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
 import { readSessionMetrics } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
-import { type AgentRunStats, formatAgentRunStats } from "@oh-my-pi/pi-tui/overlays/agent-run-stats";
+import { type AgentRunStats, formatAgentRunStats, formatRunElapsed } from "@oh-my-pi/pi-tui/overlays/agent-run-stats";
 import { formatModelLabel, formatModelName } from "@oh-my-pi/pi-tui/render/model-names";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { registerPersistedSubagents } from "../registry/persisted-agents";
@@ -1259,13 +1259,32 @@ export function registryModelLabel(session: ObservableSession): string | undefin
 	return chip.fallback ? `fallback → ${label}` : label;
 }
 
+/** Prefer the live call's own detail; never present an earlier call as current work. */
+function dockActivity(session: ObservableSession): string {
+	const progress = session.progress;
+	if (session.status === "aborted" || progress?.status === "aborted") return "interrupted";
+	if (session.status === "failed" || progress?.status === "failed") return "failed";
+	if (session.status !== "active" && isForkAgentId(session.id)) return "waiting for input";
+	if (progress?.status === "running" && progress.currentTool) {
+		const detail = progress.currentToolIntent
+			? shortenEmbeddedPaths(progress.currentToolIntent)
+			: shortenToolArgumentPaths(progress.currentToolArgs ?? "", progress.currentToolArgsKey);
+		return detail ? `${progress.currentTool}: ${detail}` : progress.currentTool;
+	}
+	const recent = progress?.recentTools[0];
+	if (progress?.status === "running" && recent?.isError) return `last call failed: ${recent.tool}`;
+	const description = session.description?.trim() || progress?.description?.trim();
+	if (description && !labelEchoesHandle(session.id, description)) return description;
+	const task = progress?.task ? taskSummaryLine(progress.task) : "";
+	if (task && !labelEchoesHandle(session.id, task)) return task;
+	return labelEchoesHandle(session.id, session.label) ? "" : session.label;
+}
+
 /**
- * Pi-style compact agent dock: an explicit `main` root followed by the active
- * child rows, scrolled so the selected row stays visible. Used by
- * `#renderSubagentList` in place of the plain jump list. Each child row names
- * its model (from progress, else `modelFor`) and ends with Claude Code-style
- * stats (`12 tool uses · 34.5k tokens · 1m 23s`), which keep their width while
- * the description truncates.
+ * Activity-first agent dock: an explicit `main` root followed by active child
+ * rows, scrolled so the selection stays visible. Compact rows show the live
+ * call or assignment and a subdued elapsed time. Expanded rows also expose
+ * model and usage when space permits; Agent Hub retains the complete stats.
  */
 export function renderSubagentDockLines(
 	sessions: ObservableSession[],
@@ -1284,6 +1303,8 @@ export function renderSubagentDockLines(
 	const children = activeDockChildren(sessions);
 	if (children.length === 0) return [];
 	const visibleLimit = expanded ? children.length : SUBAGENT_HUD_VISIBLE_LIMIT;
+	const contentColumns = Math.max(0, columns - getPaddingX(1) * 2);
+	const rowWidth = Math.max(0, contentColumns - 1);
 
 	const selectedChildIndex = selectedId ? children.findIndex(session => session.id === selectedId) : -1;
 	const firstVisibleChildIndex =
@@ -1305,28 +1326,55 @@ export function renderSubagentDockLines(
 			const selected = session.id === selectedId;
 			const pointer = selected ? theme.fg("accent", "›") : " ";
 			const waitingFork = session.status !== "active" && isForkAgentId(session.id);
-			const glyph = waitingFork ? theme.fg("dim", "⑂") : theme.fg("accent", "●");
-			const displayId = formatTaskId(session.id);
 			const progress = session.progress;
-			const identity = progress?.resolvedModelIdentity ?? progress?.resolvedModel;
-			const fallbackProvider =
-				progress?.resolvedModelIsFallback && identity?.includes("/")
-					? ` · ${identity.slice(0, identity.indexOf("/"))}`
-					: "";
-			// The identity never carries a level suffix; a bare selector may.
-			const model = identity
-				? `${formatModelLabel(identity, progress?.resolvedThinkingLevel, { ref: progress?.resolvedModelIdentity !== undefined ? "identity" : "selector" })}${fallbackProvider}`
-				: (options.modelFor?.(session) ?? progress?.modelRole);
-			const statsText = formatAgentRunStats(statsFor(session, now) ?? {});
-			const stats = statsText ? theme.fg("dim", ` · ${statsText}`) : "";
-			const budget = columns - visibleWidth(`${pointer} ${glyph} ${displayId} · `) - visibleWidth(stats) - 4;
-			const modelText =
-				model && budget >= 8
-					? theme.fg("dim", ` · ${previewLine(sanitizeText(model).replace(/\s*[\r\n]+\s*/g, " ↵ "), budget)}`)
-					: "";
+			const failed = session.status === "failed" || progress?.status === "failed";
+			const interrupted = progress?.status === "aborted";
+			const glyph = failed
+				? theme.styledSymbol("status.error", "error")
+				: interrupted
+					? theme.styledSymbol("status.aborted", "warning")
+					: waitingFork
+						? theme.fg("dim", "⑂")
+						: theme.fg("accent", "●");
+			const displayId = formatTaskId(session.id);
+			const activity = replaceTabs(sanitizeText(dockActivity(session))).replace(/\s*[\r\n]+\s*/g, " ");
+			const runStats = statsFor(session, now);
+			const elapsed = runStats?.elapsedMs !== undefined ? ` · ${formatRunElapsed(runStats.elapsedMs)}` : "";
 			const label = theme.fg(selected ? "accent" : "toolTitle", selected ? theme.bold(displayId) : displayId);
-			const head = truncateToWidth(`${pointer} ${glyph} ${label}${modelText}${stats}`, Math.max(1, columns - 2), "");
-			const preview = options.livePreview ? renderSubagentToolPreview(session, Math.max(1, columns - 4)) : undefined;
+			const prefix = `${pointer} ${glyph} ${label}`;
+			// Keep identity and useful activity ahead of optional metadata on narrow terminals.
+			const detailWidth = Math.max(0, rowWidth - visibleWidth(prefix) - visibleWidth(elapsed));
+			const activityReserve = activity ? Math.min(detailWidth, 3 + Math.min(24, visibleWidth(activity))) : 0;
+			let metadata = "";
+			if (expanded) {
+				const identity = progress?.resolvedModelIdentity ?? progress?.resolvedModel;
+				const fallbackProvider =
+					progress?.resolvedModelIsFallback && identity?.includes("/")
+						? ` · ${identity.slice(0, identity.indexOf("/"))}`
+						: "";
+				const model = identity
+					? `${formatModelLabel(identity, progress?.resolvedThinkingLevel, { ref: progress?.resolvedModelIdentity !== undefined ? "identity" : "selector" })}${fallbackProvider}`
+					: (options.modelFor?.(session) ?? progress?.modelRole);
+				const statsText = formatAgentRunStats({ tools: runStats?.tools, tokens: runStats?.tokens });
+				const stats = statsText ? ` · ${statsText}` : "";
+				if (visibleWidth(stats) <= detailWidth - activityReserve) metadata = stats;
+				const modelBudget = detailWidth - activityReserve - visibleWidth(metadata) - 3;
+				if (model && modelBudget >= 8) {
+					metadata = ` · ${previewLine(sanitizeText(model).replace(/\s*[\r\n]+\s*/g, " "), modelBudget)}${metadata}`;
+				}
+			}
+			const activityBudget = detailWidth - visibleWidth(metadata) - 3;
+			const activityText =
+				activity && activityBudget > 0
+					? theme.fg(
+							failed ? "error" : interrupted ? "warning" : "muted",
+							` · ${previewLine(activity, activityBudget)}`,
+						)
+					: "";
+			const head = truncateToWidth(`${prefix}${activityText}${theme.fg("dim", metadata + elapsed)}`, rowWidth, "");
+			const preview = options.livePreview
+				? renderSubagentToolPreview(session, Math.max(0, rowWidth - 1))
+				: undefined;
 			return preview ? `${head}\n ${preview}` : head;
 		}),
 		...(belowCount > 0 ? [theme.fg("dim", `… ${belowCount} more — expand`)] : []),
@@ -1337,8 +1385,12 @@ export function renderSubagentDockLines(
 	}
 	return [
 		"",
-		theme.bold(theme.fg("accent", `agents · main · ${dockHeaderCounts(children)}`)),
-		...rows.map(line => ` ${line}`),
+		truncateToWidth(
+			theme.bold(theme.fg("accent", `agents · main · ${dockHeaderCounts(children)}`)),
+			contentColumns,
+			"",
+		),
+		...rows.map(line => ` ${line.includes("\n") ? line : truncateToWidth(line, rowWidth, "")}`),
 	];
 }
 

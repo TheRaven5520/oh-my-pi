@@ -54,6 +54,7 @@ import { cachedPngConversion, convertImageToPngShared, imagePayloadKey } from ".
 import { sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import { renderDiff } from "../chrome/diff";
 import { type AnimationFrame, trimBlankEdges } from "../chrome/transcript-container";
+import { visibleWidth } from "../utils";
 
 /** Resolves the canonical renderer key while retaining the provider's wire name in message history. */
 export function toolRenderName(wireName: string, tool: AgentTool | undefined): string {
@@ -1332,7 +1333,7 @@ export class ToolExecutionComponent extends Container {
 		return lines;
 	}
 
-	/** Header plus one dim summary row (header only in a one-row allocation), memoized until an input it reads changes. */
+	/** Semantic receipt or header plus output row, memoized until an input it reads changes. */
 	#renderCompact(width: number): readonly string[] {
 		// Elapsed ticks only while the call is genuinely running; a settled card
 		// must not read as live ("Bash · running 0s"). With `/time` on, the
@@ -1365,23 +1366,36 @@ export class ToolExecutionComponent extends Container {
 			? super.render(width).find(row => Bun.stripANSI(row).trim().length > 0)
 			: undefined;
 		const elapsedText = elapsed === undefined ? "" : theme.fg("dim", ` ${elapsed}s`);
-		const headerText =
-			customHeader ?? `${icon} ${this.#toolLabel}${summary.detail ? ` · ${summary.detail}` : ""}${elapsedText}`;
+		const label = theme.fg("dim", summary.label);
+		const target = summary.detail
+			? `${summary.command ? "$ " : ""}${plainText(summary.detail).replace(/\s+/g, " ")}`
+			: "";
+		const meta = summary.meta ? theme.fg("dim", ` · ${plainText(summary.meta)}`) : "";
+		const prefix = `${icon} ${label}${target ? "  " : ""}`;
+		const suffix = `${meta}${elapsedText}`;
+		const targetWidth = Math.max(0, width - visibleWidth(prefix) - visibleWidth(suffix));
+		const headerText = customHeader ?? `${prefix}${truncateToWidth(target, targetWidth)}${suffix}`;
 		const output = this.#summarizeOutput();
 		const error = this.#result?.isError ? output.first?.trim() : undefined;
 		const outputTail = this.#isRunning() ? output.last : undefined;
 		const hidden =
 			error ||
 			outputTail ||
-			// A one-line output is shown whole rather than counted.
-			(output.count === 1 ? output.first : output.count > 1 ? `${output.count} lines` : undefined) ||
-			(this.#isExpandableState() ? "arguments hidden" : undefined);
+			(!summary.receipt || customHeader !== undefined
+				? output.count === 1
+					? output.first
+					: output.count > 1
+						? `${output.count} lines`
+						: undefined
+				: undefined);
 		const detail = hidden ? hidden.replace(/\s+/g, " ") : "";
 		this.#compactKey = key;
 		this.#compactRows = [
 			truncateToWidth(headerText, width),
 			// The allocator shows a block's last rows: a one-row squeeze keeps the header.
-			...(detail && this.#allocation !== 1 ? [truncateToWidth(theme.fg("dim", `  └ ${detail}`), width)] : []),
+			...(detail && this.#allocation !== 1
+				? [truncateToWidth(theme.fg(error ? "error" : "dim", `  └ ${detail}`), width)]
+				: []),
 		];
 		return this.#compactRows;
 	}
@@ -1448,6 +1462,7 @@ export class ToolExecutionComponent extends Container {
 			isPartial: this.#isPartial,
 			spinnerFrame: this.#spinnerFrame,
 			renderContext: this.#renderState.renderContext,
+			result: this.#result,
 		});
 		if (summary !== undefined) {
 			if (summary.detail) return summary;

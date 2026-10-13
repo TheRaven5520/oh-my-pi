@@ -903,7 +903,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		this.#text = new TranscriptMarkerText("", 0, 0);
 
 		if (displayRows.length === 0) {
-			this.#text.setText(`${theme.format.bullet} ${theme.fg("toolTitle", theme.bold("Read"))}`);
+			this.#text.setText(`${theme.format.bullet} ${theme.fg("dim", "Read")}`);
 			this.addChild(this.#text);
 			return;
 		}
@@ -913,7 +913,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			if (!this.#shouldRenderPreviewRow(row)) {
 				const statusSymbol = this.#formatStatus(this.#statusForTargets(row.targets));
 				const pathDisplay = this.#formatRowPath(row);
-				const lines = [`${statusSymbol} ${theme.fg("toolTitle", theme.bold("Read"))} ${pathDisplay}`.trimEnd()];
+				const lines = [`${statusSymbol} ${theme.fg("dim", "Read")}  ${pathDisplay}`.trimEnd()];
 				const usageRows = this.#usageRowsBySummaryRow(displayRows).get(0) ?? [];
 				this.#appendUsageRows(lines, usageRows, "   ");
 				this.#text.setText(lines.join("\n"));
@@ -926,7 +926,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			return;
 		}
 
-		const header = `${theme.fg("toolTitle", theme.bold("Read"))}${theme.fg("dim", ` (${displayRows.length})`)}`;
+		const header = theme.fg("dim", `Read (${displayRows.length})`);
 		const lines = [`${theme.format.bullet} ${header}`];
 		const entriesWithoutPreview = entries.filter(entry => !this.#shouldRenderPreview(entry));
 		const summaryTargets = this.#displayTargetsForEntries(entriesWithoutPreview);

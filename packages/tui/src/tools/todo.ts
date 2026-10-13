@@ -1,4 +1,4 @@
-import type { ToolRenderer } from "./renderer";
+import type { ToolActivityContext, ToolRenderer } from "./renderer";
 
 import type { Component } from "../index";
 import { Text } from "../index";
@@ -503,6 +503,23 @@ function describeTodoResult(
 
 /** Render todo operations and phased task snapshots. */
 export const todoToolRenderer = {
+	activitySummary(args: TodoRenderArgs, context: ToolActivityContext) {
+		const details = context.result?.details as TodoToolDetails | undefined;
+		const tasks = details?.phases?.flatMap(phase => phase.tasks);
+		const current = tasks?.find(task => task.status === "in_progress");
+		const completed = tasks?.filter(task => task.status === "completed").length ?? 0;
+		const blocked = tasks?.filter(task => task.status === "blocked").length ?? 0;
+		const abandoned = tasks?.filter(task => task.status === "abandoned").length ?? 0;
+		const op = normalizeTodoArg(args)[0];
+		return {
+			label: "Todo",
+			detail: current?.content ?? (op?.task ? `${op.op} ${op.task}` : op?.op),
+			meta: tasks
+				? `${completed}/${tasks.length} done${blocked ? ` · ${blocked} blocked` : ""}${abandoned ? ` · ${abandoned} dropped` : ""}`
+				: undefined,
+			receipt: tasks !== undefined,
+		};
+	},
 	renderCall(args: TodoRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		// `args` is the raw partially-parsed JSON from the streaming tool-call
 		// delta and may not satisfy `TodoRenderArgs` at runtime:

@@ -1,6 +1,12 @@
 import type { Component } from "../tui";
 import { Text } from "../components/text";
-import type { NativeToolHead, NativeToolView, RenderResultOptions, ToolRenderer } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	RenderResultOptions,
+	ToolActivityContext,
+	ToolRenderer,
+} from "./renderer";
 import { col, compact, keyed, node, row, span, text } from "../native/describe";
 import type { NativeChild, NativeNode } from "../native/node";
 import { fileHref, fileRow, footnoteText, inlineErrorView, resultText } from "./native-view";
@@ -107,6 +113,24 @@ function globNativeHead(args: GlobRenderArgs | undefined, meta: readonly string[
 /** Render glob calls and results in the transcript. */
 export const globToolRenderer = {
 	inline: true,
+	activitySummary(args: GlobRenderArgs, context: ToolActivityContext) {
+		const details = context.result?.details as GlobToolDetails | undefined;
+		const count = details?.fileCount;
+		const limited = details?.truncated || details?.meta?.truncation || details?.resultLimitReached;
+		return {
+			label: "Glob",
+			detail: formatGlobRenderPaths(args) || "*",
+			meta:
+				[
+					count === undefined ? undefined : formatCount("file", count),
+					limited ? "truncated" : undefined,
+					details?.missingPaths?.length ? "paths skipped" : undefined,
+				]
+					.filter(Boolean)
+					.join(" · ") || undefined,
+			receipt: count !== undefined,
+		};
+	},
 	renderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
 		if (args.limit !== undefined) meta.push(`limit:${args.limit}`);

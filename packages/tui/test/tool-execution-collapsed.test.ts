@@ -41,20 +41,67 @@ describe("collapsed tool cards", () => {
 		await initTheme();
 	});
 
+	it("keeps search counts distinct from output lines and retains partial-result warnings", () => {
+		const card = new ToolExecutionComponent("grep", { pattern: "needle", path: "src" }, {}, undefined, ui, "/tmp");
+		card.updateResult(
+			{ ...textResult("header\ncontext\nmatch\ncontext"), details: { matchCount: 1, fileCount: 1 } },
+			false,
+		);
+		const receipt = plain(card.render(80));
+		expect(receipt).toHaveLength(1);
+		expect(receipt[0]).toContain('"needle" in src');
+		expect(receipt[0]).toContain("1 match");
+		expect(receipt[0]).toContain("1 file");
+		card.updateResult(
+			{
+				...textResult("header\ncontext\nmatch\ncontext"),
+				details: { matchCount: 1, fileCount: 1, truncated: true, missingPaths: ["missing"] },
+			},
+			false,
+		);
+		const limited = plain(card.render(100))[0]!;
+		expect(limited).toContain("truncated");
+		expect(limited).toContain("paths skipped");
+		card.setExpanded(true);
+		expect(plain(card.render(100)).join("\n")).toContain("missing");
+		card.seal();
+	});
+
+	it("does not replace failed write output with a successful receipt", () => {
+		const card = new ToolExecutionComponent(
+			"write",
+			{ path: "report.txt", content: "one\ntwo" },
+			{},
+			undefined,
+			ui,
+			"/tmp",
+		);
+		card.updateResult({ ...textResult("Permission denied"), isError: true }, false);
+		expect(plain(card.render(80)).join("\n")).toContain("Permission denied");
+		card.updateResult(textResult("Saved"), false);
+		const saved = plain(card.render(80));
+		expect(saved).toHaveLength(1);
+		expect(saved[0]).toContain("2 lines written");
+		for (const width of [1, 8, 20, 40]) {
+			expect(card.render(width).every(row => visibleWidth(row) <= width)).toBe(true);
+		}
+		card.seal();
+	});
+
 	it("retains the Eval title or code excerpt after expansion and collapse", () => {
 		const code = "print('first visible line')\nprint('second line')";
 		const card = new ToolExecutionComponent("eval", { code }, {}, undefined, ui, "/tmp");
 		card.updateResult(textResult("first visible line\nsecond line"), false);
 		card.seal();
-		expect(plain(card.render(100))[0]).toContain(" · print('first visible line')");
+		expect(plain(card.render(100))[0]).toContain("print('first visible line')");
 		card.toggleClickExpansion();
 		card.render(100);
 		card.toggleClickExpansion();
-		expect(plain(card.render(100))[0]).toContain(" · print('first visible line')");
+		expect(plain(card.render(100))[0]).toContain("print('first visible line')");
 		card.updateArgs({ code, title: "Summarizing the output of both printed lines" });
-		expect(plain(card.render(100))[0]).toContain(" · Summarizing the output of both printed lines");
+		expect(plain(card.render(100))[0]).toContain("Summarizing the output of both printed lines");
 		const cropped = plain(card.render(24))[0]!;
-		expect(cropped).toContain(" · Summarizing");
+		expect(cropped).toContain("Summarizing");
 		expect(visibleWidth(cropped)).toBeLessThanOrEqual(24);
 	});
 
@@ -138,7 +185,7 @@ describe("collapsed tool cards", () => {
 		// result, unlike the transient progress above, and may condense normally.
 		card.updateResult(result, false);
 		const completed = plain(card.render(120));
-		expect(completed).toHaveLength(2);
+		expect(completed.join("\n")).toContain("10 running");
 		expect(completed.join("\n")).not.toContain("Visible progress");
 		const finished = plain(transcript.renderViewport(120, 40, frame)).join("\n");
 		expect(finished).toContain("Surrounding text 38");

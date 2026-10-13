@@ -24,7 +24,7 @@ import {
 	type ConfiguredThinkingLevel,
 } from "../render/render-utils";
 import type { StructuredSubagentOutput } from "./task";
-import type { RenderResultOptions, ToolRenderer, ToolActivitySummary } from "./renderer";
+import type { RenderResultOptions, ToolRenderer, ToolActivitySummary, ToolActivityContext } from "./renderer";
 import type { ForkReport, IrcDeliveryReceipt, IrcMessage } from "./irc";
 import type { TspSpan } from "@oh-my-pi/pi-wire";
 import { card as cardNode, compact, elapsed, md, node, row, span, text } from "../native/describe";
@@ -755,8 +755,22 @@ const waitResultMemo = new OwnerMemo<NativeToolView | undefined>();
 export const waitToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
-	activitySummary(): ToolActivitySummary {
-		return { label: "Wait", detail: "Background work or peer message" };
+	activitySummary(_args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details as CoordinationDetails | undefined;
+		if (details?.waited) return { label: "Wait", detail: `message from ${details.waited.from}` };
+		if (!details?.jobs) return { label: "Wait", detail: details?.interrupted ? "interrupted" : undefined };
+		const counts = { completed: 0, failed: 0, cancelled: 0, running: 0 };
+		for (const job of details.jobs) counts[job.status]++;
+		const meta = [
+			counts.running ? `${counts.running} running` : undefined,
+			counts.completed ? `${counts.completed} done` : undefined,
+			counts.failed ? `${counts.failed} failed` : undefined,
+			counts.cancelled ? `${counts.cancelled} cancelled` : undefined,
+			details.agents?.length ? `${details.agents.length} agents` : undefined,
+		]
+			.filter(Boolean)
+			.join(" · ");
+		return { label: "Wait", detail: meta || "no jobs", receipt: true };
 	},
 	renderCall: waitRenderCall,
 	describeCall(): NativeToolView {

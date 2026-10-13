@@ -113,7 +113,10 @@ describe("transcript content column", () => {
 						const rows = surface(tool, width, `${name} expanded=${expanded} error=${error}`);
 						if (expanded) expectColumn(rows, "Output first");
 						else {
-							expectColumn(rows, name);
+							expectColumn(
+								rows.map(row => row.toLowerCase()),
+								name,
+							);
 							expect(rows[1]?.search(/\S/)).toBe(2);
 						}
 					}

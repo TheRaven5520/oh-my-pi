@@ -1087,7 +1087,22 @@ export const editToolRenderer = {
 		let detail = formatEditTitlePath(facts.rawPath);
 		if (facts.rename) detail += ` → ${formatEditTitlePath(facts.rename)}`;
 		if (facts.fileCount > 1) detail += ` (+${facts.fileCount - 1} more)`;
-		return { label, detail };
+		const details = context.result?.details as EditToolDetails | undefined;
+		const files = details?.perFileResults;
+		let added = 0;
+		let removed = 0;
+		for (const file of files ?? (details ? [details] : [])) {
+			const stats = getDiffStats(file.diff ?? "");
+			added += stats.added;
+			removed += stats.removed;
+		}
+		const failed = files?.filter(file => file.isError).length ?? 0;
+		return {
+			label,
+			detail,
+			meta: details ? `+${added} −${removed}${failed ? ` · ${failed} failed` : ""}` : undefined,
+			receipt: details !== undefined && failed === 0,
+		};
 	},
 
 	renderCall(

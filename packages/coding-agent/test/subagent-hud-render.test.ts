@@ -23,6 +23,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { type ObservableSession, SessionObserverRegistry } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
+import { formatRunElapsed } from "@oh-my-pi/pi-tui/overlays/agent-run-stats";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -800,7 +801,7 @@ describe("subagent dock lines", () => {
 	const renderDock = (sessions: ObservableSession[], columns = 120, selectedId?: string): string =>
 		Bun.stripANSI(renderSubagentDockLines(sessions, columns, selectedId).join("\n"));
 
-	it("renders running agents with identity and no task descriptions", () => {
+	it("renders distinct assignments instead of repeating model and usage boilerplate", () => {
 		const out = renderDock([
 			makeSession({
 				id: "AuthLoader",
@@ -808,18 +809,18 @@ describe("subagent dock lines", () => {
 				progress: makeProgress({
 					id: "AuthLoader",
 					resolvedModelIdentity: "sprilicred-anthropic/claude-opus-5-5",
-					resolvedThinkingLevel: "high",
+					resolvedThinkingLevel: ThinkingLevel.High,
 				}),
 			}),
 			makeSession({ id: "SchemaMigrator", description: "Migrating the users table" }),
 		]);
 		expect(out).toContain("agents · main");
-		expect(out).toContain("AuthLoader · Opus 5.5 (high)");
-		expect(out).toContain("SchemaMigrator");
-		expect(out).not.toContain("Refactoring the auth flow");
-		expect(out).not.toContain("Migrating the users table");
+		expect(out).toContain("AuthLoader · Refactoring the auth flow");
+		expect(out).toContain("SchemaMigrator · Migrating the users table");
+		expect(out).not.toContain("Opus");
+		expect(out).not.toContain("tool uses");
 	});
-	it("ends a running row with Claude Code-style stats whose time ticks from the run start", () => {
+	it("ends a compact row with elapsed time ticking from the run start", () => {
 		const startedAtMs = 1_000_000;
 		const session = makeSession({
 			id: "Indexer",
@@ -830,27 +831,41 @@ describe("subagent dock lines", () => {
 			Bun.stripANSI(
 				renderSubagentDockLines([session], 120, undefined, false, { now: startedAtMs + elapsedMs }).join("\n"),
 			);
-		expect(at(83_400)).toContain("Indexer · 12 tool uses · 34.5k tokens · 1m 23s");
+		expect(at(83_400)).toContain("Indexer · Indexing the repo");
+		expect(at(83_400)).toContain(` · ${formatRunElapsed(83_400)}`);
+		expect(at(83_400)).toBe(at(83_900));
+		expect(at(83_400)).not.toContain("tool uses");
+		expect(at(83_400)).not.toContain("tokens");
 		// Between progress snapshots the time keeps counting from the start, not the last snapshot.
-		expect(at(84_600)).toContain("· 1m 24s");
+		expect(at(84_600)).toContain(` · ${formatRunElapsed(84_600)}`);
+		expect(at(84_600)).not.toBe(at(83_400));
 	});
 
-	it("shows a finished row's recorded duration, and nothing it does not know yet", () => {
+	it("shows a waiting fork's recorded duration without inventing fresh stats", () => {
 		const out = renderDock([
 			makeSession({ id: "Fresh", description: "just spawned", progress: makeProgress({ id: "Fresh" }) }),
 			makeSession({
-				id: "Waiting",
+				id: "Fork-0001",
 				status: "completed",
 				description: "fork",
-				progress: makeProgress({ id: "fork-1", toolCount: 1, tokens: 950, durationMs: 45_000, startedAtMs: 1 }),
+				progress: makeProgress({
+					id: "Fork-0001",
+					status: "completed",
+					toolCount: 1,
+					tokens: 950,
+					durationMs: 45_000,
+					startedAtMs: 1,
+				}),
 			}),
 		]);
 		expect(out).toContain("Fresh");
-		expect(out).not.toContain("just spawned");
+		expect(out).toContain("just spawned");
+		expect(out).toContain("Fork-0001 · waiting for input");
+		expect(out).toContain(` · ${formatRunElapsed(45_000)}`);
 		expect(out).not.toContain("0 tool uses");
 	});
 
-	it("does not add a task brief to compact agent rows", () => {
+	it("falls back to a concise task brief when no description is present", () => {
 		const session = makeSession({
 			id: "Briefed",
 			progress: makeProgress({ id: "Briefed", task: "# Target\nsrc/foo.ts\n# Change\n1. Rename bar" }),
@@ -858,41 +873,41 @@ describe("subagent dock lines", () => {
 		const lines = Bun.stripANSI(renderSubagentDockLines([session], 120).join("\n")).split("\n");
 		const row = lines.find(line => line.includes("Briefed"));
 		expect(row).toContain("Briefed");
-		expect(row).not.toContain("src/foo.ts");
+		expect(row).toContain("src/foo.ts");
 		expect(row).not.toContain("Rename bar");
 	});
 
-	it("keeps a compact row width without task descriptions", () => {
+	it("flattens multiline descriptions without changing row geometry", () => {
 		const out = renderDock([makeSession({ id: "Multi", description: "first line\nsecond line\n\nthird" })], 60);
 		expect(out).toContain("Multi");
-		expect(out).not.toContain("first line");
-		expect(out).not.toContain("second line");
-		expect(out).not.toContain("third");
+		expect(out).toContain("first line second line third");
+		expect(out.split("\n")).toHaveLength(4);
 		for (const line of out.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
 	});
 
-	it("keeps the stats on a narrow terminal", () => {
+	it("keeps identity, useful activity and elapsed time on a narrow terminal", () => {
 		const session = makeSession({
 			id: "Worker",
 			description: "A very long description of the work this agent is doing right now",
 			progress: makeProgress({ id: "Worker", toolCount: 3, tokens: 12_000, startedAtMs: 0 }),
 		});
 		const out = Bun.stripANSI(renderSubagentDockLines([session], 50, undefined, false, { now: 45_000 }).join("\n"));
-		expect(out).toContain("Worker · 3 tool uses · 12k tokens · 45s");
+		expect(out).toContain("Worker · A very long");
+		expect(out).toContain(` · ${formatRunElapsed(45_000)}`);
+		expect(out).not.toContain("tool uses");
 		for (const line of out.split("\n")) expect(line.length).toBeLessThanOrEqual(50);
 	});
 
-	it("uses the caller's stats for rows without progress", () => {
+	it("uses the caller's stats for expanded rows without progress", () => {
 		const out = Bun.stripANSI(
-			renderSubagentDockLines([makeSession({ id: "Plain", description: "no progress" })], 120, undefined, false, {
+			renderSubagentDockLines([makeSession({ id: "Plain", description: "no progress" })], 120, undefined, true, {
 				statsFor: () => ({ tools: 1, tokens: 2_000_000 }),
 			}).join("\n"),
 		);
-		expect(out).toContain("Plain · 1 tool use · 2m tokens");
-		expect(out).not.toContain("no progress");
+		expect(out).toContain("Plain · no progress · 1 tool use · 2m tokens");
 	});
 
-	it("names the live model of agents the executor does not report on (/tan, /fork)", () => {
+	it("names the live model of registry-only agents in expanded rows (/tan, /fork)", () => {
 		const registry = AgentRegistry.global();
 		const live: Record<string, Record<string, unknown>> = {
 			"Tan-served": {
@@ -911,7 +926,7 @@ describe("subagent dock lines", () => {
 					Object.keys(live).map(id => makeSession({ id })),
 					160,
 					undefined,
-					false,
+					true,
 					{ statsFor: () => ({ tools: 3, tokens: 12_000 }), modelFor: registryModelLabel },
 				).join("\n"),
 			);
@@ -931,7 +946,7 @@ describe("subagent dock lines", () => {
 		]);
 		expect(out).toContain("Running");
 		expect(out).toContain("1 active");
-		expect(out).not.toContain("live work");
+		expect(out).toContain("live work");
 		expect(out).not.toContain("Done");
 		expect(out).not.toContain("Aborted");
 		expect(renderDock([makeSession({ id: "Done", status: "completed" })])).toBe("");
@@ -944,7 +959,7 @@ describe("subagent dock lines", () => {
 		]);
 		expect(out).toContain("⑂");
 		expect(out).toContain("Fork-0001");
-		expect(out).not.toContain("look into the flaky test");
+		expect(out).toContain("waiting for input");
 		expect(out).toContain("0 active · 1 fork");
 		expect(out).not.toContain("Done");
 		expect(renderDock([makeSession({ id: "Fork-0001", status: "aborted" })])).toBe("");
@@ -958,10 +973,130 @@ describe("subagent dock lines", () => {
 		expect(out).toContain("Worker5");
 		expect(out).toContain("Worker8");
 		expect(out).not.toContain("Worker4");
-		expect(out).not.toContain("job 5");
+		expect(out).toContain("job 5");
 		expect(out).toContain("… 5 above");
 		expect(out).toContain("… 1 more — expand");
 		expect(out).toContain("Enter open");
+	});
+
+	it("prefers the current tool's own intent and never a prior call's detail", () => {
+		const out = renderDock([
+			makeSession({
+				id: "Reader",
+				description: "Audit session storage",
+				progress: makeProgress({
+					id: "Reader",
+					currentTool: "read",
+					currentToolIntent: "Checking session cookie",
+					currentToolArgs: "src/cookie.ts",
+					recentTools: [{ tool: "grep", args: "old", intent: "Finding old sessions", endMs: 0 }],
+				}),
+			}),
+		]);
+		expect(out).toContain("Reader · read: Checking session cookie");
+		expect(out).not.toContain("Audit session storage");
+		expect(out).not.toContain("Finding old sessions");
+		expect(out).not.toContain("src/cookie.ts");
+	});
+
+	it("uses current arguments then the assignment between successful calls", () => {
+		const session = makeSession({
+			id: "Reader",
+			description: "Audit session storage",
+			progress: makeProgress({
+				id: "Reader",
+				currentTool: "read",
+				currentToolArgs: "src/cookie.ts",
+				recentTools: [{ tool: "grep", args: "old", intent: "Finding old sessions", endMs: 0 }],
+			}),
+		});
+		expect(renderDock([session])).toContain("Reader · read: src/cookie.ts");
+		session.progress!.currentTool = undefined;
+		const between = renderDock([session]);
+		expect(between).toContain("Reader · Audit session storage");
+		expect(between).not.toContain("Finding old sessions");
+	});
+
+	it("does not hide errors or interruptions behind a stale activity", () => {
+		const sessions = [
+			makeSession({
+				id: "Stopped",
+				progress: makeProgress({ id: "Stopped", status: "aborted", currentTool: "read" }),
+			}),
+			makeSession({ id: "Broken", progress: makeProgress({ id: "Broken", status: "failed", currentTool: "bash" }) }),
+			makeSession({ id: "Fork-0002", status: "failed" }),
+			makeSession({
+				id: "Retrying",
+				progress: makeProgress({
+					id: "Retrying",
+					recentTools: [{ tool: "read", args: "missing", isError: true, endMs: 0 }],
+				}),
+			}),
+		];
+		const out = renderDock(sessions);
+		expect(out).toContain("Stopped · interrupted");
+		expect(out).toContain("Broken · failed");
+		expect(out).toContain("Fork-0002 · failed");
+		expect(out).toContain("Retrying · last call failed: read");
+		expect(out).not.toContain("waiting for input");
+	});
+
+	it("keeps expanded activity alongside the model and complete usage", () => {
+		const session = makeSession({
+			id: "Indexer",
+			description: "Indexing the repo",
+			progress: makeProgress({
+				id: "Indexer",
+				resolvedModelIdentity: "sprilicred-anthropic/claude-opus-5-5",
+				resolvedThinkingLevel: ThinkingLevel.High,
+				toolCount: 12,
+				tokens: 34_512,
+				startedAtMs: 0,
+			}),
+		});
+		const out = Bun.stripANSI(renderSubagentDockLines([session], 160, undefined, true, { now: 83_400 }).join("\n"));
+		expect(out).toContain("Indexer · Indexing the repo");
+		expect(out).toContain("Opus 5.5 (high)");
+		expect(out).toContain("12 tool uses · 34.5k tokens");
+		expect(out).toContain(` · ${formatRunElapsed(83_400)}`);
+		expect(out.split("\n")).toHaveLength(4);
+	});
+
+	it("bounds every padded row and preserves selected-row click ownership", () => {
+		const session = makeSession({ id: "Worker", description: "Checking a very long assignment ".repeat(6) });
+		for (const columns of [12, 24, 40, 60]) {
+			const lines = renderSubagentDockLines([session], columns, session.id);
+			const hud = new SubagentHudComponent(lines, [session.id], undefined, undefined, [
+				undefined,
+				undefined,
+				"main",
+				session.id,
+			]);
+			const rendered = hud.render(columns);
+			expect(rendered).toHaveLength(5);
+			for (const line of rendered) expect(Bun.stringWidth(Bun.stripANSI(line))).toBeLessThanOrEqual(columns);
+			expect(Bun.stripANSI(rendered[3]!)).toContain("›");
+			expect(hud.getClickAgentAtRow(2)).toBe("main");
+			expect(hud.getClickAgentAtRow(3)).toBe(session.id);
+			expect(hud.getClickAgentAtRow(4)).toBeUndefined();
+		}
+	});
+
+	it("keeps optional live-preview continuation rows owned by the child", () => {
+		const session = makeSession({
+			id: "Reader",
+			progress: makeProgress({ id: "Reader", currentTool: "read", currentToolIntent: "Checking storage" }),
+		});
+		const lines = renderSubagentDockLines([session], 60, undefined, false, { livePreview: true });
+		const hud = new SubagentHudComponent(lines, [session.id], undefined, undefined, [
+			undefined,
+			undefined,
+			"main",
+			session.id,
+		]);
+		expect(hud.render(60)).toHaveLength(5);
+		expect(hud.getClickAgentAtRow(3)).toBe(session.id);
+		expect(hud.getClickAgentAtRow(4)).toBe(session.id);
 	});
 });
 
@@ -1146,6 +1281,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 
 	it("ticks a running agent's time every second, and stops once no agent is running", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
+		mode.togglePinnedHudExpanded();
 		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
 		const requestComponentRender = vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
 		vi.useFakeTimers();
@@ -1156,11 +1292,13 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 		vi.advanceTimersByTime(100);
 		const dock = () => Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
-		expect(dock()).toContain("TickingAgent · 2 tool uses · 1.5k tokens · 0s");
+		expect(dock()).toContain("TickingAgent · Counting");
+		expect(dock()).toContain("2 tool uses · 1.5k tokens");
+		expect(dock()).toContain(` · ${formatRunElapsed(0)}`);
 
 		requestComponentRender.mockClear();
 		vi.advanceTimersByTime(2_000);
-		expect(dock()).toContain("· 2s");
+		expect(dock()).toContain(` · ${formatRunElapsed(2_000)}`);
 		expect(requestComponentRender).toHaveBeenCalledWith(mode.subagentContainer);
 
 		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
@@ -1191,6 +1329,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 
 	it("keeps refreshing a /tan agent's model and stats while it works", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
+		mode.togglePinnedHudExpanded();
 		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
 		vi.spyOn(mode.ui, "requestComponentRender").mockImplementation(() => {});
 		vi.useFakeTimers();
@@ -1222,7 +1361,9 @@ describe("InteractiveMode subagent observer UI sync", () => {
 				usage: { input: 1_000, output: 500, cacheWrite: 0, cost: { total: 0 } },
 			});
 			vi.advanceTimersByTime(1_000);
-			expect(dock()).toContain("Tan-live · Opus 5.5 (high) · 2 tool uses · 1.5k tokens");
+			expect(dock()).toContain("Tan-live");
+			expect(dock()).toContain("Opus 5.5 (high)");
+			expect(dock()).toContain("2 tool uses · 1.5k tokens");
 		} finally {
 			registry.unregister("Tan-live");
 		}

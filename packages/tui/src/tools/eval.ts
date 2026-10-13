@@ -752,7 +752,7 @@ export const evalToolRenderer = {
 		const cell = Array.isArray(args?.cells) ? args.cells[0] : args;
 		const title = typeof cell?.title === "string" ? cell.title.trim() : "";
 		const code = typeof cell?.code === "string" ? cell.code.trim() : "";
-		return { label: "Eval", detail: (title || code).split("\n", 1)[0] || undefined };
+		return { label: `Eval ${cell?.language ?? "py"}`, detail: (title || code).split("\n", 1)[0] || undefined };
 	},
 	renderCall(args: EvalRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const cells = getRenderCells(args);
