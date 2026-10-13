@@ -331,7 +331,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#preferences.showHardwareCursor,
 			options.tuiOptions,
 		);
-		this.#ravensLogo = options.ravensLogo ? new RavensLogo(this.ui.imageBudget.acquireId()) : undefined;
+		this.#ravensLogo = options.ravensLogo ? new RavensLogo(this.ui.imageBudget) : undefined;
 		this.ui.setFrameProvider(this);
 		this.ui.setMaxInlineImages(this.#preferences.maxInlineImages);
 		this.ui.setResizeScrollback(this.#preferences.resizeScrollback);
@@ -421,7 +421,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	renderViewportTop(viewport: ViewportSize): readonly string[] {
 		const logo =
 			this.#started && !this.#stopped && !this.#historyFlush
-				? (this.#ravensLogo?.render(viewport.columns, viewport.rows > 1 ? 1 : 0) ?? [])
+				? (this.#ravensLogo?.render(viewport.columns, viewport.rows) ?? [])
 				: [];
 		this.#logoRows = logo.length;
 		return logo;

@@ -752,7 +752,12 @@ export const evalToolRenderer = {
 		const cell = Array.isArray(args?.cells) ? args.cells[0] : args;
 		const title = typeof cell?.title === "string" ? cell.title.trim() : "";
 		const code = typeof cell?.code === "string" ? cell.code.trim() : "";
-		return { label: `Eval ${cell?.language ?? "py"}`, detail: (title || code).split("\n", 1)[0] || undefined };
+		// A title reads as one line; untitled code keeps its lines so the card can wrap them.
+		return {
+			label: `Eval ${cell?.language ?? "py"}`,
+			detail: (title ? title.split("\n", 1)[0] : code) || undefined,
+			wrap: !title,
+		};
 	},
 	renderCall(args: EvalRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const cells = getRenderCells(args);

@@ -331,6 +331,19 @@ export class VirtualTerminal implements Terminal {
 	}
 
 	/**
+	 * Raw foreground color words of a presented viewport row. Kitty Unicode
+	 * placeholder cells carry their image id in a truecolor foreground, so tests
+	 * decode `word & 0xffffff` to learn which image a scrolled-back row names.
+	 */
+	getViewportRowForegroundValues(row: number): number[] {
+		const words = this.#presentedRowCells(row);
+		if (!words) return [];
+		const values: number[] = [];
+		for (let col = 0; col * CELL_U32 < words.length; col++) values.push(words[col * CELL_U32 + CELL_FG] ?? 0);
+		return values;
+	}
+
+	/**
 	 * Columns in a viewport row whose cells carry underline.
 	 * Used with unreset-SGR regressions to ensure style attributes do not bleed
 	 * into later rows or erased blanks.

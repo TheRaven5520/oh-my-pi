@@ -2659,6 +2659,12 @@ export class TUI extends Container {
 		this.#clearScrollbackOnNextRender = false;
 		// The surface already holds the transcript; there's no row history to retire.
 		if (!nativeWasLive) this.#flushHistoryBeforeStop();
+		// Retired chrome ids are never painted again; a stop without a final
+		// normal-screen paint must still blank their native-history copies.
+		const screenPurgeIds = this.#imageBudget.takeScreenPurgeIds();
+		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
+			for (const id of screenPurgeIds) this.terminal.write(encodeKittyDeleteImage(id));
+		}
 		// Deliberately leave transmitted images in the terminal's graphics store:
 		// placeholder cells committed to native scrollback render only while their
 		// image data lives, so a delete-by-id here blanks every transcript image
@@ -3651,8 +3657,10 @@ export class TUI extends Container {
 		}
 		if (TERMINAL.imageProtocol === ImageProtocol.Kitty) {
 			for (const id of this.#imageBudget.takePurgeIds()) buffer += encodeKittyDeleteImage(id);
+			for (const id of this.#imageBudget.takeScreenPurgeIds()) buffer += encodeKittyDeleteImage(id);
 		} else {
 			this.#imageBudget.takePurgeIds();
+			this.#imageBudget.takeScreenPurgeIds();
 		}
 		// ED2 MUST precede ED3: tmux implements ED2 by scrolling the live screen
 		// into pane history (so cleared content stays reachable), so erasing

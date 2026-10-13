@@ -168,7 +168,7 @@ const finalAnswer: AssistantMessage = {
 const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
-	it("keeps tool runs adjacent through retirement, replay and resize without merging prose", () => {
+	it("separates back-to-back tool blocks by one blank row in every measurement, retirement and replay path", () => {
 		const transcript = new TranscriptContainer();
 		const first = new ToolBlock(["read source"], true);
 		const second = new ToolBlock(["grep pattern"], true);
@@ -176,24 +176,25 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(first);
 		transcript.addChild(second);
 		transcript.addChild(answer);
-		expect(transcript.render(80)).toEqual(["read source", "grep pattern", "", "final answer"]);
-		expect(transcript.liveRowCount(80)).toBe(4);
-		expect(transcript.liveRowCount(80, 4)).toBe(4);
-		expect(transcript.renderViewport(80, 4, frame)).toEqual(transcript.render(80));
-		expect(transcript.getChildStartRow(second)).toBe(1);
+		const rows = ["read source", "", "grep pattern", "", "final answer"];
+		expect(transcript.render(80)).toEqual(rows);
+		expect(transcript.liveRowCount(80)).toBe(5);
+		expect(transcript.liveRowCount(80, 5)).toBe(5);
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(rows);
+		expect(transcript.getChildStartRow(second)).toBe(2);
 		expect(transcript.getLastViewportSpans().map(span => [span.start, span.end])).toEqual([
 			[0, 1],
-			[1, 2],
-			[3, 4],
+			[2, 3],
+			[4, 5],
 		]);
 		const retired = transcript.peekFinalizedBatch(80, 3)!;
-		expect(retired.rows).toEqual(["read source"]);
+		expect(retired.rows).toEqual(["read source", ""]);
 		transcript.acknowledgeFinalizedBatch(retired.id);
 		expect(transcript.renderViewport(80, 3, frame)).toEqual(["grep pattern", "", "final answer"]);
 		expect(transcript.liveRowCount(80)).toBe(3);
 		transcript.beginReplay();
 		const replay = transcript.peekReplayBatch(60)!;
-		expect(replay.rows).toEqual(["read source"]);
+		expect(replay.rows).toEqual(["read source", ""]);
 		transcript.acknowledgeFinalizedBatch(replay.id);
 		expect(transcript.renderTail(60, 3)).toEqual(["grep pattern", "", "final answer"]);
 		expect(transcript.renderViewport(60, 3, frame)).toEqual(["grep pattern", "", "final answer"]);
@@ -589,11 +590,15 @@ describe("TranscriptContainer", () => {
 			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
 			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
 		}
-		// Emergency path: more non-empty blocks than rows. Every row carries real
-		// text — no block's tail is dropped as blank padding.
+		// Under pressure every row carries real text, apart from single
+		// separators between real blocks — no block's tail is dropped as blank padding.
 		const out = transcript.renderViewport(80, 12, frame);
 		expect(out).toHaveLength(12);
-		expect(out.every(row => /\S/.test(row))).toBe(true);
+		expect(
+			out.every(
+				(row, index) => /\S/.test(row) || (/\S/.test(out[index - 1] ?? "") && /\S/.test(out[index + 1] ?? "")),
+			),
+		).toBe(true);
 	});
 
 	it("empty blocks do not reserve capacity from real text under pressure (issue 9483)", () => {
@@ -603,10 +608,34 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
-		// Capacity 10 fits all real content once the two empty blocks stop
-		// stealing a base row each; the older block keeps its tail rows.
+		// Capacity 10 fits every real block plus its separator once the two
+		// empty blocks stop stealing a base row each; older blocks keep their tails.
 		const out = transcript.renderViewport(80, 10, frame);
-		expect(out).toEqual(["A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4"]);
+		expect(out).toEqual(["A4", "", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
+	});
+
+	it("keeps one separator between squeezed blocks while each can still show a row", () => {
+		const transcript = new TranscriptContainer();
+		for (let index = 0; index < 6; index++) {
+			transcript.addChild(
+				new ToolBlock(
+					Array.from({ length: 6 }, (_, row) => `tool ${index} row ${row}`),
+					false,
+				),
+			);
+		}
+		// 36 rows plus 5 separators overflow 40: the squeeze keeps the separators.
+		const out = transcript.renderViewport(80, 40, frame);
+		expect(out.length).toBeLessThanOrEqual(40);
+		for (let index = 1; index < 6; index++) {
+			const start = out.findIndex(row => row.startsWith(`tool ${index} `));
+			expect(out[start - 1]).toBe("");
+		}
+		expect(out.join("\n")).not.toContain("\n\n\n");
+		// Too small for a row and a separator per block: separators give way.
+		const tight = transcript.renderViewport(80, 8, frame);
+		expect(tight.length).toBeLessThanOrEqual(8);
+		expect(tight.every(row => row !== "")).toBe(true);
 	});
 
 	it("keeps a completed assistant answer visible behind an active prefix", () => {
@@ -629,12 +658,11 @@ describe("TranscriptContainer", () => {
 		const tool = new ToolBlock(["T1", "T2", "T3", "T4"], false);
 		transcript.addChild(assistant);
 		transcript.addChild(tool);
-		// Capacity 5 cannot fit both blocks in full. Surplus (3 rows) goes to the
-		// assistant block first; the tool card collapses to its one-row minimum
-		// instead of clipping already-visible assistant text.
+		// Capacity 5 keeps one separator and one row per block. The remaining
+		// two rows go to assistant text before the growing tool card.
 		const out = transcript.renderViewport(80, 5, frame);
-		expect(out).toEqual(["A1", "A2", "A3", "A4", "T4"]);
-		expect(assistant.allocations.at(-1)).toBe(4);
+		expect(out).toEqual(["A2", "A3", "A4", "", "T4"]);
+		expect(assistant.allocations.at(-1)).toBe(3);
 		expect(tool.allocations.at(-1)).toBe(1);
 	});
 
@@ -839,10 +867,10 @@ describe("TranscriptContainer viewport click spans", () => {
 		transcript.addChild(first);
 		transcript.addChild(second);
 
-		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "b1", "b2", "b3", "b4"]);
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "", "b2", "b3", "b4"]);
 		expect(transcript.getLastViewportSpans()).toEqual([
 			{ component: first, start: 0, end: 1 },
-			{ component: second, start: 1, end: 5 },
+			{ component: second, start: 2, end: 5 },
 		]);
 	});
 

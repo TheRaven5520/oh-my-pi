@@ -422,7 +422,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const details = context.result?.details as BashToolDetails | undefined;
 			return {
 				label: config.resolveTitle(args, context),
-				detail: formatBashCommandText(toBashRenderArgs(args, config)).split("\n", 1)[0],
+				detail: formatBashCommandText(toBashRenderArgs(args, config)),
 				command: true,
 				meta: details?.timedOut
 					? "timed out"

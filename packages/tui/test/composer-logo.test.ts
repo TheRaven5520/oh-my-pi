@@ -264,6 +264,59 @@ it("preserves long retained rows when preserve-mode resize narrows the viewport"
 	}
 });
 
+it.each(["preserve", "append"] as const)(
+	"blanks logo copies a %s-mode resize strands in native history while the top row stays live",
+	async mode => {
+		const h = harness();
+		try {
+			h.composer.ui.setResizeScrollback(mode);
+			for (let i = 0; i < 40; i++) h.transcript.addChild(new Text(`Chat row ${i}`, 0, 0));
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			// Shrinks push the painted top row into native history; the width
+			// change also reflows it there. No escape sequence can erase history.
+			for (const [columns, rows] of [
+				[80, 24],
+				[60, 20],
+				[80, 30],
+			] as const) {
+				h.terminal.resize(columns, rows);
+				await h.scheduler.settle(h.terminal);
+				await h.scheduler.advance(h.terminal, 1000);
+				await h.scheduler.settle(h.terminal);
+			}
+			const live = new Set(h.terminal.graphicsPlacements().map(placement => placement.imageId));
+			// Placeholder cells name their image in a truecolor foreground.
+			const namedImages = (row: number) =>
+				h.terminal.getViewport()[row]!.includes(KITTY_PLACEHOLDER)
+					? h.terminal
+							.getViewportRowForegroundValues(row)
+							.filter(word => word >>> 24 === 2)
+							.map(word => word & 0xffffff)
+					: [];
+			const top = namedImages(0);
+			expect(top.length).toBeGreaterThan(0);
+			expect(top.every(id => live.has(id))).toBe(true);
+			expect(h.terminal.getViewport()[29]?.trim()).toBe("INPUT");
+
+			const { baseY } = h.terminal.getBufferPosition();
+			h.terminal.scrollLines(-baseY);
+			const stranded: number[] = [];
+			for (let start = 0; start < baseY; start += 30) {
+				for (let row = 0; row < Math.min(30, baseY - start); row++) stranded.push(...namedImages(row));
+				h.terminal.scrollLines(30);
+			}
+			expect(stranded.length).toBeGreaterThan(0);
+			expect(stranded.some(id => live.has(id))).toBe(false);
+
+			h.composer.stop();
+			expect(h.terminal.graphicsPlacements()).toEqual([]);
+		} finally {
+			h.composer.stop();
+		}
+	},
+);
+
 it("limits the smooth logo to one row and four columns without using a chat-image slot", async () => {
 	const h = harness();
 	try {

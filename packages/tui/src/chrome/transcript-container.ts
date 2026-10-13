@@ -13,10 +13,6 @@ import { isUsageRowBlock } from "../overlays/usage-row";
 import { isToolActivityComponent } from "./tool-activity";
 import { findLabelRow, hasLabelRoom, stampRow } from "./transcript-stamp";
 
-/** Tool runs read as one group; prose and turn boundaries keep one separator. */
-function separatesBlocks(before: Component | undefined, after: Component | undefined): boolean {
-	return before !== undefined && !(isToolActivityComponent(before) && after && isToolActivityComponent(after));
-}
 /** When a block's step began and, once known, ended (epoch ms), for `/time` labels. */
 interface BlockTime {
 	at: number;
@@ -550,13 +546,9 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		this.#settleFinalized();
 		let total = 0;
-		let previous: Component | undefined;
 		for (const { entry, index } of this.#liveEntries()) {
 			const block = this.#liveBlockRows(entry, index, width);
-			if (block.length > 0) {
-				total += block.length + (separatesBlocks(previous, entry.component) ? 1 : 0);
-				previous = entry.component;
-			}
+			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
 			if (total > limit) break;
 		}
 		return total;
@@ -662,11 +654,7 @@ export class TranscriptContainer extends Container {
 		shown.reverse();
 		blocks.reverse();
 		let total = 0;
-		for (let index = 0; index < blocks.length; index++) {
-			total +=
-				blocks[index]!.length +
-				(separatesBlocks(shown[index - 1]?.entry.component, shown[index]!.entry.component) ? 1 : 0);
-		}
+		for (const block of blocks) total += block.length + (total > 0 ? 1 : 0);
 		if (shown.length === 0) {
 			this.#lastViewportSpans = [];
 			return EMPTY_ROWS;
@@ -680,7 +668,7 @@ export class TranscriptContainer extends Container {
 			const output: string[] = [];
 			const owners: (Component | undefined)[] = [];
 			for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
-				if (separatesBlocks(shown[blockIndex - 1]?.entry.component, shown[blockIndex]!.entry.component)) {
+				if (output.length > 0) {
 					output.push("");
 					owners.push(undefined);
 				}
@@ -694,9 +682,12 @@ export class TranscriptContainer extends Container {
 			return output;
 		}
 
+		// Blocks keep their one-row separators while every block can still show
+		// a row beside them; only a viewport too small for that drops them.
+		const separated = capacity >= shown.length * 2 - 1;
 		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
 		const allocation: number[] = new Array(shown.length).fill(1);
-		let surplus = capacity - shown.length;
+		let surplus = capacity - shown.length - (separated ? shown.length - 1 : 0);
 		// Honor explicit inspection before automatic layout preferences. Otherwise
 		// surrounding text can squeeze a clicked tool back to its collapsed rows.
 		// Unselected blocks still favor ordinary text over dynamic tool activity.
@@ -725,6 +716,10 @@ export class TranscriptContainer extends Container {
 				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
 			);
 			const visible = rendered.length <= allocated ? rendered : rendered.slice(rendered.length - allocated);
+			if (separated && output.length > 0 && visible.length > 0) {
+				output.push("");
+				owners.push(undefined);
+			}
 			for (const line of visible) {
 				output.push(line);
 				owners.push(candidate.entry.component);
@@ -830,14 +825,12 @@ export class TranscriptContainer extends Container {
 		let liveRows = 0;
 		let keep = 0;
 		let fits = true;
-		let following: Component | undefined;
 		for (let cursor = live.length - 1; cursor >= 0; cursor--) {
 			const candidate = live[cursor]!;
 			const height = this.#liveBlockRows(candidate.entry, candidate.index, width).length;
-			const gap = following && separatesBlocks(candidate.entry.component, following) ? 1 : 0;
-			if (height > 0) liveRows += height + gap;
+			if (height > 0) liveRows += height + (liveRows > 0 ? 1 : 0);
 			if (fits) {
-				const next = height > 0 ? tailRows + height + gap : tailRows;
+				const next = height > 0 ? tailRows + height + (tailRows > 0 ? 1 : 0) : tailRows;
 				if (next > room) {
 					fits = false;
 					keep = cursor + 1;
@@ -845,7 +838,6 @@ export class TranscriptContainer extends Container {
 					tailRows = next;
 				}
 			}
-			if (height > 0) following = candidate.entry.component;
 			if (!fits && appendHead === undefined) break;
 		}
 		const overflowing = keep > 0 || this.#liveCount() >= MAX_LIVE_BLOCKS;
@@ -948,15 +940,13 @@ export class TranscriptContainer extends Container {
 		const cap = Math.max(0, Math.trunc(maxRows));
 		if (cap === 0) return EMPTY_ROWS;
 		const rows: string[] = [];
-		let following: Component | undefined;
 		for (let index = this.#entries.length - 1; index >= 0; index--) {
 			const entry = this.#entries[index]!;
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = this.#renderBlock(entry, width);
 			if (block.length === 0) continue;
-			if (following && separatesBlocks(entry.component, following)) rows.unshift("");
+			if (rows.length > 0) rows.unshift("");
 			rows.unshift(...block);
-			following = entry.component;
 			if (rows.length >= cap) break;
 		}
 		return rows.length > cap ? rows.slice(rows.length - cap) : rows;
@@ -998,15 +988,13 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		this.#childStartRows.clear();
 		const rows: string[] = [];
-		let previous: Component | undefined;
 		for (const entry of this.#entries) {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = this.#renderEntry(entry, width);
 			if (block.length === 0) continue;
-			if (separatesBlocks(previous, entry.component)) rows.push("");
+			if (rows.length > 0) rows.push("");
 			this.#childStartRows.set(entry.component, rows.length);
 			rows.push(...block);
-			previous = entry.component;
 		}
 		return rows;
 	}
@@ -1200,7 +1188,6 @@ export class TranscriptContainer extends Container {
 		const owners: (Component | undefined)[] = [];
 		const startedAt = budgetMs === undefined ? 0 : performance.now();
 		let reached = start;
-		let previous: Component | undefined;
 		for (let index = start; index < end; index++) {
 			const entry = this.#entries[index]!;
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
@@ -1213,17 +1200,16 @@ export class TranscriptContainer extends Container {
 			const block = rendered.slice(emittedRows);
 			reached = index + 1;
 			if (block.length > 0) {
-				if (separatesBlocks(previous, entry.component)) {
+				if (rows.length > 0) {
 					rows.push("");
 					owners.push(undefined);
 				}
 				rows.push(...block);
 				for (let row = 0; row < block.length; row++) owners.push(entry.component);
-				previous = entry.component;
 			}
 			if (budgetMs !== undefined && performance.now() - startedAt >= budgetMs) break;
 		}
-		if (trailingBlank && rows.length > 0 && separatesBlocks(previous, this.#entries[reached]?.component)) {
+		if (trailingBlank && rows.length > 0) {
 			rows.push("");
 			owners.push(undefined);
 		}

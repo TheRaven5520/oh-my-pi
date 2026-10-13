@@ -55,12 +55,14 @@ export interface ToolActivitySummary {
 	detail?: string;
 	/** Small result fact kept visible even when the target is long. */
 	meta?: string;
-	/** Renderer-recognized failure; displayed instead of an output count or receipt. */
+	/** Renderer-recognized failure; displayed instead of an output preview or receipt. */
 	error?: string;
-	/** Receipts need no output row once their result is represented in the head. */
+	/** Receipts need no output preview once their result is represented in the head. */
 	receipt?: boolean;
-	/** Shell targets use a prompt marker; other targets remain plain text. */
+	/** Shell targets use a prompt marker and keep their lines, wrapping onto continuation rows. */
 	command?: boolean;
+	/** Code targets keep their lines and wrap onto continuation rows instead of being cut to one row. */
+	wrap?: boolean;
 }
 
 /** Live execution fields that are safe for compact transcript presentation. */
