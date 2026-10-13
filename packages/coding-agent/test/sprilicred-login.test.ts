@@ -10,6 +10,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runSprilicredLogin } from "@oh-my-pi/pi-coding-agent/cli/sprilicred-login";
+import { cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 
 describe("Sprilicred login", () => {
 	let root: string;
@@ -40,29 +41,31 @@ describe("Sprilicred login", () => {
 				},
 			],
 			deepseek: [{ id: "deepseek-v4.1-flash", context_window: 1000000, input_modalities: ["text", "image"] }],
-			muse: [
+			openrouter: [
 				{
-					id: "muse-wonder",
-					display_name: "Muse Wonder",
+					id: "meta/muse-wonder",
+					display_name: "Meta: Muse Wonder",
 					context_window: 1048576,
 					max_output_tokens: 128000,
 					supports_reasoning: true,
 					input_modalities: ["text", "image"],
 					pricing: {
 						unit: "microcredits_per_token",
+						usd_per_microcredit: "0.000000001",
 						input: 4000,
 						output: 20000,
 						cache_read: 200,
 						cache_write: null,
 					},
 				},
+				{ id: "openai/gpt-5", display_name: "OpenAI: GPT-5", context_window: 400000 },
 			],
 		};
 		previousUrl = process.env.SPRILICRED_URL;
 		process.env.SPRILICRED_URL = "https://sprilicred.test";
 		originalFetch = globalThis.fetch;
 		globalThis.fetch = (async input => {
-			const route = /^https:\/\/sprilicred\.test\/(glm|deepseek|muse)\/v1\/models$/.exec(String(input))?.[1];
+			const route = /^https:\/\/sprilicred\.test\/(glm|deepseek|openrouter)\/v1\/models$/.exec(String(input))?.[1];
 			if (route) {
 				const listing = dedicated[route];
 				return typeof listing === "number"
@@ -165,13 +168,8 @@ describe("Sprilicred login", () => {
 		expect((await fs.readFile(tokenPath, "utf8")).trim()).toBe("test-key");
 	});
 
-	const CYCLE = [
-		"sprilicred-anthropic/*",
-		"sprilicred-openai/*",
-		"sprilicred-glm/*",
-		"sprilicred-deepseek/*",
-		"sprilicred-muse/*",
-	];
+	const CYCLE = ["sprilicred-anthropic/*", "sprilicred-openai/*", "sprilicred-glm/*", "sprilicred-deepseek/*"];
+	const MUSE = "sprilicred-openrouter/meta/muse-wonder";
 	// The key is supplied, so login never prompts on this interface.
 	const noPrompt = {} as Parameters<typeof runSprilicredLogin>[0];
 
@@ -206,40 +204,77 @@ describe("Sprilicred login", () => {
 		expect(cfgCycleModels.get(settings)).toEqual(CYCLE);
 	});
 
-	test("puts Muse Wonder after DeepSeek with mandatory reasoning like the installer", async () => {
+	test("writes the OpenRouter provider for the model browser and retires sprilicred-muse", async () => {
+		const before = ["sprilicred-anthropic/*", ...CYCLE.slice(1), "sprilicred-muse/*"];
+		await fs.writeFile(
+			path.join(agentDir, "models.yml"),
+			JSON.stringify({
+				defaultModel: "sprilicred-muse/muse-wonder:high",
+				providers: {
+					other: { models: [{ id: "keep" }] },
+					"sprilicred-muse": {
+						baseUrl: "https://sprilicred.test/muse/v1",
+						models: [{ id: "muse-wonder", name: "Muse Wonder via Sprilicred" }],
+					},
+				},
+			}),
+		);
+		await fs.mkdir(path.join(root, ".sprilicred"), { recursive: true });
+		await fs.writeFile(
+			path.join(root, ".sprilicred/omp-models.json"),
+			JSON.stringify({ "sprilicred-muse/muse-wonder.listed": { present: false, before: null, applied: true } }),
+		);
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgCycleModels.set(settings, before);
+		cfgEnabledModels.set(settings, [...before, "mine/*"]);
+		cfgModelProviderOrder.set(settings, [...before.map(scope => scope.slice(0, -2)), "personal"]);
+		cfgModelRoles.setEntry(settings, "plan", "sprilicred-openai/muse-wonder");
+		cfgRetryFallbackChains.set(settings, {
+			"sprilicred-muse/muse-wonder": ["sprilicred-muse/muse-wonder:low", "other/keep"],
+		});
+		cfgRetryUsageLimitFallbackChains.set(settings, {
+			"sprilicred-anthropic/claude-sonnet-5": ["sprilicred-muse/muse-wonder"],
+		});
+		await settings.flush();
 		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+
 		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
-		const names = Object.keys(written.providers);
-		expect(names.indexOf("sprilicred-muse")).toBe(names.indexOf("sprilicred-deepseek") + 1);
-		expect(written.providers["sprilicred-muse"]).toMatchObject({
-			baseUrl: "https://sprilicred.test/muse/v1",
-			api: "openai-responses",
+		expect(written.providers["sprilicred-muse"]).toBeUndefined();
+		expect(Object.keys(written.providers).at(-1)).toBe("sprilicred-openrouter");
+		// No model list: discovery reads the listing, so the browser always shows the current catalog.
+		expect(written.providers["sprilicred-openrouter"]).toEqual({
+			baseUrl: "https://sprilicred.test/openrouter/v1",
+			apiKey: `!cat '${tokenPath}'`,
 			auth: "apiKey",
 			authHeader: true,
-			apiKey: `!cat '${tokenPath}'`,
+			api: "openai-responses",
 			discovery: { type: "openai-models-list", injectV1: false },
 		});
-		expect(written.providers["sprilicred-muse"].models).toEqual([
-			{
-				id: "muse-wonder",
-				name: "Muse Wonder via Sprilicred",
-				contextWindow: 1048576,
-				maxTokens: 128000,
-				reasoning: true,
-				input: ["text", "image"],
-				cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 0 },
-			},
+		expect(written.defaultModel).toBe(`${MUSE}:high`);
+		const state = JSON.parse(await fs.readFile(path.join(root, ".sprilicred/omp-models.json"), "utf8"));
+		expect(Object.keys(state).filter(key => key.startsWith("sprilicred-muse/"))).toEqual([]);
+
+		// The installer's old default cycle becomes the new one; OpenRouter never joins Ctrl+P.
+		expect(cfgCycleModels.get(settings)).toEqual(CYCLE);
+		expect(cfgEnabledModels.get(settings)).toEqual([...CYCLE, "sprilicred-openrouter/**", "mine/*"]);
+		expect(cfgModelProviderOrder.get(settings)).toEqual([
+			...CYCLE.map(scope => scope.slice(0, -2)),
+			"sprilicred-openrouter",
+			"personal",
 		]);
-		// Muse Wonder rejects effort none; GLM and DeepSeek keep it.
-		expect(written.providers["sprilicred-glm"].models[0].compat).toEqual({ reasoningDisableMode: "none-effort" });
-		expect(written.providers["sprilicred-deepseek"].models[0].compat).toEqual({
-			reasoningDisableMode: "none-effort",
+		expect(cfgModelRoles.get(settings).plan).toBe(MUSE);
+		expect(cfgRetryFallbackChains.get(settings)).toEqual({ [MUSE]: [`${MUSE}:low`, "other/keep"] });
+		expect(cfgRetryUsageLimitFallbackChains.get(settings)).toEqual({
+			"sprilicred-anthropic/claude-sonnet-5": [MUSE],
 		});
+
+		// A later login respects a narrower list the person chose.
+		cfgEnabledModels.set(settings, ["sprilicred-openai/*", "mine/*"]);
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		expect(cfgEnabledModels.get(settings)).toEqual(["sprilicred-openai/*", "mine/*"]);
 	});
 
-	test("adds a newly offered dedicated provider after the group in scoped settings", async () => {
-		const before = ["sprilicred-openai/*", "sprilicred-glm/*", "sprilicred-deepseek/*"];
+	test("keeps a custom cycle free of OpenRouter, pinning Muse Wonder by its exact id", async () => {
 		await fs.writeFile(
 			path.join(agentDir, "models.yml"),
 			JSON.stringify({
@@ -249,24 +284,81 @@ describe("Sprilicred login", () => {
 			}),
 		);
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
-		cfgCycleModels.set(settings, CYCLE.slice(0, 4));
-		cfgEnabledModels.set(settings, [...before, "mine/*"]);
-		cfgModelProviderOrder.set(settings, ["sprilicred-openai", "sprilicred-glm", "sprilicred-deepseek", "personal"]);
+		cfgCycleModels.set(settings, [
+			"other/keep",
+			"sprilicred-openai/*",
+			"sprilicred-muse/*",
+			"sprilicred-muse/muse-wonder:high",
+			`${MUSE}:high`,
+		]);
 		await settings.flush();
 		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
-		expect(cfgCycleModels.get(settings)).toEqual(CYCLE);
-		expect(cfgEnabledModels.get(settings)).toEqual([...before, "sprilicred-muse/*", "mine/*"]);
-		expect(cfgModelProviderOrder.get(settings)).toEqual([
-			"sprilicred-openai",
-			"sprilicred-glm",
-			"sprilicred-deepseek",
-			"sprilicred-muse",
-			"personal",
-		]);
-		// A later login respects a narrower list the person chose.
-		cfgEnabledModels.set(settings, ["sprilicred-openai/*", "mine/*"]);
+		expect(cfgCycleModels.get(settings)).toEqual(["other/keep", "sprilicred-openai/*", MUSE, `${MUSE}:high`]);
+	});
+
+	test("keeps a listed or unverifiable OpenRouter default, and drops the provider when nothing is listed", async () => {
+		await fs.writeFile(
+			path.join(agentDir, "models.yml"),
+			JSON.stringify({ defaultModel: "sprilicred-openrouter/openai/gpt-5:high" }),
+		);
+		const paths = { home: root, agentDir, tokenPath };
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		const modelsPath = path.join(agentDir, "models.yml");
+		expect(JSON.parse(await fs.readFile(modelsPath, "utf8")).defaultModel).toBe(
+			"sprilicred-openrouter/openai/gpt-5:high",
+		);
+
+		// Unreachable listing: keep the provider (and the person's own fields).
+		const kept = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		kept.providers["sprilicred-openrouter"].headers = { "X-Mine": "yes" };
+		await fs.writeFile(modelsPath, JSON.stringify(kept));
+		dedicated.openrouter = 503;
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		const unknown = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		expect(unknown.providers["sprilicred-openrouter"]).toMatchObject({
+			headers: { "X-Mine": "yes" },
+			baseUrl: "https://sprilicred.test/openrouter/v1",
+		});
+		expect(unknown.defaultModel).toBe("sprilicred-openrouter/openai/gpt-5:high");
+
+		// Listed without it: the default is gone like any other withdrawn model.
+		dedicated.openrouter = [{ id: "meta/muse-wonder" }];
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		expect(JSON.parse(await fs.readFile(modelsPath, "utf8")).defaultModel).toStartWith("sprilicred-anthropic/");
+
+		dedicated.openrouter = [];
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		expect(JSON.parse(await fs.readFile(modelsPath, "utf8")).providers["sprilicred-openrouter"]).toBeUndefined();
+	});
+
+	test("leaves Muse Wonder where it is when the server does not offer OpenRouter", async () => {
+		const museProvider = { baseUrl: "https://sprilicred.test/muse/v1", models: [{ id: "muse-wonder" }] };
+		await fs.writeFile(
+			path.join(agentDir, "models.yml"),
+			JSON.stringify({
+				defaultModel: "sprilicred-muse/muse-wonder",
+				providers: { "sprilicred-muse": museProvider },
+			}),
+		);
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		const muselist = ["sprilicred-anthropic/*", "sprilicred-openai/*", "sprilicred-muse/*"];
+		cfgEnabledModels.set(settings, muselist);
+		cfgModelRoles.setEntry(settings, "plan", "sprilicred-muse/muse-wonder:high");
+		await settings.flush();
+		dedicated.openrouter = 404;
 		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
-		expect(cfgEnabledModels.get(settings)).toEqual(["sprilicred-openai/*", "mine/*"]);
+		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
+		expect(written.providers["sprilicred-openrouter"]).toBeUndefined();
+		expect(written.providers["sprilicred-muse"]).toEqual(museProvider);
+		expect(written.defaultModel).toBe("sprilicred-muse/muse-wonder");
+		expect(cfgEnabledModels.get(settings)).toEqual([
+			...muselist.slice(0, 2),
+			"sprilicred-glm/*",
+			"sprilicred-deepseek/*",
+			"sprilicred-muse/*",
+		]);
+		expect(cfgModelRoles.get(settings).plan).toBe("sprilicred-muse/muse-wonder:high");
 	});
 
 	test("moves old sprilicred-openai refs and the old owned cycle list to the new layout", async () => {
@@ -336,7 +428,7 @@ describe("Sprilicred login", () => {
 		cfgCycleModels.set(settings, customCycle);
 		dedicated.glm = [];
 		dedicated.deepseek = [];
-		dedicated.muse = [];
+		dedicated.openrouter = [];
 		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
 		const written = JSON.parse(await fs.readFile(modelsPath, "utf8"));
 		expect(written.providers["sprilicred-glm"].models).toEqual([custom]);

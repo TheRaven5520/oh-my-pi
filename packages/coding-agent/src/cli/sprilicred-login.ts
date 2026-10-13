@@ -14,6 +14,7 @@ import {
 	cfgModelRoles,
 } from "../config/model-settings";
 import type { Settings } from "../config/settings";
+import { cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains } from "../session/settings";
 import { promptLine } from "./oauth-terminal";
 
 const DEFAULT_URL = "https://sprilicred.taila2d385.ts.net";
@@ -40,17 +41,25 @@ const OPENAI_DISCOVERY = { type: "openai-models-list", injectV1: false };
 const OPENAI_PROVIDER = "sprilicred-openai";
 // Same layout as the Sprilicred installer (deploy/connect.py install_omp): models
 // with a dedicated route (`/<route>/v1`) live under their own `sprilicred-<route>`.
-const DEDICATED_ROUTES = ["glm", "deepseek", "muse"];
+// DeepSeek is listed only to keys with an API-key grant; others get an empty listing.
+const DEEPSEEK_PROVIDER = "sprilicred-deepseek";
+const DEDICATED_ROUTES = ["deepseek"];
 // The installer's built-in dedicated IDs remain managed even without an ownership file.
-const DEDICATED_MODELS: Record<string, true> = {
-	"abliterated-model-large-v2": true,
-	"deepseek-v4.1-flash": true,
-	"muse-wonder": true,
-};
-// Dedicated models whose reasoning cannot be turned off (Muse Wonder rejects effort none).
-const ALWAYS_REASONING_MODELS: Record<string, true> = { "muse-wonder": true };
+const DEDICATED_MODELS: Record<string, true> = { "deepseek-v4.1-flash": true };
+// Any OpenRouter model, listed at `/openrouter/v1/models` to keys with an API-key grant. omp
+// discovers them for the model browser; models.yml holds no list, and they never join Ctrl+P.
+const OPENROUTER_PROVIDER = "sprilicred-openrouter";
+const OPENROUTER_LISTING = "/openrouter/v1/models";
+// `*` stops at `/`, and OpenRouter ids are `vendor/model`.
+const OPENROUTER_SCOPE = `${OPENROUTER_PROVIDER}/**`;
+// Muse Wonder had its own provider (`sprilicred-muse`, `/muse/v1`); it is now an OpenRouter model.
+const MUSE_PROVIDER = "sprilicred-muse";
+const MUSE_ID = "muse-wonder";
+const MUSE_REF = `${OPENROUTER_PROVIDER}/meta/muse-wonder`;
+// Providers Sprilicred no longer offers anyone: removed with every reference to them.
+const RETIRED_PROVIDERS = ["sprilicred-glm", MUSE_PROVIDER];
 // Models that accept the real `none` effort tier (connect.py model_fields): the Codex-backed
-// GPT models plus the dedicated ones, minus ALWAYS_REASONING_MODELS. Do not guess for future IDs.
+// GPT models plus the dedicated ones. Do not guess for future IDs.
 const NONE_EFFORT_MODELS: Record<string, true> = {
 	"gpt-6-astra": true,
 	"gpt-6.1-sol": true,
@@ -97,7 +106,13 @@ const PROVIDER_GROUPS: ProviderGroup[] = [
 		required: false,
 	})),
 ];
-const CYCLE_MODELS = PROVIDER_GROUPS.map(group => `${group.provider}/*`);
+const BASE_CYCLE = ["sprilicred-anthropic/*", "sprilicred-openai/*"];
+// Installer default cycles, old and new: replaced by the current default on every login.
+const OLD_CYCLE = [...BASE_CYCLE, "sprilicred-glm/*", `${DEEPSEEK_PROVIDER}/*`, `${MUSE_PROVIDER}/*`];
+const OWNED_CYCLES = [
+	...OLD_CYCLE.slice(1).map((_, index) => OLD_CYCLE.slice(0, index + 2)),
+	[...BASE_CYCLE, `${DEEPSEEK_PROVIDER}/*`],
+];
 
 type CatalogModel = {
 	id: string;
@@ -114,13 +129,26 @@ type CatalogModel = {
 type ModelConfig = Record<string, unknown> & { id: string };
 type ModelState = Record<string, { present: boolean; before: unknown; applied: unknown }>;
 
-type WrittenModels = {
-	defaultModel: string;
-	/** Model ids per provider that models.yml now holds. */
-	byProvider: Record<string, string[]>;
+/** Where old references go in this login. */
+type Migration = {
 	/** Dedicated model id -> provider it moved to from sprilicred-openai. */
 	moved: Map<string, string>;
-	/** Dedicated providers this login wrote that models.yml did not hold before. */
+	/** Providers removed this login; references to them are removed too. */
+	withdrawn: Set<string>;
+	/** Muse Wonder moves to OpenRouter, only in a login that writes the OpenRouter provider. */
+	muse: boolean;
+};
+
+type WrittenModels = {
+	defaultModel: string;
+	/** The previous default when this login replaced it because its model is gone. */
+	replacedDefault?: string;
+	/** Model ids per provider that models.yml now holds. */
+	byProvider: Record<string, string[]>;
+	/** Whether models.yml now holds the DeepSeek provider (it joins the default cycle). */
+	deepseek: boolean;
+	migration: Migration;
+	/** Dedicated and OpenRouter providers this login wrote that models.yml did not hold before. */
 	added: string[];
 };
 
@@ -168,6 +196,15 @@ async function exists(file: string): Promise<boolean> {
 		.catch(() => false);
 }
 
+class CatalogHttpError extends Error {
+	constructor(
+		readonly status: number,
+		route: string,
+	) {
+		super(`${route} returned HTTP ${status}`);
+	}
+}
+
 async function fetchCatalog(baseUrl: string, route: string, key: string): Promise<CatalogModel[]> {
 	let response: Response;
 	try {
@@ -181,25 +218,52 @@ async function fetchCatalog(baseUrl: string, route: string, key: string): Promis
 		}
 		throw error;
 	}
-	if (!response.ok) throw new Error(`${route} returned HTTP ${response.status}`);
+	if (!response.ok) throw new CatalogHttpError(response.status, route);
 	const payload = (await response.json()) as { data?: CatalogModel[] };
 	return (payload.data ?? []).filter(model => typeof model?.id === "string" && model.id.length > 0);
 }
 
-/** A group's listing; null when an optional route could not be asked (keep what was written before). */
-async function fetchGroup(baseUrl: string, group: ProviderGroup, key: string): Promise<CatalogModel[] | null> {
-	if (!group.required) return fetchCatalog(baseUrl, group.listing, key).catch(() => null);
-	const models = await fetchCatalog(baseUrl, group.listing, key);
-	if (models.length === 0) throw new Error(`${group.listing} returned no models`);
-	return models;
+/**
+ * A listing. Required groups fail login when unlisted or unreachable. Other listings are `[]`
+ * when the server does not offer them to this key (nothing listed, or 403/404), and null when
+ * they could not be asked (network, 5xx, timeout), so what was written before is kept.
+ */
+async function fetchListing(
+	baseUrl: string,
+	route: string,
+	key: string,
+	required: boolean,
+): Promise<CatalogModel[] | null> {
+	if (required) {
+		const models = await fetchCatalog(baseUrl, route, key);
+		if (models.length === 0) throw new Error(`${route} returned no models`);
+		return models;
+	}
+	try {
+		return await fetchCatalog(baseUrl, route, key);
+	} catch (error) {
+		return error instanceof CatalogHttpError && (error.status === 403 || error.status === 404) ? [] : null;
+	}
 }
 
-/** Rewrites an old `sprilicred-openai/<dedicated id>[:level]` reference to the model's own provider. */
-function migrateRef(ref: string, moved: Map<string, string>): string {
-	if (!ref.startsWith(`${OPENAI_PROVIDER}/`)) return ref;
-	const rest = ref.slice(OPENAI_PROVIDER.length + 1);
-	const provider = moved.get(rest.split(":")[0]);
-	return provider ? `${provider}/${rest}` : ref;
+/**
+ * Where an old reference goes now; undefined when it points at a withdrawn provider. Muse
+ * Wonder (`sprilicred-muse/` or the older `sprilicred-openai/`) moves to its OpenRouter id when
+ * OpenRouter is written, and a `sprilicred-openai/<dedicated id>[:level]` to its own provider.
+ */
+function migrateRef(ref: string, migration: Migration): string | undefined {
+	const slash = ref.indexOf("/");
+	if (slash <= 0) return ref;
+	const provider = ref.slice(0, slash);
+	const rest = ref.slice(slash + 1);
+	const id = rest.split(":")[0];
+	if ((provider === MUSE_PROVIDER || provider === OPENAI_PROVIDER) && id === MUSE_ID) {
+		return migration.muse ? `${MUSE_REF}${rest.slice(MUSE_ID.length)}` : undefined;
+	}
+	if (migration.withdrawn.has(provider)) return undefined;
+	if (provider !== OPENAI_PROVIDER) return ref;
+	const target = migration.moved.get(id);
+	return target ? `${target}/${rest}` : ref;
 }
 
 function perMillion(value: unknown): number | undefined {
@@ -240,11 +304,7 @@ function modelFields(model: CatalogModel, family: "anthropic" | "openai"): Recor
 	if (family === "anthropic" && pricing?.fast_mode !== null && typeof pricing?.fast_mode === "object") {
 		fields.compat = { supportsFastMode: true };
 	}
-	if (
-		family !== "anthropic" &&
-		Object.hasOwn(NONE_EFFORT_MODELS, model.id) &&
-		!Object.hasOwn(ALWAYS_REASONING_MODELS, model.id)
-	) {
+	if (family !== "anthropic" && Object.hasOwn(NONE_EFFORT_MODELS, model.id)) {
 		fields.compat = { reasoningDisableMode: "none-effort" };
 	}
 	return fields;
@@ -265,6 +325,7 @@ function applyOwnedField(state: ModelState, key: string, entry: ModelConfig, fie
 
 async function writeModels(
 	catalogs: Map<string, CatalogModel[] | null>,
+	openrouter: CatalogModel[] | null,
 	paths: SprilicredLoginPaths,
 ): Promise<WrittenModels> {
 	const modelsPath = path.join(paths.agentDir, "models.yml");
@@ -292,6 +353,7 @@ async function writeModels(
 	);
 	const byProvider: Record<string, string[]> = {};
 	const moved = new Map<string, string>();
+	const withdrawn = new Set(RETIRED_PROVIDERS);
 
 	for (const group of PROVIDER_GROUPS) {
 		const { provider } = group;
@@ -304,6 +366,11 @@ async function writeModels(
 				),
 			);
 			catalog = catalog.filter(model => !dedicatedIds.has(model.id));
+		}
+		if (!group.required && catalog?.length === 0) {
+			// Not offered to this key (no API-key grant, or withdrawn): removed with its references.
+			withdrawn.add(provider);
+			continue;
 		}
 		if (catalog === null) {
 			// Optional route could not be asked: keep whatever was written before.
@@ -379,25 +446,67 @@ async function writeModels(
 		};
 		byProvider[provider] = entries.map(entry => entry.id);
 	}
+	// The OpenRouter provider carries no model list of ours: discovery reads the listing.
+	// Not offered to this key: removed with its references. Not reachable: written anyway.
+	const offersOpenRouter = openrouter === null || openrouter.length > 0;
+	if (offersOpenRouter) {
+		providers[OPENROUTER_PROVIDER] = {
+			...original[OPENROUTER_PROVIDER],
+			baseUrl: `${endpoint()}/openrouter/v1`,
+			apiKey: tokenCommand,
+			auth: "apiKey",
+			authHeader: true,
+			api: "openai-responses",
+			discovery: OPENAI_DISCOVERY,
+		};
+	} else withdrawn.add(OPENROUTER_PROVIDER);
+	// Withdrawn providers go even when the person added models under them.
+	for (const provider of withdrawn) {
+		delete providers[provider];
+		for (const key of Object.keys(state)) {
+			if (key.startsWith(`${provider}/`)) delete state[key];
+		}
+	}
+	const migration: Migration = { moved, withdrawn, muse: offersOpenRouter };
 
 	const fallbackDefault = `sprilicred-anthropic/${byProvider["sprilicred-anthropic"][0]}`;
-	const currentDefault =
-		typeof existing.defaultModel === "string" ? migrateRef(existing.defaultModel, moved) : undefined;
+	const previousDefault = typeof existing.defaultModel === "string" ? existing.defaultModel : undefined;
+	const currentDefault = previousDefault === undefined ? undefined : migrateRef(previousDefault, migration);
 	const written = Object.entries(byProvider).flatMap(([provider, ids]) => ids.map(id => `${provider}/${id}`));
-	if (!currentDefault) existing.defaultModel = fallbackDefault;
-	else if (
+	// A chosen OpenRouter model stays the default while it is listed, or while the listing is unknown.
+	const openrouterDefault = currentDefault?.startsWith(`${OPENROUTER_PROVIDER}/`)
+		? currentDefault.slice(OPENROUTER_PROVIDER.length + 1).split(":")[0]
+		: undefined;
+	const keptOpenRouterDefault =
+		openrouterDefault !== undefined &&
+		(openrouter === null || openrouter.some(model => model.id === openrouterDefault));
+	let replacedDefault: string | undefined;
+	if (!currentDefault) {
+		existing.defaultModel = fallbackDefault;
+		replacedDefault = previousDefault;
+	} else if (
 		currentDefault.startsWith("sprilicred-") &&
+		!keptOpenRouterDefault &&
 		!written.some(model => currentDefault === model || currentDefault.startsWith(`${model}:`))
 	) {
 		existing.defaultModel = fallbackDefault;
+		replacedDefault = previousDefault;
 	} else existing.defaultModel = currentDefault;
 	existing.providers = providers;
 	await privateWrite(modelsPath, `${JSON.stringify(existing, null, 2)}\n`);
 	await privateWrite(statePath, `${JSON.stringify(state, null, 2)}\n`);
-	const added = PROVIDER_GROUPS.filter(
-		group => !group.required && !(group.provider in original) && group.provider in providers,
-	).map(group => group.provider);
-	return { defaultModel: existing.defaultModel, byProvider, moved, added };
+	const added = [
+		...PROVIDER_GROUPS.filter(group => !group.required).map(group => group.provider),
+		OPENROUTER_PROVIDER,
+	].filter(provider => !(provider in original) && provider in providers);
+	return {
+		defaultModel: existing.defaultModel,
+		replacedDefault,
+		byProvider,
+		deepseek: DEEPSEEK_PROVIDER in providers,
+		migration,
+		added,
+	};
 }
 
 /**
@@ -406,12 +515,44 @@ async function writeModels(
  * Lists without the sprilicred-openai scope are left alone.
  */
 function addScopes(list: string[], added: string[], providerOnly: boolean): string[] {
-	const scope = (provider: string) => (providerOnly ? provider : `${provider}/*`);
+	const scope = (provider: string) =>
+		providerOnly ? provider : provider === OPENROUTER_PROVIDER ? OPENROUTER_SCOPE : `${provider}/*`;
 	if (!list.includes(scope(OPENAI_PROVIDER))) return list;
-	const ours = new Set([OPENAI_PROVIDER, ...DEDICATED_ROUTES.map(route => `sprilicred-${route}`)].map(scope));
+	const ours = new Set(
+		[OPENAI_PROVIDER, ...DEDICATED_ROUTES.map(route => `sprilicred-${route}`), OPENROUTER_PROVIDER].map(scope),
+	);
 	const index = list.findLastIndex(item => ours.has(item)) + 1;
 	const additions = added.map(scope).filter(item => !list.includes(item));
 	return [...list.slice(0, index), ...additions, ...list.slice(index)];
+}
+
+/**
+ * Moves a scoped list's references to where their models live now. When Muse Wonder moves,
+ * its retired provider scope is dropped (or, in a cycle the person chose, becomes Muse
+ * Wonder's exact OpenRouter id); other refs go through {@link migrateRef}. Duplicates keep the first.
+ */
+function migrateScopes(list: string[], migration: Migration, museScope: "drop" | "exact"): string[] {
+	const next: string[] = [];
+	for (const item of list) {
+		const isMuseScope = migration.muse && (item === MUSE_PROVIDER || item === `${MUSE_PROVIDER}/*`);
+		if (isMuseScope && museScope === "drop") continue;
+		const migrated = isMuseScope ? MUSE_REF : migrateRef(item, migration);
+		if (!next.includes(migrated)) next.push(migrated);
+	}
+	return next;
+}
+
+/** Migrates fallback-chain keys and entries (`retry.fallbackChains`, `retry.usageLimitFallbackChains`). */
+function migrateChains(chains: Record<string, string[]>, migration: Migration): Record<string, string[]> | undefined {
+	let changed = false;
+	const next: Record<string, string[]> = {};
+	for (const [key, chain] of Object.entries(chains)) {
+		const migratedKey = migrateRef(key, migration);
+		const migrated = chain.map(ref => migrateRef(ref, migration));
+		if (migratedKey !== key || migrated.some((ref, index) => ref !== chain[index])) changed = true;
+		next[migratedKey] = migrated;
+	}
+	return changed ? next : undefined;
 }
 
 function wantedRoles(models: WrittenModels): Record<string, string> {
@@ -453,10 +594,14 @@ async function writeOwnedSettings(
 	const stateRoot = path.join(paths.home, ".sprilicred");
 	await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
 
-	// Only the installer's exact old or current defaults are ours to replace.
+	// Only the installer's exact old or current defaults are ours to replace (the old ones still
+	// listed Muse Wonder's provider, retired once OpenRouter is written). The OpenRouter
+	// provider never joins the cycle: its models are picked in the model browser.
+	const { migration } = models;
 	const currentCycle = cfgCycleModels.get(settings);
-	const ownCycle =
-		Bun.deepEquals(currentCycle, CYCLE_MODELS) || Bun.deepEquals(currentCycle, CYCLE_MODELS.slice(0, 2));
+	const ownCycle = (migration.muse ? OWNED_CYCLES : OWNED_CYCLES.slice(0, -1)).some(owned =>
+		Bun.deepEquals(currentCycle, owned),
+	);
 	if (currentCycle.length === 0) {
 		const cycleState = path.join(paths.home, CYCLE_STATE);
 		if (!(await exists(cycleState))) await privateWrite(cycleState, `${JSON.stringify({ before: currentCycle })}\n`);
@@ -465,22 +610,22 @@ async function writeOwnedSettings(
 		currentCycle.length === 0 || ownCycle
 			? CYCLE_MODELS
 			: addScopes(
-					currentCycle.map(ref => migrateRef(ref, models.moved)),
-					models.added,
+					migrateScopes(currentCycle, migration, "exact"),
+					models.added.filter(provider => provider !== OPENROUTER_PROVIDER),
 					false,
 				);
 	if (!Bun.deepEquals(currentCycle, nextCycle)) cfgCycleModels.set(settings, nextCycle);
 
 	const currentEnabled = cfgEnabledModels.get(settings);
-	const nextEnabled = addScopes(
-		currentEnabled.map(ref => migrateRef(ref, models.moved)),
-		models.added,
-		false,
-	);
+	const nextEnabled = addScopes(migrateScopes(currentEnabled, migration, "drop"), models.added, false);
 	if (!Bun.deepEquals(currentEnabled, nextEnabled)) cfgEnabledModels.set(settings, nextEnabled);
 	const currentOrder = cfgModelProviderOrder.get(settings);
-	const nextOrder = addScopes(currentOrder, models.added, true);
+	const nextOrder = addScopes(migrateScopes(currentOrder, migration, "drop"), models.added, true);
 	if (!Bun.deepEquals(currentOrder, nextOrder)) cfgModelProviderOrder.set(settings, nextOrder);
+	for (const chains of [cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains]) {
+		const next = migrateChains(chains.get(settings), migration);
+		if (next) chains.set(settings, next);
+	}
 
 	const currentRoles = cfgModelRoles.get(settings);
 	const rolesStatePath = path.join(paths.home, ROLES_STATE);
@@ -489,12 +634,13 @@ async function writeOwnedSettings(
 	const nextRoles: Record<string, string> = {};
 	let changed = false;
 	for (const [role, value] of Object.entries(currentRoles)) {
-		nextRoles[role] = migrateRef(value, models.moved);
+		nextRoles[role] = migrateRef(value, migration);
 		if (nextRoles[role] !== value) changed = true;
 	}
 	const written: Record<string, string> = {};
 	for (const [role, value] of Object.entries(desired)) {
-		if (currentRoles[role] === undefined || currentRoles[role] === rolesState.roles?.[role]) {
+		const ownedRole = migrateRef(rolesState.roles?.[role] ?? "", migration);
+		if (currentRoles[role] === undefined || nextRoles[role] === ownedRole) {
 			nextRoles[role] = value;
 			written[role] = value;
 		}
@@ -513,12 +659,16 @@ export async function runSprilicredLogin(
 	const key = (suppliedKey ?? (await promptLine(rl, "Paste your Sprilicred API key: "))).trim();
 	if (!key) throw new Error("Sprilicred API key is empty");
 	const baseUrl = endpoint();
-	const listings = await Promise.all(PROVIDER_GROUPS.map(group => fetchGroup(baseUrl, group, key)));
+	const [listings, openrouter] = await Promise.all([
+		Promise.all(PROVIDER_GROUPS.map(group => fetchGroup(baseUrl, group, key))),
+		fetchOpenRouter(baseUrl, key),
+	]);
 	const catalogs = new Map(PROVIDER_GROUPS.map((group, index) => [group.provider, listings[index]]));
 	const paths = resolvePaths(pathOverrides);
 	await prepareBroker(settings, key, paths);
-	const models = await writeModels(catalogs, paths);
+	const models = await writeModels(catalogs, openrouter, paths);
 	await writeOwnedSettings(settings, models, paths);
 	const count = Object.values(models.byProvider).reduce((total, ids) => total + ids.length, 0);
-	process.stdout.write(`\nLogged in to Sprilicred; configured ${count} models\n`);
+	const browse = openrouter?.length ? `; ${openrouter.length} OpenRouter models are in /model` : "";
+	process.stdout.write(`\nLogged in to Sprilicred; configured ${count} models${browse}\n`);
 }
