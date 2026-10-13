@@ -297,6 +297,8 @@ import {
 	getRunningSubagentBadgeRegistry,
 } from "@oh-my-pi/pi-tui/overlays/running-subagent-badge";
 import {
+	type AgentWorkState,
+	isWaitingTool,
 	type ObservableSession,
 	type SessionObserverChangeKind,
 	SessionObserverRegistry,
@@ -953,22 +955,19 @@ export interface SubagentHudNative {
 }
 
 /**
- * Native subagent HUD: one dock pill (§8.1) counting the running subagents,
- * with a spinner while they run; a click sends `agents.open`.
+ * Native subagent HUD: one dock pill counting the same work phases as the
+ * terminal dock; a click sends `agents.open`.
  */
 export function describeSubagentHud(sessions: ObservableSession[]): NativeNode {
-	const running = sessions.filter(isHudSubagent).length;
-	if (running === 0) return EMPTY_HUD;
+	const children = activeDockChildren(sessions);
+	if (children.length === 0) return EMPTY_HUD;
 	return row(
 		[
 			node("icon", { name: "users" }, undefined, "icon"),
-			node("spinner", { style: "dots", tone: "accent" }, undefined, "spinner"),
-			node(
-				"text",
-				{ text: `${running} ${running === 1 ? "agent" : "agents"} running`, wrap: "none" },
-				undefined,
-				"label",
-			),
+			...(children.some(session => dockWorkState(session).state === "active")
+				? [node("spinner", { style: "dots", tone: "accent" }, undefined, "spinner")]
+				: []),
+			node("text", { text: dockHeaderCounts(children), wrap: "none" }, undefined, "label"),
 		],
 		{
 			role: "omp.hud.pill",
@@ -1215,7 +1214,7 @@ export function renderSubagentHudLines(
 // Mirror Pi's compact below-editor agent panel rather than making users open
 // the full Agent Hub just to inspect or enter a child conversation.
 const SUBAGENT_HUD_VISIBLE_LIMIT = 4;
-/** How often the dock refreshes a running agent's elapsed time. */
+/** How often the dock refreshes each visible agent's current-state elapsed time. */
 const SUBAGENT_DOCK_TICK_MS = 1_000;
 
 /**
@@ -1231,18 +1230,15 @@ function activeDockChildren(sessions: readonly ObservableSession[]): ObservableS
 }
 
 /**
- * Stats for a dock row from the executor's progress snapshot: its tool calls,
- * tokens (input + output + cache writes, as Agent Hub counts them), and the
- * elapsed time, ticking from the run's start while it works.
+ * Usage for a dock row from the executor's progress snapshot: its tool calls
+ * and tokens (input + output + cache writes, as Agent Hub counts them).
  */
-export function progressRunStats(session: ObservableSession, now: number): AgentRunStats | undefined {
+function progressRunStats(session: ObservableSession): AgentRunStats | undefined {
 	const progress = session.progress;
 	if (!progress) return undefined;
-	const running = session.status === "active" && progress.startedAtMs !== undefined;
 	return {
 		tools: progress.toolCount,
 		tokens: progress.tokens,
-		elapsedMs: running ? now - progress.startedAtMs! : progress.durationMs > 0 ? progress.durationMs : undefined,
 	};
 }
 
@@ -1259,12 +1255,34 @@ export function registryModelLabel(session: ObservableSession): string | undefin
 	return chip.fallback ? `fallback → ${label}` : label;
 }
 
+/** Registry phases include concurrent tools; observer phases cover progress-only producers. */
+function dockWorkState(session: ObservableSession): AgentWorkState {
+	const tracked = AgentRegistry.global().get(session.id)?.workState ?? session.workState;
+	if (tracked) return tracked;
+	const progress = session.progress;
+	const state =
+		session.status !== "active" || (progress && progress.status !== "running")
+			? "inactive"
+			: isWaitingTool(progress?.currentTool)
+				? "waiting"
+				: "active";
+	return {
+		state,
+		since:
+			state === "waiting"
+				? (progress?.currentToolStartMs ?? session.lastUpdate)
+				: state === "active"
+					? (progress?.startedAtMs ?? session.lastUpdate)
+					: session.lastUpdate,
+	};
+}
+
 /** Prefer the live call's own detail; never present an earlier call as current work. */
 function dockActivity(session: ObservableSession): string {
 	const progress = session.progress;
 	if (session.status === "aborted" || progress?.status === "aborted") return "interrupted";
 	if (session.status === "failed" || progress?.status === "failed") return "failed";
-	if (session.status !== "active" && isForkAgentId(session.id)) return "waiting for input";
+	if (dockWorkState(session).state === "inactive" && isForkAgentId(session.id)) return "waiting for input";
 	if (progress?.status === "running" && progress.currentTool) {
 		const detail = progress.currentToolIntent
 			? shortenEmbeddedPaths(progress.currentToolIntent)
@@ -1283,7 +1301,7 @@ function dockActivity(session: ObservableSession): string {
 /**
  * Activity-first agent dock: an explicit `main` root followed by active child
  * rows, scrolled so the selection stays visible. Compact rows show the live
- * call or assignment and a subdued elapsed time. Expanded rows also expose
+ * call or assignment and the elapsed current work phase. Expanded rows also expose
  * model and usage when space permits; Agent Hub retains the complete stats.
  */
 export function renderSubagentDockLines(
@@ -1294,7 +1312,7 @@ export function renderSubagentDockLines(
 	options: {
 		now?: number;
 		livePreview?: boolean;
-		statsFor?: (session: ObservableSession, now: number) => AgentRunStats | undefined;
+		statsFor?: (session: ObservableSession) => AgentRunStats | undefined;
 		modelFor?: (session: ObservableSession) => string | undefined;
 	} = {},
 ): string[] {
@@ -1325,7 +1343,8 @@ export function renderSubagentDockLines(
 		...visible.map(session => {
 			const selected = session.id === selectedId;
 			const pointer = selected ? theme.fg("accent", "›") : " ";
-			const waitingFork = session.status !== "active" && isForkAgentId(session.id);
+			const workState = dockWorkState(session);
+			const waitingFork = workState.state === "inactive" && isForkAgentId(session.id);
 			const progress = session.progress;
 			const failed = session.status === "failed" || progress?.status === "failed";
 			const interrupted = progress?.status === "aborted";
@@ -1338,8 +1357,8 @@ export function renderSubagentDockLines(
 						: theme.fg("accent", "●");
 			const displayId = formatTaskId(session.id);
 			const activity = replaceTabs(sanitizeText(dockActivity(session))).replace(/\s*[\r\n]+\s*/g, " ");
-			const runStats = statsFor(session, now);
-			const elapsed = runStats?.elapsedMs !== undefined ? ` · ${formatRunElapsed(runStats.elapsedMs)}` : "";
+			const runStats = statsFor(session);
+			const elapsed = ` · ${failed ? "failed" : interrupted ? "interrupted" : workState.state} ${formatRunElapsed(Math.max(0, now - workState.since))}`;
 			const label = theme.fg(selected ? "accent" : "toolTitle", selected ? theme.bold(displayId) : displayId);
 			const prefix = `${pointer} ${glyph} ${label}`;
 			// Keep identity and useful activity ahead of optional metadata on narrow terminals.
@@ -1395,11 +1414,27 @@ export function renderSubagentDockLines(
 }
 
 function dockHeaderCounts(children: readonly ObservableSession[]): string {
-	const active = children.filter(session => session.status === "active").length;
-	const waitingForks = children.length - active;
-	return waitingForks > 0
-		? `${active} active · ${waitingForks} fork${waitingForks === 1 ? "" : "s"}`
-		: `${active} active`;
+	let active = 0;
+	let waiting = 0;
+	let inactive = 0;
+	for (const child of children) {
+		switch (dockWorkState(child).state) {
+			case "active":
+				active++;
+				break;
+			case "waiting":
+				waiting++;
+				break;
+			case "inactive":
+				inactive++;
+				break;
+		}
+	}
+	return [
+		`${active} active`,
+		...(waiting > 0 ? [`${waiting} waiting`] : []),
+		...(inactive > 0 ? [`${inactive} inactive`] : []),
+	].join(" · ");
 }
 
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
@@ -4853,7 +4888,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			{
 				now,
 				livePreview,
-				statsFor: (session, at) => this.#dockRunStats(session, at),
+				statsFor: session => this.#dockRunStats(session),
 				modelFor: registryModelLabel,
 			},
 		);
@@ -4872,26 +4907,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		let tickMs: number | undefined;
 		if (!agentPauseGate.paused) {
 			tickMs = livePreview ? nextSubagentPreviewTickMs(visible, now) : undefined;
-			// Registry-only rows (`/tan`, `/fork`) get no progress events, so the
-			// tick is what refreshes their model and stats while they work.
-			if (
-				visible.some(
-					child =>
-						child.status === "active" &&
-						(child.progress
-							? child.progress.startedAtMs !== undefined
-							: AgentRegistry.global().get(child.id) !== undefined),
-				)
-			) {
-				tickMs = Math.min(tickMs ?? SUBAGENT_DOCK_TICK_MS, SUBAGENT_DOCK_TICK_MS);
-			}
+			// Every visible row has a current-state clock, including an idle fork.
+			tickMs = Math.min(tickMs ?? SUBAGENT_DOCK_TICK_MS, SUBAGENT_DOCK_TICK_MS);
 		}
 		return { sessions: children, lines, rowOwners, tickMs };
 	}
 
 	/** Cache registry-only row metrics until the transcript grows. */
-	#dockRunStats(session: ObservableSession, now: number): AgentRunStats | undefined {
-		const fromProgress = progressRunStats(session, now);
+	#dockRunStats(session: ObservableSession): AgentRunStats | undefined {
+		const fromProgress = progressRunStats(session);
 		if (fromProgress) return fromProgress;
 		const live = AgentRegistry.global().get(session.id)?.session;
 		if (!live) return undefined;

@@ -55,6 +55,8 @@ export interface ToolActivitySummary {
 	detail?: string;
 	/** Small result fact kept visible even when the target is long. */
 	meta?: string;
+	/** Renderer-recognized failure; displayed instead of an output count or receipt. */
+	error?: string;
 	/** Receipts need no output row once their result is represented in the head. */
 	receipt?: boolean;
 	/** Shell targets use a prompt marker; other targets remain plain text. */

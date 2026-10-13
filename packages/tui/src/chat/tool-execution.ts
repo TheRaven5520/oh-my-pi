@@ -1352,7 +1352,7 @@ export class ToolExecutionComponent extends Container {
 		const summary = this.#activitySummary();
 		const status =
 			this.#result !== undefined && !this.#isPartial
-				? this.#result.isError
+				? this.#result.isError || summary.error
 					? "error"
 					: "success"
 				: this.#isRunning()
@@ -1376,7 +1376,7 @@ export class ToolExecutionComponent extends Container {
 		const targetWidth = Math.max(0, width - visibleWidth(prefix) - visibleWidth(suffix));
 		const headerText = customHeader ?? `${prefix}${truncateToWidth(target, targetWidth)}${suffix}`;
 		const output = this.#summarizeOutput();
-		const error = this.#result?.isError ? output.first?.trim() : undefined;
+		const error = summary.error || (this.#result?.isError ? output.first?.trim() : undefined);
 		const outputTail = this.#isRunning() ? output.last : undefined;
 		const hidden =
 			error ||
@@ -1469,7 +1469,7 @@ export class ToolExecutionComponent extends Container {
 			// A detail-less custom summary (e.g. wait before its result
 			// parse) must not fold to a bare `╭─ Label` frame under viewport
 			// pressure — keep the generic liveness hint for in-flight calls.
-			return this.#isRunning() ? { ...summary, detail: "running" } : summary;
+			return this.#isRunning() ? { ...summary, detail: "running", command: false, receipt: false } : summary;
 		}
 		if (isRecord(this.#args)) {
 			for (const key of ["command", "path", "input"] as const) {

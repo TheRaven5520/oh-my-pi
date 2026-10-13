@@ -12,6 +12,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import { oneLineLabel } from "@oh-my-pi/pi-tui/tools/task";
+import { isWaitingTool, type AgentWorkState } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 
 import { MAIN_AGENT_ID, type AgentStatus, type AgentMetricsSummary } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
 export { MAIN_AGENT_ID };
@@ -71,6 +72,8 @@ export interface AgentRef {
 	sessionFile: string | null;
 	createdAt: number;
 	lastActivity: number;
+	/** Current work phase; unlike lastActivity, output and metadata never reset this clock. */
+	workState?: AgentWorkState;
 	/** Short gist of what the agent is currently doing (latest intent or tool), for the work-aware roster. Display-only. */
 	activity?: string;
 	/** Persisted identity and telemetry restored after the live observer is gone. */
@@ -148,6 +151,10 @@ export class AgentRegistry {
 			sessionFile: input.sessionFile ?? null,
 			createdAt: input.createdAt ?? now,
 			lastActivity: input.lastActivity ?? now,
+			workState: {
+				state: (input.status ?? "running") === "running" ? "active" : "inactive",
+				since: input.lastActivity ?? input.createdAt ?? now,
+			},
 			activity: input.activity,
 			history: input.history,
 			lifecycle: input.lifecycle,
@@ -199,6 +206,8 @@ export class AgentRegistry {
 		// leaves `running`, so drop it to avoid showing stale work in rosters.
 		if (status !== "running") ref.activity = undefined;
 		ref.lastActivity = Date.now();
+		const state = status === "running" ? "active" : "inactive";
+		if (ref.workState?.state !== state) ref.workState = { state, since: ref.lastActivity };
 		if (status === "running") {
 			// Milestones are run-scoped. A ref reused by a follow-up or wake
 			// turn must not carry the previous run's response/acceptance into
@@ -337,12 +346,35 @@ export class AgentRegistry {
 		return ref.session?.isStreaming === true;
 	}
 
-	/** Mirror a session's authoritative run-state notifications into its owned registry ref. */
+	/** Mirror authoritative run and tool boundaries, including registry-only fork/tan sessions. */
 	syncSessionStatus(id: string, session: AgentSession): () => void {
+		const tools = new Map<string, string>();
 		const unsubscribe = session.subscribeRunState(status => {
+			if (status !== "running") tools.clear();
 			this.setStatus(id, status, session);
 		});
-		return unsubscribe;
+		const unsubscribeEvents = session.subscribe(event => {
+			if (event.type === "tool_execution_start") tools.set(event.toolCallId, event.toolName);
+			else if (event.type === "tool_execution_end") tools.delete(event.toolCallId);
+			else return;
+			const ref = this.#refs.get(id);
+			if (!ref || ref.session !== session || ref.status !== "running") return;
+			// A concurrent read/build still means active work even if another call waits.
+			let state: AgentWorkState["state"] = tools.size > 0 ? "waiting" : "active";
+			for (const tool of tools.values()) {
+				if (!isWaitingTool(tool)) {
+					state = "active";
+					break;
+				}
+			}
+			if (ref.workState?.state === state) return;
+			ref.workState = { state, since: Date.now() };
+			this.#emit({ type: "metadata_changed", ref });
+		});
+		return () => {
+			unsubscribe();
+			unsubscribeEvents();
+		};
 	}
 
 	onChange(listener: RegistryListener): () => void {

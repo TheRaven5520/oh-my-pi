@@ -256,6 +256,14 @@ export const grepToolRenderer = {
 	activitySummary(args: GrepRenderArgs, context: ToolActivityContext) {
 		const details = context.result?.details as GrepToolDetails | undefined;
 		const scope = details?.scopePath ?? toPathList(args?.path ?? args?.paths).join(", ");
+		if (context.result?.isError || details?.error) {
+			return {
+				label: "Grep",
+				detail: `${JSON.stringify(args?.pattern ?? "?")}${scope ? ` in ${scope}` : ""}`,
+				error: details?.error || context.result?.content.find(c => c.type === "text")?.text || "Unknown error",
+				receipt: false,
+			};
+		}
 		const counts =
 			details?.matchCount === undefined
 				? undefined

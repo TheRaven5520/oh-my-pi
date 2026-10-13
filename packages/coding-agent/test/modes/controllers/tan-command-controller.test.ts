@@ -65,7 +65,7 @@ function createCloneStub(overrides?: {
 	const appendMessage = vi.fn((message: AgentMessage) => {
 		messages.push(message);
 	});
-	let listener: ((event: TanSessionEvent) => void) | undefined;
+	const listeners = new Set<(event: TanSessionEvent) => void>();
 	const clone = {
 		agent: { appendMessage, state: { messages } },
 		sessionManager: overrides?.sessionManager,
@@ -73,11 +73,10 @@ function createCloneStub(overrides?: {
 		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
 		getEnabledToolNames: vi.fn(() => overrides?.enabledToolNames ?? overrides?.activeToolNames ?? ["read", "bash"]),
 		subscribe: vi.fn((l: (event: TanSessionEvent) => void) => {
-			listener = l;
-			return () => {
-				listener = undefined;
-			};
+			listeners.add(l);
+			return () => listeners.delete(l);
 		}),
+		subscribeRunState: vi.fn(() => () => {}),
 		prompt: vi.fn(overrides?.prompt ?? (async () => {})),
 		waitForIdle: vi.fn(async () => {}),
 		hasPendingAsyncWork: vi.fn(() => false),
@@ -91,7 +90,11 @@ function createCloneStub(overrides?: {
 		appendMessage,
 		messages,
 		get compactionListener() {
-			return listener;
+			return listeners.size > 0
+				? (event: TanSessionEvent) => {
+						for (const listener of listeners) listener(event);
+					}
+				: undefined;
 		},
 	};
 }

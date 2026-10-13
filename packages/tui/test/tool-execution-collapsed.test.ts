@@ -68,6 +68,56 @@ describe("collapsed tool cards", () => {
 		card.seal();
 	});
 
+	describe.each(["glob", "grep"] as const)("%s search failures", toolName => {
+		it.each(["isError", "details.error"] as const)("preserves %s errors across expansion and recovery", channel => {
+			const card = new ToolExecutionComponent(
+				toolName,
+				{ pattern: "needle", path: "src" },
+				{},
+				undefined,
+				ui,
+				"/tmp",
+			);
+			const error = "Permission denied searching src";
+			card.updateResult(
+				{
+					...textResult(
+						channel === "isError" ? `${error}\nCheck directory access` : "Search stopped\nCheck access",
+					),
+					isError: channel === "isError",
+					details: {
+						fileCount: 0,
+						matchCount: 0,
+						truncated: true,
+						missingPaths: ["missing"],
+						...(channel === "details.error" ? { error } : {}),
+					},
+				},
+				false,
+			);
+			for (const expanded of [false, true, false]) {
+				card.setExpanded(expanded);
+				const failed = plain(card.render(120)).join("\n");
+				expect(failed).toContain(error);
+				expect(failed).not.toContain("0 files");
+				expect(failed).not.toContain("0 matches");
+				expect(failed).not.toContain("truncated");
+				expect(failed).not.toContain("paths skipped");
+			}
+			const emptyMessage = toolName === "glob" ? "No files found" : "No matches found";
+			card.updateResult({ ...textResult(emptyMessage), details: { fileCount: 0, matchCount: 0 } }, false);
+			const recovered = plain(card.render(120));
+			expect(recovered).toHaveLength(1);
+			expect(recovered[0]).toContain(toolName === "glob" ? "0 files" : "0 matches");
+			expect(recovered[0]).not.toContain(error);
+			card.setExpanded(true);
+			expect(plain(card.render(120)).join("\n")).toContain(emptyMessage);
+			card.setExpanded(false);
+			expect(plain(card.render(120))).toEqual(recovered);
+			card.seal();
+		});
+	});
+
 	it("does not replace failed write output with a successful receipt", () => {
 		const card = new ToolExecutionComponent(
 			"write",
@@ -449,6 +499,19 @@ describe("collapsed tool cards", () => {
 		} finally {
 			card.seal();
 		}
+	});
+
+	it("retains a failed shell command's exit metadata alongside its error", () => {
+		const card = new ToolExecutionComponent("bash", { command: "exit 7" }, {}, undefined, ui, "/tmp");
+		card.updateResult(
+			{ ...textResult("Command failed\nDiagnostic detail"), isError: true, details: { exitCode: 7 } },
+			false,
+		);
+		const failed = plain(card.render(80));
+		expect(failed[0]).toContain("exit 7");
+		expect(failed[0]).toContain("· exit 7");
+		expect(failed[1]).toContain("Command failed");
+		card.seal();
 	});
 
 	it("ticks elapsed seconds on a running collapsed header and drops them once settled", () => {

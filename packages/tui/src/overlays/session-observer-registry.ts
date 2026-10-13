@@ -44,6 +44,16 @@ export interface EventBusLike {
 	on(channel: string, listener: (data: unknown) => void): () => void;
 }
 
+/** Current work phase, timed at a lifecycle boundary rather than the last output. */
+export interface AgentWorkState {
+	state: "active" | "waiting" | "inactive";
+	since: number;
+}
+
+export function isWaitingTool(tool: string | undefined): boolean {
+	return tool === "wait" || tool === "ask";
+}
+
 export interface ObservableSession {
 	id: string;
 	kind: "main" | "subagent";
@@ -62,6 +72,7 @@ export interface ObservableSession {
 	detached?: boolean;
 	index?: number;
 	lastUpdate: number;
+	workState?: AgentWorkState;
 	/** Latest progress snapshot from the subagent executor */
 	progress?: AgentProgress;
 }
@@ -217,8 +228,15 @@ export class SessionObserverRegistry {
 						const sortOrder = this.#ensureSortOrder(payload.id);
 						this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
 						const existing = this.#sessions.get(payload.id);
+						const now = Date.now();
+						const state = status === "active" ? "active" : "inactive";
+						const workState =
+							existing?.status === status && existing.workState
+								? existing.workState
+								: ({ state, since: now } satisfies AgentWorkState);
 						if (existing) {
 							existing.status = status;
+							existing.workState = workState;
 							existing.lastUpdate = Date.now();
 							existing.index = payload.index;
 							existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
@@ -233,6 +251,7 @@ export class SessionObserverRegistry {
 								agent: payload.agent,
 								description: payload.description,
 								status,
+								workState,
 								sessionFile: payload.sessionFile,
 								parentToolCallId: payload.parentToolCallId,
 								detached: payload.detached,
@@ -253,6 +272,25 @@ export class SessionObserverRegistry {
 						const progress = payload.progress;
 						const id = progress.id;
 						const existing = this.#sessions.get(id);
+						const now = Date.now();
+						const state =
+							(existing && existing.status !== "active") || progress.status !== "running"
+								? "inactive"
+								: isWaitingTool(progress.currentTool)
+									? "waiting"
+									: "active";
+						const workState =
+							existing?.workState?.state === state
+								? existing.workState
+								: ({
+										state,
+										since:
+											state === "waiting"
+												? (progress.currentToolStartMs ?? now)
+												: existing
+													? now
+													: (progress.startedAtMs ?? now),
+									} satisfies AgentWorkState);
 
 						const sortOrder = this.#ensureSortOrder(id);
 						this.#ensureParentSortOrder(payload.parentToolCallId, sortOrder);
@@ -262,6 +300,7 @@ export class SessionObserverRegistry {
 							existing.parentToolCallId = payload.parentToolCallId ?? existing.parentToolCallId;
 							existing.detached = payload.detached ?? existing.detached;
 							existing.progress = progress;
+							existing.workState = workState;
 							if (progress.description) existing.description = progress.description;
 							if (payload.sessionFile) existing.sessionFile = payload.sessionFile;
 						} else {
@@ -278,6 +317,7 @@ export class SessionObserverRegistry {
 								index: payload.index,
 								lastUpdate: Date.now(),
 								progress,
+								workState,
 							});
 						}
 						this.#notifyListeners("progress");

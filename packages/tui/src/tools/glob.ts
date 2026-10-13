@@ -115,6 +115,14 @@ export const globToolRenderer = {
 	inline: true,
 	activitySummary(args: GlobRenderArgs, context: ToolActivityContext) {
 		const details = context.result?.details as GlobToolDetails | undefined;
+		if (context.result?.isError || details?.error) {
+			return {
+				label: "Glob",
+				detail: formatGlobRenderPaths(args) || "*",
+				error: details?.error || context.result?.content.find(c => c.type === "text")?.text || "Unknown error",
+				receipt: false,
+			};
+		}
 		const count = details?.fileCount;
 		const limited = details?.truncated || details?.meta?.truncation || details?.resultLimitReached;
 		return {

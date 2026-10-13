@@ -151,6 +151,7 @@ export class TanCommandController {
 								timestamp: Date.now(),
 							});
 						});
+						const unsubscribeStatus = agentRegistry.syncSessionStatus(cloneId, clone);
 						try {
 							if (signal.aborted) {
 								abortClone();
@@ -168,6 +169,7 @@ export class TanCommandController {
 							}
 							return extractAssistantText(clone.getLastAssistantMessage()) || "(no output)";
 						} finally {
+							unsubscribeStatus();
 							unsubscribeCompaction();
 							signal.removeEventListener("abort", abortClone);
 						}

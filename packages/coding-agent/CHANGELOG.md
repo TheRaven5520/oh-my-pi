@@ -6,6 +6,7 @@
 
 ### Added
 
+- Agent dock rows now show active, waiting or inactive state with elapsed time in that phase. Explicit waits and questions are distinct from quiet active work; idle forks retain their inactivity clock. Timers survive metadata refreshes, and native dock counts use the same states.
 - The personal fork keeps a tiny, smooth Baltimore Ravens image in the top-right of the standard terminal UI while chatting. It uses at most four columns by one row, stays above pickers, and does not consume a chat-image slot. The PNG is bundled; terminals without Kitty Unicode placeholders hide it instead of showing pixel art.
 - `omp login sprilicred` writes Muse Wonder like the Sprilicred installer: its own `sprilicred-muse` provider (`/muse/v1`) after `sprilicred-deepseek`, with no `reasoningDisableMode` because its reasoning cannot be turned off. A dedicated provider new to `models.yml` joins scoped `cycleModels`, `enabledModels` and `modelProviderOrder` after the Sprilicred group.
 - Personal fork installers and `omp update` now use only `TheRaven5520/oh-my-pi` releases (`v18.6.1-personal.N`), with SHA-256 verification and atomic replacement. Updates and opt-in startup notices detect fork revisions sharing a native version by executable digest. Published targets are Linux x64/glibc and Apple Silicon; no upstream or Spring Silicon fallback. Managed installs are refused rather than silently upgraded through an upstream package manager.
