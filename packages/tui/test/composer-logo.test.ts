@@ -1,4 +1,8 @@
 import { afterEach, beforeAll, beforeEach, expect, it } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { RavensHeaderTransport } from "../src/chrome/ravens-header";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { Text } from "@oh-my-pi/pi-tui";
@@ -34,12 +38,12 @@ afterEach(() => {
 	setCellDimensions(previousCells);
 });
 
-function harness() {
+function harness(ravensLogo: boolean | { header?: RavensHeaderTransport | null } = true) {
 	const terminal = new VirtualTerminal(80, 30);
 	const scheduler = new VirtualRenderScheduler();
 	const composer = new Composer({
 		terminal,
-		ravensLogo: true,
+		ravensLogo,
 		tuiOptions: { renderScheduler: scheduler },
 		preferences: {
 			quiet: true,
@@ -357,6 +361,74 @@ it.each([null, ImageProtocol.Kitty])("does not reserve logo space without safe i
 		expect(frame.viewport.join("")).not.toContain(KITTY_PLACEHOLDER);
 		expect(frame.viewport.join("")).not.toMatch(/[▀▄]/u);
 		expect(frame.viewport.at(-1)).toBe("INPUT");
+	} finally {
+		h.composer.stop();
+	}
+});
+
+it("keeps a stable tmux header out of the viewport, padding, and resize purge queue", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "omp-ravens-composer-"));
+	let published: { header: string; file: string } | undefined;
+	let publishes = 0;
+	const transport: RavensHeaderTransport = {
+		replayDir: dir,
+		probe: async () => ({ enabled: true, inMode: false }),
+		publish(header, file) {
+			published = { header, file };
+			publishes++;
+			return true;
+		},
+		clear(file) {
+			if (published?.file === file) published = undefined;
+		},
+	};
+	const h = harness({ header: transport });
+	try {
+		await h.scheduler.settle(h.terminal);
+		const initial = published!;
+		expect(initial).toBeDefined();
+		expect(initial.header).toContain(KITTY_PLACEHOLDER);
+		for (const [columns, rows] of [
+			[80, 30],
+			[8, 8],
+			[4, 4],
+			[80, 30],
+		] as const) {
+			h.terminal.resize(columns, rows);
+			await h.scheduler.settle(h.terminal);
+			expect(h.composer.getViewportTopInset()).toBe(0);
+			expect(h.composer.renderViewportTop({ columns, rows })).toEqual([]);
+			expect(h.terminal.getViewport().join("\n")).not.toContain(KITTY_PLACEHOLDER);
+			expect(h.composer.ui.imageBudget.takeScreenPurgeIds()).toEqual([]);
+			expect(published).toEqual(initial);
+		}
+		expect(publishes).toBe(1);
+		h.composer.stop();
+		expect(published).toBeUndefined();
+		expect(existsSync(initial.file)).toBe(false);
+	} finally {
+		h.composer.stop();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+it.each([null, false])("retains the inline logo when the tmux header is disabled (%s)", async disabled => {
+	const transport: RavensHeaderTransport | null =
+		disabled === null
+			? null
+			: {
+					replayDir: "/unused",
+					probe: async () => ({ enabled: false, inMode: false }),
+					publish: () => {
+						throw new Error("disabled header must not publish");
+					},
+					clear: () => {},
+				};
+	const h = harness({ header: transport });
+	try {
+		await h.scheduler.settle(h.terminal);
+		expect(h.composer.getViewportTopInset()).toBe(1);
+		expect(h.terminal.getViewport()[0]).toContain(KITTY_PLACEHOLDER);
 	} finally {
 		h.composer.stop();
 	}

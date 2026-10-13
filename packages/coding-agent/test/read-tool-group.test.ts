@@ -264,7 +264,7 @@ describe("ReadToolGroupComponent", () => {
 		expect(rendered).toContain("corrected from");
 	});
 
-	it("highlights only the collapsed preview lines", () => {
+	it("keeps collapsed reads as receipts without highlighting hidden content", () => {
 		const highlightSpy = vi.spyOn(themeModule, "highlightCode");
 		const component = new ReadToolGroupComponent({ showContentPreview: true });
 		const examplePath = path.resolve("/tmp/example.ts");
@@ -283,12 +283,13 @@ describe("ReadToolGroupComponent", () => {
 		);
 
 		const rendered = Bun.stripANSI(component.render(120).join("\n"));
-		const highlightedInput = highlightSpy.mock.calls[0]?.[0];
-
-		expect(highlightedInput).toBe("line 1\nline 2\nline 3");
-		expect(rendered).toContain("line 1");
-		expect(rendered).not.toContain("line 4");
-		expect(rendered).toContain("2 more lines");
+		expect(highlightSpy).not.toHaveBeenCalled();
+		expect(rendered).toContain(" · 5 lines");
+		expect(rendered).not.toContain("line 1");
+		expect(rendered.split("\n")).toHaveLength(1);
+		component.setExpanded(true);
+		expect(Bun.stripANSI(component.render(120).join("\n"))).toContain("line 5");
+		expect(highlightSpy).toHaveBeenCalled();
 	});
 
 	it("does not render a duplicate summary row when inline previews are enabled", () => {
@@ -309,7 +310,7 @@ describe("ReadToolGroupComponent", () => {
 		expect(matches).toBe(1);
 	});
 
-	it("keeps usage below an inline preview when the summary row is suppressed", () => {
+	it("keeps usage below a collapsed receipt without duplicating it", () => {
 		const component = new ReadToolGroupComponent({ showContentPreview: true });
 		const examplePath = path.resolve("/tmp/example.ts");
 		component.updateArgs({ path: examplePath }, "read-preview");
@@ -330,12 +331,13 @@ describe("ReadToolGroupComponent", () => {
 		);
 
 		const lines = Bun.stripANSI(component.render(120).join("\n")).split("\n");
-		const previewIndex = lines.findIndex(line => line.includes("line 2"));
+		const receiptIndex = lines.findIndex(line => line.includes(" · 2 lines"));
 		const usageIndices = lines
 			.map((line, index) => (line.includes("2026-01-02 03:04:05") ? index : -1))
 			.filter(index => index >= 0);
 		expect(usageIndices).toHaveLength(1);
-		expect(usageIndices[0]).toBeGreaterThan(previewIndex);
+		expect(receiptIndex).toBe(0);
+		expect(usageIndices[0]).toBe(receiptIndex + 1);
 	});
 
 	it("links grouped summary paths to resolved filesystem paths and selector lines", () => {

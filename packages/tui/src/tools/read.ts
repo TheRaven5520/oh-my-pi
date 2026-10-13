@@ -4,6 +4,7 @@ import { LINE_RANGE_CHUNK_SOURCE, parseLineRanges } from "./line-ranges";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parseArchivePathCandidates } from "@oh-my-pi/pi-utils/ar";
+import { formatCount } from "@oh-my-pi/pi-utils";
 import type { Component } from "../tui";
 import { Text } from "../components/text";
 import type {
@@ -83,6 +84,24 @@ export interface ReadToolDetails {
 	 * delimited part has no linkable fs path. Lets the TUI hyperlink each grouped row the same way a standalone read row is.
 	 */
 	displayReadTargetLinks?: Array<string | null>;
+}
+
+/** Count source content, never wrapped terminal rows or model-only notices. */
+export function readResultLineCount(result: {
+	content?: Array<{ type: string; text?: string }>;
+	details?: ReadToolDetails;
+	isError?: boolean;
+}): number | undefined {
+	const details = result.details;
+	if (result.isError || details?.isDirectory || result.content?.some(block => block.type === "image")) return;
+	const display = details?.displayContent;
+	if (display?.lineNumbers) return display.lineNumbers.filter(line => line !== null).length;
+	if (display === undefined && details?.summary) return details.summary.lines;
+	const text = display?.text ?? result.content?.find(block => block.type === "text")?.text;
+	if (text === undefined) return;
+	const content = display ? text : stripOutputNotice(text, details?.meta);
+	if (!content) return 0;
+	return content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
 }
 
 // Parsing also recognizes incomplete counts to explain their errors; path splitting
@@ -429,13 +448,45 @@ function describeReadImage(block: TaggedReadImageBlock, alt: string): NativeNode
 
 /** Render file, image, and URL reads in the transcript. */
 export const readToolRenderer = {
-	activitySummary(args: unknown, _context: ToolActivityContext): ToolActivitySummary {
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const input = args as ReadRenderArgs | undefined;
 		const rawPath =
 			typeof input?.file_path === "string" ? input.file_path : typeof input?.path === "string" ? input.path : "";
 		const routed = readUrlCard(rawPath);
 		if (routed) return { label: routed.card.label, detail: routed.target || routed.card.rootDetail };
-		return { label: "Read", detail: shortenPath(rawPath) };
+		const result = context.result;
+		const details = result?.details as ReadToolDetails | undefined;
+		const summary: ToolActivitySummary = { label: "Read", detail: shortenPath(rawPath) };
+		if (!result || context.isPartial || details?.kind === "url" || isReadableUrlPath(rawPath)) return summary;
+		if (result.isError) {
+			summary.error = (result.content.find(block => block.type === "text")?.text || "Read failed").replace(
+				/^Error:\s*/,
+				"",
+			);
+			return summary;
+		}
+		const count = readResultLineCount({ ...result, details });
+		if (count === undefined) return summary;
+		const meta = [formatCount("line", count)];
+		if (details?.suffixResolution) {
+			const suffix = details.suffixResolution;
+			const selector = splitPathAndSel(rawPath).sel;
+			const target = selector && !splitPathAndSel(suffix.to).sel ? `${suffix.to}:${selector}` : suffix.to;
+			summary.detail = shortenPath(target);
+			meta.push(`corrected from ${shortenPath(suffix.from)}`);
+		}
+		if (details?.conflictCount) meta.push(formatCount("conflict", details.conflictCount));
+		summary.meta = meta.join(" · ");
+		// Warning bodies and multi-target identities must remain visible.
+		summary.receipt = !(
+			details?.meta?.truncation ||
+			details?.meta?.artifactError ||
+			details?.meta?.limits ||
+			details?.truncation?.truncated ||
+			details?.notes?.length ||
+			(details?.displayReadTargets && details.displayReadTargets.length > 1)
+		);
+		return summary;
 	},
 	renderCall(args: ReadRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const rawPath =

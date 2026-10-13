@@ -13,7 +13,7 @@ import type { TruncationMeta } from "../tools/output-meta";
 import { OutputPane } from "../render/output-pane";
 import { expandedToolRows } from "../render/utils";
 import { transcriptContent } from "./transcript-content";
-import { truncateToWidth } from "../utils";
+import { truncateToWidth, visibleWidth } from "../utils";
 import {
 	buildExecutionFrame,
 	buildStatusFooter,
@@ -208,23 +208,39 @@ export class EvalExecutionComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		const lines = super.render(width);
-		if (lines.filter(line => /\S/.test(line)).length > 2) this.#hadExpandableContent = true;
-		if (!this.#expanded && this.#hadExpandableContent) {
-			const output = this.#outputPane
-				.getText()
-				.split("\n")
-				.filter(line => line.trim());
-			const detail =
-				this.#status === "running"
-					? (output.at(-1) ?? "running")
-					: this.#status === "error"
-						? (output[0] ?? "error")
-						: `${output.length} lines`;
+		const output = this.#outputPane
+			.getText()
+			.split("\n")
+			.filter(line => line.trim());
+		if (output.length > 0 || this.#code.includes("\n")) this.#hadExpandableContent = true;
+		if (!this.#expanded) {
+			const status = this.#status === "error" ? `exit ${this.#exitCode}` : this.#status;
+			const meta = [status === "complete" ? "done" : status];
+			if (output.length > 0) meta.push(`${output.length} ${output.length === 1 ? "line" : "lines"}`);
+			const suffix = theme.fg(this.#status === "error" ? "error" : "dim", ` · ${meta.join(" · ")}`);
 			const colorKey: ExecutionColorKey = this.#excludeFromContext ? "dim" : "pythonMode";
-			const header = transcriptContent(this.#formatHeader(colorKey)).render(width)[0] ?? "  >>>";
-			return [header, truncateToWidth(theme.fg("dim", `  └ ${detail}`), width)];
+			const headerWidth = Math.max(0, width - visibleWidth(suffix));
+			const headerRows = transcriptContent(this.#formatHeader(colorKey)).render(Math.max(1, headerWidth));
+			if (headerRows.length > 1) this.#hadExpandableContent = true;
+			const header = headerRows[0] ?? "  >>>";
+			const preview = this.#status === "complete" ? output.slice(0, 3) : output.slice(-3);
+			const rows = [
+				truncateToWidth(`${truncateToWidth(header, headerWidth)}${suffix}`, width),
+				...preview.map((line, index) =>
+					truncateToWidth(theme.fg("muted", `${index === 0 ? "  └ " : "    "}${line}`), width),
+				),
+			];
+			const notices = buildStatusFooter({
+				status: "complete",
+				exitCode: undefined,
+				truncation: this.#truncation,
+				artifactError: this.#artifactError,
+				hiddenLineCount: 0,
+			});
+			if (notices) rows.push(...notices.render(width).filter(line => line.trim()));
+			return rows;
 		}
+		const lines = super.render(width);
 		if (this.#individuallyExpanded) {
 			return expandedToolRows(theme, lines, width);
 		}

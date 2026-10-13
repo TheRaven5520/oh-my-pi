@@ -802,7 +802,7 @@ describe("subagent dock lines", () => {
 	const renderDock = (sessions: ObservableSession[], columns = 120, selectedId?: string): string =>
 		Bun.stripANSI(renderSubagentDockLines(sessions, columns, selectedId).join("\n"));
 
-	it("renders distinct assignments instead of repeating model and usage boilerplate", () => {
+	it("shows the actual compact model alongside distinct assignments without usage boilerplate", () => {
 		const out = renderDock([
 			makeSession({
 				id: "AuthLoader",
@@ -818,8 +818,39 @@ describe("subagent dock lines", () => {
 		expect(out).toContain("agents · main");
 		expect(out).toContain("AuthLoader · Refactoring the auth flow");
 		expect(out).toContain("SchemaMigrator · Migrating the users table");
-		expect(out).not.toContain("Opus");
+		expect(out).toContain("Opus 5.5 (high)");
 		expect(out).not.toContain("tool uses");
+	});
+
+	it("marks the actual fallback model in compact rows instead of the configured role", () => {
+		const out = renderDock([
+			makeSession({
+				id: "FallbackWorker",
+				progress: makeProgress({
+					id: "FallbackWorker",
+					modelRole: "task",
+					resolvedModelIdentity: "openai/gpt-5",
+					resolvedThinkingLevel: ThinkingLevel.High,
+					resolvedModelIsFallback: true,
+				}),
+			}),
+		]);
+		expect(out).toContain("FallbackWorker · fallback → GPT-5 (high) · openai");
+		expect(out).not.toContain(" · task");
+		expect(out.split("\n")).toHaveLength(4);
+	});
+
+	it("does not present an unresolved model role as the actual model", () => {
+		const session = makeSession({
+			id: "Unresolved",
+			description: "Awaiting resolution",
+			progress: makeProgress({ id: "Unresolved", modelRole: "configured-role" }),
+		});
+		for (const expanded of [false, true]) {
+			const out = Bun.stripANSI(renderSubagentDockLines([session], 120, undefined, expanded).join("\n"));
+			expect(out).toContain("Unresolved · Awaiting resolution");
+			expect(out).not.toContain("configured-role");
+		}
 	});
 	it("times continuous active work from its start rather than each output", () => {
 		const startedAtMs = 1_000_000;
@@ -1001,6 +1032,27 @@ describe("subagent dock lines", () => {
 		for (const line of out.split("\n")) expect(line.length).toBeLessThanOrEqual(50);
 	});
 
+	it("truncates compact activity before the actual model, identity and phase timer", () => {
+		const session = makeSession({
+			id: "Worker",
+			description: "A very long description of the work this agent is doing right now",
+			progress: makeProgress({
+				id: "Worker",
+				resolvedModelIdentity: "sprilicred-anthropic/claude-opus-5-5",
+				resolvedThinkingLevel: ThinkingLevel.High,
+				startedAtMs: 0,
+			}),
+		});
+		const lines = renderSubagentDockLines([session], 50, undefined, false, { now: 45_000 });
+		const row = Bun.stripANSI(lines[3]!);
+		expect(row).toContain("Worker");
+		expect(row).toContain("Opus 5.5 (high)");
+		expect(row).toContain(` · active ${formatRunElapsed(45_000)}`);
+		expect(row).not.toContain("A very long description");
+		expect(lines).toHaveLength(4);
+		for (const line of lines) expect(Bun.stringWidth(Bun.stripANSI(line))).toBeLessThanOrEqual(50);
+	});
+
 	it("uses the caller's stats for expanded rows without progress", () => {
 		const out = Bun.stripANSI(
 			renderSubagentDockLines([makeSession({ id: "Plain", description: "no progress" })], 120, undefined, true, {
@@ -1010,7 +1062,7 @@ describe("subagent dock lines", () => {
 		expect(out).toContain("Plain · no progress · 1 tool use · 2m tokens");
 	});
 
-	it("names the live model of registry-only agents in expanded rows (/tan, /fork)", () => {
+	it("names the live model of registry-only agents in compact and expanded rows (/tan, /fork)", () => {
 		const registry = AgentRegistry.global();
 		const live: Record<string, Record<string, unknown>> = {
 			"Tan-served": {
@@ -1024,18 +1076,22 @@ describe("subagent dock lines", () => {
 			registry.register({ id, displayName: "tan", kind: "sub", session: session as unknown as AgentSession });
 		}
 		try {
-			const rows = Bun.stripANSI(
-				renderSubagentDockLines(
-					Object.keys(live).map(id => makeSession({ id })),
-					160,
-					undefined,
-					true,
-					{ statsFor: () => ({ tools: 3, tokens: 12_000 }), modelFor: registryModelLabel },
-				).join("\n"),
-			);
-			expect(rows).toContain("Tan-served · Opus 5.5 (high) · 3 tool uses · 12k tokens");
-			expect(rows).toContain("Fork-fresh · Opus 5.5 (low) · 3 tool uses");
-			expect(rows).toContain("Tan-fallback · fallback → sprilicred-openai/gpt-6.1-sol · 3 tool uses");
+			for (const expanded of [false, true]) {
+				const rows = Bun.stripANSI(
+					renderSubagentDockLines(
+						Object.keys(live).map(id => makeSession({ id })),
+						160,
+						undefined,
+						expanded,
+						{ statsFor: () => ({ tools: 3, tokens: 12_000 }), modelFor: registryModelLabel },
+					).join("\n"),
+				);
+				expect(rows).toContain("Tan-served · Opus 5.5 (high)");
+				expect(rows).toContain("Fork-fresh · Opus 5.5 (low)");
+				expect(rows).toContain("Tan-fallback · fallback → sprilicred-openai/gpt-6.1-sol");
+				if (expanded) expect(rows).toContain(" · 3 tool uses · 12k tokens");
+				else expect(rows).not.toContain("tool uses");
+			}
 		} finally {
 			for (const id of Object.keys(live)) registry.unregister(id);
 		}
@@ -1166,7 +1222,15 @@ describe("subagent dock lines", () => {
 	});
 
 	it("bounds every padded row and preserves selected-row click ownership", () => {
-		const session = makeSession({ id: "Worker", description: "Checking a very long assignment ".repeat(6) });
+		const session = makeSession({
+			id: "Worker",
+			description: "Checking a very long assignment ".repeat(6),
+			progress: makeProgress({
+				id: "Worker",
+				resolvedModelIdentity: "sprilicred-anthropic/claude-opus-5-5",
+				resolvedThinkingLevel: ThinkingLevel.High,
+			}),
+		});
 		for (const columns of [12, 24, 40, 60]) {
 			const lines = renderSubagentDockLines([session], columns, session.id);
 			const hud = new SubagentHudComponent(lines, [session.id], undefined, undefined, [

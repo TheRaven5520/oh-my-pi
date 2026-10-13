@@ -17,7 +17,7 @@ import { resolveImageOptions } from "../render/render-utils";
 import { OutputPane } from "../render/output-pane";
 import { expandedToolRows } from "../render/utils";
 import { TranscriptMarkerText, transcriptContent } from "./transcript-content";
-import { truncateToWidth } from "../utils";
+import { truncateToWidth, visibleWidth } from "../utils";
 import { loadXtermTerminal, readTerminalRows, styleTerminalRow } from "../tools/terminal-output";
 import { getSixelLineMask, isSixelPassthroughEnabled, sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import {
@@ -391,27 +391,42 @@ export class BashExecutionComponent extends Container {
 			this.#displayDirty = false;
 			this.#updateDisplay();
 		}
-		const lines = super.render(width);
 		const sixelOutput =
 			TERMINAL.imageProtocol === ImageProtocol.Sixel &&
 			isSixelPassthroughEnabled() &&
 			(getSixelLineMask(this.#outputLines)?.some(Boolean) ?? false);
-		if (this.#outputLines.some(line => line.trim()) || this.#images.length > 0) this.#hadExpandableContent = true;
-		if (!this.#expanded && this.#hadExpandableContent && !sixelOutput) {
-			const visible = this.#outputLines.filter(line => line.trim());
-			const detail =
-				this.#status === "running"
-					? (visible.at(-1) ?? "running")
-					: this.#status === "error"
-						? (visible[0] ?? "error")
-						: visible.length === 1
-							? visible[0]
-							: visible.length > 1
-								? `${visible.length} lines`
-								: "output hidden";
-			const header = `$ ${this.#command.replace(/\s+/g, " ")}`;
-			return [truncateToWidth(header, width), truncateToWidth(theme.fg("dim", `  └ ${detail}`), width)];
+		if (this.#outputLines.some(line => line.trim()) || this.#images.length > 0 || this.#command.includes("\n")) {
+			this.#hadExpandableContent = true;
 		}
+		if (!this.#expanded && !sixelOutput) {
+			const visible = this.#outputLines.filter(line => line.trim());
+			const status = this.#status === "error" ? `exit ${this.#exitCode}` : this.#status;
+			const meta = [status === "complete" ? "done" : status];
+			if (visible.length > 0) meta.push(`${visible.length} ${visible.length === 1 ? "line" : "lines"}`);
+			if (this.#images.length > 0)
+				meta.push(`${this.#images.length} ${this.#images.length === 1 ? "image" : "images"}`);
+			const suffix = theme.fg(this.#status === "error" ? "error" : "dim", ` · ${meta.join(" · ")}`);
+			const header = theme.fg(this.#colorKey, theme.bold(`$ ${this.#command.replace(/\s+/g, " ")}`));
+			const headerWidth = Math.max(0, width - visibleWidth(suffix));
+			if (visibleWidth(header) > headerWidth) this.#hadExpandableContent = true;
+			const preview = this.#status === "complete" ? visible.slice(0, 3) : visible.slice(-3);
+			const rows = [
+				truncateToWidth(`${truncateToWidth(header, headerWidth)}${suffix}`, width),
+				...preview.map((line, index) =>
+					truncateToWidth(`${index === 0 ? "  └ " : "    "}${this.#styleDisplayLine(line)}`, width),
+				),
+			];
+			const notices = buildStatusFooter({
+				status: "complete",
+				exitCode: undefined,
+				truncation: this.#truncation,
+				artifactError: this.#artifactError,
+				hiddenLineCount: 0,
+			});
+			if (notices) rows.push(...notices.render(width).filter(line => line.trim()));
+			return rows;
+		}
+		const lines = super.render(width);
 		if (this.#individuallyExpanded) {
 			return expandedToolRows(theme, lines, width);
 		}

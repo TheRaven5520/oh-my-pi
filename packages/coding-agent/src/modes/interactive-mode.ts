@@ -1299,10 +1299,10 @@ function dockActivity(session: ObservableSession): string {
 }
 
 /**
- * Activity-first agent dock: an explicit `main` root followed by active child
- * rows, scrolled so the selection stays visible. Compact rows show the live
- * call or assignment and the elapsed current work phase. Expanded rows also expose
- * model and usage when space permits; Agent Hub retains the complete stats.
+ * Agent dock: an explicit `main` root followed by active child rows, scrolled
+ * so the selection stays visible. Compact rows show the resolved model, live
+ * call or assignment and elapsed work phase. Expanded rows also expose usage;
+ * identity, phase and model take priority over activity on narrow terminals.
  */
 export function renderSubagentDockLines(
 	sessions: ObservableSession[],
@@ -1357,30 +1357,30 @@ export function renderSubagentDockLines(
 						: theme.fg("accent", "●");
 			const displayId = formatTaskId(session.id);
 			const activity = replaceTabs(sanitizeText(dockActivity(session))).replace(/\s*[\r\n]+\s*/g, " ");
-			const runStats = statsFor(session);
 			const elapsed = ` · ${failed ? "failed" : interrupted ? "interrupted" : workState.state} ${formatRunElapsed(Math.max(0, now - workState.since))}`;
 			const label = theme.fg(selected ? "accent" : "toolTitle", selected ? theme.bold(displayId) : displayId);
 			const prefix = `${pointer} ${glyph} ${label}`;
-			// Keep identity and useful activity ahead of optional metadata on narrow terminals.
+			// Reserve identity and phase first, then the actual model before activity.
 			const detailWidth = Math.max(0, rowWidth - visibleWidth(prefix) - visibleWidth(elapsed));
-			const activityReserve = activity ? Math.min(detailWidth, 3 + Math.min(24, visibleWidth(activity))) : 0;
-			let metadata = "";
+			const identity = progress?.resolvedModelIdentity ?? progress?.resolvedModel;
+			const fallbackProvider =
+				progress?.resolvedModelIsFallback && identity?.includes("/")
+					? ` · ${identity.slice(0, identity.indexOf("/"))}`
+					: "";
+			const model = identity
+				? `${progress?.resolvedModelIsFallback ? "fallback → " : ""}${formatModelLabel(identity, progress?.resolvedThinkingLevel, { ref: progress?.resolvedModelIdentity !== undefined ? "identity" : "selector" })}${fallbackProvider}`
+				: options.modelFor?.(session);
+			const modelBudget = detailWidth - 3;
+			let metadata =
+				model && modelBudget > 0
+					? ` · ${previewLine(replaceTabs(sanitizeText(model)).replace(/\s*[\r\n]+\s*/g, " "), modelBudget)}`
+					: "";
 			if (expanded) {
-				const identity = progress?.resolvedModelIdentity ?? progress?.resolvedModel;
-				const fallbackProvider =
-					progress?.resolvedModelIsFallback && identity?.includes("/")
-						? ` · ${identity.slice(0, identity.indexOf("/"))}`
-						: "";
-				const model = identity
-					? `${formatModelLabel(identity, progress?.resolvedThinkingLevel, { ref: progress?.resolvedModelIdentity !== undefined ? "identity" : "selector" })}${fallbackProvider}`
-					: (options.modelFor?.(session) ?? progress?.modelRole);
+				const runStats = statsFor(session);
 				const statsText = formatAgentRunStats({ tools: runStats?.tools, tokens: runStats?.tokens });
 				const stats = statsText ? ` · ${statsText}` : "";
-				if (visibleWidth(stats) <= detailWidth - activityReserve) metadata = stats;
-				const modelBudget = detailWidth - activityReserve - visibleWidth(metadata) - 3;
-				if (model && modelBudget >= 8) {
-					metadata = ` · ${previewLine(sanitizeText(model).replace(/\s*[\r\n]+\s*/g, " "), modelBudget)}${metadata}`;
-				}
+				const activityReserve = activity ? 3 + Math.min(24, visibleWidth(activity)) : 0;
+				if (visibleWidth(metadata) + visibleWidth(stats) + activityReserve <= detailWidth) metadata += stats;
 			}
 			const activityBudget = detailWidth - visibleWidth(metadata) - 3;
 			const activityText =

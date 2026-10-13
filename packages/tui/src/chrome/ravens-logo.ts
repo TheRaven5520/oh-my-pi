@@ -1,6 +1,7 @@
 import type { ImageBudget } from "../components/image";
 import { getKittyGraphics } from "../kitty-graphics";
 import {
+	calculateImageFit,
 	encodeKittyDeleteImage,
 	getCellDimensions,
 	ImageProtocol,
@@ -9,6 +10,7 @@ import {
 	TERMINAL,
 } from "../terminal-capabilities";
 import { visibleWidth } from "../utils";
+import { RavensHeader, type RavensHeaderTransport, resolveRavensHeaderTransport } from "./ravens-header";
 import { RAVENS_LOGO_DIMENSIONS, RAVENS_LOGO_PNG_BASE64 } from "./ravens-logo-data";
 
 const EMPTY_ROWS: readonly string[] = [];
@@ -16,6 +18,7 @@ const EMPTY_ROWS: readonly string[] = [];
 /** Tiny pane-relative graphic; unsupported terminals get no replacement text. */
 export class RavensLogo {
 	readonly #budget: ImageBudget;
+	readonly #header: RavensHeader | undefined;
 	#imageId: number;
 	#columns = -1;
 	#rows = -1;
@@ -28,13 +31,39 @@ export class RavensLogo {
 	#lines: readonly string[] = EMPTY_ROWS;
 
 	/** Reserve ids from the owning TUI's allocator without observing an image-budget slot. */
-	constructor(budget: ImageBudget) {
+	constructor(
+		budget: ImageBudget,
+		options: {
+			header?: RavensHeaderTransport | null;
+			onChange?: () => void;
+			emit?: (bytes: string) => void;
+		} = {},
+	) {
 		this.#budget = budget;
 		this.#imageId = budget.acquireId();
+		const transport = options.header === undefined ? resolveRavensHeaderTransport() : options.header;
+		if (transport) {
+			this.#header = new RavensHeader(
+				transport,
+				this.#imageId,
+				options.onChange ?? (() => {}),
+				options.emit ?? (() => {}),
+			);
+		}
 	}
 
 	/** The logo row for a `columns`×`rows` viewport; empty below two rows. */
 	render(columns: number, rows: number): readonly string[] {
+		if (this.#header && this.#header.mode !== "inline") {
+			const supported = TERMINAL.imageProtocol === ImageProtocol.Kitty && getKittyGraphics().unicodePlaceholders;
+			this.#header.sync(
+				supported
+					? calculateImageFit(RAVENS_LOGO_DIMENSIONS, { maxWidthCells: 4, maxHeightCells: 1 }, getCellDimensions())
+							.columns
+					: undefined,
+			);
+			return EMPTY_ROWS;
+		}
 		// A terminal resize reflows the painted row or pushes it into native
 		// history before the app hears about it, and no escape sequence can edit
 		// history. Retire the id instead: deleting it blanks every stranded copy,
@@ -93,10 +122,11 @@ export class RavensLogo {
 
 	/** Called on the restored normal screen at shutdown; never deletes chat images. */
 	release(): string {
+		const headerRelease = this.#header?.release() ?? "";
 		this.#columns = -1;
 		this.#lines = EMPTY_ROWS;
-		if (this.#paintedColumns < 0) return "";
+		if (this.#paintedColumns < 0) return headerRelease;
 		this.#paintedColumns = -1;
-		return encodeKittyDeleteImage(this.#imageId);
+		return headerRelease + encodeKittyDeleteImage(this.#imageId);
 	}
 }

@@ -24,6 +24,7 @@ import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
 import { RavensLogo } from "../chrome/ravens-logo";
+import type { RavensHeaderTransport } from "../chrome/ravens-header";
 import { WelcomeComponent } from "./welcome";
 import { ensureThemeSync, getEditorTheme } from "../theme/theme";
 
@@ -84,7 +85,7 @@ export interface ComposerOptions {
 	readonly preferences?: Partial<ComposerPreferences>;
 	readonly welcome?: ComposerWelcomeUpdate;
 	/** Personal-fork decoration, outside the transcript and native history. */
-	readonly ravensLogo?: boolean;
+	readonly ravensLogo?: boolean | { header?: RavensHeaderTransport | null };
 	readonly status?: ComposerStatusCache;
 	readonly exit?: (code: number) => void;
 	readonly now?: () => number;
@@ -331,7 +332,13 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#preferences.showHardwareCursor,
 			options.tuiOptions,
 		);
-		this.#ravensLogo = options.ravensLogo ? new RavensLogo(this.ui.imageBudget) : undefined;
+		this.#ravensLogo = options.ravensLogo
+			? new RavensLogo(this.ui.imageBudget, {
+					header: typeof options.ravensLogo === "object" ? options.ravensLogo.header : undefined,
+					onChange: () => this.ui.requestRender(),
+					emit: bytes => this.ui.terminal.write(bytes),
+				})
+			: undefined;
 		this.ui.setFrameProvider(this);
 		this.ui.setMaxInlineImages(this.#preferences.maxInlineImages);
 		this.ui.setResizeScrollback(this.#preferences.resizeScrollback);

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- With the companion tmux header configuration enabled, the Ravens image lives in the fixed pane border rather than scrollable text. A private raw-image cache supports reconnect/window replay; shutdown clears only the owning process's pane options. Native scrolling and selection remain unchanged.
+- Successful Read receipts put source-line counts on the same row as the target. Grouped paths, errors and warnings remain visible. User shell/Eval runs preview actual output, while clean delivery and task roster metadata stays inline instead of repeating on a second row.
 - Resizing with preserved or appended native history retires old Ravens image placements, preventing visible logo copies from being left in scrollback.
 - Compact Glob/Grep cards preserve both top-level and structured errors instead of displaying successful zero-result receipts. Synthetic running hints no longer inherit a shell prompt marker.
 - Live transcript height uses the same separators as rendering, preventing tool blocks from squeezing the viewport or retiring early. Failed edits with structured details no longer report successful diff counts or qualify as compact receipts.

@@ -11,6 +11,7 @@ import {
 	type ReadToolDetails,
 	readContentCode,
 	readSourceFsPath,
+	readResultLineCount,
 	splitPathAndSel,
 } from "../tools/read";
 import { PREVIEW_LIMITS, shortenPath } from "../render/render-utils";
@@ -36,6 +37,7 @@ import {
 import { plainText } from "../native/spans";
 import { Memo } from "../native/memo";
 import { fileHref, fileRow, inlineErrorView } from "../tools/native-view";
+import { formatOutputNotice } from "../tools/output-meta";
 
 /**
  * Extract the read call's target path. `path` is the canonical arg; `file_path`
@@ -124,6 +126,8 @@ type ReadEntry = {
 	status: "pending" | "success" | "warning" | "error";
 	correctedFrom?: string;
 	contentText?: string;
+	lineCount?: number;
+	warningText?: string;
 	conflictCount?: number;
 	codeStartLine?: number;
 	codeLineNumbers?: Array<number | null>;
@@ -387,26 +391,41 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
-		const lines = super.render(width);
-		if (lines.filter(line => Bun.stripANSI(line).trim().length > 0).length > 2) this.#hadExpandableContent = true;
-		if (!this.#expanded && this.#hadExpandableContent) {
-			const first = lines.find(line => Bun.stripANSI(line).trim().length > 0) ?? "Read";
-			const failed = [...this.#entries.values()].find(entry => entry.status === "error");
-			const detail = failed
-				? `error: ${
-						plainText(failed.contentText ?? "")
-							.replace(/^Error:\s*/, "")
-							.trim() || "Read failed"
-					}`
-				: `${Math.max(1, lines.length - 1)} lines`;
-			return [first, theme.fg("dim", `  └ ${detail.replace(/\s+/g, " ")}`)].map(line =>
-				truncateToWidth(line, width),
+		if (this.#expanded) {
+			const lines = super.render(width);
+			return this.#individuallyExpanded ? expandedToolRows(theme, lines, width) : lines;
+		}
+		const entries = [...this.#entries.values()];
+		const rows = this.#buildSummaryRows(this.#displayTargetsForEntries(entries));
+		const usageByRow = this.#usageRowsBySummaryRow(rows);
+		const title = theme.fg("toolTitle", theme.bold("Read"));
+		const lines: string[] = [];
+		if (rows.length === 1) {
+			const row = rows[0]!;
+			lines.push(
+				`${this.#formatStatus(this.#statusForTargets(row.targets))} ${title} ${this.#formatRowPath(row)}${this.#rowCount(row)}`,
 			);
+			this.#appendUsageRows(lines, usageByRow.get(0) ?? [], "   ");
+		} else {
+			lines.push(`${theme.format.bullet} ${title}${rows.length ? theme.fg("dim", ` (${rows.length})`) : ""}`);
+			for (const [index, row] of rows.entries()) {
+				this.#appendSummaryRow(lines, row, index, rows.length, usageByRow.get(index) ?? []);
+			}
 		}
-		if (this.#individuallyExpanded) {
-			return expandedToolRows(theme, lines, width);
+		for (const entry of entries) {
+			if (this.#shouldRenderPreview(entry)) this.#hadExpandableContent = true;
+			if (entry.status === "error") {
+				const error =
+					plainText(entry.contentText ?? "")
+						.replace(/^Error:\s*/, "")
+						.trim() || "Read failed";
+				lines.push(
+					theme.fg("error", `  └ ${rows.length > 1 ? `${entry.path}: ` : ""}${error.replace(/\s+/g, " ")}`),
+				);
+			}
+			if (entry.warningText) lines.push(`  └ ${entry.warningText}`);
 		}
-		return lines;
+		return lines.map(line => truncateToWidth(line, width));
 	}
 	isTranscriptBlockFinalized(): boolean {
 		if (this.#sealed) return true;
@@ -510,6 +529,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const conflictCount =
 			typeof details?.conflictCount === "number" && details.conflictCount > 0 ? details.conflictCount : undefined;
 		entry.conflictCount = conflictCount;
+		entry.lineCount = readResultLineCount({ ...result, details });
+		const warnings = [formatOutputNotice(details?.meta).trim(), ...(details?.notes ?? [])].filter(Boolean);
+		if (details?.truncation?.truncated && !details.meta?.truncation) warnings.push("Read output truncated");
+		entry.warningText = warnings.length ? theme.fg("warning", warnings.join(" · ").replace(/\s+/g, " ")) : undefined;
 		entry.status = result.isError ? "error" : suffixResolution ? "warning" : "success";
 		// Store clean display content for preview/expanded display when the read
 		// tool provides it; fall back to model-facing text for legacy results.
@@ -1078,7 +1101,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#formatRow(row: ReadSummaryRow): string {
 		const status = this.#statusForTargets(row.targets);
 		const statusPrefix = status === "success" ? "" : `${this.#formatStatus(status)} `;
-		return `${statusPrefix}${this.#formatRowPath(row)}`;
+		return `${statusPrefix}${this.#formatRowPath(row)}${this.#expanded ? "" : this.#rowCount(row)}`;
 	}
 
 	#formatRowPath(row: ReadSummaryRow): string {
@@ -1088,6 +1111,23 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			line: firstSelectorLineForTargets(row.targets),
 			linkPath: linkPathForTargets(row.targets),
 		});
+	}
+
+	#rowCount(row: ReadSummaryRow): string {
+		const seen = new Set<ReadEntry>();
+		let count = 0;
+		for (const { entry } of row.targets) {
+			if (seen.has(entry)) continue;
+			// A multi-file result has only an aggregate count, not one for each path.
+			if (
+				entry.lineCount === undefined ||
+				(entry.displayPaths?.length ?? splitReadDisplayPathSpecs(entry.path).length) > 1
+			)
+				return "";
+			seen.add(entry);
+			count += entry.lineCount;
+		}
+		return theme.fg("dim", ` · ${formatCount("line", count)}`);
 	}
 
 	#statusForTargets(targets: ReadDisplayTarget[]): ReadEntry["status"] {

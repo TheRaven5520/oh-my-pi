@@ -539,7 +539,11 @@ describe("collapsed tool cards", () => {
 		try {
 			for (const index of [0, 2, 1]) {
 				update(index);
-				expect(plain(card.render(100))[1]).toEndWith(` Running 3 agents: ${names.join(", ")}`);
+				const rendered = plain(card.render(160));
+				expect(rendered[0]).toContain(names.join(", "));
+				expect(rendered[0]).toContain("3 running");
+				expect(rendered.join("\n")).toContain("Update from");
+				expect(rendered.join("\n")).not.toContain("Running 3 agents:");
 				// Native task cards already carry all agent nodes, not the text tail.
 				const nativeNames = card
 					.describe()
@@ -547,7 +551,7 @@ describe("collapsed tool cards", () => {
 				expect(nativeNames).toEqual([names[2], names[0], names[1]]);
 			}
 			const narrow = card.render(40);
-			expect(plain(narrow)[1]).toEndWith("…");
+			expect(plain(narrow).join("\n")).not.toContain("Running 3 agents:");
 			expect(narrow.every(row => visibleWidth(row) <= 40)).toBe(true);
 			card.setExpanded(true);
 			const expanded = plain(card.render(100)).join("\n");
@@ -556,10 +560,12 @@ describe("collapsed tool cards", () => {
 			card.setExpanded(false);
 			progress[1]!.status = "completed";
 			update(2);
-			expect(plain(card.render(100))[1]).toEndWith(" Running 2 agents: AdvisorOneLine2, CardsReview");
+			expect(plain(card.render(160))[0]).toContain("2 running");
+			expect(plain(card.render(160))[0]).toContain("1 done");
 			progress[0]!.status = "failed";
 			const lastUpdate = update(2);
-			expect(plain(card.render(100))[1]).toEndWith(" Running agent CardsReview");
+			expect(plain(card.render(160))[0]).toContain("1 running");
+			expect(plain(card.render(160))[0]).toContain("1 failed");
 			// The same payload settling must invalidate the live-summary cache.
 			card.updateResult(lastUpdate, false);
 			expect(plain(card.render(100))[1]).toEndWith(" Running agent CardsReview...");

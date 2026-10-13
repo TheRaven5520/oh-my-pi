@@ -2108,14 +2108,22 @@ export const taskToolRenderer = {
 	activitySummary(args: TaskParams, context: ToolActivityContext) {
 		const details = context.result?.details as TaskToolDetails | undefined;
 		const results = details?.results ?? [];
-		const failed = results.filter(result => !result.aborted && (result.exitCode !== 0 || result.error)).length;
-		const cancelled = results.filter(result => result.aborted).length;
-		const done = results.length - failed - cancelled;
-		const running =
-			details?.progress?.filter(
-				progress => progress.status === "running" && !results.some(result => result.id === progress.id),
-			).length ?? 0;
+		const progress = (details?.progress ?? []).filter(entry => !results.some(result => result.id === entry.id));
+		const failed =
+			results.filter(result => !result.aborted && (result.exitCode !== 0 || result.error)).length +
+			progress.filter(entry => entry.status === "failed").length;
+		const cancelled =
+			results.filter(result => result.aborted).length + progress.filter(entry => entry.status === "aborted").length;
+		const done =
+			results.filter(result => !result.aborted && result.exitCode === 0 && !result.error).length +
+			progress.filter(entry => entry.status === "completed").length;
+		const running = progress.filter(entry => entry.status === "running").length;
+		const pending = progress.filter(entry => entry.status === "pending").length;
 		const names =
+			[...results, ...progress]
+				.sort((a, b) => a.index - b.index)
+				.map(entry => entry.id)
+				.join(", ") ||
 			args?.tasks
 				?.map(task => task.name)
 				.filter(Boolean)
@@ -2128,29 +2136,48 @@ export const taskToolRenderer = {
 			meta:
 				[
 					running ? `${running} running` : undefined,
+					pending ? `${pending} pending` : undefined,
 					done ? `${done} done` : undefined,
 					failed ? `${failed} failed` : undefined,
 					cancelled ? `${cancelled} cancelled` : undefined,
 				]
 					.filter(Boolean)
 					.join(" · ") || undefined,
-			receipt: results.length > 0 && running === 0 && failed === 0 && cancelled === 0,
+			// Completed output may include findings, warnings or patch instructions.
+			receipt: false,
 		};
 	},
 	renderCall,
 	renderResult,
 	visibleOutput(output: string, details: TaskToolDetails | undefined, options: RenderResultOptions): string {
 		if (!options.isPartial || !details?.progress) return output;
-		// The latest text belongs to whichever child just reported. The compact
-		// card needs the whole live roster, not that interleaved progress tail.
-		const running = details.progress
-			.filter(
-				progress => progress.status === "running" && !details.results.some(result => result.id === progress.id),
-			)
-			.sort((a, b) => a.index - b.index);
+		const running = details.progress.filter(
+			progress => progress.status === "running" && !details.results.some(result => result.id === progress.id),
+		);
 		if (running.length === 0) return output;
 		const names = running.map(progress => progress.id).join(", ");
-		return running.length === 1 ? `Running agent ${names}` : `Running ${running.length} agents: ${names}`;
+		// Match only known roster-only output, not arbitrary child prose. The
+		// activity head carries the actual ids and count; useful progress stays below.
+		const rosterOnly =
+			output === `Running ${running.length} agents: ${names}` ||
+			output === `Running ${running.length} agents...` ||
+			running.some(
+				progress =>
+					output === `Running agent ${progress.id}` ||
+					output === `Running agent ${progress.id}...` ||
+					output === `Running background task ${progress.id}...`,
+			);
+		if (!rosterOnly) return output;
+		return details.progress
+			.flatMap(progress => {
+				const messages = [...progress.recentOutput];
+				const failure = progress.retryFailure?.errorMessage ?? progress.retryState?.errorMessage;
+				if (failure) messages.push(failure);
+				const intent = progress.currentToolIntent ?? progress.lastIntent;
+				if (intent) messages.push(intent);
+				return messages.map(message => `${progress.id}: ${message}`);
+			})
+			.join("\n");
 	},
 	describeCall(args: TaskParams, options: RenderResultOptions): NativeToolView | undefined {
 		return taskCallMemo.get(args, [options.argsComplete], () => describeTaskCall(args));
