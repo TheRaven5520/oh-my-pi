@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createCompactionSummaryMessage, createCustomMessage } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
+import { appendAdvisorNotes, createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-tui/chat/chat-transcript-builder";
@@ -20,6 +20,7 @@ import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "@oh-my
 import { text } from "@oh-my-pi/pi-tui/native/describe";
 import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import type { TspNode, TspOp } from "@oh-my-pi/pi-wire";
 import { TspHarness } from "./tsp-harness";
 
@@ -329,5 +330,40 @@ describe("native transcript", () => {
 			]),
 		);
 		expect(h.errors).toEqual([]);
+	});
+	it("merges only live consecutive advisor cards, never emitted history", () => {
+		const firstNotes = [{ note: "first note", severity: "concern" as const }];
+		const secondNotes = [{ note: "second note", severity: "concern" as const }];
+
+		const live = new TranscriptContainer();
+		const liveFirst = createAdvisorMessageCard({ notes: firstNotes }, () => true, theme);
+		live.addChild(liveFirst);
+		const livePrevious = live.children.at(-1);
+		if (livePrevious && live.canRemoveBlock(livePrevious) && appendAdvisorNotes(livePrevious, secondNotes)) {
+			// Merged into the still-live tail.
+		} else {
+			live.addChild(createAdvisorMessageCard({ notes: secondNotes }, () => true, theme));
+		}
+		expect(live.children).toHaveLength(1);
+		expect(live.render(120).join("\\n")).toContain("2 notes");
+
+		const committed = new TranscriptContainer();
+		const committedFirst = createAdvisorMessageCard({ notes: firstNotes }, () => true, theme);
+		committed.addChild(committedFirst);
+		const firstRows = committedFirst.render(120);
+		const batch = committed.peekFlushBatch(120);
+		committed.acknowledgeFinalizedBatch(batch!.id);
+		expect(committed.canRemoveBlock(committedFirst)).toBe(false);
+		const committedPrevious = committed.children.at(-1);
+		if (
+			committedPrevious &&
+			committed.canRemoveBlock(committedPrevious) &&
+			appendAdvisorNotes(committedPrevious, secondNotes)
+		) {
+			throw new Error("committed advisor card was merged");
+		}
+		committed.addChild(createAdvisorMessageCard({ notes: secondNotes }, () => true, theme));
+		expect(committed.children).toHaveLength(2);
+		expect(committedFirst.render(120)).toEqual(firstRows);
 	});
 });

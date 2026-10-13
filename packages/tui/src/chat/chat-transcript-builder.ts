@@ -599,7 +599,8 @@ export class ChatTranscriptBuilder {
 		if (message.customType === "advisor") {
 			const details = (message as CustomMessage<AdvisorMessageDetails>).details;
 			const notes = details?.notes ?? [];
-			if (appendAdvisorNotes(this.container.children.at(-1), notes)) return;
+			const previous = this.container.children.at(-1);
+			if (previous && this.container.canRemoveBlock(previous) && appendAdvisorNotes(previous, notes)) return;
 			const card = createAdvisorMessageCard(details, () => this.#expanded, theme);
 			// Tracked so a transcript-wide toggle also clears a per-card native toggle.
 			this.#trackExpandable(card);

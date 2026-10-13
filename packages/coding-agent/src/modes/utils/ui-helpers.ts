@@ -255,7 +255,12 @@ export class UiHelpers {
 						const details = (message as CustomMessage<AdvisorMessageDetails>).details;
 						const notes = details?.notes ?? [];
 						const previous = this.ctx.chatContainer.children.at(-1);
-						if (appendAdvisorNotes(previous, notes)) break;
+						if (
+							previous &&
+							this.ctx.chatContainer.canRemoveBlock(previous) &&
+							appendAdvisorNotes(previous, notes)
+						)
+							break;
 						this.ctx.chatContainer.addChild(
 							createAdvisorMessageCard(details, () => this.ctx.toolOutputExpanded, theme),
 						);
