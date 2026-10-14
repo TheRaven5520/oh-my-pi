@@ -356,7 +356,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#usageRows = new Map<string, ReadUsageRow>();
 	#usageBatchByToolCallId = new Map<string, string>();
 	readonly #instanceId = nextReadGroupId++;
-	#hadExpandableContent = false;
 	#text: Text;
 	#expanded = false;
 	#individuallyExpanded = false;
@@ -413,7 +412,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			}
 		}
 		for (const entry of entries) {
-			if (this.#shouldRenderPreview(entry)) this.#hadExpandableContent = true;
 			if (entry.status === "error") {
 				const error =
 					plainText(entry.contentText ?? "")
@@ -599,11 +597,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	getClickToolId(): string | undefined {
-		return this.#hadExpandableContent ? `read:${this.#instanceId}` : undefined;
+		return this.#hasExpandableContent() ? `read:${this.#instanceId}` : undefined;
 	}
 
 	toggleClickExpansion(): boolean {
-		if (!this.#hadExpandableContent) return false;
+		if (!this.#hasExpandableContent()) return false;
 		this.setExpanded(!this.#expanded, true);
 		return true;
 	}
@@ -662,10 +660,11 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const rows = this.#buildSummaryRows(this.#displayTargetsForEntries(entries));
 		const status = this.#groupStatus(entries);
 		const previews = entries.filter(entry => entry.status !== "error" && this.#shouldRenderPreview(entry));
+		const hasExpandableContent = this.#hasExpandableContent();
 		const body: NativeChild[] = [];
 		let head: NativeToolHead;
 		// Previews (and a long error message) are what a collapse hides; plain rows always show.
-		let collapsible = previews.length > 0;
+		let collapsible = hasExpandableContent;
 		if (rows.length <= 1) {
 			const row = rows[0];
 			const error = row && this.#statusForTargets(row.targets) === "error" ? this.#errorFor(row) : undefined;
@@ -801,6 +800,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const rows = this.#buildSummaryRows(this.#displayTargetsForEntries(entries));
 		const usageByRow = this.#usageRowsBySummaryRow(rows);
 		const previews = entries.filter(entry => this.#shouldRenderPreview(entry));
+		const hasExpandableContent = this.#hasExpandableContent();
 		const status = this.#groupStatus(entries);
 		const title = span("Read", "toolTitle");
 		const children: NativeChild[] = [];
@@ -876,6 +876,8 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 				variant: "bare",
 				status,
 				tone: status === "error" ? "error" : status === "running" ? "pending" : undefined,
+				collapsible: hasExpandableContent,
+				collapsed: hasExpandableContent ? !this.#expanded : undefined,
 				head,
 			},
 			children,
@@ -1271,8 +1273,17 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		);
 	}
 
+	#hasExpandableContent(): boolean {
+		for (const entry of this.#entries.values()) {
+			if (entry.status !== "error" && entry.contentText !== undefined) return true;
+		}
+		return false;
+	}
+
 	#shouldRenderPreview(entry: ReadEntry): boolean {
-		return this.#showContentPreview && entry.contentText !== undefined;
+		return (
+			entry.status !== "error" && entry.contentText !== undefined && (this.#showContentPreview || this.#expanded)
+		);
 	}
 
 	#formatStatus(status: ReadEntry["status"]): string {

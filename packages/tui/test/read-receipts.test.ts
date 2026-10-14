@@ -61,6 +61,23 @@ describe("read source line counts", () => {
 });
 
 describe("read group receipts", () => {
+	it("expands a content-bearing read on click even when previews are disabled", () => {
+		const group = new ReadToolGroupComponent();
+		group.updateArgs({ path: "src/a.ts" }, "read");
+		group.updateResult(
+			result("header\nsource line 1\nsource line 2", {
+				displayContent: { text: "source line 1\nsource line 2", startLine: 1 },
+			}),
+			false,
+			"read",
+		);
+
+		expect(group.getClickToolId()).toBeDefined();
+		expect(plain(group).join("\n")).not.toContain("source line 2");
+		expect(group.toggleClickExpansion()).toBe(true);
+		expect(plain(group).join("\n")).toContain("source line 2");
+	});
+
 	it("renders one source-count header and restores it after individual expansion", () => {
 		const group = new ReadToolGroupComponent({ showContentPreview: true });
 		group.updateArgs({ path: "src/a.ts:10-49" }, "read");
