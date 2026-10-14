@@ -204,6 +204,7 @@ export class AttachmentChipsBand implements Component {
 						},
 					);
 					if (result?.transmit) budget.enqueueTransmit(imageId, result.transmit);
+					if (result?.virtualPlacement) budget.enqueueVirtualPlacement(imageId, result.virtualPlacement);
 					if (result?.lines) return this.#centerGrid(result.lines);
 				}
 			}

@@ -4,10 +4,11 @@ import { writeTerminalSequence } from "./active-terminal";
 import { sendDesktopNotification, shouldDeliverDesktopNotification } from "./desktop-notify";
 import {
 	detectKittyUnicodePlaceholdersSupport,
+	encodeKittyPlaceholderGrid,
+	encodeKittyVirtualPlacement,
 	getKittyGraphics,
 	KITTY_PLACEHOLDER,
 	kittyPlaceholdersFit,
-	renderKittyPlaceholderLines,
 	setKittyGraphics,
 } from "./kitty-graphics";
 import { isInsideHerdr, isInsideTerminalMultiplexer } from "./terminal-multiplexer";
@@ -1339,7 +1340,7 @@ export function renderImage(
 	base64Data: string,
 	imageDimensions: ImageDimensions,
 	options: ImageRenderOptions = {},
-): { sequence?: string; lines?: string[]; rows: number; transmit?: string } | null {
+): { sequence?: string; lines?: string[]; rows: number; transmit?: string; virtualPlacement?: string } | null {
 	if (!TERMINAL.imageProtocol) {
 		return null;
 	}
@@ -1362,13 +1363,20 @@ export function renderImage(
 			// `a=p` placement. Falls back to direct placement when disabled or when the
 			// grid exceeds the diacritic table's addressable cell range.
 			if (graphics.unicodePlaceholders && kittyPlaceholdersFit(fit.columns, fit.rows)) {
-				const lines = renderKittyPlaceholderLines({
+				const placement = {
 					imageId: options.imageId,
 					placementId,
 					columns: fit.columns,
 					rows: fit.rows,
-				});
-				return { lines, rows: fit.rows, transmit };
+				};
+				// Register independently of the grid: viewport clipping can omit its
+				// first row, including on the first paint or after a geometry change.
+				return {
+					lines: encodeKittyPlaceholderGrid(placement),
+					rows: fit.rows,
+					transmit,
+					virtualPlacement: encodeKittyVirtualPlacement(placement),
+				};
 			}
 			// Direct placement: re-emit only the tiny `a=p` on repaints.
 			const sequence = encodeKittyPlacement({

@@ -806,6 +806,38 @@ describe("subagent dock lines", () => {
 	const renderDock = (sessions: ObservableSession[], columns = 120, selectedId?: string): string =>
 		Bun.stripANSI(renderSubagentDockLines(sessions, columns, selectedId).join("\n"));
 
+	it("prioritizes longest waiting phases before the compact cutoff with stable ties and other states", () => {
+		const sessions = [
+			makeSession({ id: "ActiveFirst", workState: { state: "active", since: 1 } }),
+			makeSession({ id: "RecentWait", lastUpdate: 1, workState: { state: "waiting", since: 9_000 } }),
+			makeSession({ id: "Fork-idle", status: "completed", workState: { state: "inactive", since: 1 } }),
+			makeSession({ id: "ActiveLast", workState: { state: "active", since: 0 } }),
+			makeSession({ id: "OldWait", lastUpdate: 10_000, workState: { state: "waiting", since: 2_000 } }),
+			makeSession({ id: "TiedWait", workState: { state: "waiting", since: 2_000 } }),
+			makeSession({
+				id: "ToolWait",
+				lastUpdate: 20_000,
+				progress: makeProgress({ id: "ToolWait", startedAtMs: 0, currentTool: "ask", currentToolStartMs: 5_000 }),
+			}),
+		];
+		const originalIds = sessions.map(session => session.id);
+		const ordered = ["OldWait", "TiedWait", "ToolWait", "RecentWait", "ActiveFirst", "Fork-idle", "ActiveLast"];
+		const paint = (expanded: boolean, selectedId?: string) =>
+			Bun.stripANSI(renderSubagentDockLines(sessions, 120, selectedId, expanded, { now: 30_000 }).join("\n"));
+		const expanded = paint(true);
+		for (let index = 1; index < ordered.length; index++) {
+			expect(expanded.indexOf(ordered[index - 1]!)).toBeLessThan(expanded.indexOf(ordered[index]!));
+		}
+		const compact = paint(false);
+		for (const id of ordered.slice(0, 4)) expect(compact).toContain(id);
+		for (const id of ordered.slice(4)) expect(compact).not.toContain(id);
+		expect(sessions.map(session => session.id)).toEqual(originalIds);
+		expect(paint(false, "ActiveLast")).toContain("› ● ActiveLast");
+		sessions[3]!.workState = { state: "waiting", since: 1_000 };
+		expect(paint(false, "ActiveLast")).toContain("› ● ActiveLast");
+		expect(paint(false, "ActiveLast")).not.toContain("ActiveFirst");
+	});
+
 	it("shows the actual compact model alongside distinct assignments without usage boilerplate", () => {
 		const out = renderDock([
 			makeSession({
@@ -1448,6 +1480,40 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		setSystemTime();
 		vi.restoreAllMocks();
 		resetSettingsForTest();
+	});
+
+	it("navigates waiting-first dock order and retains the selected ID when phases reorder", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		const focus = vi.spyOn(mode, "focusAgentSession").mockResolvedValue(undefined);
+		vi.useFakeTimers();
+		const active = makeProgressPayload("DockActive", 0, "Working", true);
+		const recent = makeProgressPayload("DockRecent", 1, "Waiting", true);
+		const oldest = makeProgressPayload("DockOldest", 2, "Waiting", true);
+		recent.progress = { ...recent.progress, currentTool: "wait", currentToolStartMs: 9_000 };
+		oldest.progress = { ...oldest.progress, currentTool: "ask", currentToolStartMs: 2_000 };
+		for (const payload of [active, recent, oldest]) eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, payload);
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		expect(mode.moveSubagentDockSelection("next")).toBe(true); // main
+		mode.moveSubagentDockSelection("next");
+		await mode.openSelectedSubagentDock();
+		expect(focus).toHaveBeenLastCalledWith("DockOldest");
+		mode.moveSubagentDockSelection("next");
+		await mode.openSelectedSubagentDock();
+		expect(focus).toHaveBeenLastCalledWith("DockRecent");
+		recent.progress = { ...recent.progress, currentTool: undefined, currentToolStartMs: undefined };
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, { ...recent });
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		await mode.openSelectedSubagentDock();
+		expect(focus).toHaveBeenLastCalledWith("DockRecent");
+		mode.moveSubagentDockSelection("previous");
+		await mode.openSelectedSubagentDock();
+		expect(focus).toHaveBeenLastCalledWith("DockActive");
+		mode.moveSubagentDockSelection("previous");
+		await mode.openSelectedSubagentDock();
+		expect(focus).toHaveBeenLastCalledWith("DockOldest");
 	});
 
 	it("coalesces a burst of progress observer changes into one HUD rebuild and render request", async () => {

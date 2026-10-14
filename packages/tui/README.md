@@ -480,6 +480,17 @@ tui.addChild(image);
 
 Supported formats: PNG, JPEG, GIF, WebP. Dimensions are parsed from the image headers automatically.
 
+Kitty Unicode-placeholder images register their virtual placement before the
+frame's text, independently of the first image row. Images clipped by the
+viewport therefore retain their placement, including after geometry changes.
+
+Under tmux, `allow-passthrough on` can discard graphics chunks during pending
+pane/client redraws, leaving blank placeholders. `set -g allow-passthrough all`
+prevents that loss, but also permits terminal-control sequences from background
+panes; use it only when those programs are trusted. After changing the option,
+restart/resume the image-producing application to resend already-lost data.
+
+
 ## Autocomplete
 
 ### CombinedAutocompleteProvider

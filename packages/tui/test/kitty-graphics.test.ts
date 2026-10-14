@@ -7,7 +7,6 @@ import {
 	KITTY_PLACEHOLDER,
 	KITTY_PLACEHOLDER_MAX_CELLS,
 	kittyPlaceholdersFit,
-	renderKittyPlaceholderLines,
 } from "@oh-my-pi/pi-tui/kitty-graphics";
 
 const ORIGINAL_TMUX = Bun.env.TMUX;
@@ -52,17 +51,6 @@ describe("kitty Unicode placeholder encoding", () => {
 		// Each placeholder cell (U+10EEEE + diacritics) is one terminal column; the
 		// SGR runs are zero-width. This is what keeps renderer/terminal accounting aligned.
 		expect(visibleWidth(grid[0]!, 3)).toBe(6);
-	});
-
-	it("renderKittyPlaceholderLines prefixes line 0 with the virtual placement APC", () => {
-		const opts = { imageId: 2, placementId: 2, columns: 2, rows: 3 } as const;
-		const placement = encodeKittyVirtualPlacement(opts);
-		const grid = encodeKittyPlaceholderGrid(opts);
-		const lines = renderKittyPlaceholderLines(opts);
-		expect(lines).toHaveLength(3);
-		// Line 0 is the placement APC + the first grid row; later rows are unchanged.
-		expect(lines[0]).toBe(placement + grid[0]);
-		expect(lines.slice(1)).toEqual(grid.slice(1));
 	});
 
 	it("kittyPlaceholdersFit guards the diacritic table capacity", () => {

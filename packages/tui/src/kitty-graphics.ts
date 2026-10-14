@@ -167,20 +167,3 @@ export function encodeKittyPlaceholderGrid(opts: {
 	}
 	return out;
 }
-
-/**
- * Full placeholder render: the virtual-placement APC prefixes line 0, and every
- * line carries placeholder cells. Returns exactly `rows` lines (no cursor moves).
- */
-export function renderKittyPlaceholderLines(opts: {
-	imageId: number;
-	placementId?: number;
-	columns: number;
-	rows: number;
-}): string[] {
-	const grid = encodeKittyPlaceholderGrid(opts);
-	if (grid.length > 0) {
-		grid[0] = encodeKittyVirtualPlacement(opts) + grid[0];
-	}
-	return grid;
-}

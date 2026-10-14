@@ -1228,11 +1228,20 @@ const SUBAGENT_DOCK_TICK_MS = 1_000;
  * Finished and aborted agents stay reachable in Agent Hub.
  */
 function activeDockChildren(sessions: readonly ObservableSession[]): ObservableSession[] {
-	return sessions.filter(
-		session =>
-			session.kind === "subagent" &&
-			(session.status === "active" || (isForkAgentId(session.id) && session.status !== "aborted")),
-	);
+	return sessions
+		.filter(
+			session =>
+				session.kind === "subagent" &&
+				(session.status === "active" || (isForkAgentId(session.id) && session.status !== "aborted")),
+		)
+		.sort((a, b) => {
+			const aState = dockWorkState(a);
+			const bState = dockWorkState(b);
+			const aWaiting = aState.state === "waiting";
+			const bWaiting = bState.state === "waiting";
+			// Stable ties preserve observer order, including all non-waiting agents.
+			return aWaiting && bWaiting ? aState.since - bState.since : Number(bWaiting) - Number(aWaiting);
+		});
 }
 
 /** Job snapshots stay jobs; omit only task work already represented by an agent row. */

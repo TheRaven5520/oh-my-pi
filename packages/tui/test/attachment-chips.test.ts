@@ -4,7 +4,7 @@ import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { chipLabel } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
 import { ImageBudget } from "@oh-my-pi/pi-tui";
-import { setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
+import { KITTY_PLACEHOLDER, setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
 import { getCellDimensions, ImageProtocol, setCellDimensions, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 
@@ -112,11 +112,10 @@ describe("AttachmentChipsBand — Kitty placeholder thumbnails", () => {
 			editor.insertAtom(chipLabel("image", 1), "[Image #1, 560x502]");
 			const rows = band.render(80);
 			expect(rows).toHaveLength(6);
-			// Thumbnail path actually engaged: the placement APC rides row 1.
-			expect(rows[1]).toContain("\x1b_Ga=p,U=1");
-			// Regression: the placement APC was counted as visible width, which
-			// dropped row 1's centering pad and painted its right border 3 cells
-			// inside the card. Every row must measure exactly the card width.
+			// Thumbnail rows remain ordinary text cells; prototype registration
+			// no longer rides the first row or affects its centering width.
+			expect(rows[1]).toContain(KITTY_PLACEHOLDER);
+			expect(rows.join("")).not.toContain("\x1b_G");
 			for (const row of rows) {
 				expect(visibleWidth(row)).toBe(14);
 			}
@@ -148,11 +147,14 @@ describe("AttachmentChipsBand — Kitty placeholder thumbnails", () => {
 			expect(budget.hasPendingTransmits()).toBe(false);
 			await repaint.promise;
 			const rows = band.render(80);
-			expect(rows.some(row => row.includes("\x1b_Ga=p,U=1"))).toBe(true);
+			expect(rows.some(row => row.includes(KITTY_PLACEHOLDER))).toBe(true);
+			expect(budget.takeVirtualPlacements().join("")).toContain("\x1b_Ga=p,U=1");
 			const transmits = budget.takeTransmits();
 			expect(transmits).toHaveLength(1);
-			const payload = transmits[0]!.slice(transmits[0]!.indexOf(";") + 1);
-			expect(payload.startsWith("iVBOR")).toBe(true);
+			const payload = transmits[0]!.match(/\x1b_G[^;]+;([A-Za-z0-9+/=]+)/u)?.[1];
+			expect(Buffer.from(payload ?? "", "base64").subarray(0, 8)).toEqual(
+				Buffer.from("\x89PNG\r\n\x1a\n", "binary"),
+			);
 		} finally {
 			mutable.imageProtocol = originalProtocol;
 			setKittyGraphics({ unicodePlaceholders: false });

@@ -179,6 +179,8 @@ export class ImageBudget {
 	#transmitted: Record<Surface, Set<number>> = { screen: new Set(), alt: new Set() };
 	/** Transmit sequences (full base64) to write once per surface, before that frame's placements. */
 	#pendingTransmits: Record<Surface, Map<number, string>> = { screen: new Map(), alt: new Map() };
+	/** Virtual placements must be registered even when their first grid row is clipped. */
+	#pendingVirtualPlacements: Record<Surface, Map<number, string>> = { screen: new Map(), alt: new Map() };
 	// True while the in-flight pass is a partial/throwaway pass (the
 	// non-multiplexer resize viewport fast path) that walks only the visible
 	// tail, bottom-up. Such a pass cannot derive display order from observe()
@@ -270,6 +272,7 @@ export class ImageBudget {
 		this.#liveIds.alt.clear();
 		// `?1049h` hands over an empty graphics store as well as a cleared grid.
 		this.#transmitted.alt.clear();
+		this.#pendingVirtualPlacements.alt.clear();
 	}
 
 	/**
@@ -426,6 +429,7 @@ export class ImageBudget {
 		// terminal, so cancel it instead of transmitting then purging.
 		if (!this.#pendingTransmits[this.#surface].delete(imageId)) this.#purgeIds.push(imageId);
 		this.#transmitted[this.#surface].delete(imageId);
+		this.#pendingVirtualPlacements[this.#surface].delete(imageId);
 		if (!this.#isTransmitted(imageId)) this.#deletePlacementState(imageId);
 		this.#forgetKeyForId(imageId);
 		return true;
@@ -463,6 +467,7 @@ export class ImageBudget {
 			for (const id of this.#transmitted[surface]) ids.add(id);
 			this.#transmitted[surface].clear();
 			this.#pendingTransmits[surface].clear();
+			this.#pendingVirtualPlacements[surface].clear();
 		}
 		if (ids.size === 0) return EMPTY_IDS;
 		this.#purgeIds = [];
@@ -609,6 +614,20 @@ export class ImageBudget {
 		this.#pendingTransmits[this.#surface].set(imageId, sequence);
 	}
 
+	/** Queue the latest prototype geometry before any placeholder cells are painted. */
+	enqueueVirtualPlacement(imageId: number, sequence: string): void {
+		this.#pendingVirtualPlacements[this.#surface].set(imageId, sequence);
+	}
+
+	/** Virtual placements to emit after image data, independently of viewport clipping. */
+	takeVirtualPlacements(): readonly string[] {
+		const pending = this.#pendingVirtualPlacements[this.#surface];
+		if (pending.size === 0) return EMPTY_TRANSMITS;
+		const sequences = [...pending.values()];
+		pending.clear();
+		return sequences;
+	}
+
 	/** Whether the in-flight pass's surface has image data queued but not yet written. */
 	hasPendingTransmits(): boolean {
 		return this.#pendingTransmits[this.#surface].size > 0;
@@ -616,13 +635,14 @@ export class ImageBudget {
 
 	/**
 	 * True when the budget has nothing in flight on either surface: no live images
-	 * observed on the last pass, no queued transmits, no pending purges, and no
-	 * stricter threshold left to apply. A component-scoped frame may skip the
-	 * observe pass only then — a partial tree walk would under-count display order.
+	 * observed on the last pass, no queued transmits or virtual placements, no
+	 * pending purges, and no stricter threshold left to apply. A component-scoped
+	 * frame may skip the observe pass only then: a partial tree walk under-counts display order.
 	 */
 	get quiescent(): boolean {
 		if (this.#purgeIds.length > 0) return false;
 		for (const surface of SURFACES) if (this.#pendingTransmits[surface].size > 0) return false;
+		for (const surface of SURFACES) if (this.#pendingVirtualPlacements[surface].size > 0) return false;
 		for (const split of [this.#screenSplit, this.#altSplit]) {
 			if (split.lastTotal !== 0 || split.planned !== split.onTerminal) return false;
 		}
@@ -665,6 +685,7 @@ export class ImageBudget {
 		// explicit `d=I` no later sweep can ever find that placement again.
 		transmitted.clear();
 		pending.clear();
+		this.#pendingVirtualPlacements.screen.clear();
 	}
 
 	/**
@@ -844,10 +865,13 @@ export class Image implements Component {
 			if (result?.transmit && this.#imageId != null && this.#budget !== undefined) {
 				this.#budget.enqueueTransmit(this.#imageId, result.transmit);
 			}
+			if (result?.virtualPlacement && this.#imageId != null && this.#budget !== undefined) {
+				this.#budget.enqueueVirtualPlacement(this.#imageId, result.virtualPlacement);
+			}
 
 			if (result?.lines) {
-				// Unicode placeholders: the image is already a block of real text-cell
-				// lines (line 0 carries the virtual-placement APC). No cursor moves.
+				// Unicode placeholders are ordinary text-cell rows. Their prototype
+				// is queued separately so clipping cannot discard its registration.
 				lines = result.lines;
 			} else if (result) {
 				// Direct placement: return `rows` lines so TUI accounts for image

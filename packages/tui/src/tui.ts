@@ -3712,6 +3712,7 @@ export class TUI extends Container {
 		// after a settled width resize.
 		if (destructiveReset) buffer += `${LINE_TERMINATOR}\x1b[H\x1b[2J\x1b[3J`;
 		for (const sequence of this.#imageBudget.takeTransmits()) append(sequence);
+		for (const sequence of this.#imageBudget.takeVirtualPlacements()) append(sequence);
 		const diffable =
 			geometryStable &&
 			historyRows.length === 0 &&
@@ -4579,6 +4580,7 @@ export class TUI extends Container {
 			for (const seq of imageTransmits) transmitBuffer += seq;
 			this.terminal.write(transmitBuffer);
 		}
+		for (const sequence of this.#imageBudget.takeVirtualPlacements()) this.terminal.write(sequence);
 		// A forced repaint (resetDisplay, requestRender(true)) rewrites every row
 		// even when the cached frame is byte-identical: the redraw gesture must
 		// repair a corrupted modal. So does a changed frame with OSC 66 text in

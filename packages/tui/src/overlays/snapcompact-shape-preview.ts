@@ -168,6 +168,7 @@ export class SnapcompactShapePreview implements Component {
 			this.#budget.enqueueTransmit(entry.imageId, result.transmit);
 			entry.transmitted = true;
 		}
+		if (result.virtualPlacement) this.#budget.enqueueVirtualPlacement(entry.imageId, result.virtualPlacement);
 		for (const line of result.lines) {
 			lines.push(`  ${line}`);
 		}

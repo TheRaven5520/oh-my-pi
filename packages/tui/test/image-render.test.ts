@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Image, ImageBudget } from "@oh-my-pi/pi-tui/components/image";
-import { getKittyGraphics, setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
+import { getKittyGraphics, KITTY_PLACEHOLDER, setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
 import {
 	type CellDimensions,
 	getCellDimensions,
@@ -122,7 +122,7 @@ describe("terminal image rendering", () => {
 		setKittyGraphics({ unicodePlaceholders: true });
 		const placeholder = image.render(20).join("");
 
-		expect(placeholder).toContain("U=1");
+		expect(placeholder).toContain(KITTY_PLACEHOLDER);
 		expect(placeholder).not.toBe(direct);
 	});
 
@@ -146,6 +146,22 @@ describe("terminal image rendering", () => {
 		expect(result).not.toBeNull();
 		expect(result?.transmit).toBe(`\x1b_Ga=t,f=100,q=2,i=42;${BASE64_ONE_PIXEL_PNG}\x1b\\`);
 		expect(result?.transmit).not.toContain("t=t");
+	});
+
+	it("returns virtual placement registration separately from clippable placeholder rows", () => {
+		terminal.imageProtocol = ImageProtocol.Kitty;
+		setKittyGraphics({ unicodePlaceholders: true });
+		const result = renderImage(BASE64_ONE_PIXEL_PNG, SQUARE_DIMENSIONS, {
+			imageId: 42,
+			includeTransmit: true,
+			maxWidthCells: 4,
+			maxHeightCells: 4,
+		});
+
+		expect(result?.virtualPlacement).toBe("\x1b_Ga=p,U=1,q=2,i=42,p=42,c=4,r=4\x1b\\");
+		expect(result?.lines).toHaveLength(4);
+		expect(result?.lines?.every(line => line.includes(KITTY_PLACEHOLDER) && !line.includes("\x1b_G"))).toBe(true);
+		expect(result?.transmit).toContain("\x1b_Ga=t");
 	});
 
 	it("reduces iTerm2 width when max height is the limiting bound", () => {

@@ -41,6 +41,7 @@
 
 ### Changed
 
+- The agents dock puts waiting agents first, longest current wait first, using the same phase timestamps as its elapsed labels. Equal waits and non-waiting agents retain their existing order; compact visibility, keyboard navigation and selection follow the same ordering without changing the selected agent.
 - Tool summaries are function-specific and compact: commands and Eval output, search scope and counts, edit deltas, write sizes, and coordination state. Consecutive tool blocks have no inter-block blank row; prose and turn boundaries retain separation. Usage remains visible, with Claude/Codex pool gauges omitted for non-subscription routes such as OpenRouter.
 
 - `omp login sprilicred` writes the same models.yml layout as the Sprilicred installer: GLM and DeepSeek models live under their own `sprilicred-glm` (`/glm/v1`) and `sprilicred-deepseek` (`/deepseek/v1`) providers instead of `sprilicred-openai`, `cycleModels` covers all four providers (an existing Sprilicred-owned two-provider list is upgraded), and `defaultModel`/`modelRoles` references to a moved model follow it to its new provider.

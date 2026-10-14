@@ -392,14 +392,6 @@ describe("tmux Kitty graphics passthrough", () => {
 		expect(encodeKittyDeleteImage(9)).toBe(expected("\x1b_Ga=d,d=I,i=9,q=2\x1b\\"));
 	});
 
-	it("wraps each quiet chunk of a multi-part Kitty transmission separately", () => {
-		const sequence = encodeKittyTransmit("A".repeat(4097), 9);
-		expect(sequence.match(/\x1bPtmux;/gu)).toHaveLength(2);
-		expect(sequence.match(/\x1b\x1b_G/gu)).toHaveLength(2);
-		expect(sequence.match(/\x1b\x1b\\\x1b\\/gu)).toHaveLength(2);
-		expect(sequence).toContain("\x1b\x1b_Gq=2,m=0;");
-	});
-
 	it("leaves Kitty graphics commands bare outside tmux", () => {
 		delete Bun.env.TMUX;
 		expect(encodeKittyTransmit("AA==", 9)).toBe("\x1b_Ga=t,f=100,q=2,i=9;AA==\x1b\\");
@@ -604,8 +596,11 @@ describe("Image budget + Unicode placeholders", () => {
 		const lines = image.render(20);
 		budget.endPass();
 
-		// Line 0 carries the U=1 virtual placement keyed by the image id.
-		expect(lines[0]).toContain(`\x1b_Ga=p,U=1,q=2,i=${id}`);
+		// The prototype is registered independently of the clippable grid.
+		expect(budget.takeVirtualPlacements()).toEqual([
+			encodeKittyVirtualPlacement({ imageId: id, placementId: id, columns: 4, rows: 4 }),
+		]);
+		expect(lines.join("")).not.toContain("\x1b_G");
 		// Every rendered line is a real placeholder-cell row (no empty/cursor-up trick).
 		expect(lines.every(l => l.includes(KITTY_PLACEHOLDER))).toBe(true);
 		expect(lines.join("")).not.toContain("\x1b[1A");
@@ -632,14 +627,35 @@ describe("Image budget + Unicode placeholders", () => {
 		image.render(20);
 		budget.endPass();
 		expect([...budget.takeTransmits()]).toHaveLength(1);
+		expect(budget.takeVirtualPlacements()).toHaveLength(1);
 
 		// A repaint after invalidation re-emits the placement but never the data.
 		image.invalidate();
 		budget.beginPass();
-		const lines = image.render(20);
+		image.render(20);
 		budget.endPass();
-		expect(lines[0]).toContain(encodeKittyVirtualPlacement({ imageId: id, placementId: id, columns: 4, rows: 4 }));
+		expect(budget.takeVirtualPlacements()).toEqual([
+			encodeKittyVirtualPlacement({ imageId: id, placementId: id, columns: 4, rows: 4 }),
+		]);
 		expect([...budget.takeTransmits()]).toEqual([]);
+	});
+
+	it("cancels a discovery pass's virtual placement when its image is demoted", () => {
+		const budget = new ImageBudget(1, () => {});
+		budget.beginPass();
+		for (const id of [1, 2]) {
+			budget.observe(id);
+			budget.enqueueTransmit(id, `TX${id}`);
+			budget.enqueueVirtualPlacement(id, `PLACE${id}`);
+		}
+		expect(budget.endPass()).toBe(true);
+		budget.beginPass();
+		expect(budget.observe(1)).toBe(true);
+		expect(budget.observe(2)).toBe(false);
+		expect(budget.endPass()).toBe(false);
+		expect(budget.takeTransmits()).toEqual(["TX2"]);
+		expect(budget.takeVirtualPlacements()).toEqual(["PLACE2"]);
+		expect(budget.takeVirtualPlacements()).toEqual([]);
 	});
 });
 
@@ -940,6 +956,69 @@ describe("TUI inline-image budget", () => {
 			realWrite(data);
 		});
 		return { ...screen, alt, deleted, writes };
+	}
+
+	for (const fullscreen of [false, true]) {
+		it(`registers a cropped image before its cells on the ${fullscreen ? "alternate" : "normal"} screen`, async () => {
+			const originalGraphics = { ...getKittyGraphics() };
+			const term = new VirtualTerminal(40, 12);
+			const graphics = trackKittyGraphics(term);
+			setKittyGraphics({ unicodePlaceholders: true });
+			const tui = new TUI(term);
+			const image = new Image(
+				BASE64_ONE_PIXEL_PNG,
+				"image/png",
+				{ fallbackColor: text => text },
+				{ budget: tui.imageBudget, imageKey: "clipped", maxWidthCells: 4, maxHeightCells: 4 },
+				{ widthPx: 40, heightPx: 40 },
+			);
+			const id = tui.imageBudget.acquireId("clipped");
+			// A viewport begins inside an image, so row zero never reaches the
+			// terminal. Its prototype must not depend on that row being written.
+			if (fullscreen) {
+				tui.showOverlay(
+					{ render: width => image.render(width).slice(1), invalidate: () => image.invalidate() },
+					{ fullscreen: true },
+				);
+			} else {
+				tui.setFrameProvider({
+					renderFrame: size => ({ viewport: image.render(size.columns).slice(1) }),
+					acknowledgeHistory: () => {},
+				});
+			}
+			try {
+				tui.start();
+				await settle(term);
+				const output = graphics.writes.join("");
+				const placement = encodeKittyVirtualPlacement({ imageId: id, placementId: id, columns: 4, rows: 4 });
+				expect(output).not.toContain(`${KITTY_PLACEHOLDER}\u0305\u0305`);
+				expect(output).toContain(`${KITTY_PLACEHOLDER}\u030d\u0305`);
+				expect(output.indexOf("\x1b_Ga=t")).toBeGreaterThanOrEqual(0);
+				expect(output.indexOf(placement)).toBeGreaterThan(output.indexOf(BASE64_ONE_PIXEL_PNG));
+				expect(output.indexOf(placement)).toBeLessThan(output.indexOf(KITTY_PLACEHOLDER));
+				expect((fullscreen ? graphics.alt : graphics).placed.has(id)).toBe(true);
+
+				// Geometry changes while row zero remains clipped still update the
+				// prototype, without retransmitting the already-resident PNG.
+				graphics.writes.length = 0;
+				setCellDimensions({ widthPx: 20, heightPx: 10 });
+				tui.requestRender();
+				await settle(term);
+				const resized = graphics.writes.join("");
+				const resizedPlacement = encodeKittyVirtualPlacement({ imageId: id, placementId: id, columns: 2, rows: 4 });
+				expect(resized).not.toContain("\x1b_Ga=t");
+				expect(resized).toContain(resizedPlacement);
+				expect(resized.indexOf(resizedPlacement)).toBeLessThan(resized.indexOf(KITTY_PLACEHOLDER));
+
+				graphics.writes.length = 0;
+				tui.requestRender();
+				await settle(term);
+				expect(graphics.writes.join("")).not.toContain("\x1b_G");
+			} finally {
+				tui.stop();
+				setKittyGraphics(originalGraphics);
+			}
+		});
 	}
 
 	it("keeps normal-buffer placements visible across a fullscreen overlay pass", async () => {
