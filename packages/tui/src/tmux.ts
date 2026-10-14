@@ -3,7 +3,11 @@ import { isBunTestRuntime } from "@oh-my-pi/pi-utils/env";
 
 /** Whether the process is running inside a tmux session. */
 export function isInsideTmux(env: NodeJS.ProcessEnv = Bun.env): boolean {
-	return Boolean(env.TMUX);
+	if (env.TMUX) return true;
+	// SSH does not forward TMUX when an OMP process runs on a remote host, but
+	// the local tmux still owns the pty and advertises that through TERM.
+	const term = env.TERM?.toLowerCase() ?? "";
+	return term.startsWith("tmux") || term.startsWith("screen");
 }
 
 /** Wrap a control sequence in tmux's DCS passthrough envelope. */

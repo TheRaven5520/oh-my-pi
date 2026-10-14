@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Wrap Kitty graphics for SSH sessions whose local tmux marker is stripped but `TERM=tmux-*` or `screen-*` remains, preventing APCs from being swallowed as pane-title input.
 - Register Kitty placeholder placements independently of their first image row, so initially clipped images and clipped geometry changes retain their graphics in the viewport and fullscreen overlays.
 - Read cards with inline previews disabled still expose a click target when content is available; clicking the compact receipt now reveals the retained source.
 - Consecutive non-blocking advisor deliveries at the transcript tail now merge into the preceding advisor card, while blockers and separated notes remain distinct.

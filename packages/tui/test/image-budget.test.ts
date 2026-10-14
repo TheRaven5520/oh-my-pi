@@ -392,6 +392,12 @@ describe("tmux Kitty graphics passthrough", () => {
 		expect(encodeKittyDeleteImage(9)).toBe(expected("\x1b_Ga=d,d=I,i=9,q=2\x1b\\"));
 	});
 
+	it("wraps image APCs when SSH leaves only the tmux TERM marker", () => {
+		delete Bun.env.TMUX;
+		Bun.env.TERM = "tmux-256color";
+		expect(encodeKittyTransmit("AA==", 9)).toStartWith("\x1bPtmux;");
+	});
+
 	it("leaves Kitty graphics commands bare outside tmux", () => {
 		delete Bun.env.TMUX;
 		expect(encodeKittyTransmit("AA==", 9)).toBe("\x1b_Ga=t,f=100,q=2,i=9;AA==\x1b\\");

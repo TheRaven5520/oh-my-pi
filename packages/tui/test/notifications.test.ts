@@ -196,6 +196,12 @@ describe("terminal notifications", () => {
 		}
 	});
 
+	it("treats tmux and screen TERM values as passthrough hosts after SSH strips TMUX", () => {
+		expect(isInsideTmux({ TERM: "tmux-256color" })).toBe(true);
+		expect(isInsideTmux({ TERM: "screen-256color" })).toBe(true);
+		expect(isInsideTmux({ TERM: "xterm-256color" })).toBe(false);
+	});
+
 	it("isInsideTmux reads the TMUX env fresh on each call", () => {
 		expect(isInsideTmux()).toBe(false);
 		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
