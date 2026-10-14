@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createCompactionSummaryMessage, createCustomMessage } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { appendAdvisorNotes, createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
+import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { ChatTranscriptBuilder } from "@oh-my-pi/pi-tui/chat/chat-transcript-builder";
@@ -20,7 +20,6 @@ import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "@oh-my
 import { text } from "@oh-my-pi/pi-tui/native/describe";
 import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
-import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import type { TspNode, TspOp } from "@oh-my-pi/pi-wire";
 import { TspHarness } from "./tsp-harness";
 
@@ -331,39 +330,37 @@ describe("native transcript", () => {
 		);
 		expect(h.errors).toEqual([]);
 	});
-	it("merges only live consecutive advisor cards, never emitted history", () => {
-		const firstNotes = [{ note: "first note", severity: "concern" as const }];
-		const secondNotes = [{ note: "second note", severity: "concern" as const }];
+	it("merges only live consecutive advisor cards, never emitted history", async () => {
+		const notes = (note: string) => [{ note, severity: "concern" as const }];
+		const advisorEntry = (id: string, note: string): TranscriptEntryLike => ({
+			type: "custom_message",
+			id,
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00Z",
+			customType: "advisor",
+			content: `<advisory severity="concern">${note}</advisory>`,
+			details: { notes: notes(note) },
+			display: true,
+			attribution: "agent",
+		});
 
-		const live = new TranscriptContainer();
-		const liveFirst = createAdvisorMessageCard({ notes: firstNotes }, () => true, theme);
-		live.addChild(liveFirst);
-		const livePrevious = live.children.at(-1);
-		if (livePrevious && live.canRemoveBlock(livePrevious) && appendAdvisorNotes(livePrevious, secondNotes)) {
-			// Merged into the still-live tail.
-		} else {
-			live.addChild(createAdvisorMessageCard({ notes: secondNotes }, () => true, theme));
-		}
-		expect(live.children).toHaveLength(1);
-		expect(live.render(120).join("\\n")).toContain("2 notes");
+		const h = await startWith(() => {});
+		const live = new ChatTranscriptBuilder({ ui: h.tui, cwd: "/tmp", requestRender: () => {} });
+		live.append([advisorEntry("live-1", "first note")]);
+		live.append([advisorEntry("live-2", "second note")]);
+		expect(live.container.children).toHaveLength(1);
+		expect(live.container.render(120).join("\n")).toContain("2 notes");
 
-		const committed = new TranscriptContainer();
-		const committedFirst = createAdvisorMessageCard({ notes: firstNotes }, () => true, theme);
-		committed.addChild(committedFirst);
-		const firstRows = committedFirst.render(120);
-		const batch = committed.peekFlushBatch(120);
-		committed.acknowledgeFinalizedBatch(batch!.id);
-		expect(committed.canRemoveBlock(committedFirst)).toBe(false);
-		const committedPrevious = committed.children.at(-1);
-		if (
-			committedPrevious &&
-			committed.canRemoveBlock(committedPrevious) &&
-			appendAdvisorNotes(committedPrevious, secondNotes)
-		) {
-			throw new Error("committed advisor card was merged");
-		}
-		committed.addChild(createAdvisorMessageCard({ notes: secondNotes }, () => true, theme));
-		expect(committed.children).toHaveLength(2);
-		expect(committedFirst.render(120)).toEqual(firstRows);
+		const committed = new ChatTranscriptBuilder({ ui: h.tui, cwd: "/tmp", requestRender: () => {} });
+		committed.append([advisorEntry("committed-1", "first note")]);
+		const first = committed.container.children[0]!;
+		const firstRows = first.render(120);
+		const batch = committed.container.peekFlushBatch(120);
+		expect(batch).toBeDefined();
+		committed.container.acknowledgeFinalizedBatch(batch!.id);
+		expect(committed.container.canRemoveBlock(first)).toBe(false);
+		committed.append([advisorEntry("committed-2", "second note")]);
+		expect(committed.container.children).toHaveLength(2);
+		expect(first.render(120)).toEqual(firstRows);
 	});
 });

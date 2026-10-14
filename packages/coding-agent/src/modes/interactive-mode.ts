@@ -129,6 +129,7 @@ import { sumSubagentTreeCost } from "./agent-hub-runtime";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	type AsyncJobSnapshotItem,
 	type DroppedPrompt,
 	type ResolvedRoleModel,
 	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
@@ -958,16 +959,21 @@ export interface SubagentHudNative {
  * Native subagent HUD: one dock pill counting the same work phases as the
  * terminal dock; a click sends `agents.open`.
  */
-export function describeSubagentHud(sessions: ObservableSession[]): NativeNode {
+export function describeSubagentHud(
+	sessions: ObservableSession[],
+	backgroundJobs: readonly AsyncJobSnapshotItem[] = [],
+): NativeNode {
 	const children = activeDockChildren(sessions);
-	if (children.length === 0) return EMPTY_HUD;
+	const jobs = activeDockJobs(children, backgroundJobs);
+	if (children.length === 0 && jobs.length === 0) return EMPTY_HUD;
+	const jobLabel = jobs.length === 0 ? "" : ` · ${jobs.length} background job${jobs.length === 1 ? "" : "s"}`;
 	return row(
 		[
 			node("icon", { name: "users" }, undefined, "icon"),
-			...(children.some(session => dockWorkState(session).state === "active")
+			...(children.some(session => dockWorkState(session).state === "active") || jobs.length > 0
 				? [node("spinner", { style: "dots", tone: "accent" }, undefined, "spinner")]
 				: []),
-			node("text", { text: dockHeaderCounts(children), wrap: "none" }, undefined, "label"),
+			node("text", { text: `${dockHeaderCounts(children)}${jobLabel}`, wrap: "none" }, undefined, "label"),
 		],
 		{
 			role: "omp.hud.pill",
@@ -1229,6 +1235,18 @@ function activeDockChildren(sessions: readonly ObservableSession[]): ObservableS
 	);
 }
 
+/** Job snapshots stay jobs; omit only task work already represented by an agent row. */
+function activeDockJobs(
+	children: readonly ObservableSession[],
+	jobs: readonly AsyncJobSnapshotItem[],
+): AsyncJobSnapshotItem[] {
+	return jobs.filter(
+		job =>
+			job.status === "running" &&
+			!children.some(child => child.id === (job.agentId ?? (job.type === "task" ? job.id : undefined))),
+	);
+}
+
 /**
  * Usage for a dock row from the executor's progress snapshot: its tool calls
  * and tokens (input + output + cache writes, as Agent Hub counts them).
@@ -1298,12 +1316,21 @@ function dockActivity(session: ObservableSession): string {
 	return labelEchoesHandle(session.id, session.label) ? "" : session.label;
 }
 
+function renderBackgroundJobRow(job: AsyncJobSnapshotItem, width: number, now: number): string {
+	const label = replaceTabs(sanitizeText(job.label || job.command || job.type)).replace(/\s*[\r\n]+\s*/g, " ");
+	const elapsed = ` · running ${formatRunElapsed(Math.max(0, now - job.startTime))}`;
+	const prefix = `  ${theme.fg("dim", "↗")} ${theme.fg("toolTitle", job.id)}`;
+	const labelBudget = width - visibleWidth(prefix) - visibleWidth(elapsed) - 3;
+	const detail = labelBudget > 0 ? ` · ${previewLine(label, labelBudget)}` : "";
+	return truncateToWidth(`${prefix}${detail}${theme.fg("dim", elapsed)}`, width, "");
+}
 /**
  * Agent dock: an explicit `main` root followed by active child rows, scrolled
  * so the selection stays visible. Compact rows show the resolved model, live
  * call or assignment and elapsed work phase. Expanded rows also expose usage;
  * identity, phase and model take priority over activity on narrow terminals.
  */
+
 export function renderSubagentDockLines(
 	sessions: ObservableSession[],
 	columns: number,
@@ -1314,12 +1341,14 @@ export function renderSubagentDockLines(
 		livePreview?: boolean;
 		statsFor?: (session: ObservableSession) => AgentRunStats | undefined;
 		modelFor?: (session: ObservableSession) => string | undefined;
+		backgroundJobs?: readonly AsyncJobSnapshotItem[];
 	} = {},
 ): string[] {
 	const now = options.now ?? Date.now();
 	const statsFor = options.statsFor ?? progressRunStats;
 	const children = activeDockChildren(sessions);
-	if (children.length === 0) return [];
+	const backgroundJobs = activeDockJobs(children, options.backgroundJobs ?? []);
+	if (children.length === 0 && backgroundJobs.length === 0) return [];
 	const visibleLimit = expanded ? children.length : SUBAGENT_HUD_VISIBLE_LIMIT;
 	const contentColumns = Math.max(0, columns - getPaddingX(1) * 2);
 	const rowWidth = Math.max(0, contentColumns - 1);
@@ -1331,7 +1360,9 @@ export function renderSubagentDockLines(
 			: Math.min(Math.max(0, selectedChildIndex - visibleLimit + 1), Math.max(0, children.length - visibleLimit));
 	const visible = children.slice(firstVisibleChildIndex, firstVisibleChildIndex + visibleLimit);
 	const aboveCount = firstVisibleChildIndex;
-	const belowCount = children.length - aboveCount - visible.length;
+	const visibleJobLimit = expanded ? backgroundJobs.length : Math.max(0, visibleLimit - visible.length);
+	const visibleJobs = backgroundJobs.slice(0, visibleJobLimit);
+	const belowCount = children.length - aboveCount - visible.length + backgroundJobs.length - visibleJobs.length;
 	// Pi's dock has an explicit main root before the active child rows.
 	const mainSelected = selectedId === MAIN_AGENT_ID;
 	const rows = [
@@ -1396,8 +1427,11 @@ export function renderSubagentDockLines(
 				: undefined;
 			return preview ? `${head}\n ${preview}` : head;
 		}),
+		...visibleJobs.map(job => renderBackgroundJobRow(job, rowWidth, now)),
 		...(belowCount > 0 ? [theme.fg("dim", `… ${belowCount} more — expand`)] : []),
-		...(expanded && children.length > SUBAGENT_HUD_VISIBLE_LIMIT ? [theme.fg("dim", "… show less")] : []),
+		...(expanded && children.length + backgroundJobs.length > SUBAGENT_HUD_VISIBLE_LIMIT
+			? [theme.fg("dim", "… show less")]
+			: []),
 	];
 	if (selectedId && selectedId !== MAIN_AGENT_ID) {
 		rows.push(theme.fg("dim", "↑/↓ select · Enter open · x interrupt/close fork · Esc cancel"));
@@ -1405,7 +1439,12 @@ export function renderSubagentDockLines(
 	return [
 		"",
 		truncateToWidth(
-			theme.bold(theme.fg("accent", `agents · main · ${dockHeaderCounts(children)}`)),
+			theme.bold(
+				theme.fg(
+					"accent",
+					`agents · main · ${dockHeaderCounts(children)}${backgroundJobs.length > 0 ? ` · ${backgroundJobs.length} job${backgroundJobs.length === 1 ? "" : "s"}` : ""}`,
+				),
+			),
 			contentColumns,
 			"",
 		),
@@ -2655,10 +2694,19 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (event.type === "config_warnings_changed") {
 					this.#syncConfigWarningHeader();
 				}
+				// Async bash/eval calls become visible when their tool call returns,
+				// including in sessions that have never spawned a subagent. Settled
+				// jobs disappear on the live dock tick even if delivery is suppressed.
+				if (event.type === "tool_execution_end" || event.type === "agent_end") {
+					if (this.#renderSubagentList()) this.ui.requestRender();
+					else this.ui.requestComponentRender(this.subagentContainer);
+				}
 				void this.#handleGoalSessionEvent(event);
 			}),
 			cfgLiveUiSettings.listen(this.settings, (next, previous) => this.#applyUiSettingChanges(next, previous)),
 		);
+		// Jobs may already be running when an interactive view attaches.
+		this.#renderSubagentList();
 		// Cache the live model for the next status-bar prepaint: init-time
 		// reconciliations (#reconcileModeFromSession, #enterPlanMode for
 		// plan.defaultOnStartup) can change the model before this subscription
@@ -4822,7 +4870,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/**
 	 * Anchored Pi-style agent dock, mirroring the Todos block above the editor.
-	 * Driven by observer-registry and agent-registry change events, so rows
+	 * Driven by observer/agent-registry changes and session tool-return events, so rows
 	 * appear on spawn and leave when the child stops working (Agent Hub keeps
 	 * finished children enterable). Returns whether the row count changed, so
 	 * callers can skip a full compose when only row contents moved.
@@ -4835,9 +4883,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#subagentDockRenderedLineCount = lineCount;
 		if (!view) {
 			this.subagentContainer.clear();
+			if (cfgDisplayPinnedAgents.get(settings) !== "off" && this.session.asyncJobManager) {
+				this.#armSubagentPreviewTick(SUBAGENT_DOCK_TICK_MS);
+			}
 			return changed;
 		}
-		const node = describeSubagentHud(view.sessions);
+		// Native receives the same filtered rows as the text dock.
+		const node = describeSubagentHud(view.sessions, view.jobs);
 		const hud = this.subagentContainer.children[0];
 		if (hud instanceof SubagentHudComponent) hud.update(view.lines, [], undefined, node, view.rowOwners);
 		else {
@@ -4858,10 +4910,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		return changed;
 	}
 
-	/** Inputs for one HUD paint; undefined when the dock is off or has no children. */
+	/** Inputs for one HUD paint; undefined when the dock is off or has no work. */
 	#buildSubagentHudView():
 		| {
 				sessions: ObservableSession[];
+				jobs: AsyncJobSnapshotItem[];
 				lines: string[];
 				rowOwners: (string | undefined)[];
 				tickMs: number | undefined;
@@ -4871,6 +4924,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (mode === "off") return undefined;
 		const sessions = this.#dockSessions();
 		const children = activeDockChildren(sessions);
+		const backgroundJobs = activeDockJobs(children, this.session.getAsyncJobSnapshot()?.running ?? []);
 		if (
 			this.#subagentDockSelectedId !== MAIN_AGENT_ID &&
 			!children.some(child => child.id === this.#subagentDockSelectedId)
@@ -4890,6 +4944,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				livePreview,
 				statsFor: session => this.#dockRunStats(session),
 				modelFor: registryModelLabel,
+				backgroundJobs,
 			},
 		);
 		if (lines.length === 0) return undefined;
@@ -4898,19 +4953,27 @@ export class InteractiveMode implements InteractiveModeContext {
 		const first =
 			selected < 0 ? 0 : Math.min(Math.max(0, selected - limit + 1), Math.max(0, children.length - limit));
 		const visible = children.slice(first, first + limit);
+		const visibleJobLimit = expanded ? backgroundJobs.length : Math.max(0, limit - visible.length);
+		const visibleJobs = backgroundJobs.slice(0, visibleJobLimit);
 		const rowOwners: (string | undefined)[] = [undefined, undefined, MAIN_AGENT_ID];
 		if (first > 0) rowOwners.push(PINNED_HUD_TOGGLE_ID);
-		rowOwners.push(...visible.map(child => child.id));
-		if (children.length > first + visible.length || (expanded && children.length > SUBAGENT_HUD_VISIBLE_LIMIT)) {
+		// Background jobs are informational here; /jobs owns inspection/cancel.
+		// They must never be routed to focusAgentSession or steal an expander click.
+		rowOwners.push(...visible.map(child => child.id), ...visibleJobs.map(() => undefined));
+		if (
+			children.length > first + visible.length ||
+			backgroundJobs.length > visibleJobs.length ||
+			(expanded && children.length + backgroundJobs.length > SUBAGENT_HUD_VISIBLE_LIMIT)
+		) {
 			rowOwners.push(PINNED_HUD_TOGGLE_ID);
 		}
 		let tickMs: number | undefined;
 		if (!agentPauseGate.paused) {
 			tickMs = livePreview ? nextSubagentPreviewTickMs(visible, now) : undefined;
-			// Every visible row has a current-state clock, including an idle fork.
+			// Agent phase and background-job elapsed clocks both advance each second.
 			tickMs = Math.min(tickMs ?? SUBAGENT_DOCK_TICK_MS, SUBAGENT_DOCK_TICK_MS);
 		}
-		return { sessions: children, lines, rowOwners, tickMs };
+		return { sessions: children, jobs: backgroundJobs, lines, rowOwners, tickMs };
 	}
 
 	/** Cache registry-only row metrics until the transcript grows. */

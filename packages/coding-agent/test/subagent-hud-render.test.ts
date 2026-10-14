@@ -26,7 +26,11 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { type ObservableSession, SessionObserverRegistry } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 import { formatRunElapsed } from "@oh-my-pi/pi-tui/overlays/agent-run-stats";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
-import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import {
+	AgentSession,
+	type AgentSessionEvent,
+	type AsyncJobSnapshotItem,
+} from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { type AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
@@ -1095,6 +1099,35 @@ describe("subagent dock lines", () => {
 		} finally {
 			for (const id of Object.keys(live)) registry.unregister(id);
 		}
+	});
+
+	it("renders job-only sessions, reserves elapsed time, and removes task duplicates and settled jobs", () => {
+		const jobs: AsyncJobSnapshotItem[] = [
+			{ id: "bg_1", type: "bash", status: "running", label: "Building the native bundle", startTime: 0 },
+			{ id: "bg_2", type: "task", status: "running", label: "Worker", agentId: "Worker", startTime: 0 },
+			{ id: "bg_3", type: "eval", status: "completed", label: "Finished", startTime: 0 },
+			{ id: "bg_4", type: "bash", status: "cancelled", label: "Cancelled", startTime: 0 },
+		];
+		const jobOnly = Bun.stripANSI(
+			renderSubagentDockLines([], 80, undefined, false, {
+				now: 12_000,
+				backgroundJobs: [jobs[0]!],
+			}).join("\n"),
+		);
+		expect(jobOnly).toContain("bg_1 · Building the native bundle · running 12s");
+		expect(jobOnly).toContain("1 job");
+		const mixed = Bun.stripANSI(
+			renderSubagentDockLines([makeSession({ id: "Worker" })], 100, undefined, false, {
+				now: 12_000,
+				backgroundJobs: jobs,
+			}).join("\n"),
+		);
+		expect(mixed).toContain("Worker");
+		expect(mixed).toContain("bg_1");
+		for (const id of ["bg_2", "bg_3", "bg_4"]) expect(mixed).not.toContain(id);
+		const narrow = renderSubagentDockLines([], 40, undefined, false, { now: 12_000, backgroundJobs: [jobs[0]!] });
+		expect(Bun.stripANSI(narrow[3]!)).toContain("running 12s");
+		for (const line of narrow) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(38);
 	});
 
 	it("shows only active subagents and hides the dock once none are working", () => {
