@@ -53,7 +53,7 @@ function makeHarness(columns = COLUMNS, rows = ROWS, transcriptRows = TRANSCRIPT
 	const widget = new InlineWidget();
 	editor.addChild(widget);
 	editor.addChild(new Text("EDITOR", 0, 0));
-	composer.setRuntimeChildren([transcript, hud, editor], { transient: [editor] });
+	composer.setRuntimeChildren([transcript, hud, editor], { transient: [editor], browseDock: [editor] });
 	composer.start({ playWelcomeIntro: false });
 	return { terminal, scheduler, composer, widget, hud, editor };
 }
@@ -251,6 +251,28 @@ describe("composer inline shrink (#11007)", () => {
 		expect(separators.length).toBeGreaterThan(0);
 		expect(transcriptRows.at(-1)).toBe(`${TRANSCRIPT_PREFIX}${TRANSCRIPT_ROWS - 1}`);
 
+		h.composer.stop();
+	});
+
+	it("keeps the input dock at the bottom while browsing through expand, collapse, and resize", async () => {
+		const h = makeHarness();
+		expect(h.composer.scrollViewport(-6)).toBe(true);
+		await h.scheduler.settle(h.terminal);
+
+		h.widget.rows = 12;
+		h.composer.ui.requestRender();
+		await h.scheduler.settle(h.terminal);
+		h.terminal.resize(COLUMNS - 10, ROWS - 5);
+		await h.scheduler.advance(h.terminal, 300);
+		h.widget.rows = 0;
+		h.composer.ui.requestRender();
+		await h.scheduler.settle(h.terminal);
+
+		const collapsed = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+		expect(collapsed.at(-1)).toBe("EDITOR");
+		h.composer.ui.resetDisplay();
+		await h.scheduler.settle(h.terminal);
+		expect(h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd())).toEqual(collapsed);
 		h.composer.stop();
 	});
 

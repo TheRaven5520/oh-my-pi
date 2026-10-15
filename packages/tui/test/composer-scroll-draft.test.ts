@@ -12,7 +12,7 @@ beforeAll(async () => {
 	await initTheme();
 });
 
-async function setup(draft = "") {
+async function setup(draft = "", includeHud = false) {
 	const terminal = new VirtualTerminal(80, 20);
 	const scheduler = new VirtualRenderScheduler();
 	const composer = new Composer({
@@ -28,7 +28,10 @@ async function setup(draft = "") {
 	});
 	const transcript = new TranscriptContainer();
 	for (let index = 0; index < 80; index++) transcript.addChild(new Text(`Message ${index}`, 0, 0));
-	composer.setRuntimeChildren([transcript, composer.editor], { transient: [composer.editor] });
+	const hud = { render: () => ["TODO HUD", "AGENTS HUD"] };
+	composer.setRuntimeChildren([transcript, ...(includeHud ? [hud] : []), composer.editor], {
+		transient: [composer.editor],
+	});
 	composer.editor.setText(draft);
 	composer.start({ playWelcomeIntro: false });
 	await scheduler.settle(terminal);
@@ -46,7 +49,7 @@ it("reveals a typed draft without moving the message being read, then hides only
 		await wheel("up", 8);
 		const before = view();
 		expect(composer.isViewportBrowsing()).toBe(true);
-		expect(before.some(row => row.includes("─"))).toBe(false);
+		expect(before.slice(0, -3).some(row => row.includes("─"))).toBe(false);
 		terminal.sendInput("a draft while reading");
 		await scheduler.settle(terminal);
 		const typed = view();
@@ -57,7 +60,24 @@ it("reveals a typed draft without moving the message being read, then hides only
 		await scheduler.settle(terminal);
 		expect(composer.editor.getText()).toBe("");
 		expect(view().slice(0, 5)).toEqual(before.slice(0, 5));
-		expect(view().some(row => row.includes("─"))).toBe(false);
+		expect(
+			view()
+				.slice(0, -3)
+				.some(row => row.includes("─")),
+		).toBe(false);
+	} finally {
+		composer.stop();
+	}
+});
+
+it("does not pin todo and agent HUDs while browsing", async () => {
+	const { composer, view, wheel } = await setup("", true);
+	try {
+		expect(view().join("\n")).toContain("TODO HUD");
+		await wheel("up", 4);
+		const browsed = view();
+		expect(browsed.slice(-5).join("\n")).not.toContain("TODO HUD");
+		expect(browsed.slice(-5).join("\n")).not.toContain("AGENTS HUD");
 	} finally {
 		composer.stop();
 	}

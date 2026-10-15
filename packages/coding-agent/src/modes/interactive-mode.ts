@@ -2479,6 +2479,12 @@ export class InteractiveMode implements InteractiveModeContext {
 					this.editorContainer,
 					this.hookWidgetContainerBelow,
 				],
+				browseDock: [
+					this.attachmentChipsContainer,
+					this.hookWidgetContainerAbove,
+					this.editorContainer,
+					this.hookWidgetContainerBelow,
+				],
 			},
 		);
 		this.ui.setFocus(this.editor);

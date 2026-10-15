@@ -111,6 +111,8 @@ export interface RuntimeChildrenOptions {
 	 * to the roots below the transcript in render order.
 	 */
 	readonly nativeDock?: readonly Component[];
+	/** Roots that stay attached to the bottom while browsing transcript history. */
+	readonly browseDock?: readonly Component[];
 }
 
 /** Controls the first terminal paint for a composer that does not already own the terminal. */
@@ -254,6 +256,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#headerAfter: readonly Component[] = [];
 	#runtimeChildren: readonly Component[] = [];
 	#nativeDock: readonly Component[] | undefined;
+	#browseDock: ReadonlySet<Component> = new Set([this.editor]);
 	/** Cache-driven status line shown until {@link setStatusComponent} mounts the session's. */
 	#startupStatus: StatusLineComponent | undefined;
 	#runtimeMounted = false;
@@ -496,12 +499,12 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		let transientRows = 0;
 		let displacingRows = 0;
 		let decisionPanelOpen = false;
-		const ends: { root: Component; end: number }[] = [];
+		const ranges: { root: Component; start: number; end: number }[] = [];
 		for (const root of afterRoots) {
 			const chrome: Component = root;
 			const start = after.length;
 			this.#renderBelowRoot(root, width, after, afterSpans);
-			ends.push({ root, end: after.length });
+			ranges.push({ root, start, end: after.length });
 			if (this.#transientChrome.has(root)) transientRows += after.length - start;
 			if (
 				chrome.retireDisplacedTranscript ||
@@ -511,9 +514,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				decisionPanelOpen = true;
 			}
 		}
-		this.#rowsBelow = new Map(ends.map(({ root, end }) => [root, after.length - end]));
+		this.#rowsBelow = new Map(ranges.map(({ root, end }) => [root, after.length - end]));
 		if (this.#browsing) {
-			return this.#renderBrowseFrame(transcript, width, rows, after, afterSpans, decisionPanelOpen);
+			return this.#renderBrowseFrame(transcript, width, rows, after, afterSpans, ranges, decisionPanelOpen);
 		}
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
@@ -626,22 +629,37 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		rows: number,
 		after: readonly string[],
 		afterSpans: readonly ViewportClickSpan[],
-		decisionPanelOpen: boolean,
+		afterRanges: readonly { root: Component; start: number; end: number }[],
+		_decisionPanelOpen: boolean,
 	): TerminalFramePlan {
-		const showComposer = this.editor.hasDraftContent() || decisionPanelOpen;
-		const dockRows = Math.max(0, rows - 1);
-		const dock = showComposer && dockRows > 0 ? after.slice(-dockRows) : [];
+		const dockRanges = afterRanges.filter(
+			range => this.#browseDock.has(range.root) || range.root === this.#statusHost,
+		);
+		const rawDock: string[] = [];
+		const rawSpans: ViewportClickSpan[] = [];
+		for (const range of dockRanges) {
+			const offset = rawDock.length;
+			rawDock.push(...after.slice(range.start, range.end));
+			for (const span of afterSpans) {
+				if (span.start < range.start || span.end > range.end) continue;
+				rawSpans.push({
+					...span,
+					start: offset + span.start - range.start,
+					end: offset + span.end - range.start,
+				});
+			}
+		}
+		const dock = rawDock.slice(-Math.max(0, rows - 1));
+		const dockTrim = rawDock.length - dock.length;
 		const capacity = Math.max(0, rows - dock.length);
 		const delta = this.#browseDelta;
 		this.#browseDelta = 0;
-		// Hide the empty dock below the old top anchor; do not turn the first
-		// three-row wheel gesture into a jump by the height of the composer.
 		const window = transcript.renderWindow(
 			width,
 			capacity,
 			this.#browseAnchor,
 			delta,
-			Math.max(1, rows - after.length),
+			Math.max(1, rows - dock.length),
 		);
 		this.#browseAnchor = window.anchor;
 		if (delta > 0 && window.atEnd) {
@@ -662,20 +680,17 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			}
 			spans.push({ ...span, candidates: () => ids, toolTarget: toolId, owner: span.component });
 		}
-		if (showComposer) {
-			const clipped = after.length - dock.length;
-			for (const span of afterSpans) {
-				const start = Math.max(0, span.start - clipped);
-				const end = span.end - clipped;
-				if (end <= start) continue;
-				const skew = Math.max(0, clipped - span.start);
-				spans.push({
-					...span,
-					start: capacity + start,
-					end: capacity + end,
-					candidates: local => span.candidates(local + skew),
-				});
-			}
+		for (const span of rawSpans) {
+			const start = Math.max(0, span.start - dockTrim);
+			const end = Math.min(dock.length, span.end - dockTrim);
+			if (end <= start) continue;
+			const skew = Math.max(0, dockTrim - span.start);
+			spans.push({
+				...span,
+				start: capacity + start,
+				end: capacity + end,
+				candidates: local => span.candidates(local + skew),
+			});
 		}
 		this.#lastClickSpans = spans;
 		return {
@@ -1227,6 +1242,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#transientChromeFloor = undefined;
 		this.#anchorAfterInlineRetirement = false;
 		this.#nativeDock = options.nativeDock;
+		this.#browseDock = new Set(options.browseDock ?? [this.editor]);
 		this.ui.removeChild(this.#statusHost);
 		if (this.#runtimeMounted) {
 			for (const child of this.#runtimeChildren) this.ui.removeChild(child);
