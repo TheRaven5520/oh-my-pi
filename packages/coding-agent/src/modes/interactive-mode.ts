@@ -7238,6 +7238,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
 		this.#extensionUiController.disposeComposerShapes();
+		this.#extensionUiController.disposeCentral();
 		for (const unsubscribe of this.#eventBusUnsubscribers) {
 			unsubscribe();
 		}
@@ -7462,6 +7463,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showStatus("Still closing… (flushing memory backend / network)");
 		}, STILL_CLOSING_DELAY_MS);
 		try {
+			this.#extensionUiController.disposeCentral();
 			this.#streamPublisher?.dispose();
 			this.#streamPublisher = undefined;
 			await this.#recorder?.stop();

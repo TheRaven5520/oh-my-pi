@@ -63,6 +63,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.browserRelayHelp,
 	},
 	{
+		name: "central",
+		load: () => import("./commands/central").then(m => m.default),
+		help: commandHelp.centralHelp,
+	},
+	{
 		name: "cleanse",
 		load: () => import("./commands/cleanse").then(m => m.default),
 		help: commandHelp.cleanseHelp,
@@ -426,6 +431,9 @@ function stripLaunchGlobalFlags(leading: readonly string[]): string[] {
  */
 export function resolveCliArgv(argv: string[]): ResolvedCliArgv {
 	const first = argv[0];
+	// `--central` is the documented launch spelling for the Central inbox. Keep
+	// it out of launch's flag parser so it cannot become a prompt or unknown flag.
+	if (argv.length === 1 && first === "--central") return { argv: ["central"] };
 	const reservedMessage = reservedTopLevelWordMessage(argv);
 	if (reservedMessage) return { error: reservedMessage };
 	if (first === "--help" || first === "-h" || first === "--version" || first === "-v" || first === "help") {

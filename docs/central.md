@@ -1,0 +1,44 @@
+# OMP Central
+
+`omp central` is a private inbox for questions waiting in active OMP chats.
+
+## Workflow
+
+1. Start Central in its own terminal: `omp --central` (or `omp central`).
+2. The current chat's structured question is shown with its real options, previews,
+   multi-select state, custom-answer editor, and notes.
+3. Submit an answer to advance. `F6` skips the whole chat to the back without
+   cancelling or answering it. `F7` opens the original chat when it needs work
+   beyond the question. `F4` toggles the full question/details view; `PgUp` and
+   `PgDn` scroll long forms. `Ctrl+C` closes Central only.
+4. If the original chat answers or withdraws a question, Central advances without
+   sending the Central draft elsewhere. An unsent draft is retained in the retired
+   view with `F8`.
+
+Central does not scrape terminal panes and does not type into another chat. Each
+interactive OMP process publishes a short-lived owner-only local socket with the
+structured question payload. Answers are authenticated, validated against the
+pending question, and removed when either side answers. Continued questions stay
+pending while the agent works.
+
+## Other hosts
+
+Central uses only explicitly configured SSH destinations; it never scans the
+network. The probe is non-interactive and bounded. When a configured host is
+unavailable, local chats remain usable and Central shows that source's bounded
+unavailable status. An empty host list disables remote access:
+
+```sh
+omp config set central.hosts '["user@mini"]'
+```
+
+Set `central.identity` to the designated SSH key in the local configuration;
+the public repository intentionally does not prescribe a private key path.
+
+The remote host must run a Central-capable OMP binary. SSH is used only for the
+bounded JSONL bridge; question text and answers are not logged. A remote source
+that cannot connect stays visible as an error instead of looking like an empty
+queue.
+
+Slider selectors remain in the original chat because their answer is not a single
+string. Disabled options are preserved and cannot be selected from Central.

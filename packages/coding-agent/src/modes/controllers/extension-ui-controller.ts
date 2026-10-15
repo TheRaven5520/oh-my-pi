@@ -2,6 +2,8 @@ import type { Component, OverlayHandle, TUI } from "@oh-my-pi/pi-tui";
 import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire";
 import type { CollabHost } from "../../collab/host";
+import type { CentralAnswer, CentralRequestDraft } from "@oh-my-pi/pi-tui/apps/central/types";
+import { type CentralHost, startCentralHost } from "../../central/bridge";
 import { formatKeyHint, formatKeyHints, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type {
 	CompactOptions,
@@ -104,6 +106,11 @@ export class ExtensionUiController {
 	 * call with the same picker/dialog primitives a live tool call would get.
 	 */
 	#toolUIContext: ExtensionUIContext | undefined;
+	#centralHost: CentralHost | undefined;
+	#centralStart: Promise<void> | undefined;
+	#centralStopped = false;
+	#centralSessionAbort = new AbortController();
+	#centralSessionUnsubscribe: (() => void) | undefined;
 	constructor(private ctx: InteractiveModeContext) {}
 
 	#syncExtensionComposerShapes(): void {
@@ -119,10 +126,74 @@ export class ExtensionUiController {
 		for (const dispose of this.#composerShapeDisposers.splice(0)) dispose();
 	}
 
+	/** Withdraw structured questions without stopping the session or its tools. */
+	disposeCentral(): void {
+		this.#centralStopped = true;
+		this.#centralSessionUnsubscribe?.();
+		this.#centralSessionUnsubscribe = undefined;
+		this.#centralSessionAbort.abort();
+		void this.#centralHost?.close();
+		this.#centralHost = undefined;
+	}
+
+	async #startCentral(): Promise<void> {
+		if (this.ctx.collabGuest || this.#centralStopped) return;
+		this.#centralStart ??= (async () => {
+			let host: CentralHost | undefined;
+			try {
+				host = await startCentralHost(
+					() => ({
+						sessionId: this.ctx.session.sessionManager.getSessionId(),
+						name: this.ctx.session.sessionManager.getSessionName() ?? "Untitled chat",
+						cwd: this.ctx.session.sessionManager.getCwd(),
+						busy:
+							this.ctx.session.isStreaming ||
+							this.ctx.session.isCompacting ||
+							this.ctx.session.hasPostPromptWork,
+					}),
+					{
+						onClosed: () => {
+							if (this.#centralHost === host) this.#centralHost = undefined;
+						},
+					},
+				);
+				if (this.#centralStopped) {
+					await host.close();
+					return;
+				}
+				this.#centralHost = host;
+				this.#centralSessionUnsubscribe = this.ctx.session.registerSessionChangeCallback(() => {
+					this.#centralSessionAbort.abort();
+					this.#centralSessionAbort = new AbortController();
+				});
+				this.ctx.session.addDisposer(() => this.disposeCentral());
+			} catch {
+				void this.#centralHost?.close();
+				this.#centralHost = undefined;
+				this.ctx.showWarning("OMP Central is unavailable for this chat; local dialogs are unaffected.");
+			}
+		})();
+		await this.#centralStart;
+	}
+
+	#raceCentral<T extends CentralAnswer | undefined>(
+		request: CentralRequestDraft,
+		signal: AbortSignal | undefined,
+		local: (signal: AbortSignal) => Promise<T>,
+	): Promise<T> {
+		const scopedSignal = signal
+			? AbortSignal.any([signal, this.#centralSessionAbort.signal])
+			: this.#centralSessionAbort.signal;
+		return this.#centralHost && !this.#centralHost.closed && !this.ctx.collabGuest
+			? this.#centralHost.race(request, scopedSignal, local)
+			: local(scopedSignal);
+	}
+
 	/**
 	 * Initialize the hook system with TUI-based UI context.
 	 */
 	async initHooksAndCustomTools(): Promise<void> {
+		await this.#startCentral();
 		// Create and set hook & tool UI context
 		const uiContext: ExtensionUIContext = {
 			timeoutStartsOnPresentation: true,
@@ -541,6 +612,10 @@ export class ExtensionUiController {
 		reason: "start" | "switch" | "branch" | "tree" | "shutdown",
 		previousSessionFile?: string,
 	): Promise<void> {
+		if (reason === "switch" || reason === "branch" || reason === "tree") {
+			this.#centralSessionAbort.abort();
+			this.#centralSessionAbort = new AbortController();
+		}
 		const event = { reason, previousSessionFile };
 		const uiContext = this.ctx.session.extensionRunner?.getUIContext();
 		if (!uiContext) {
@@ -595,8 +670,19 @@ export class ExtensionUiController {
 			markableCount: dialogOptions?.markableCount,
 			helpText: dialogOptions?.helpText,
 		};
-		return this.#raceCollabDialog(request, dialogOptions?.signal, signal =>
-			this.showHookSelector(title, options, { ...dialogOptions, signal }, extra),
+		const local = (signal: AbortSignal | undefined) =>
+			this.#raceCollabDialog(request, signal, localSignal =>
+				this.showHookSelector(title, options, { ...dialogOptions, signal: localSignal }, extra),
+			);
+		// A slider's orthogonal state cannot be represented by a string answer.
+		if (extra?.slider) return local(dialogOptions?.signal);
+		return this.#raceCentral(
+			{
+				...request,
+				disabledIndices: dialogOptions?.disabledIndices ? [...dialogOptions.disabledIndices] : undefined,
+			},
+			dialogOptions?.signal,
+			local,
 		);
 	}
 
@@ -607,8 +693,10 @@ export class ExtensionUiController {
 		editorOptions?: { promptStyle?: boolean },
 	): Promise<string | undefined> {
 		const request: CollabUiRequestDraft = { kind: "editor", title, prefill };
-		return this.#raceCollabDialog(request, dialogOptions?.signal, signal =>
-			this.showHookEditor(title, prefill, { ...dialogOptions, signal }, editorOptions),
+		return this.#raceCentral(request, dialogOptions?.signal, signal =>
+			this.#raceCollabDialog(request, signal, localSignal =>
+				this.showHookEditor(title, prefill, { ...dialogOptions, signal: localSignal }, editorOptions),
+			),
 		);
 	}
 
@@ -621,6 +709,15 @@ export class ExtensionUiController {
 		// strings/arrays here instead of throwing inside `sanitizeCarriageReturns`
 		// on the guest path or taking down the local render.
 		const normalized = normalizeDialogQuestions(questions);
+		return this.#raceCentral({ kind: "ask", questions: normalized }, dialogOptions?.signal, signal =>
+			this.#showCollabAskDialog(normalized, { ...dialogOptions, signal }),
+		);
+	}
+
+	async #showCollabAskDialog(
+		normalized: ExtensionAskDialogQuestion[],
+		dialogOptions?: ExtensionUIDialogOptions,
+	): Promise<ExtensionAskDialogResult | undefined> {
 		const host = this.ctx.collabHost;
 		if (!host) return this.#showLocalAskDialog(normalized, dialogOptions);
 		const localAbort = new AbortController();
