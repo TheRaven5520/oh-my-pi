@@ -12,6 +12,7 @@ import {
 } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import {
 	CustomEditor,
+	type ComposerDraftSnapshot,
 	extractBracketedImagePastePaths,
 	extractBracketedPastePaths,
 	extractImagePastePathsFromText,
@@ -84,6 +85,101 @@ describe("CustomEditor placeholder decoration", () => {
 	it("renders linked image placeholders before theme and settings initialization", async () => {
 		const output = await decorateInFreshProcess("[Image #1]", ["/tmp/example.png"]);
 		expect(output).toBe("[Image #1]");
+	});
+});
+
+describe("CustomEditor draft snapshots", () => {
+	beforeAll(async () => {
+		await initTheme();
+	});
+
+	it("round trips cursor, attachment chips, expansions, counters, and link slots through JSON", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		editor.setText("first line\n");
+		editor.insertTextAttachment("preview", "expanded paste body");
+		editor.pendingImages = [{ type: "image", mimeType: "image/png", data: "aW1hZ2U=" }];
+		editor.pendingImageLinks = [undefined];
+		editor.imageLinks = [undefined, "file:///tmp/image.png"];
+		editor.insertAtom(chipLabel("image", 1), "[Image #1]");
+		editor.moveToMessageStart();
+		const expectedText = editor.getText();
+		const expectedExpanded = editor.getExpandedText();
+		const snapshot: ComposerDraftSnapshot = JSON.parse(JSON.stringify(editor.captureDraftSnapshot()));
+		editor.clearDraft();
+		editor.restoreDraftSnapshot(snapshot);
+		expect(editor.getText()).toBe(expectedText);
+		expect(editor.getExpandedText()).toBe(expectedExpanded);
+		expect(editor.getCursor()).toEqual({ line: 0, col: 0 });
+		expect(editor.pendingImageLinks).toEqual([undefined]);
+		expect(editor.imageLinks).toEqual([undefined, "file:///tmp/image.png"]);
+		expect(editor.pendingTexts[0]?.content).toBe("preview");
+		expect(editor.pendingImages[0]?.data).toBe("aW1hZ2U=");
+		editor.insertTextAttachment("another paste");
+		expect(editor.pendingTexts[1]?.n).toBe(2);
+	});
+
+	it("does not alias captured or restored draft state", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		editor.insertTextAttachment("original", "expansion");
+		editor.pendingImages = [{ type: "image", mimeType: "image/png", data: "original" }];
+		editor.pendingImageLinks = ["file:///original.png"];
+		const snapshot = editor.captureDraftSnapshot();
+		editor.pendingImages[0]!.data = "changed";
+		editor.pendingTexts[0]!.content = "changed";
+		editor.pendingImageLinks[0] = "file:///changed.png";
+		expect(snapshot.pendingImages[0]?.data).toBe("original");
+		expect(snapshot.pendingTexts[0]?.content).toBe("original");
+		expect(snapshot.pendingImageLinks[0]).toBe("file:///original.png");
+		editor.restoreDraftSnapshot(snapshot);
+		snapshot.pendingImages[0]!.data = "mutated snapshot";
+		snapshot.pendingTexts[0]!.content = "mutated snapshot";
+		snapshot.atoms[0]![1] = "mutated expansion";
+		expect(editor.pendingImages[0]?.data).toBe("original");
+		expect(editor.pendingTexts[0]?.content).toBe("original");
+		expect(editor.getExpandedText()).toContain("expansion");
+	});
+
+	it("preserves base paste markers and their next counter", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const content = "long line\n".repeat(30);
+		editor.pasteText(content);
+		const snapshot: ComposerDraftSnapshot = JSON.parse(JSON.stringify(editor.captureDraftSnapshot()));
+		expect(snapshot.pastes.length).toBe(1);
+		editor.clearDraft();
+		editor.restoreDraftSnapshot(snapshot);
+		expect(editor.getExpandedText()).toContain(content.trimEnd());
+		editor.pasteText(content);
+		expect(editor.captureDraftSnapshot().pasteCounter).toBe(2);
+	});
+
+	it("recognizes whitespace and attachment-only drafts without sending", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		expect(editor.hasDraftContent()).toBe(false);
+		editor.setText(" ");
+		expect(editor.hasDraftContent()).toBe(true);
+		editor.clearDraft();
+		editor.pendingImages = [{ type: "image", mimeType: "image/png", data: "image" }];
+		expect(editor.hasDraftContent()).toBe(true);
+	});
+
+	it("waits for an in-flight clipboard attachment before snapshotting", async () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const { promise, resolve } = Promise.withResolvers<boolean>();
+		editor.onPasteImage = async () => {
+			await promise;
+			editor.pendingImages = [{ type: "image", mimeType: "image/png", data: "image" }];
+			return true;
+		};
+		editor.handleInput(bracketedPaste(""));
+		let settled = false;
+		const waiting = editor.awaitPendingPaste().then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		resolve(true);
+		await waiting;
+		expect(editor.captureDraftSnapshot().pendingImages).toHaveLength(1);
 	});
 });
 

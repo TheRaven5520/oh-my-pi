@@ -6,6 +6,7 @@
 
 ### Added
 
+- Added a persistent, session-local draft backlog on `Ctrl+N` (`app.draft.backlog`): save and clear a nonempty composer, or restore the oldest saved draft into an empty one without sending. Drafts preserve cursor, attachments, and collapsed-paste expansions; a prompt widget shows the count. Writes are atomic, and focused subagents and overlays retain their shortcuts.
 - Providers in `models.yml` can declare `modelSearch: { type: "openai-models-list", param, limit }`: `/model` gets a "Search <provider>…" scope that queries `<baseUrl>/models?<param>=…&limit=…` as you type (debounced; loading, empty and error shown inline), and picking a result adds it to that provider's `models` in models.yml and opens it for selection without a restart. Picked models never join Ctrl+P.
 - Learn results retain structured memory storage and optional skill outcomes, including partial failures after a lesson was stored or queued. Dedicated cards show the lesson preview without a JSON argument wall; full context and skill content remain available on expansion.
 - Bash uses structured display actions for simple Git, test and build commands. Its optional `title` accepts a small action ID or concise custom override; commands remain exact on expansion and execution/approval are unchanged. Tool headers retain tool-specific facts, shell styling and actionable outcomes without requiring extra model fields for structured tools.

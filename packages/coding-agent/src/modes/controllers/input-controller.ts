@@ -18,7 +18,7 @@ import { isSettingsInitialized, settings } from "../../config/settings";
 import { InternalUrlRouter, resolveLocalRoot } from "../../internal-urls";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
-import { extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { type ComposerDraftSnapshot, extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { HistorySearchComponent } from "@oh-my-pi/pi-tui/overlays/history-search";
 import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
@@ -248,6 +248,44 @@ function safeAbort(label: string, fn: () => void): void {
 const LEFT_DOUBLE_TAP_MIN_GAP_MS = 40;
 const LEFT_DOUBLE_TAP_MAX_GAP_MS = 500;
 
+function isComposerDraftSnapshot(value: unknown): value is ComposerDraftSnapshot {
+	if (!value || typeof value !== "object") return false;
+	const draft = value as ComposerDraftSnapshot;
+	const strings = (items: unknown): boolean =>
+		Array.isArray(items) && items.every(item => item === null || typeof item === "string");
+	return (
+		draft.version === 1 &&
+		typeof draft.text === "string" &&
+		!!draft.cursor &&
+		Number.isInteger(draft.cursor.line) &&
+		draft.cursor.line >= 0 &&
+		Number.isInteger(draft.cursor.col) &&
+		draft.cursor.col >= 0 &&
+		Array.isArray(draft.pastes) &&
+		draft.pastes.every(
+			pair => Array.isArray(pair) && pair.length === 2 && Number.isInteger(pair[0]) && typeof pair[1] === "string",
+		) &&
+		Array.isArray(draft.atoms) &&
+		draft.atoms.every(
+			pair => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === "string" && typeof pair[1] === "string",
+		) &&
+		Number.isInteger(draft.pasteCounter) &&
+		draft.pasteCounter >= 0 &&
+		Array.isArray(draft.pendingImages) &&
+		draft.pendingImages.every(
+			image => image?.type === "image" && typeof image.data === "string" && typeof image.mimeType === "string",
+		) &&
+		strings(draft.pendingImageLinks) &&
+		(draft.imageLinks === null || strings(draft.imageLinks)) &&
+		Array.isArray(draft.pendingTexts) &&
+		draft.pendingTexts.every(
+			item => item && Number.isInteger(item.n) && typeof item.label === "string" && typeof item.content === "string",
+		) &&
+		Number.isInteger(draft.textAttachmentCounter) &&
+		draft.textAttachmentCounter >= 0
+	);
+}
+
 export class InputController {
 	constructor(
 		private ctx: InteractiveModeContext,
@@ -262,6 +300,110 @@ export class InputController {
 			readMacFileUrls: readMacFileUrlsFromClipboard,
 		},
 	) {}
+
+	#draftBacklogBusy = false;
+
+	#readDraftBacklog(): ComposerDraftSnapshot[] {
+		const manager = this.ctx.sessionManager;
+		const entry = manager
+			.getEntries()
+			.findLast(entry => entry.type === "custom" && entry.customType === "composer-draft-backlog");
+		if (!entry || entry.type !== "custom") return [];
+		const data = entry.data as { version?: unknown; sessionId?: unknown; drafts?: unknown } | undefined;
+		if (data && typeof data.sessionId === "string" && data.sessionId !== manager.getSessionId()) return [];
+		if (
+			!data ||
+			data.sessionId !== manager.getSessionId() ||
+			data.version !== 1 ||
+			!Array.isArray(data.drafts) ||
+			!data.drafts.every(isComposerDraftSnapshot)
+		) {
+			throw new Error("Saved draft backlog is malformed; it has been left untouched.");
+		}
+		return data.drafts;
+	}
+
+	syncDraftBacklogIndicator(): void {
+		try {
+			const count = this.#readDraftBacklog().length;
+			this.ctx.setHookWidget(
+				"composer-draft-backlog",
+				count
+					? [
+							`${count} saved draft${count === 1 ? "" : "s"} · ${appKey(this.ctx.keybindings, "app.draft.backlog")} saves / restores oldest when empty`,
+						]
+					: undefined,
+			);
+		} catch (error) {
+			this.ctx.setHookWidget("composer-draft-backlog", [String(error)]);
+		}
+	}
+
+	/** Never submits a prompt. Repeated keys during a disk write are coalesced. */
+	async handleDraftBacklog(): Promise<void> {
+		if (
+			this.#draftBacklogBusy ||
+			this.ctx.focusedAgentId ||
+			this.ctx.ui.hasOverlay() ||
+			this.ctx.ui.getFocused() !== this.ctx.editor
+		)
+			return;
+		this.#draftBacklogBusy = true;
+		const manager = this.ctx.sessionManager;
+		const sessionId = manager.getSessionId();
+		const editor = this.ctx.editor;
+		const isCurrent = (): boolean =>
+			this.ctx.sessionManager === manager &&
+			manager.getSessionId() === sessionId &&
+			!this.ctx.focusedAgentId &&
+			!this.ctx.ui.hasOverlay() &&
+			this.ctx.ui.getFocused() === editor;
+		try {
+			await editor.awaitPendingPaste();
+			if (!isCurrent()) return;
+			const drafts = this.#readDraftBacklog();
+			const saving = editor.hasDraftContent();
+			if (!saving && !drafts.length) return;
+			const snapshot = editor.captureDraftSnapshot();
+			let appended = false;
+			const unchanged = (): boolean =>
+				isCurrent() && JSON.stringify(editor.captureDraftSnapshot()) === JSON.stringify(snapshot);
+			await manager.appendEntriesAtomically(() => {
+				// The persistence lock may have waited behind another operation.
+				if (!unchanged()) return;
+				if (!saving) editor.restoreDraftSnapshot(drafts[0]);
+				manager.appendCustomEntry("composer-draft-backlog", {
+					version: 1,
+					sessionId,
+					drafts: saving ? [...drafts, snapshot] : drafts.slice(1),
+				});
+				appended = true;
+			});
+			// Clear only after durable publication, and never erase typing that arrived meanwhile.
+			if (appended && saving && unchanged()) {
+				editor.restoreDraftSnapshot({
+					version: 1,
+					text: "",
+					cursor: { line: 0, col: 0 },
+					pastes: [],
+					atoms: [],
+					pasteCounter: 0,
+					pendingImages: [],
+					pendingImageLinks: [],
+					imageLinks: null,
+					pendingTexts: [],
+					textAttachmentCounter: 0,
+				});
+			}
+		} catch (error) {
+			// Atomic journal rollback retains the queued copy; a restored editor is also kept.
+			this.ctx.showError(`Draft backlog was not saved; your draft was kept. ${String(error)}`);
+		} finally {
+			this.#draftBacklogBusy = false;
+			this.syncDraftBacklogIndicator();
+			this.ctx.ui.requestRender();
+		}
+	}
 
 	/** Resolve the current tiny role at use time so project/session reloads cannot leave a stale model. */
 	#resolveTinyTitleLocalModelKey(): string | undefined {
@@ -427,6 +569,12 @@ export class InputController {
 			// These actions target the main transcript/editor rather than the
 			// focused prompt. Keep focused components' own bindings authoritative.
 			this.ctx.ui.addInputListener(data => {
+				if (this.ctx.keybindings.matches(data, "app.draft.backlog")) {
+					if (this.ctx.focusedAgentId || this.ctx.ui.hasOverlay() || this.ctx.ui.getFocused() !== this.ctx.editor)
+						return undefined;
+					void this.handleDraftBacklog();
+					return { consume: true };
+				}
 				if (this.ctx.keybindings.matches(data, "app.thinking.toggle")) {
 					if (this.ctx.ui.hasOverlay()) return undefined;
 					this.ctx.toggleThinkingBlockVisibility();

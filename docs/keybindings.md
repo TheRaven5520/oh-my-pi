@@ -39,6 +39,7 @@ app.history.search: []
 | `app.thinking.toggle`        | `Ctrl+T`                                                              | Toggle thinking-block visibility                                                                                                                                                     |
 | `app.thinking.cycle`         | `Shift+Tab`                                                           | Cycle thinking level                                                                                                                                                                 |
 | `app.editor.external`        | `Ctrl+G`                                                              | Edit the draft in `$VISUAL` / `$EDITOR`                                                                                                                                              |
+| `app.draft.backlog`          | `Ctrl+N`                                                              | Save the current draft; when empty, restore the oldest saved draft |
 | `app.message.followUp`       | `Ctrl+Q`, `Ctrl+Enter`                                                | Queue a follow-up message                                                                                                                                                            |
 | `app.message.dequeue`        | `Alt+Up`, `Shift+Up`                                                  | Dequeue a queued message back into the editor                                                                                                                                        |
 | `app.retry`                  | `F5`, `Alt+R`                                                         | Retry the last failed assistant turn                                                                                                                                                 |
@@ -54,6 +55,12 @@ app.history.search: []
 Inside a model picker, `Ctrl+P` moves to the next model and `Ctrl+Shift+P` moves to the previous model, wrapping at either end of the filtered results. These use the same `app.model.cycleForward` and `app.model.cycleBackward` remaps as the prompt. Arrow navigation remains available; navigation does not apply the highlighted model until you confirm it.
 
 The terminal must send a distinct modified-key sequence for `Ctrl+Shift+P`. If it sends the same byte as `Ctrl+P`, remap `app.model.cycleBackward` to a distinguishable chord.
+
+## Persistent draft backlog
+
+In the main composer, `Ctrl+N` saves a nonempty draft to this session's FIFO backlog and clears it only after persistence succeeds. With an empty composer it restores the oldest saved draft for editing; it never sends anything. An empty backlog is a no-op. Whitespace and attachment-only drafts count as nonempty. A count above the prompt shows saved drafts.
+
+Saved drafts retain text, cursor, attachments, and collapsed-paste expansions across `/refresh` and resume. The backlog belongs to its session, stays out of provider messages, and is distinct from queued follow-up messages. Focused subagents, overlays, and other input dialogs keep ownership of their input. Repeated presses while a save is pending are coalesced. If persistence fails, the draft is kept; a failed restore commit can leave both the restored editor and the original saved copy rather than risk losing either.
 
 ## Recover a cleared prompt
 

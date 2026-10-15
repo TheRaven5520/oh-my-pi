@@ -4,6 +4,7 @@ import { BracketedPasteHandler } from "../bracketed-paste";
 import { BRACKETED_PASTE_END, BRACKETED_PASTE_START } from "../stdin-buffer";
 import {
 	Editor,
+	type EditorDraftSnapshot,
 	type EditorTextDecorationContext,
 	type EditorTheme,
 	type NativeEditorLayout,
@@ -429,6 +430,16 @@ export interface TextAttachment {
 	charCount: number;
 }
 
+/** Persistable composer state. Null link slots survive a JSON round trip. */
+export interface ComposerDraftSnapshot extends EditorDraftSnapshot {
+	version: 1;
+	pendingImages: ImageContent[];
+	pendingImageLinks: (string | null)[];
+	imageLinks: (string | null)[] | null;
+	pendingTexts: TextAttachment[];
+	textAttachmentCounter: number;
+}
+
 /** One visible composer attachment, in band order (vision attachments first, then text pastes). */
 export type ComposerChipDescriptor =
 	| { kind: "image" | "video"; n: number; image: ImageContent; link: string | undefined }
@@ -530,6 +541,39 @@ export class CustomEditor extends Editor {
 		this.pendingImageLinks = [];
 		this.pendingTexts = [];
 		this.#textAttachmentCounter = 0;
+	}
+
+	/** Capture an independent draft, including attachment chips and expansion payloads. */
+	override captureDraftSnapshot(): ComposerDraftSnapshot {
+		return {
+			...super.captureDraftSnapshot(),
+			version: 1,
+			pendingImages: structuredClone(this.pendingImages),
+			pendingImageLinks: this.pendingImageLinks.map(link => link ?? null),
+			imageLinks: this.imageLinks?.map(link => link ?? null) ?? null,
+			pendingTexts: this.pendingTexts.map(text => ({ ...text })),
+			textAttachmentCounter: this.#textAttachmentCounter,
+		};
+	}
+
+	/** Restore host state before text notifications, without sharing mutable snapshot data. */
+	override restoreDraftSnapshot(snapshot: ComposerDraftSnapshot): void {
+		this.restoreHistoryState(() => {
+			this.pendingImages = structuredClone(snapshot.pendingImages);
+			this.pendingImageLinks = snapshot.pendingImageLinks.map(link => link ?? undefined);
+			this.imageLinks = snapshot.imageLinks?.map(link => link ?? undefined);
+			this.pendingTexts = snapshot.pendingTexts.map(text => ({ ...text }));
+			this.#textAttachmentCounter = snapshot.textAttachmentCounter;
+		});
+		super.restoreDraftSnapshot(snapshot);
+		if (this.pendingImages.length > 0 && this.pendingImageLinks.some(link => link === undefined)) {
+			void this.#materializeDraftLinks();
+		}
+	}
+
+	/** Even whitespace or an image-only draft must not be overwritten by a dequeue. */
+	hasDraftContent(): boolean {
+		return this.getText().length > 0 || this.pendingImages.length > 0 || this.pendingTexts.length > 0;
 	}
 
 	/** Preserve a canceled draft in local navigation, then clear the composer. */
@@ -1343,6 +1387,15 @@ export class CustomEditor extends Editor {
 	 *  dispatching them so a trailing `Enter` after `Cmd+V` can't submit before the image lands on
 	 *  `pendingImages` (Codex PR #3602 review). */
 	#pasteInFlight = 0;
+	#pasteWaiters: (() => void)[] = [];
+
+	/** Wait for clipboard reads and any queued paste input to settle before capturing a draft. */
+	awaitPendingPaste(): Promise<void> {
+		if (this.#pasteInFlight === 0) return Promise.resolve();
+		const { promise, resolve } = Promise.withResolvers<void>();
+		this.#pasteWaiters.push(resolve);
+		return promise;
+	}
 	/** Input chunks and explicit prompts deferred behind an in-flight paste,
 	 *  drained in FIFO order once the paste count returns to zero. */
 	#pendingInput: (string | Extract<NativeUiEvent, { type: "send" }>)[] = [];
@@ -1418,6 +1471,9 @@ export class CustomEditor extends Editor {
 		this.#pasteInFlight--;
 		if (this.#pasteInFlight > 0) return;
 		this.#drainPendingInput();
+		if (this.#pasteInFlight === 0) {
+			for (const resolve of this.#pasteWaiters.splice(0)) resolve();
+		}
 	};
 
 	#drainPendingInput(): void {

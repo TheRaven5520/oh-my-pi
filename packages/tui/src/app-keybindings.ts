@@ -39,6 +39,7 @@ interface AppKeybindings {
 	"app.tools.toggleVisibility": true;
 	"app.tool.background": true;
 	"app.editor.external": true;
+	"app.draft.backlog": true;
 	"app.message.followUp": true;
 	"app.retry": true;
 	"app.message.dequeue": true;
@@ -145,6 +146,10 @@ export const KEYBINDINGS = {
 	"app.editor.external": {
 		defaultKeys: "ctrl+g",
 		description: "Open external editor",
+	},
+	"app.draft.backlog": {
+		defaultKeys: "ctrl+n",
+		description: "Save draft, or restore oldest draft when empty",
 	},
 	"app.message.followUp": {
 		// Ctrl+Enter is preserved for terminals that deliver it (Kitty/iTerm2/WezTerm/Ghostty),

@@ -515,6 +515,15 @@ interface HistoryStorage {
 	getRecent(limit: number): HistoryEntry[];
 }
 
+/** JSON-safe draft state; expansion tables use entries rather than Maps. */
+export interface EditorDraftSnapshot {
+	text: string;
+	cursor: { line: number; col: number };
+	pastes: [number, string][];
+	atoms: [string, string][];
+	pasteCounter: number;
+}
+
 interface LocalHistoryEntry {
 	text: string;
 	draft?: {
@@ -1006,22 +1015,45 @@ export class Editor implements Component, Focusable {
 		this.#pushHistory({ text: trimmed });
 	}
 
-	/** Retain the current draft for local recall only, never persistent history. */
-	rememberDraft(restore?: () => void): void {
+	/** Capture the same expansion state used by local draft recall, without retaining references. */
+	captureDraftSnapshot(): EditorDraftSnapshot {
 		const text = this.getText();
-		if (!text.trim()) return;
 		const pastes = new Map<number, string>();
 		for (const match of text.matchAll(/\[Paste #(\d+)(?:, (?:\+\d+ lines|\d+ chars))?\]/g)) {
 			const id = Number(match[1]);
 			const value = this.#pastes.get(id);
 			if (value !== undefined) pastes.set(id, value);
 		}
-		this.#pushHistory({
+		return {
 			text,
+			cursor: this.getCursor(),
+			pastes: [...pastes],
+			atoms: [...this.#atoms].filter(([label]) => text.includes(label)),
+			pasteCounter: this.#pasteCounter,
+		};
+	}
+
+	/** Replace the current draft, including its cursor and submit-time expansions. */
+	restoreDraftSnapshot(snapshot: EditorDraftSnapshot): void {
+		this.#pastes = new Map(snapshot.pastes);
+		this.#atoms = new Map(snapshot.atoms);
+		this.#pasteCounter = snapshot.pasteCounter;
+		this.#historyDraftActive = false;
+		this.#historyIndex = -1;
+		this.#resetKillSequence();
+		this.#setTextInternal(snapshot.text, "end", snapshot.cursor);
+	}
+
+	/** Retain the current draft for local recall only, never persistent history. */
+	rememberDraft(restore?: () => void): void {
+		const snapshot = this.captureDraftSnapshot();
+		if (!snapshot.text.trim()) return;
+		this.#pushHistory({
+			text: snapshot.text,
 			draft: {
-				pastes,
-				atoms: new Map([...this.#atoms].filter(([label]) => text.includes(label))),
-				pasteCounter: this.#pasteCounter,
+				pastes: new Map(snapshot.pastes),
+				atoms: new Map(snapshot.atoms),
+				pasteCounter: snapshot.pasteCounter,
 				restore,
 			},
 		});
@@ -1082,7 +1114,11 @@ export class Editor implements Component, Focusable {
 		this.#setTextInternal(entry?.text ?? "", cursorAnchor);
 	}
 	/** Internal setText that doesn't reset history state - used by navigateHistory */
-	#setTextInternal(text: string, cursorAnchor: HistoryCursorAnchor = "end"): void {
+	#setTextInternal(
+		text: string,
+		cursorAnchor: HistoryCursorAnchor = "end",
+		cursor?: { line: number; col: number },
+	): void {
 		this.#undoStack.length = 0;
 		const lines = sanitizeLoadedText(text).split("\n");
 		this.#state.lines = lines.length === 0 ? [""] : lines;
@@ -1092,7 +1128,10 @@ export class Editor implements Component, Focusable {
 		// leaving delete/yank commands aimed at column 0 on one path and at the tail on
 		// the other. Single-row entries always open at the end — matching what
 		// wholesale text replacement (`setText`) and the first-edit anchor do.
-		if (cursorAnchor === "start" && this.#spansMultipleVisualRows()) {
+		if (cursor) {
+			this.#state.cursorLine = Math.max(0, Math.min(cursor.line, this.#state.lines.length - 1));
+			this.#setCursorCol(Math.max(0, Math.min(cursor.col, this.#state.lines[this.#state.cursorLine]!.length)));
+		} else if (cursorAnchor === "start" && this.#spansMultipleVisualRows()) {
 			this.#state.cursorLine = 0;
 			this.#setCursorCol(0);
 		} else {

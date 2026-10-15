@@ -2486,6 +2486,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.#inputController.setupKeyHandlers();
 		this.#inputController.setupEditorSubmitHandler();
+		this.#inputController.syncDraftBacklogIndicator();
+		this.#eventBusUnsubscribers.push(
+			this.session.registerSessionChangeCallback(() => this.#inputController.syncDraftBacklogIndicator()),
+		);
 		// Native transcript controls (user-message toolbar, error-frame actions)
 		// run the same commands as their key bindings.
 		setTranscriptActionHandler(action => {

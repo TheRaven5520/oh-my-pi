@@ -1214,6 +1214,7 @@ export class ExtensionRunner {
 		"ctrl+z": true,
 		"ctrl+k": true,
 		"ctrl+p": true,
+		"ctrl+n": true,
 		"ctrl+l": true,
 		"ctrl+o": true,
 		"ctrl+t": true,
