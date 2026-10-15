@@ -243,6 +243,49 @@ describe("inline mouse tracking", () => {
 	});
 });
 
+describe("application-owned viewport scrolling", () => {
+	it("captures wheel reports before input listeners even when clicks are disabled", () => {
+		const { terminal, tui } = makeInlineTui({ current: false });
+		const scrolls: number[] = [];
+		const input: string[] = [];
+		tui.addInputListener(data => {
+			input.push(data);
+			return undefined;
+		});
+		tui.setFrameProvider({
+			renderFrame: () => ({ viewport: ["conversation", "draft"] }),
+			acknowledgeHistory: () => {},
+			scrollViewport: delta => {
+				scrolls.push(delta);
+				return delta < 0;
+			},
+		});
+		try {
+			tui.start();
+			tui.renderNow();
+			expect(terminal.output).toContain(TRACKING_ON);
+			terminal.sendInput("\x1b[<64;10;5M");
+			terminal.sendInput("\x1b[<65;10;5M");
+			expect(scrolls).toEqual([-3, 3]);
+			expect(input).toEqual([]); // A boundary (false) still consumes the wheel.
+			terminal.sendInput("x");
+			expect(input).toEqual(["x"]);
+			expect(scrolls).toEqual([-3, 3]); // Typing never resets browsing.
+			const overlay = tui.showOverlay(new StaticOverlay(), { fullscreen: true });
+			tui.renderNow();
+			terminal.sendInput("\x1b[<64;10;5M");
+			expect(scrolls).toEqual([-3, 3]);
+			expect(input.at(-1)).toBe("\x1b[<64;10;5M");
+			overlay.hide();
+			tui.renderNow();
+			terminal.sendInput("\x1b[<64;10;5M");
+			expect(scrolls).toEqual([-3, 3, -3]);
+		} finally {
+			tui.stop();
+		}
+	});
+});
+
 describe("mutable viewport geometry", () => {
 	it("exposes the painted window and hides it behind the alt screen", () => {
 		const enabled = { current: true };
@@ -264,7 +307,7 @@ describe("mutable viewport geometry", () => {
 });
 
 describe("confirmed native tool click adapter", () => {
-	it("replaces only inline capture, links history and mutable tools, and acknowledges after replay", () => {
+	it.each([false, true])("preserves native tool links with app-owned scrolling=%s", viewportScroll => {
 		const keys = [
 			"TMUX",
 			"STY",
@@ -295,6 +338,7 @@ describe("confirmed native tool click adapter", () => {
 		const input: string[] = [];
 		tui.setFocus({ render: () => [], handleInput: data => input.push(data) });
 		tui.setFrameProvider({
+			scrollViewport: viewportScroll ? () => true : undefined,
 			renderFrame: () => ({
 				history: pending
 					? {
@@ -338,7 +382,8 @@ describe("confirmed native tool click adapter", () => {
 			tui.renderNow();
 			expect(terminal.output.lastIndexOf(TRACKING_OFF)).toBe(offBefore);
 			terminal.sendInput(`\x1b[>997;1;${nonce}u`);
-			expect(terminal.output.lastIndexOf(TRACKING_OFF)).toBeGreaterThan(offBefore);
+			if (viewportScroll) expect(terminal.output.lastIndexOf(TRACKING_OFF)).toBe(offBefore);
+			else expect(terminal.output.lastIndexOf(TRACKING_OFF)).toBeGreaterThan(offBefore);
 			expect(terminal.output.match(/\x1b\]22;>default\x1b\\/g)).toHaveLength(1);
 			const ids = [...terminal.output.matchAll(new RegExp(`omp-tool://${nonce}/([0-9]+)`, "g"))].map(
 				match => match[1]!,
@@ -356,12 +401,10 @@ describe("confirmed native tool click adapter", () => {
 
 			const overlay = tui.showOverlay(new StaticOverlay(), { fullscreen: true });
 			tui.renderNow();
-			expect(terminal.output).toContain(TRACKING_ON);
 			terminal.sendInput(`\x1b[>997;2;${nonce};${id};2u`);
 			expect(toggles).toBe(1);
 			overlay.hide();
 			tui.renderNow();
-			expect(terminal.output.lastIndexOf(TRACKING_OFF)).toBeGreaterThan(terminal.output.lastIndexOf(TRACKING_ON));
 			expect(terminal.output).not.toContain("\x1b]22;"); // Alternate buffer has its own pointer stack.
 			enabled.current = false;
 			tui.renderNow();

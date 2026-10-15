@@ -19,12 +19,14 @@ export interface TmuxHistorySnapshot {
 }
 
 export interface TmuxHistoryHost {
+	/** Advertise application-owned wheel scrolling for this bridge lifetime. */
+	viewportScroll?: boolean;
 	capture(owner?: object, signal?: AbortSignal): Promise<TmuxHistorySnapshot | undefined>;
 	setHistoryLimit(limit: number): void;
 }
 
 interface HistoryRequest {
-	op: "wheel" | "click" | "drag-prepare" | "drag-commit";
+	op: "wheel" | "click" | "drag-prepare" | "drag-commit" | "viewport-owner";
 	pane: string;
 	generation: number;
 	token?: string;
@@ -121,6 +123,17 @@ export class TmuxHistoryBridge {
 				throw new Error("Invalid tmux pane dimensions");
 			host.setHistoryLimit(state.historyLimit + state.rows);
 			await bridge.#tmux(undefined, "set", "-p", "-t", pane, "@omp-history-socket", bridge.socketPath);
+			if (host.viewportScroll) {
+				// One blocking helper owns the pane option while this socket lives.
+				// EOF also revokes it after SIGKILL, without polling or wheel jobs.
+				const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+				await bridge.#tmux(
+					undefined,
+					"run-shell",
+					"-b",
+					`python3 ~/.config/tmux/natural-scroll.py --viewport-owner ${quote(pane)} ${quote(bridge.socketPath)} ${quote(serverSocket)}`,
+				);
+			}
 			return bridge;
 		} catch {
 			if (bridge) bridge.stop();
@@ -152,7 +165,7 @@ export class TmuxHistoryBridge {
 					"-t",
 					this.pane,
 					`#{==:#{@omp-history-socket},${this.socketPath}}`,
-					`set -pu -t ${this.pane} @omp-history-socket ; set -pu -t ${this.pane} @omp-history-snapshot`,
+					`set -pu -t ${this.pane} @omp-history-socket ; set -pu -t ${this.pane} @omp-history-snapshot ; if -F -t ${this.pane} '#{==:#{@omp-viewport-scroll},${this.socketPath}}' 'set -pu -t ${this.pane} @omp-viewport-scroll'`,
 				),
 			)
 			.catch(() => {})
@@ -222,6 +235,16 @@ export class TmuxHistoryBridge {
 				request = JSON.parse(input.slice(0, input.indexOf("\n")));
 			} catch {
 				socket.end('{"ok":false}\n');
+				return;
+			}
+			if (
+				request?.op === "viewport-owner" &&
+				request.pane === this.pane &&
+				this.host.viewportScroll &&
+				!this.#stopped
+			) {
+				clearTimeout(deadline);
+				socket.write('{"ok":true}\n');
 				return;
 			}
 			if (

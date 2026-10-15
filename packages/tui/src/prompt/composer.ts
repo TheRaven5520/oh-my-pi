@@ -24,7 +24,7 @@ import { sameItems } from "../native/memo";
 import { postmortem } from "@oh-my-pi/pi-utils";
 import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
-import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
+import { type AnimationFrame, TranscriptContainer, type TranscriptWindowAnchor } from "../chrome/transcript-container";
 import { resolveOmpWatermark, type OmpWatermark } from "../omp-watermark";
 import { WelcomeComponent } from "./welcome";
 import { ensureThemeSync, getEditorTheme } from "../theme/theme";
@@ -311,6 +311,10 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#transientChrome: ReadonlySet<Component> = new Set();
 	#transientChromeFloor: number | undefined;
 	#anchorAfterInlineRetirement = false;
+	#browsing = false;
+	#browseAnchor: TranscriptWindowAnchor | undefined;
+	#browseTranscript: TranscriptContainer | undefined;
+	#browseDelta = 0;
 	/** Rows the chrome below each below-transcript root took in the last frame (see {@link rowsBelow}). */
 	#rowsBelow = new Map<Component, number>();
 	#lastInterruptAt = 0;
@@ -418,6 +422,27 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#anchorAfterInlineRetirement = true;
 	}
 
+	/** Wheel navigation moves the transcript, never the editor or its draft. */
+	scrollViewport(delta: number): boolean {
+		if (!Number.isFinite(delta) || delta === 0 || this.ui.hasOverlay()) return false;
+		const transcript = this.#runtimeChildren.find(root => root instanceof TranscriptContainer);
+		if (!(transcript instanceof TranscriptContainer) || transcript.children.length === 0) return false;
+		if (!this.#browsing && delta > 0) return true;
+		if (this.#browseTranscript !== transcript) {
+			this.#browseAnchor = undefined;
+			this.#browseDelta = 0;
+		}
+		this.#browseTranscript = transcript;
+		this.#browsing = true;
+		this.#browseDelta += Math.trunc(delta);
+		this.ui.requestRender();
+		return true;
+	}
+
+	isViewportBrowsing(): boolean {
+		return this.#browsing;
+	}
+
 	onTerminalPaint(paint: TuiPaint): void {
 		if (!this.#statusPadding) return;
 		this.#statusPaddingPainted = true;
@@ -462,6 +487,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			return { viewport: this.#renderRoots(roots, width).slice(-rows) };
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
+		if (this.#browsing && this.#browseTranscript !== transcript) this.#leaveBrowse();
 		const preRoots = this.#renderRoots(roots.slice(0, transcriptIndex), width);
 		const afterRoots = roots.slice(transcriptIndex + 1);
 		const after: string[] = [];
@@ -486,6 +512,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			}
 		}
 		this.#rowsBelow = new Map(ends.map(({ root, end }) => [root, after.length - end]));
+		if (this.#browsing) {
+			return this.#renderBrowseFrame(transcript, width, rows, after, afterSpans, decisionPanelOpen);
+		}
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
@@ -578,6 +607,80 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
 		return { history, viewport: mutable };
+	}
+
+	#leaveBrowse(): void {
+		this.#browsing = false;
+		this.#browseAnchor = undefined;
+		this.#browseDelta = 0;
+		this.#browseTranscript = undefined;
+		// Browsing borrows physical rows that belonged to retired history.
+		// Restore that history once on return to the live tail, not per wheel
+		// or keystroke. The writer synchronizes the replay and final frame.
+		this.ui.resetDisplay();
+	}
+
+	#renderBrowseFrame(
+		transcript: TranscriptContainer,
+		width: number,
+		rows: number,
+		after: readonly string[],
+		afterSpans: readonly ViewportClickSpan[],
+		decisionPanelOpen: boolean,
+	): TerminalFramePlan {
+		const showComposer = this.editor.hasDraftContent() || decisionPanelOpen;
+		const dockRows = Math.max(0, rows - 1);
+		const dock = showComposer && dockRows > 0 ? after.slice(-dockRows) : [];
+		const capacity = Math.max(0, rows - dock.length);
+		const delta = this.#browseDelta;
+		this.#browseDelta = 0;
+		// Hide the empty dock below the old top anchor; do not turn the first
+		// three-row wheel gesture into a jump by the height of the composer.
+		const window = transcript.renderWindow(
+			width,
+			capacity,
+			this.#browseAnchor,
+			delta,
+			Math.max(1, rows - after.length),
+		);
+		this.#browseAnchor = window.anchor;
+		if (delta > 0 && window.atEnd) {
+			this.#leaveBrowse();
+			return this.renderFrame({ columns: width, rows });
+		}
+		const spans: ViewportClickSpan[] = [];
+		for (const span of window.spans) {
+			const ids = blockAgentIds(span.component);
+			const toolId = blockToolId(span.component, ids);
+			const toggle = (span.component as ClickBlock).toggleClickExpansion;
+			if (toolId !== undefined && toggle !== undefined) {
+				const component = span.component;
+				this.#toolClickTargets.set(toolId, {
+					target: { toggleClickExpansion: () => toggle.call(component) },
+					retired: false,
+				});
+			}
+			spans.push({ ...span, candidates: () => ids, toolTarget: toolId, owner: span.component });
+		}
+		if (showComposer) {
+			const clipped = after.length - dock.length;
+			for (const span of afterSpans) {
+				const start = Math.max(0, span.start - clipped);
+				const end = span.end - clipped;
+				if (end <= start) continue;
+				const skew = Math.max(0, clipped - span.start);
+				spans.push({
+					...span,
+					start: capacity + start,
+					end: capacity + end,
+					candidates: local => span.candidates(local + skew),
+				});
+			}
+		}
+		this.#lastClickSpans = spans;
+		return {
+			viewport: [...window.rows, ...Array<string>(Math.max(0, capacity - window.rows.length)).fill(""), ...dock],
+		};
 	}
 
 	/**
@@ -736,12 +839,14 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		);
 		if (!retained || blockToolId(owner, blockAgentIds(owner)) === undefined) return false;
 		if (!(owner as ClickBlock).toggleClickExpansion?.()) return false;
-		this.ui.resetDisplay();
+		if (this.#browsing) this.ui.requestRender();
+		else this.ui.resetDisplay();
 		return true;
 	}
 
 	/** Block that wrote the accepted history row shown at mutable-viewport index `index`, if that row is history. */
 	#screenHistoryOwnerAt(index: number): object | undefined {
+		if (this.#browsing) return undefined;
 		const viewport = this.ui.getMutableViewport();
 		if (viewport.length === 0) return undefined;
 		return this.ui.getScreenHistoryOwner(viewport.top + index);
@@ -751,6 +856,10 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	toggleViewportTool(id: string): boolean {
 		const entry = this.#toolClickTargets.get(id);
 		if (entry === undefined || !entry.target.toggleClickExpansion()) return false;
+		if (this.#browsing) {
+			this.ui.requestRender();
+			return true;
+		}
 		// A live card can displace earlier settled blocks into native history.
 		// Refill from that ledger, not blank padding: padding hides the earlier
 		// rows and retains the expanded height even when the whole chat now fits.
@@ -795,6 +904,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	/** Render the semantic transcript tail while the terminal borrows its resize buffer. */
 	renderResizeFrame(viewport: ViewportSize): readonly string[] {
 		if (!this.#started || this.#stopped) return [];
+		if (this.#browsing) return this.renderFrame(viewport).viewport;
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
 		const tail = this.#runtimeMounted
@@ -825,7 +935,12 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	/** Forces every currently eligible finalized prefix to retire before stop. */
 	beginHistoryFlush(): void {
+		const wasBrowsing = this.#browsing;
+		if (wasBrowsing) this.#leaveBrowse();
 		this.#historyFlush = true;
+		// A borrowed browsing viewport must restore the original ledger before
+		// flush appends its remaining tail. Ordinary shutdown needs no replay.
+		if (wasBrowsing) return;
 		// A pending replay would re-render and re-stream the entire committed
 		// ledger during shutdown; the terminal already holds that history, so
 		// flush emits only genuinely un-retired rows. An already offered batch

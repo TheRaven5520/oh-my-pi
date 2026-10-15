@@ -24,6 +24,7 @@ import { TuiDebugServer } from "./debug-server";
 import { isKeyRelease, matchesKey } from "./keys";
 import { KITTY_PLACEHOLDER } from "./kitty-graphics";
 import { LoopWatchdog } from "./loop-watchdog";
+import { parseSgrMouse } from "./mouse";
 import { assumedTspHello, NativeBackend, type NativeHost } from "./native/backend";
 import { col } from "./native/describe";
 import { TSP_PREFIX, type TspHello } from "./native/encode";
@@ -98,12 +99,10 @@ const PAINT_BEGIN = `${HIDE_CURSOR}${SYNC_OUTPUT_BEGIN}${DISABLE_AUTOWRAP}`;
 const PAINT_END = `${ENABLE_AUTOWRAP}${SYNC_OUTPUT_END}`;
 const PAINT_BEGIN_NO_SYNC = `${HIDE_CURSOR}${DISABLE_AUTOWRAP}`;
 const PAINT_END_NO_SYNC = ENABLE_AUTOWRAP;
-// Mouse reporting is scoped to fullscreen overlays that opt into pointer
-// interaction, plus the opt-in normal-buffer click capture (`tui.mouse`).
-// 1000h = button click tracking, 1003h = any-motion tracking for hover
-// targets, and 1006h = SGR extended coordinates past column/row 223.
-// Selection-first surfaces leave these modes disabled so the terminal retains
-// native text selection.
+// Mouse reporting is scoped to fullscreen overlays, application-owned viewport
+// scrolling, and opt-in normal-buffer clicks (`tui.mouse`). Native companions
+// preserve ordinary selection while viewport scrolling requires wheel reports.
+// 1000h = button clicks, 1003h = hover, 1006h = extended SGR coordinates.
 const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
 
@@ -195,6 +194,8 @@ export interface TerminalFramePlan {
 export interface TerminalFrameProvider {
 	renderFrame(viewport: ViewportSize): TerminalFramePlan;
 	acknowledgeHistory(id: number): void;
+	/** Scroll the app-owned viewport by signed rows; true when its view changed. */
+	scrollViewport?(delta: number): boolean;
 	/** Full semantic viewport used only on the transient resize buffer. */
 	renderResizeFrame?(viewport: ViewportSize): readonly string[];
 	/** Re-offer finalized history after a display reset or resize replay. */
@@ -1125,6 +1126,10 @@ export class TUI extends Container {
 
 	/** Install the product-owned bounded frame provider. */
 	setFrameProvider(provider: TerminalFrameProvider | undefined): void {
+		if ((this.#frameProvider?.scrollViewport !== undefined) !== (provider?.scrollViewport !== undefined)) {
+			this.#historyBridge?.stop();
+			this.#historyBridge = undefined;
+		}
 		this.#frameProvider = provider;
 		this.#providerWindow = [];
 		this.#providerPreparedRows = [];
@@ -1136,6 +1141,7 @@ export class TUI extends Container {
 			this.#nativeToolLinksEnabled = false;
 		}
 		this.#startNativeToolLinks();
+		this.#startHistoryBridge();
 		this.requestRender(true);
 	}
 
@@ -1467,21 +1473,30 @@ export class TUI extends Container {
 	}
 
 	#startHistoryBridge(): void {
-		if (this.#stopped || this.#historyBridge || this.#historyBridgeStarting || !this.#inlineMouseProvider) return;
+		if (
+			this.#stopped ||
+			this.#historyBridge ||
+			this.#historyBridgeStarting ||
+			(!this.#inlineMouseProvider && !this.#frameProvider?.scrollViewport)
+		)
+			return;
+		const viewportScroll = this.#frameProvider?.scrollViewport !== undefined;
 		this.#historyBridgeStarting = true;
 		void TmuxHistoryBridge.create({
+			viewportScroll,
 			capture: (owner, signal) => this.#captureHistory(owner, signal),
 			setHistoryLimit: limit => {
 				this.#historyLimit = Math.max(SCREEN_HISTORY_MIN_ROWS, limit);
 			},
 		})
 			.then(bridge => {
-				if (this.#stopped) bridge?.stop();
+				if (this.#stopped || viewportScroll !== (this.#frameProvider?.scrollViewport !== undefined)) bridge?.stop();
 				else this.#historyBridge = bridge;
 			})
 			.catch(error => logger.debug("tmux history bridge unavailable", { error: String(error) }))
 			.finally(() => {
 				this.#historyBridgeStarting = false;
+				if (viewportScroll !== (this.#frameProvider?.scrollViewport !== undefined)) this.#startHistoryBridge();
 			});
 	}
 
@@ -2996,6 +3011,16 @@ export class TUI extends Container {
 			data = data.slice(0, searchFrom + match.index) + data.slice(searchFrom + match.index + match[0].length);
 		}
 		if (data.length === 0) return;
+		// App-owned scrolling precedes product input listeners: browsing must not
+		// be mistaken for editor input or invoke native-history replay. Overlays
+		// retain their own wheel routing, including non-fullscreen selectors.
+		if (!this.hasOverlay() && this.#frameProvider?.scrollViewport && data.startsWith("\x1b[<")) {
+			const event = parseSgrMouse(data);
+			if (event && event.wheel !== null) {
+				if (this.#frameProvider.scrollViewport(event.wheel * 3)) this.requestRender();
+				return;
+			}
+		}
 		// Ctrl+C/Esc use app-level double-press windows. Give those gestures one
 		// frame to drain queued input before an ordinary repaint; delaying every
 		// key would make idle navigation pay a full frame of latency.
@@ -3939,7 +3964,8 @@ export class TUI extends Container {
 		}
 		const wantMouse: MouseTrackingState =
 			topOverlay === undefined
-				? this.#inlineMouseProvider?.() === true && !this.#nativeToolLinks?.ready
+				? this.#frameProvider?.scrollViewport ||
+					(this.#inlineMouseProvider?.() === true && !this.#nativeToolLinks?.ready)
 					? "inline"
 					: "off"
 				: wantAlt && topOverlay.options?.mouseTracking !== false

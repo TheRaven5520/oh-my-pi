@@ -19,6 +19,26 @@ The runtime has two layers:
 
 If your extension/tool can run headless, guard with `ctx.hasUI` / `pi.hasUI`. RPC can expose `hasUI === true` for protocol-backed dialogs while still not supporting `custom()`; `hasUI` alone does not guarantee a component can be mounted.
 
+### Conversation scrolling and drafts
+
+Wheel scrolling browses an app-owned, bounded transcript window independently of
+the input. While browsing, an empty composer is hidden; a nonempty draft stays
+pinned at the bottom. Typing or pasting reveals it without changing the top
+message being read. Clearing the draft hides it again. Scroll down to the live
+tail to resume following output. Inline decision panels remain visible.
+
+The transcript uses component-and-row anchors across retired and live blocks.
+Wheel and typing frames use the synchronized differential writer, not alternate
+screen swaps or history replay. Returning to the live tail restores native
+history once. Fullscreen overlays retain their own scrolling.
+
+Tmux requires the matching `natural-scroll.py` and wheel bindings from the
+personal dotfiles companion. A live socket lease enables direct wheel forwarding;
+other programs keep native tmux scrolling. Kitty's matching `omp_tool.py` preserves
+ordinary left-button selection while OMP captures wheel events. Without that
+companion, use the terminal's mouse-selection modifier.
+
+
 ## Core component contract (`@oh-my-pi/pi-tui`)
 
 `packages/tui/src/tui.ts` defines:

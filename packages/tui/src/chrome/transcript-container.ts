@@ -224,11 +224,17 @@ export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 	return start === 0 && end === rows.length ? rows : rows.slice(start, end);
 }
 
-/** One live block's row span in the last `renderViewport` output (half-open `[start, end)`). */
+/** One block's visible row span in a transcript viewport (half-open `[start, end)`). */
 export interface TranscriptViewportSpan {
 	component: Component;
 	start: number;
 	end: number;
+}
+
+/** A window's top row in a block's full trimmed render; -1 is its preceding separator. */
+export interface TranscriptWindowAnchor {
+	component: Component;
+	row: number;
 }
 
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
@@ -247,7 +253,7 @@ export class TranscriptContainer extends Container {
 	// retirement: everything behind it stays live and degrades to one-line
 	// allocations. Logs once per pinned episode after a grace period.
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
-	/** Block spans of the last `renderViewport` output, for click hit-testing. */
+	/** Block spans of the last viewport or window output, for click hit-testing. */
 	#lastViewportSpans: TranscriptViewportSpan[] = [];
 	/**
 	 * The composed frame {@link beginFrame} opened; `undefined` outside one.
@@ -594,9 +600,160 @@ export class TranscriptContainer extends Container {
 		this.#frameRows.clear();
 	}
 
-	/** Block spans of the last `renderViewport` output, in output coordinates. Empty when the tail is empty. */
+	/** Block spans of the last `renderViewport` or `renderWindow` output, in output coordinates. */
 	getLastViewportSpans(): readonly TranscriptViewportSpan[] {
 		return this.#lastViewportSpans;
+	}
+
+	/**
+	 * Browse the full semantic transcript, including retired and published rows,
+	 * without advancing retirement or offering history. An absent anchor follows
+	 * the tail; an existing anchor preserves the top when the available height
+	 * changes. Negative deltas move up and positive deltas move down, bounded by
+	 * a full tail window. Separators have no hit-test owner.
+	 * At zero height, no blocks render and a supplied, still-present anchor is
+	 * retained; an absent anchor remains tail-following (`atEnd: true`).
+	 */
+	renderWindow(
+		width: number,
+		rows: number,
+		anchor: TranscriptWindowAnchor | undefined,
+		delta = 0,
+		tailRows = rows,
+	): {
+		rows: readonly string[];
+		spans: readonly TranscriptViewportSpan[];
+		anchor: TranscriptWindowAnchor | undefined;
+		atEnd: boolean;
+	} {
+		this.#syncEntries();
+		const capacity = Math.max(0, Math.trunc(rows));
+		const entries = this.#entries;
+		const anchorIndex = anchor === undefined ? -1 : this.children.indexOf(anchor.component);
+		if (capacity === 0 || entries.length === 0) {
+			this.#lastViewportSpans = [];
+			const retained = anchorIndex < 0 ? undefined : anchor;
+			return { rows: EMPTY_ROWS, spans: this.#lastViewportSpans, anchor: retained, atEnd: retained === undefined };
+		}
+
+		// Only memoize within this call: components own cross-frame render caches
+		// and may change without invalidating their transcript container.
+		const rendered = new Map<number, readonly string[]>();
+		const block = (index: number): readonly string[] => {
+			let result = rendered.get(index);
+			if (result === undefined) {
+				const entry = entries[index]!;
+				this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+				result = this.#renderBlock(entry, width);
+				rendered.set(index, result);
+			}
+			return result;
+		};
+		const previous = (index: number): number => {
+			while (--index >= 0) if (block(index).length > 0) return index;
+			return -1;
+		};
+		const next = (index: number): number => {
+			while (++index < entries.length) if (block(index).length > 0) return index;
+			return -1;
+		};
+		const separated = (before: number, after: number): boolean =>
+			separatorRows(entries[before]!.component, entries[after]!.component) > 0;
+		type Position = { index: number; row: number };
+		const up = (position: Position, count: number): Position => {
+			let { index, row } = position;
+			while (count > 0) {
+				if (row > 0) {
+					const step = Math.min(row, count);
+					row -= step;
+					count -= step;
+					if (count === 0) break;
+				}
+				const before = previous(index);
+				if (before < 0) return { index, row: 0 };
+				if (row === 0 && separated(before, index)) {
+					row = -1;
+				} else {
+					index = before;
+					row = block(index).length - 1;
+				}
+				count--;
+			}
+			return { index, row };
+		};
+		const tail = (): Position | undefined => {
+			const index = previous(entries.length);
+			return index < 0
+				? undefined
+				: up({ index, row: block(index).length - 1 }, Math.max(0, Math.trunc(tailRows) - 1));
+		};
+		let start: Position | undefined;
+		if (anchorIndex >= 0 && block(anchorIndex).length > 0) {
+			let row = Math.max(-1, Math.min(Math.trunc(anchor!.row), block(anchorIndex).length - 1));
+			if (row === -1) {
+				const before = previous(anchorIndex);
+				if (before < 0 || !separated(before, anchorIndex)) row = 0;
+			}
+			start = { index: anchorIndex, row };
+		} else {
+			start = tail();
+		}
+		if (start === undefined) {
+			this.#lastViewportSpans = [];
+			return { rows: EMPTY_ROWS, spans: this.#lastViewportSpans, anchor: undefined, atEnd: true };
+		}
+		if (delta < 0) start = up(start, -Math.trunc(delta));
+		else if (delta > 0) {
+			// Locate the prospective bottom, then walk back one viewport. This
+			// clamps at the tail without rendering a distant tail on every wheel.
+			let remaining = Math.trunc(delta) + capacity - 1;
+			while (remaining > 0) {
+				const step = Math.min(block(start.index).length - 1 - start.row, remaining);
+				start.row += step;
+				remaining -= step;
+				if (remaining === 0) break;
+				const after = next(start.index);
+				if (after < 0) break;
+				start = { index: after, row: separated(start.index, after) ? -1 : 0 };
+				remaining--;
+			}
+			// Clamp only an explicit downward scroll, never a height change or
+			// append: both must keep a supplied anchor's top row stable.
+			start = up(start, capacity - 1);
+		}
+
+		const output: string[] = [];
+		const spans: TranscriptViewportSpan[] = [];
+		let { index, row } = start;
+		let atEnd = false;
+		while (output.length < capacity) {
+			if (row === -1) {
+				output.push("");
+				row = 0;
+				if (output.length === capacity) break;
+			}
+			const content = block(index);
+			const count = Math.min(content.length - row, capacity - output.length);
+			const spanStart = output.length;
+			for (let offset = 0; offset < count; offset++) output.push(content[row + offset]!);
+			spans.push({ component: entries[index]!.component, start: spanStart, end: output.length });
+			row += count;
+			if (row < content.length) break;
+			const after = next(index);
+			if (after < 0) {
+				atEnd = true;
+				break;
+			}
+			row = separated(index, after) ? -1 : 0;
+			index = after;
+		}
+		this.#lastViewportSpans = spans;
+		return {
+			rows: output,
+			spans,
+			anchor: { component: entries[start.index]!.component, row: start.row },
+			atEnd,
+		};
 	}
 
 	/** Collapse a per-line owner list into run-length block spans, clamped to `length`. */
