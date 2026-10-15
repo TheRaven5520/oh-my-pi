@@ -17,7 +17,7 @@ import { runSprilicredLogin } from "@oh-my-pi/pi-coding-agent/cli/sprilicred-log
 import { getModelPreset } from "@oh-my-pi/pi-coding-agent/config/model-presets";
 import { cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 
-describe("Sprilicred login", () => {
+describe("SpriliCred login", () => {
 	let root: string;
 	let agentDir: string;
 	let tokenPath: string;
@@ -169,6 +169,27 @@ describe("Sprilicred login", () => {
 		expect((await fs.readFile(tokenPath, "utf8")).trim()).toBe("test-key");
 	});
 
+	test("renames names an older login wrote as ' via Sprilicred' and keeps names the person chose", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		const paths = { home: root, agentDir, tokenPath };
+		const modelsPath = path.join(agentDir, "models.yml");
+		await fs.writeFile(modelsPath, JSON.stringify({ defaultModel: "sprilicred-openrouter/openai/gpt-5" }));
+		await runSprilicredLogin({} as any, settings, "test-key", paths);
+		const first = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		const anthropic = first.providers["sprilicred-anthropic"].models;
+		const openrouter = first.providers["sprilicred-openrouter"].models;
+		const generated = [anthropic[0].name, openrouter[0].name];
+		expect(generated.every((name: string) => name.endsWith(" via SpriliCred"))).toBe(true);
+		anthropic[0].name = anthropic[0].name.replace(/ via SpriliCred$/, " via Sprilicred");
+		anthropic[1].name = "My own name";
+		openrouter[0].name = openrouter[0].name.replace(/ via SpriliCred$/, " via Sprilicred");
+		await fs.writeFile(modelsPath, JSON.stringify(first));
+		await runSprilicredLogin({} as any, settings, "test-key", paths);
+		const second = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		expect(second.providers["sprilicred-anthropic"].models[0].name).toBe(generated[0]);
+		expect(second.providers["sprilicred-anthropic"].models[1].name).toBe("My own name");
+		expect(second.providers["sprilicred-openrouter"].models[0].name).toBe(generated[1]);
+	});
 	const CYCLE = ["sprilicred-anthropic/*", "sprilicred-openai/*", "sprilicred-deepseek/*"];
 	const OLD_CYCLE = [
 		"sprilicred-anthropic/*",
@@ -224,7 +245,7 @@ describe("Sprilicred login", () => {
 					other: { models: [{ id: "keep" }] },
 					"sprilicred-muse": {
 						baseUrl: "https://sprilicred.test/muse/v1",
-						models: [{ id: "muse-wonder", name: "Muse Wonder via Sprilicred" }],
+						models: [{ id: "muse-wonder", name: "Muse Wonder via SpriliCred" }],
 					},
 					"sprilicred-glm": {
 						baseUrl: "https://sprilicred.test/glm/v1",
@@ -276,7 +297,7 @@ describe("Sprilicred login", () => {
 			models: [
 				{
 					id: "meta/muse-wonder",
-					name: "Meta: Muse Wonder via Sprilicred",
+					name: "Meta: Muse Wonder via SpriliCred",
 					contextWindow: 1048576,
 					maxTokens: 128000,
 					reasoning: true,
@@ -390,7 +411,7 @@ describe("Sprilicred login", () => {
 		expect(written.providers["sprilicred-openrouter"].models).toEqual([
 			{
 				id: "meta/muse-wonder",
-				name: "Muse Wonder via Sprilicred",
+				name: "Muse Wonder via SpriliCred",
 				contextWindow: 1048576,
 				maxTokens: 128000,
 				reasoning: true,
@@ -411,7 +432,7 @@ describe("Sprilicred login", () => {
 		dedicated.openrouter = 503;
 		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
 		expect(JSON.parse(await fs.readFile(modelsPath, "utf8")).providers["sprilicred-openrouter"].models).toEqual([
-			{ id: "openai/gpt-5", name: "openai/gpt-5 via Sprilicred" },
+			{ id: "openai/gpt-5", name: "openai/gpt-5 via SpriliCred" },
 		]);
 
 		const written = JSON.parse(await fs.readFile(modelsPath, "utf8"));
@@ -432,7 +453,7 @@ describe("Sprilicred login", () => {
 		expect(JSON.parse(await fs.readFile(modelsPath, "utf8")).providers["sprilicred-openrouter"].models).toEqual([
 			{
 				id: "openai/gpt-5",
-				name: "OpenAI: GPT-5 via Sprilicred",
+				name: "OpenAI: GPT-5 via SpriliCred",
 				contextWindow: 400000,
 				maxTokens: 128000,
 				reasoning: true,
@@ -731,7 +752,7 @@ describe("Sprilicred login", () => {
 		expect(cfgModelProviderOrder.get(settings)).toEqual(["personal", "sprilicred-openrouter"]);
 	});
 
-	test("puts OpenRouter after the person's last Sprilicred entry when the list has no Sprilicred group", async () => {
+	test("puts OpenRouter after the person's last SpriliCred entry when the list has no SpriliCred group", async () => {
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
 		cfgEnabledModels.set(settings, ["sprilicred-anthropic/*", "mine/*"]);
 		cfgModelProviderOrder.set(settings, ["sprilicred-anthropic", "personal"]);
@@ -834,15 +855,15 @@ describe("Sprilicred login", () => {
 		expect(await fs.readFile(path.join(agentDir, "config.yml"), "utf8")).toBe(first);
 	});
 
-	// Each case is deploy/fixtures/omp-parity/<case> from Sprilicred's installer (deploy/connect.py,
-	// or-installer e38e2a8), written by install_omp from the same listings and the same
+	// Each case is deploy/fixtures/omp-parity/<case> from SpriliCred's installer (deploy/connect.py,
+	// naming-spriliCred 6fbdb99), written by install_omp from the same listings and the same
 	// before-files: catalog.json (listing bodies per route), models/config/state.before.json
 	// (migration cases), installer-{models,config,state}.json. `$HOME` is the scratch home and
 	// https://sprilicred.example the server.
 	// Every case the installer recorded, so a new one is never skipped.
 	const PARITY_DIR = path.join(import.meta.dir, "fixtures", "sprilicred-login-parity");
 	for (const parityCase of readdirSync(PARITY_DIR).sort()) {
-		test(`writes what the Sprilicred installer writes: ${parityCase}`, async () => {
+		test(`writes what the SpriliCred installer writes: ${parityCase}`, async () => {
 			const dir = path.join(import.meta.dir, "fixtures", "sprilicred-login-parity", parityCase);
 			const load = async (name: string) => {
 				const file = path.join(dir, name);

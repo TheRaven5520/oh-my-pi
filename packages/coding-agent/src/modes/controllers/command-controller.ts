@@ -216,7 +216,7 @@ function renderUsageWindowBar(window: PooledUsageWindow | undefined): string {
 	return `${renderFractionBar(used / 100, theme, USAGE_BAR_CELLS, color)}  ${theme.fg(color, left)}`;
 }
 
-/** Pool headline per provider from Sprilicred's pooled reports; no per-account rows. */
+/** Pool headline per provider from SpriliCred's pooled reports; no per-account rows. */
 function renderUsageSnapshotRows(snapshot: UsageSnapshot, width: number): string[] {
 	const rows: string[] = [];
 	if (snapshot.reports !== null) {

@@ -145,7 +145,7 @@ describe("AgentSession.cycleModelPatterns", () => {
 		expect(active.model?.id).toBe("alpha");
 	});
 
-	// Sprilicred's OpenRouter models (`vendor/model` ids) are picked in /model, never by Ctrl+P:
+	// SpriliCred's OpenRouter models (`vendor/model` ids) are picked in /model, never by Ctrl+P:
 	// a provider scope `p/*` stops at the `/`, so only `p/**` (the enabledModels scope) reaches them.
 	test("a provider scope cycles past vendor/model ids that only a ** scope reaches", async () => {
 		listed = ["alpha", "meta/muse-wonder", "beta", "openai/gpt-5"];
@@ -200,7 +200,7 @@ describe("AgentSession.cycleModelPatterns", () => {
 	});
 });
 
-// Ctrl+P without `cycleModels` cycles the role models. The Sprilicred installer
+// Ctrl+P without `cycleModels` cycles the role models. The SpriliCred installer
 // scopes `enabledModels` to `sprilicred-openrouter/**` so /model lists OpenRouter;
 // that scope must never turn into the Ctrl+P cycle list.
 describe("Ctrl+P (InputController.cycleRoleModel) with cycleModels unset", () => {

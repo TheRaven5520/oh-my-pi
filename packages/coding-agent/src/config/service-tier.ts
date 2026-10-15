@@ -9,7 +9,7 @@ import type { SubmenuOption } from "@oh-my-pi/pi-tui/overlays/settings-defs";
  * Per-family service-tier setting values. `"none"` is the omit-the-parameter
  * sentinel; the rest mirror the wire {@link ServiceTier} values each provider
  * family actually realizes. OpenAI accepts the full set (`ultrafast` reaches
- * Sprilicred OpenAI models, the OpenAI API with preview access, and Codex
+ * SpriliCred OpenAI models, the OpenAI API with preview access, and Codex
  * models whose discovery lists it; it is omitted elsewhere); Anthropic realizes only
  * `priority` (fast mode); Google (Gemini API + Vertex) realizes
  * `flex`/`priority`.
@@ -119,7 +119,7 @@ export const SERVICE_TIER_OPENAI_OPTIONS: ReadonlyArray<SubmenuOption<ServiceTie
 		value: "ultrafast",
 		label: "Ultrafast",
 		description:
-			"Lowest-latency serving (six times Standard on Sprilicred); Sprilicred OpenAI models, OpenAI API preview access, or Codex models that advertise it (omitted elsewhere)",
+			"Lowest-latency serving (six times Standard on SpriliCred); SpriliCred OpenAI models, OpenAI API preview access, or Codex models that advertise it (omitted elsewhere)",
 	},
 ];
 

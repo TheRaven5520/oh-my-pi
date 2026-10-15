@@ -1,7 +1,7 @@
 /**
  * What became of a request that asked for a faster serving tier.
  *
- * Sprilicred answers every request that asked for fast or ultrafast with
+ * SpriliCred answers every request that asked for fast or ultrafast with
  * `x-sprilicred-speed-requested` (what was asked), `x-sprilicred-speed` (the
  * tier it forwarded upstream: `fast`/`ultrafast`/`standard`) and
  * `x-sprilicred-speed-reason` (`forwarded`, `not_permitted`, …), on errors
@@ -23,7 +23,7 @@ export const SPEED_REASON_HEADER = "x-sprilicred-speed-reason";
 /**
  * Error codes that refuse the faster tier itself, with the reason each
  * implies when no speed header or field names one. `speed_refused` always
- * carries its reason; the others are Sprilicred's Ultrafast refusals.
+ * carries its reason; the others are SpriliCred's Ultrafast refusals.
  */
 const REFUSAL_CODE_REASONS: Readonly<Record<string, string | undefined>> = {
 	speed_refused: undefined,
@@ -42,7 +42,7 @@ function readHeader(headers: HeaderSource, name: string): string | undefined {
 	return value?.trim() || undefined;
 }
 
-/** The faster tier a wire value names: OpenAI `priority`/`ultrafast`, Anthropic/Sprilicred `fast`. */
+/** The faster tier a wire value names: OpenAI `priority`/`ultrafast`, Anthropic/SpriliCred `fast`. */
 export function requestedSpeedForWire(value: unknown): RequestedSpeed | undefined {
 	if (typeof value !== "string") return undefined;
 	switch (value.trim().toLowerCase()) {
@@ -70,7 +70,7 @@ function refusalCode(value: unknown): string | undefined {
 }
 
 /**
- * Sprilicred's speed headers, or `undefined` when the response carries none.
+ * SpriliCred's speed headers, or `undefined` when the response carries none.
  * `requested` is what this request put on the wire; the header wins when set.
  */
 export function speedOutcomeFromHeaders(
@@ -87,7 +87,7 @@ export function speedOutcomeFromHeaders(
 /**
  * Speed fields in an error object (an HTTP error body, or a WebSocket/SSE
  * error frame, either bare or under `error`): `speed_requested`, `speed`,
- * `speed_reason`, the refusal code (`code`, or `type` as Sprilicred's
+ * `speed_reason`, the refusal code (`code`, or `type` as SpriliCred's
  * WebSocket error frames name it) and `status`.
  */
 export function speedOutcomeFromErrorObject(
@@ -109,10 +109,10 @@ export function speedOutcomeFromErrorObject(
 
 /**
  * What a mid-stream `error` / `response.failed` event says about the faster
- * tier: its speed fields when it carries them (Sprilicred over WebSocket);
+ * tier: its speed fields when it carries them (SpriliCred over WebSocket);
  * else, for an Ultrafast request the gateway forwarded, whether the upstream
  * error refused the tier itself (its error names `service_tier` or Ultrafast,
- * the test Sprilicred applies), in which case the turn was not served at
+ * the test SpriliCred applies), in which case the turn was not served at
  * Ultrafast. Otherwise `prior` stands.
  */
 export function speedOutcomeFromStreamError(event: unknown, prior: SpeedOutcome | undefined): SpeedOutcome | undefined {
@@ -128,7 +128,7 @@ export function speedOutcomeFromStreamError(event: unknown, prior: SpeedOutcome 
 }
 
 /**
- * What a failed request's error says about its faster tier: Sprilicred's
+ * What a failed request's error says about its faster tier: SpriliCred's
  * speed headers on the HTTP error, the speed fields of its error body, and
  * whether the error refused the tier itself (409 `speed_refused`, or an older
  * Ultrafast refusal code). Walks the `cause` chain; falls back to `prior`
@@ -173,12 +173,12 @@ export function speedOutcomeFromError(error: unknown, prior: SpeedOutcome | unde
  * so it is kept alongside, never in place of, the forwarded tier.
  *
  * One exception: ChatGPT OAuth echoes `service_tier: "default"` for a premium
- * request Sprilicred says it forwarded at a faster tier, whether as asked
+ * request SpriliCred says it forwarded at a faster tier, whether as asked
  * (`forwarded`) or as a fallback (Ultrafast forwarded as Fast). That echo is
  * the OpenAI wire value `default`, which Anthropic's `usage.speed`
  * (`standard`/`fast`) never sends, so only it falls back to the forwarded
  * tier; a Claude turn forwarded fast but served `standard`, and a turn
- * Sprilicred forwarded at standard, stay standard.
+ * SpriliCred forwarded at standard, stay standard.
  */
 export function applyProviderReportedSpeed(output: Pick<AssistantMessage, "speed">, reported: unknown): void {
 	const speed = output.speed;

@@ -263,7 +263,7 @@ describe("memories runtime", () => {
 	});
 
 	test("phase1 never sends a chat the person made private to a model", async () => {
-		// Sprilicred private mode: the person types exactly `private` (in
+		// SpriliCred private mode: the person types exactly `private` (in
 		// backticks) and the proxy itself answers "OK". That transcript must not
 		// leave the machine as a memory-extraction prompt.
 		const fx = await createFixture();

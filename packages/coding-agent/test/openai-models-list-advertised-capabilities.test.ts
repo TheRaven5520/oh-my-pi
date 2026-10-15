@@ -9,7 +9,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
 // A gateway that describes its models (`supports_reasoning`,
-// `max_output_tokens` on each `/models` row, as Sprilicred does) must be able
+// `max_output_tokens` on each `/models` row, as SpriliCred does) must be able
 // to offer a model newer than the bundled catalog that still thinks and writes
 // its full output, instead of a non-reasoning 8K/32K default.
 describe("openai-models-list discovery honors advertised model capabilities", () => {
@@ -160,7 +160,7 @@ describe("openai-models-list discovery honors advertised model capabilities", ()
 		expect(registry.find("gateway", "claude-sonnet-4-5")?.thinking?.mode).toBe("effort");
 	});
 
-	// Sprilicred's OpenRouter listing (`/openrouter/v1/models`) names and prices
+	// SpriliCred's OpenRouter listing (`/openrouter/v1/models`) names and prices
 	// each row itself; the model browser must show those, through a cache restore too.
 	test("a gateway's display name, microcredit prices and efforts survive discovery and the cache", async () => {
 		fs.writeFileSync(

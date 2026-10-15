@@ -20,8 +20,8 @@ describe("formatModelName", () => {
 	it("drops the provider of a reference, a selector's thinking suffix, and a `via` unless asked to keep it", () => {
 		expect(formatModelName("sprilicred-anthropic/claude-opus-5-5:low", { ref: "selector" })).toBe("Opus 5.5");
 		expect(formatModelName("openrouter/google/gemini-2.5-pro", { ref: "identity" })).toBe("Gemini 2.5 Pro");
-		expect(formatModelName("claude-opus-5-5 via Sprilicred")).toBe("Opus 5.5");
-		expect(formatModelName("claude-opus-5-5 via Sprilicred", { keepVia: true })).toBe("Opus 5.5 via Sprilicred");
+		expect(formatModelName("claude-opus-5-5 via SpriliCred")).toBe("Opus 5.5");
+		expect(formatModelName("claude-opus-5-5 via SpriliCred", { keepVia: true })).toBe("Opus 5.5 via SpriliCred");
 		expect(formatModelName("Claude Opus 4.5")).toBe("Opus 4.5");
 	});
 
@@ -59,7 +59,7 @@ describe("raw selectors and configured notes", () => {
 	it("keeps where a model comes from only when asked (the status line)", () => {
 		expect(formatModelName("claude-opus-5-5 (personal)")).toBe("Opus 5.5");
 		expect(formatModelName("claude-opus-5-5 (personal)", { keepVia: true })).toBe("Opus 5.5 (personal)");
-		expect(formatModelName("gpt-6.1-sol via Sprilicred", { keepVia: true })).toBe("GPT-6.1 Sol via Sprilicred");
+		expect(formatModelName("gpt-6.1-sol via SpriliCred", { keepVia: true })).toBe("GPT-6.1 Sol via SpriliCred");
 	});
 });
 

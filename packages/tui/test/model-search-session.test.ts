@@ -30,7 +30,7 @@ function model(provider: string, id: string, name = id): Model {
 }
 
 const muse: ModelSearchHit = {
-	model: model("sprilicred-openrouter", "meta/muse-wonder", "Muse Wonder via Sprilicred"),
+	model: model("sprilicred-openrouter", "meta/muse-wonder", "Muse Wonder via SpriliCred"),
 	entry: { id: "meta/muse-wonder" },
 };
 

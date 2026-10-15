@@ -12,7 +12,7 @@
       "models": [
         {
           "id": "claude-fable-5-1",
-          "name": "claude-fable-5-1 via Sprilicred",
+          "name": "claude-fable-5-1 via SpriliCred",
           "contextWindow": 1000000,
           "maxTokens": 128000,
           "reasoning": true,
@@ -39,7 +39,7 @@
         },
         {
           "id": "claude-opus-5-5",
-          "name": "claude-opus-5-5 via Sprilicred",
+          "name": "claude-opus-5-5 via SpriliCred",
           "contextWindow": 1000000,
           "maxTokens": 128000,
           "reasoning": true,
@@ -66,7 +66,7 @@
         },
         {
           "id": "claude-sonnet-5",
-          "name": "claude-sonnet-5 via Sprilicred",
+          "name": "claude-sonnet-5 via SpriliCred",
           "contextWindow": 1000000,
           "maxTokens": 128000,
           "reasoning": true,
@@ -93,7 +93,7 @@
         },
         {
           "id": "claude-haiku-4-5",
-          "name": "claude-haiku-4-5 via Sprilicred",
+          "name": "claude-haiku-4-5 via SpriliCred",
           "contextWindow": 200000,
           "maxTokens": 64000,
           "reasoning": true,
@@ -123,7 +123,7 @@
       "models": [
         {
           "id": "gpt-6-astra",
-          "name": "gpt-6-astra via Sprilicred",
+          "name": "gpt-6-astra via SpriliCred",
           "contextWindow": 500000,
           "maxTokens": 128000,
           "reasoning": true,
@@ -143,7 +143,7 @@
         },
         {
           "id": "gpt-6.1-sol",
-          "name": "gpt-6.1-sol via Sprilicred",
+          "name": "gpt-6.1-sol via SpriliCred",
           "contextWindow": 500000,
           "maxTokens": 128000,
           "reasoning": true,
@@ -163,7 +163,7 @@
         },
         {
           "id": "gpt-6-luna",
-          "name": "gpt-6-luna via Sprilicred",
+          "name": "gpt-6-luna via SpriliCred",
           "contextWindow": 500000,
           "maxTokens": 128000,
           "reasoning": true,

@@ -18,7 +18,7 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { acquireFileLock } from "@oh-my-pi/pi-utils/file-lock";
 
-// Providers with `modelSearch` (Sprilicred's OpenRouter catalog) are searched
+// Providers with `modelSearch` (SpriliCred's OpenRouter catalog) are searched
 // from /model instead of discovered: the search hits `<baseUrl>/models?search=`,
 // a pick is written into models.yml once, and it never joins Ctrl+P.
 
@@ -42,7 +42,7 @@ const MUSE_ROW = {
 };
 const MUSE_ENTRY = {
 	id: "meta/muse-wonder",
-	name: "Muse Wonder via Sprilicred",
+	name: "Muse Wonder via SpriliCred",
 	contextWindow: 1_048_576,
 	maxTokens: 65_536,
 	reasoning: true,
@@ -190,7 +190,7 @@ describe("ModelRegistry model search", () => {
 		expect(hit.model).toMatchObject({
 			provider: "sprilicred-openrouter",
 			id: "meta/muse-wonder",
-			name: "Muse Wonder via Sprilicred",
+			name: "Muse Wonder via SpriliCred",
 			contextWindow: 1_048_576,
 			maxTokens: 65_536,
 			reasoning: true,
@@ -224,12 +224,12 @@ describe("ModelRegistry model search", () => {
 		expect(hits.map(hit => hit.entry)).toEqual([
 			{
 				id: "a/reasons",
-				name: "a/reasons via Sprilicred",
+				name: "a/reasons via SpriliCred",
 				reasoning: true,
 				thinking: { mode: "effort", efforts: ["low", "high"] },
 			},
-			{ id: "b/plain", name: "b/plain via Sprilicred", reasoning: false },
-			{ id: "c/silent", name: "c/silent via Sprilicred" },
+			{ id: "b/plain", name: "b/plain via SpriliCred", reasoning: false },
+			{ id: "c/silent", name: "c/silent via SpriliCred" },
 		]);
 	});
 
@@ -247,7 +247,7 @@ describe("ModelRegistry model search", () => {
 			});
 		const hits = await makeRegistry().searchModels("sprilicred-openrouter", "x");
 		expect(hits.map(hit => hit.model.id)).toEqual(["x/ok"]);
-		expect(hits[0].entry).toEqual({ id: "x/ok", name: "x/ok via Sprilicred" });
+		expect(hits[0].entry).toEqual({ id: "x/ok", name: "x/ok via SpriliCred" });
 		respond = () => Response.json({ data: "not a list" });
 		expect(await makeRegistry().searchModels("sprilicred-openrouter", "x")).toEqual([]);
 	});
@@ -314,7 +314,7 @@ describe("ModelRegistry model search", () => {
 		expect(added).toMatchObject({
 			provider: "sprilicred-openrouter",
 			id: "meta/muse-wonder",
-			name: "Muse Wonder via Sprilicred",
+			name: "Muse Wonder via SpriliCred",
 		});
 		expect(
 			registry

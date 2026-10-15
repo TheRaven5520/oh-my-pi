@@ -257,7 +257,7 @@ type DiscoveryCost = { input: number; output: number; cacheRead: number; cacheWr
 
 /**
  * Per-million-token prices from a gateway row that prices in its own unit,
- * as Sprilicred does: `pricing.unit: "microcredits_per_token"` with
+ * as SpriliCred does: `pricing.unit: "microcredits_per_token"` with
  * `usd_per_microcredit`. Input and output must both be known non-negative
  * numbers (0 is free); a missing, null or negative leg makes the price
  * `"unknown"`. An absent cache class costs nothing, matching the installer.
@@ -1054,7 +1054,7 @@ export async function discoverOpenAIModelsList(
 				? resolveLiteLLMApi(undefined, id, providerConfig.api)
 				: providerConfig.api;
 		const contextWindow = reportedContextWindow ?? DISCOVERY_DEFAULT_CONTEXT_WINDOW;
-		// Gateways that describe their models (e.g. Sprilicred) advertise whether
+		// Gateways that describe their models (e.g. SpriliCred) advertise whether
 		// each one reasons, which efforts it takes, how much it may write, its
 		// display name and price; the gateway's word wins over the bundled
 		// reference, and lets a model newer than the catalog think.
@@ -1073,7 +1073,7 @@ export async function discoverOpenAIModelsList(
 				reasoning: advertisedReasoning ?? reference?.reasoning ?? false,
 				// Non-Messages wires take plain effort. Over Messages a catalogued Messages
 				// model keeps its own mode; an unreferenced Claude takes adaptive effort, as
-				// the Sprilicred installer writes it.
+				// the SpriliCred installer writes it.
 				thinking: efforts
 					? {
 							mode:

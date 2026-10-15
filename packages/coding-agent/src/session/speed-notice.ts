@@ -1,11 +1,11 @@
 /**
  * The one-line notice that tells the person what became of a turn that asked
  * for fast or ultrafast, read from the turn's `AssistantMessage.speed`
- * (Sprilicred's speed headers, else the provider's own report). Sprilicred
+ * (SpriliCred's speed headers, else the provider's own report). SpriliCred
  * never refuses a faster tier: ultrafast it can't run goes at fast (when fast
  * is allowed) or standard, fast at standard, and the reason header says why.
- * A turn refused outright (a 400 `ultrafast_*`, from a Sprilicred that
- * refused Ultrafast) says why in the same words as the Sprilicred omp extension.
+ * A turn refused outright (a 400 `ultrafast_*`, from a SpriliCred that
+ * refused Ultrafast) says why in the same words as the SpriliCred omp extension.
  */
 import type { AssistantMessage, RequestedSpeed } from "@oh-my-pi/pi-ai";
 
@@ -18,7 +18,7 @@ export interface SpeedNotice {
 	always: boolean;
 }
 
-/** Why Sprilicred did not forward the tier asked for, by `x-sprilicred-speed-reason` code. */
+/** Why SpriliCred did not forward the tier asked for, by `x-sprilicred-speed-reason` code. */
 const REASON_TEXT: Readonly<Record<string, string>> = {
 	not_permitted: "not enabled for you",
 	model_unsupported: "this model doesn't offer it",
@@ -27,8 +27,8 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
 };
 
 /**
- * What Sprilicred refusing an Ultrafast turn says, by reason. Identical in the
- * Sprilicred omp extension (deploy/omp-extension/sprilicred.ts).
+ * What SpriliCred refusing an Ultrafast turn says, by reason. Identical in the
+ * SpriliCred omp extension (deploy/omp-extension/sprilicred.ts).
  */
 export function ultrafastRefusalText(reason: string | undefined): string {
 	switch (reason) {
@@ -41,7 +41,7 @@ export function ultrafastRefusalText(reason: string | undefined): string {
 		case "account_refuses":
 			return "Ultrafast refused by the serving account. Use /fast.";
 		default:
-			return `Ultrafast refused (${reason ? `reason ${reason}` : "Sprilicred gave no reason"}). Use /fast.`;
+			return `Ultrafast refused (${reason ? `reason ${reason}` : "SpriliCred gave no reason"}). Use /fast.`;
 	}
 }
 
@@ -78,14 +78,14 @@ export function describeSpeedOutcome(
 	const reason = speed.reason;
 	const why = reason ? (REASON_TEXT[reason] ?? `reason ${reason}`) : undefined;
 	if (speed.refused) {
-		// Sprilicred refuses Ultrafast it can't run (and an older one refused fast, 409 `speed_refused`).
+		// SpriliCred refuses Ultrafast it can't run (and an older one refused fast, 409 `speed_refused`).
 		return {
 			key: `refused:${speed.requested}:${reason ?? ""}`,
 			level: "warning",
 			text:
 				speed.requested === "ultrafast"
 					? ultrafastRefusalText(reason)
-					: `${name} refused: ${why ?? "Sprilicred gave no reason"}.`,
+					: `${name} refused: ${why ?? "SpriliCred gave no reason"}.`,
 			always: true,
 		};
 	}
@@ -100,11 +100,11 @@ export function describeSpeedOutcome(
 			always: false,
 		};
 	}
-	// Sprilicred forwarded a slower tier than asked: say why, and what it used instead.
+	// SpriliCred forwarded a slower tier than asked: say why, and what it used instead.
 	if (speed.forwarded !== undefined && speed.forwarded !== speed.requested) {
 		const using = speed.forwarded === "fast" ? "fast mode" : "standard";
 		// "Subscription account" is Claude Opus's wall only. GPT (e.g. Astra) on
-		// paid credits gets `paid_credits`; older Sprilicreds sent it as
+		// paid credits gets `paid_credits`; older SpriliCreds sent it as
 		// `subscription_extra_usage`, so that code says it only for Opus.
 		const opus = /opus/i.test(message.model);
 		return {
@@ -135,7 +135,7 @@ export function describeSpeedOutcome(
 
 export type SpeedMode = "normal" | "fast" | "ultrafast";
 
-/** The status line's speed label and how to colour it. Same words as the Sprilicred omp extension. */
+/** The status line's speed label and how to colour it. Same words as the SpriliCred omp extension. */
 export interface SpeedStatus {
 	text: string;
 	level: "dim" | "normal" | "warning";
@@ -144,11 +144,11 @@ export interface SpeedStatus {
 const MODE_NAME: Readonly<Record<SpeedMode, string>> = { normal: "Normal", fast: "Fast", ultrafast: "Ultrafast" };
 
 /**
- * What the status line says for the selected mode and, when Sprilicred
+ * What the status line says for the selected mode and, when SpriliCred
  * reported on the last turn in that mode, what it served: "Fast" as asked,
  * "Ultrafast→Fast" / "Fast→Normal" served slower, "Ultrafast refused" for a
- * turn that failed with Sprilicred's refusal. `served` is the tier served, or "refused". Identical in
- * the Sprilicred omp extension (deploy/omp-extension/sprilicred.ts).
+ * turn that failed with SpriliCred's refusal. `served` is the tier served, or "refused". Identical in
+ * the SpriliCred omp extension (deploy/omp-extension/sprilicred.ts).
  */
 export function speedStatus(selected: SpeedMode, served?: SpeedMode | "refused"): SpeedStatus {
 	if (selected === "normal") return { text: MODE_NAME.normal, level: "dim" };
@@ -158,9 +158,9 @@ export function speedStatus(selected: SpeedMode, served?: SpeedMode | "refused")
 }
 
 /**
- * What Sprilicred served of `mode` on this turn, or `undefined` when the turn
+ * What SpriliCred served of `mode` on this turn, or `undefined` when the turn
  * says nothing about it (asked for another tier, failed for another reason,
- * or no Sprilicred report).
+ * or no SpriliCred report).
  */
 export function servedSpeed(message: AssistantMessage, mode: SpeedMode): SpeedMode | "refused" | undefined {
 	const speed = message.speed;

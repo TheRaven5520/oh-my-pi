@@ -9,7 +9,7 @@ import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
 // Agreed Release55 wire contract, shared by /anthropic/v1/messages and /v1/responses.
-const busyMessage = "Sprilicred busy: upstream capacity is briefly saturated; retry in 2 s";
+const busyMessage = "SpriliCred busy: upstream capacity is briefly saturated; retry in 2 s";
 const busyError = { type: "rate_limit_error", code: "rate_limited", message: busyMessage, retry_after: 2 };
 const context = { messages: [{ role: "user" as const, content: "hello", timestamp: 0 }] };
 const anthropic = getBundledModel("anthropic", "claude-haiku-4-5-20251001") as Model<"anthropic-messages">;
@@ -23,7 +23,7 @@ function expectBusy(result: AssistantMessage) {
 	expect(extractProviderRetryHint(result.provider, result.errorMessage)).toBe(2000);
 }
 
-describe("Sprilicred busy response", () => {
+describe("SpriliCred busy response", () => {
 	for (const api of ["anthropic-messages", "openai-responses"] as const) {
 		it(`${api} parses the agreed body without headers as a transient delay`, () => {
 			const text = `429 ${JSON.stringify({ type: "error", error: busyError })}`;
@@ -40,7 +40,7 @@ describe("Sprilicred busy response", () => {
 		for (const header of ["retry-after", "retry-after-ms"]) {
 			it(`${api} retains ${header} when the body has no delay`, async () => {
 				const customFetch: FetchImpl = Object.assign(async () => new Response(JSON.stringify({
-					type: "error", error: { type: "rate_limit_error", code: "rate_limited", message: "Sprilicred busy" },
+					type: "error", error: { type: "rate_limit_error", code: "rate_limited", message: "SpriliCred busy" },
 				}), { status: 429, headers: { "content-type": "application/json", [header]: header === "retry-after" ? "2" : "2000" } }),
 				{ preconnect: fetch.preconnect });
 				const options = { apiKey: "test-key", fetch: customFetch, maxRetryDelayMs: 500 };
@@ -60,7 +60,7 @@ describe("Sprilicred busy response", () => {
 		};
 		// Gateway frames extend the standard Responses event schema with status/headers.
 		async function* events(): AsyncIterable<never> {
-			yield { type: "error", status: 429, error: { ...busyError, message: "Sprilicred busy" },
+			yield { type: "error", status: 429, error: { ...busyError, message: "SpriliCred busy" },
 				headers: { "retry-after": "2", "retry-after-ms": "2000" } } as never;
 		}
 		try {

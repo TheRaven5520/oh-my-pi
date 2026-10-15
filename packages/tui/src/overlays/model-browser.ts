@@ -1329,7 +1329,7 @@ export class ModelBrowser implements Component {
 		}
 		const overContext = this.isOverContext(item);
 		const prefix = selected && this.#focused ? `${theme.fg("accent", theme.nav.cursor)} ` : "  ";
-		// Friendly names (`Opus 5.5 via Sprilicred`); a name without its own
+		// Friendly names (`Opus 5.5 via SpriliCred`); a name without its own
 		// `via` gets the provider after it when providers are shown.
 		const displayName = modelDisplayName(item);
 		const providerSuffix =

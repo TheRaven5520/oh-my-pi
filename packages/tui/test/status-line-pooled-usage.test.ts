@@ -76,7 +76,7 @@ describe("summarizePooledUsage", () => {
 		expect(codex?.fableWeekly).toBeUndefined();
 	});
 
-	it("averages Sprilicred's Ultrafast rows over the Pro 500 accounts only, apart from the weekly", () => {
+	it("averages SpriliCred's Ultrafast rows over the Pro 500 accounts only, apart from the weekly", () => {
 		const ultrafast = (account: string, weekly: number, used: number) => {
 			const report = pooledReport("openai-codex", account, [
 				["chat:secondary", weekly, "Weekly"],
@@ -154,7 +154,7 @@ describe("pooledProviderMatches", () => {
 		expect(pooledUsageProvider({ provider: "personal-codex", providerType: "openai-codex" })).toBe("openai-codex");
 	});
 
-	it("requires matching model lineage on generic Sprilicred routes", () => {
+	it("requires matching model lineage on generic SpriliCred routes", () => {
 		expect(pooledUsageProvider({ provider: "sprilicred-openai", identity: { class: "openai" } })).toBe(
 			"openai-codex",
 		);

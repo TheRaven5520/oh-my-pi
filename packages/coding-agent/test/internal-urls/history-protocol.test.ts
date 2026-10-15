@@ -723,7 +723,7 @@ describe("history:// protocol", () => {
 		});
 	});
 
-	describe("private chats (Sprilicred private mode)", () => {
+	describe("private chats (SpriliCred private mode)", () => {
 		const header = (id: string) =>
 			JSON.stringify({
 				type: "session",

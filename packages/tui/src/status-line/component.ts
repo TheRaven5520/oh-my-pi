@@ -2217,7 +2217,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 					}
 				: undefined;
 		if (!context.identity || !selectedGroup) {
-			// Without an active OAuth account (Sprilicred-brokered sessions) any
+			// Without an active OAuth account (SpriliCred-brokered sessions) any
 			// account-scoped group would be an arbitrary pooled account's numbers.
 			// Prefer the pool headline for the active subscription route only.
 			// Non-pooled reports yield null and fall through.
@@ -2283,7 +2283,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		}
 		// The tier-scoped weekly for the active model family (Claude's `7d:fable`)
 		// lands in its own lower-priority group; surface it as the tighter of the
-		// shared weekly and the scoped cap, matching Sprilicred's pool math.
+		// shared weekly and the scoped cap, matching SpriliCred's pool math.
 		let modelWeekly: { percent: number } | undefined;
 		if (sevenDay && activeModelId) {
 			for (const group of scopeGroups.values()) {

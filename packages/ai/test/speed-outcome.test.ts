@@ -84,7 +84,7 @@ async function runResponses(model: Model<"openai-responses">, serviceTier: Servi
 }
 
 describe("ultrafast on the wire", () => {
-	it("sends service_tier=ultrafast through a Sprilicred OpenAI provider", async () => {
+	it("sends service_tier=ultrafast through a SpriliCred OpenAI provider", async () => {
 		const { body, message } = await runResponses(openaiModel("sprilicred-openai"), "ultrafast", () =>
 			sse([...TEXT, completed("ultrafast")], SPEED("ultrafast", "ultrafast", "forwarded")),
 		);
@@ -113,7 +113,7 @@ describe("ultrafast on the wire", () => {
 	});
 });
 
-describe("speed outcome from Sprilicred's headers and errors (OpenAI Responses)", () => {
+describe("speed outcome from SpriliCred's headers and errors (OpenAI Responses)", () => {
 	it("reads a fast request downgraded to standard, with its reason", async () => {
 		const { body, message } = await runResponses(openaiModel("sprilicred-openai"), "priority", () =>
 			sse([...TEXT, completed("default")], SPEED("fast", "standard", "api_fallback_refused")),
@@ -127,7 +127,7 @@ describe("speed outcome from Sprilicred's headers and errors (OpenAI Responses)"
 		});
 	});
 
-	it("reads ultrafast that Sprilicred fell back to fast, with its reason", async () => {
+	it("reads ultrafast that SpriliCred fell back to fast, with its reason", async () => {
 		const { body, message } = await runResponses(openaiModel("sprilicred-openai"), "ultrafast", () =>
 			sse([...TEXT, completed("priority")], SPEED("ultrafast", "fast", "no_pro500_capacity")),
 		);
@@ -148,7 +148,7 @@ describe("speed outcome from Sprilicred's headers and errors (OpenAI Responses)"
 		expect(message.speed?.served).toBe("fast");
 	});
 
-	it("uses Sprilicred's forwarded tier when Codex echoes default", async () => {
+	it("uses SpriliCred's forwarded tier when Codex echoes default", async () => {
 		const { message } = await runResponses(openaiModel("sprilicred-openai"), "ultrafast", () =>
 			sse([...TEXT, completed("default")], SPEED("ultrafast", "ultrafast", "forwarded")),
 		);
@@ -160,7 +160,7 @@ describe("speed outcome from Sprilicred's headers and errors (OpenAI Responses)"
 		});
 	});
 
-	it("uses Sprilicred's fallback Fast tier when Codex echoes default for Ultrafast", async () => {
+	it("uses SpriliCred's fallback Fast tier when Codex echoes default for Ultrafast", async () => {
 		const { message } = await runResponses(openaiModel("sprilicred-openai"), "ultrafast", () =>
 			sse([...TEXT, completed("default")], SPEED("ultrafast", "fast", "no_pro500_capacity")),
 		);
@@ -172,7 +172,7 @@ describe("speed outcome from Sprilicred's headers and errors (OpenAI Responses)"
 		});
 	});
 
-	it("keeps a default echo standard when Sprilicred forwarded standard", async () => {
+	it("keeps a default echo standard when SpriliCred forwarded standard", async () => {
 		const { message } = await runResponses(openaiModel("sprilicred-openai"), "priority", () =>
 			sse([...TEXT, completed("default")], SPEED("fast", "standard", "api_fallback_refused")),
 		);
@@ -218,7 +218,7 @@ describe("speed outcome from Sprilicred's headers and errors (OpenAI Responses)"
 		});
 	});
 
-	it("marks Sprilicred's 400 Ultrafast refusal as refused with its reason", async () => {
+	it("marks SpriliCred's 400 Ultrafast refusal as refused with its reason", async () => {
 		const { message } = await runResponses(
 			openaiModel("sprilicred-openai"),
 			"ultrafast",
@@ -364,7 +364,7 @@ describe("speed outcome on Anthropic fast mode", () => {
 		expect(message.speed).toEqual({ requested: "fast", forwarded: "fast", reason: "forwarded", served: "fast" });
 	});
 
-	it("keeps a Claude turn Sprilicred forwarded fast but the provider served standard as standard", async () => {
+	it("keeps a Claude turn SpriliCred forwarded fast but the provider served standard as standard", async () => {
 		const message = await run(() => anthropicSse("standard", SPEED("fast", "fast", "forwarded")));
 		expect(message.speed).toEqual({
 			requested: "fast",

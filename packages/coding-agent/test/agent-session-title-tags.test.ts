@@ -51,7 +51,7 @@ describe("AgentSession tag-style titles", () => {
 				checks.push(systemPrompt.match(/tagged `([^`]+)`/)?.[1] ?? "?");
 				return "pi05 evals";
 			}
-			return "Sprilicred";
+			return "SpriliCred";
 		});
 		const send = async (count: number) => {
 			for (let i = 0; i < count; i++) {

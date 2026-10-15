@@ -1,6 +1,6 @@
 /**
  * Friendly model names for display: `claude-opus-5-5`,
- * `sprilicred-anthropic/claude-opus-5-5:low`, `claude-opus-5-5 via Sprilicred`
+ * `sprilicred-anthropic/claude-opus-5-5:low`, `claude-opus-5-5 via SpriliCred`
  * and `Claude Opus 5.5` all read `Opus 5.5`. Only the claude/gpt/gemini id
  * families are rewritten; any other id is shown as-is rather than guessed at.
  */

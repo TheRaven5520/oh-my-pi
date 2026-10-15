@@ -62,7 +62,7 @@ export interface StatusLineSession {
 	getContextUsage(): { tokens: number; contextWindow: number; percent: number | null } | undefined;
 	autoResolvedThinkingLevel(): string | undefined;
 	isFastModeActive(): boolean;
-	/** Speed label (Normal / Fast / Ultrafast, or what Sprilicred served of it) and its colour. */
+	/** Speed label (Normal / Fast / Ultrafast, or what SpriliCred served of it) and its colour. */
 	speedStatus?(): { text: string; level: "dim" | "normal" | "warning" };
 	/** Anthropic usage-limit label (`limit reached · wrapping up · resets 14:30`, `low priority until 14:30 · 62% left`). */
 	getAnthropicSlowModeLabel?(): string | undefined;

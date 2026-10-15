@@ -133,7 +133,7 @@ export type CacheRetention = "none" | "short" | "long";
  *   (`flex`/`scale`/`priority`/`ultrafast`). `ultrafast` is a separate
  *   low-latency serving path: sent to the OpenAI API as-is (preview access is
  *   per project), to Codex only for models whose discovery advertises it, and
- *   always through a Sprilicred (`sprilicred-*`) OpenAI-family provider, which
+ *   always through a SpriliCred (`sprilicred-*`) OpenAI-family provider, which
  *   decides per request (see {@link supportsUltrafastServiceTier}).
  * - Google (Gemini API + Vertex AI): sent as the top-level `serviceTier`
  *   field (`flex`/`priority`).
@@ -229,8 +229,8 @@ export function resolveModelServiceTier(
 }
 
 /**
- * True when `target` is a Sprilicred `ultrafast` target: an OpenAI-family model
- * (or a bare provider id) on a Sprilicred (`sprilicred-*`) provider. Sprilicred
+ * True when `target` is a SpriliCred `ultrafast` target: an OpenAI-family model
+ * (or a bare provider id) on a SpriliCred (`sprilicred-*`) provider. SpriliCred
  * decides per request whether a model and person get it and says so in its
  * speed headers, so {@link shouldSendServiceTier} always sends `ultrafast`
  * there; every other endpoint gets it only per the provider rules there (the
@@ -266,7 +266,7 @@ export function shouldSendServiceTier(
 	target: Provider | ServiceTierModel | undefined,
 ): boolean {
 	if (!serviceTier || serviceTier === "auto") return false;
-	// Sprilicred decides per request whether a model and person get Ultrafast.
+	// SpriliCred decides per request whether a model and person get Ultrafast.
 	if (serviceTier === "ultrafast" && supportsUltrafastServiceTier(target)) return true;
 	const provider = typeof target === "string" ? target : target?.provider;
 	if (
@@ -1167,7 +1167,7 @@ export type RequestedSpeed = "fast" | "ultrafast";
 
 /**
  * What became of a request that asked for a faster tier. `forwarded`/`reason`
- * come from Sprilicred's `x-sprilicred-speed*` headers (or the same fields in
+ * come from SpriliCred's `x-sprilicred-speed*` headers (or the same fields in
  * an error body or WebSocket error frame); `served` is what the provider
  * itself reported serving (OpenAI's echoed `service_tier`, Anthropic's
  * `usage.speed`), which can be lower than what was forwarded. Each stays
@@ -1182,10 +1182,10 @@ export interface SpeedOutcome {
 	/** Gateway reason code (`forwarded`, `not_permitted`, `no_pro500_capacity`, …). */
 	reason?: string;
 	/**
-	 * The request failed over its faster tier: Sprilicred refusing Ultrafast it
+	 * The request failed over its faster tier: SpriliCred refusing Ultrafast it
 	 * can't run (a 400 `ultrafast_not_allowed` / `ultrafast_unsupported_model`
 	 * / `ultrafast_unavailable`), an upstream refusal of Ultrafast mid-stream,
-	 * or an older Sprilicred's 409 `speed_refused`.
+	 * or an older SpriliCred's 409 `speed_refused`.
 	 */
 	refused?: boolean;
 }

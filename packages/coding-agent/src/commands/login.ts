@@ -15,7 +15,7 @@ export default class Login extends Command {
 			required: false,
 		}),
 		key: Args.string({
-			description: "Sprilicred API key (optional; prompts when omitted)",
+			description: "SpriliCred API key (optional; prompts when omitted)",
 			required: false,
 		}),
 	};
@@ -23,7 +23,7 @@ export default class Login extends Command {
 	static examples = [
 		`# Pick a provider interactively\n  ${APP_NAME} login`,
 		`# Log in to a specific provider\n  ${APP_NAME} login anthropic`,
-		`# Log in to Sprilicred\n  ${APP_NAME} login sprilicred`,
+		`# Log in to SpriliCred\n  ${APP_NAME} login sprilicred`,
 	];
 
 	async run(): Promise<void> {

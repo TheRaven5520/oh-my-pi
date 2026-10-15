@@ -32,7 +32,7 @@ type ProviderGroup = {
 	provider: string;
 	/** Route that lists exactly this provider's models. */
 	listing: string;
-	/** Path appended to the Sprilicred URL for the provider's baseUrl. */
+	/** Path appended to the SpriliCred URL for the provider's baseUrl. */
 	suffix: string;
 	api: "anthropic-messages" | "openai-responses";
 	auth: "oauth" | "apiKey";
@@ -44,7 +44,7 @@ type ProviderGroup = {
 
 const OPENAI_DISCOVERY = { type: "openai-models-list", injectV1: false };
 const OPENAI_PROVIDER = "sprilicred-openai";
-// Same layout as the Sprilicred installer (deploy/connect.py install_omp): models
+// Same layout as the SpriliCred installer (deploy/connect.py install_omp): models
 // with a dedicated route (`/<route>/v1`) live under their own `sprilicred-<route>`.
 // DeepSeek is listed only to keys with an API-key grant; others get an empty listing.
 const DEEPSEEK_PROVIDER = "sprilicred-deepseek";
@@ -73,7 +73,7 @@ const MUSE_BUILT_IN = {
 	efforts: ["low", "medium", "high", "xhigh", "max"],
 	input: ["text", "image"],
 };
-// Providers Sprilicred no longer offers anyone: removed with every reference to them.
+// Providers SpriliCred no longer offers anyone: removed with every reference to them.
 const RETIRED_PROVIDERS = ["sprilicred-glm", MUSE_PROVIDER];
 // Retired models once listed under sprilicred-openai (GLM 5.3 Abliterated, Muse Wonder).
 const RETIRED_OPENAI_MODELS: Record<string, true> = { "abliterated-model-large-v2": true, [MUSE_ID]: true };
@@ -241,7 +241,7 @@ async function fetchCatalog(baseUrl: string, route: string, key: string): Promis
 		});
 	} catch (error) {
 		if (error instanceof DOMException && error.name === "TimeoutError") {
-			throw new Error(`could not reach Sprilicred at ${baseUrl}`);
+			throw new Error(`could not reach SpriliCred at ${baseUrl}`);
 		}
 		throw error;
 	}
@@ -364,7 +364,7 @@ function openRouterEntry(listing: CatalogModel[] | null, id: string): ModelConfi
 	const row: CatalogModel | undefined = listing?.find(model => model.id === id);
 	const builtIn = id === MUSE_OPENROUTER_ID ? MUSE_BUILT_IN : undefined;
 	const listedName = row?.display_name?.trim() && row.display_name !== id ? row.display_name : undefined;
-	const entry: ModelConfig = { id, name: `${listedName ?? (builtIn ? "Muse Wonder" : id)} via Sprilicred` };
+	const entry: ModelConfig = { id, name: `${listedName ?? (builtIn ? "Muse Wonder" : id)} via SpriliCred` };
 	const window = row?.context_window ?? row?.context_length;
 	const output = row?.max_output_tokens;
 	if (Number.isInteger(window) && Number.isInteger(output) && window! > 0 && output! > 0) {
@@ -391,10 +391,23 @@ function openRouterEntry(listing: CatalogModel[] | null, id: string): ModelConfi
 	return entry;
 }
 
-/** Adds `id`'s entry to sprilicred-openrouter's models unless the person already has one. */
+/** A name an older login or installer wrote (the " via Sprilicred" spelling) becomes `generated`; any other stays. */
+function renamedOldName(stored: string, generated: string): string {
+	return stored.endsWith(" via Sprilicred") ? generated : stored;
+}
+/**
+ * Adds `id`'s entry to sprilicred-openrouter's models unless the person already has one; an existing
+ * entry only has an old-spelling name renamed (connect.py add_omp_openrouter_entry).
+ */
 function addOpenRouterEntry(providers: Record<string, any>, listing: CatalogModel[] | null, id: string): boolean {
 	const models: unknown[] = providers[OPENROUTER_PROVIDER].models;
-	if (models.some(entry => isRecord(entry) && entry.id === id)) return false;
+	const existing = models.find(entry => isRecord(entry) && entry.id === id) as ModelConfig | undefined;
+	if (existing) {
+		if (typeof existing.name === "string") {
+			existing.name = renamedOldName(existing.name, openRouterEntry(listing, id).name as string);
+		}
+		return false;
+	}
 	models.push(openRouterEntry(listing, id));
 	return true;
 }
@@ -410,7 +423,7 @@ function applyOwnedField(state: ModelState, key: string, entry: ModelConfig, fie
 	}
 }
 
-// Provider keys the login writes; anything else on a Sprilicred provider is the person's and stays first.
+// Provider keys the login writes; anything else on a SpriliCred provider is the person's and stays first.
 const MANAGED_PROVIDER_KEYS: Record<string, true> = {
 	baseUrl: true,
 	apiKey: true,
@@ -505,11 +518,14 @@ async function writeModels(
 					}
 				}
 			}
-			const defaultName = `${catalogModel.display_name || catalogModel.id} via Sprilicred`;
+			const defaultName = `${catalogModel.display_name || catalogModel.id} via SpriliCred`;
 			const entry = previousModel
 				? {
 						...previousModel,
-						name: typeof previousModel.name === "string" ? previousModel.name : defaultName,
+						name:
+							typeof previousModel.name === "string"
+								? renamedOldName(previousModel.name, defaultName)
+								: defaultName,
 						id: catalogModel.id,
 					}
 				: { id: catalogModel.id, name: defaultName };
@@ -636,7 +652,7 @@ async function writeModels(
  * Adds newly written providers to a non-empty scoped list (cycleModels, enabledModels,
  * modelProviderOrder), like the installer's scope migration: DeepSeek joins a list that holds
  * the sprilicred-openai scope, OpenRouter joins any list the person set (or /model would hide
- * it) but never a cycle. They go after the Sprilicred group, else after the last `sprilicred-`
+ * it) but never a cycle. They go after the SpriliCred group, else after the last `sprilicred-`
  * entry, else at the end (connect.py move_omp_settings).
  */
 function addScopes(list: string[], added: string[], providerOnly: boolean, cycle = false): string[] {
@@ -753,7 +769,7 @@ function wantedRoles(models: WrittenModels): Record<string, string> {
 	const openai = models.byProvider[OPENAI_PROVIDER];
 	const claude = anthropic.find(model => model.includes("haiku")) ?? anthropic.at(-1);
 	const gpt = openai.find(model => model.includes("sol")) ?? openai.at(0);
-	if (!claude || !gpt) throw new Error("Sprilicred returned no models for helper roles");
+	if (!claude || !gpt) throw new Error("SpriliCred returned no models for helper roles");
 	return {
 		default: models.defaultModel,
 		smol: `sprilicred-anthropic/${claude}`,
@@ -865,8 +881,8 @@ export async function runSprilicredLogin(
 	suppliedKey?: string,
 	pathOverrides?: Partial<SprilicredLoginPaths>,
 ): Promise<void> {
-	const key = (suppliedKey ?? (await promptLine(rl, "Paste your Sprilicred API key: "))).trim();
-	if (!key) throw new Error("Sprilicred API key is empty");
+	const key = (suppliedKey ?? (await promptLine(rl, "Paste your SpriliCred API key: "))).trim();
+	if (!key) throw new Error("SpriliCred API key is empty");
 	const baseUrl = endpoint();
 	const [listings, openrouter] = await Promise.all([
 		Promise.all(PROVIDER_GROUPS.map(group => fetchListing(baseUrl, group.listing, key, group.required))),
@@ -888,7 +904,7 @@ export async function runSprilicredLogin(
 	}
 	const count = Object.values(models.byProvider).reduce((total, ids) => total + ids.length, 0);
 	const browse = openrouter?.length ? "; search OpenRouter models in /model" : "";
-	process.stdout.write(`\nLogged in to Sprilicred; configured ${count} models${browse}\n`);
+	process.stdout.write(`\nLogged in to SpriliCred; configured ${count} models${browse}\n`);
 	if (models.replacedDefault) {
 		process.stdout.write(
 			`Your default model ${models.replacedDefault} is no longer offered to you; it is now ${models.defaultModel}\n`,

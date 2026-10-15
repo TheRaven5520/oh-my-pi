@@ -62,7 +62,7 @@ function isConcurrencyAdmissionRejection(response: Response, bodyText: string): 
 }
 
 /**
- * Sprilicred's pooled-account gateway answers `pool_exhausted` (HTTP 429) when
+ * SpriliCred's pooled-account gateway answers `pool_exhausted` (HTTP 429) when
  * no account can serve the model until a reset that is often hours away. It is
  * a usage limit, so the transport must not sleep through it: session recovery
  * decides whether to wait or switch to a configured fallback.

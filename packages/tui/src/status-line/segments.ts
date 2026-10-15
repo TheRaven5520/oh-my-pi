@@ -417,7 +417,7 @@ const modelSegment: StatusLineSegment = {
 	render(ctx) {
 		const state = ctx.session.state;
 
-		// Keeps where the model comes from (`Opus 5.5 via Sprilicred`, `Opus 5.5 (personal)`),
+		// Keeps where the model comes from (`Opus 5.5 via SpriliCred`, `Opus 5.5 (personal)`),
 		// so a fallback off the pool is visible at a glance; other surfaces drop it.
 		const modelName = modelDisplayName(ctx);
 
@@ -481,7 +481,7 @@ const modelSegment: StatusLineSegment = {
 		if (tail) {
 			content += accentFg(ctx, "statusLineModel", tail);
 		}
-		// Speed mode: Normal (dim), Fast, Ultrafast, or what Sprilicred served of it (`Fast→Normal`, `Ultrafast refused`).
+		// Speed mode: Normal (dim), Fast, Ultrafast, or what SpriliCred served of it (`Fast→Normal`, `Ultrafast refused`).
 		const speed = ctx.session.speedStatus?.();
 		if (speed) {
 			const text = speed.text;

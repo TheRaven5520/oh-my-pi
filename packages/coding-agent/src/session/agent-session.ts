@@ -1041,7 +1041,7 @@ export class AgentSession implements SettingsScope {
 	#skippedPostTurnSpeculationCompletion: Promise<void> | undefined;
 	/** Outcome of the last faster-tier notice shown; the next shows only when it changes. */
 	#lastSpeedNoticeKey: string | undefined;
-	/** What Sprilicred served on the last reported turn, for the model and mode it ran in (the status line). */
+	/** What SpriliCred served on the last reported turn, for the model and mode it ran in (the status line). */
 	#lastSpeedServed: { key: string; tiers: ServiceTierByFamily; served: SpeedMode | "refused" } | undefined;
 	#pendingAgentEndEmit: AgentSessionEvent | undefined;
 	#inFlightSettledCallbacks: Array<() => void | Promise<void>> = [];
@@ -3020,13 +3020,13 @@ export class AgentSession implements SettingsScope {
 
 	/**
 	 * Tell the person what became of a turn that asked for fast or ultrafast
-	 * (Sprilicred's speed headers, else the provider's report), once per change
+	 * (SpriliCred's speed headers, else the provider's report), once per change
 	 * of outcome and on every refused turn. A turn whose model could not carry
 	 * the session's faster tier says it was not sent.
 	 */
 	#noticeSpeedOutcome(message: AssistantMessage): void {
 		const model = this.model;
-		// Only Sprilicred reports what it served; other providers' status shows the selected mode.
+		// Only SpriliCred reports what it served; other providers' status shows the selected mode.
 		if (
 			model &&
 			model.provider === message.provider &&
@@ -9926,7 +9926,7 @@ export class AgentSession implements SettingsScope {
 
 	/**
 	 * The status line's speed label: the mode selected for the active model,
-	 * or what Sprilicred served of it on the last turn in that mode and model
+	 * or what SpriliCred served of it on the last turn in that mode and model
 	 * (`Fast→Normal`, `Ultrafast refused`). Changing mode or model shows the selection again.
 	 */
 	speedStatus(): SpeedStatus {
@@ -9956,10 +9956,10 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/**
-	 * Whether Sprilicred offers this person Ultrafast: its Codex catalog
+	 * Whether SpriliCred offers this person Ultrafast: its Codex catalog
 	 * (`/openai/models` on the active model's host) lists the `ultrafast`
 	 * service tier only to a person it is on for. `undefined` when the active
-	 * model isn't a Sprilicred OpenAI model or the catalog can't be read.
+	 * model isn't a SpriliCred OpenAI model or the catalog can't be read.
 	 */
 	async isUltrafastPermitted(): Promise<boolean | undefined> {
 		const model = this.model;

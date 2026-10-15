@@ -6,7 +6,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
-// A Claude-Code-style gateway (e.g. Sprilicred) serves Claude through an
+// A Claude-Code-style gateway (e.g. SpriliCred) serves Claude through an
 // `anthropic-messages` provider with `auth: oauth`: every request must carry the
 // OAuth (Claude Code) shape. Discovery used to build its rows without that flag
 // and, once it listed a models.yml row too, the merged row lost it as well.

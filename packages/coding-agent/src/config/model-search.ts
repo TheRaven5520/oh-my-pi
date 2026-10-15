@@ -25,7 +25,7 @@ export interface ModelSearchProviderConfig {
 	modelSearch: ProviderModelSearch;
 }
 
-/** USD per million tokens from a Sprilicred integer microcredits-per-token price, as the installer writes it. */
+/** USD per million tokens from a SpriliCred integer microcredits-per-token price, as the installer writes it. */
 function microcreditsPerMillion(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value / 1000 : undefined;
 }
@@ -33,13 +33,13 @@ function microcreditsPerMillion(value: unknown): number | undefined {
 /**
  * The agreed models.yml entry for a listing row (same keys, order and values
  * as the installer and `omp login sprilicred` write): id; name
- * "<display_name> via Sprilicred"; contextWindow; maxTokens; reasoning (only
+ * "<display_name> via SpriliCred"; contextWindow; maxTokens; reasoning (only
  * when the row says); thinking {mode "effort", the row's known efforts in
  * omp's order} when it reasons and lists some; input; cost in $/MTok. No compat.
  */
 function rowEntry(id: string, row: Record<string, unknown>): Record<string, unknown> {
 	const displayName = typeof row.display_name === "string" ? row.display_name.trim() : "";
-	const entry: Record<string, unknown> = { id, name: `${displayName || id} via Sprilicred` };
+	const entry: Record<string, unknown> = { id, name: `${displayName || id} via SpriliCred` };
 	const contextWindow = row.context_window ?? row.context_length;
 	if (typeof contextWindow === "number" && contextWindow > 0) entry.contextWindow = contextWindow;
 	if (typeof row.max_output_tokens === "number" && row.max_output_tokens > 0) entry.maxTokens = row.max_output_tokens;

@@ -91,7 +91,7 @@ interface IndexEntry {
 }
 
 /**
- * True when `sessionFile` belongs to a chat the person made private (Sprilicred
+ * True when `sessionFile` belongs to a chat the person made private (SpriliCred
  * private mode) other than the caller's own chat `callerRoot`. Such a transcript
  * is never listed, completed or served: reading it here would hand a private
  * chat to a model outside it. Only the top-level chat holds the typed trigger,

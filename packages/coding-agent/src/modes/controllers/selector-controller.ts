@@ -182,7 +182,7 @@ function loadProviderAuthUi(): ProviderAuthUiModules {
 	};
 }
 
-/** A model chosen in the picker, named as the picker names it (`Opus 5.5 via Sprilicred (high)`). */
+/** A model chosen in the picker, named as the picker names it (`Opus 5.5 via SpriliCred (high)`). */
 function pickedModelLabel(model: { name?: string; id: string }, selector: string | undefined): string {
 	const level = shownThinkingLevel(selector ? splitModelSelector(selector).level : undefined);
 	const name = formatModelName(model.name || model.id, { keepVia: true });

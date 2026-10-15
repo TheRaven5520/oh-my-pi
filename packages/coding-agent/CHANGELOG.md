@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Human-visible text spells the product SpriliCred; `omp login sprilicred` names models "<name> via SpriliCred" and renames a stored name an older login or installer wrote (" via Sprilicred"), keeping names you chose.
 - Focused subagent views now route `/model`, `/switch`, `/effort`, `/thinking`, `/fast`, `/ultrafast`, `/slow`, and model/thinking keyboard cycles to that agent's session without changing the main session.
 
 ### Added

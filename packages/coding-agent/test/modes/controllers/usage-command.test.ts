@@ -481,7 +481,7 @@ describe("interactive /usage account visibility", () => {
 
 const now = 1_700_000_005_000;
 
-/** One Sprilicred pooled account reporting the given windows as used fractions. */
+/** One SpriliCred pooled account reporting the given windows as used fractions. */
 function pooledReport(provider: string, account: string, windows: Record<string, number>): UsageReport {
 	return {
 		provider,

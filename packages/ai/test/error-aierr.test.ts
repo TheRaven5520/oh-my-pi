@@ -64,8 +64,8 @@ describe("AIError.classify — structural provider errors", () => {
 		expect(AIError.is(id, AIError.Flag.UsageLimit)).toBe(true);
 	});
 
-	it("maps Sprilicred's pool_exhausted 429 to usageLimit on both wire formats, whatever its wording", async () => {
-		// Exact body shape from Sprilicred (src/lib.rs IntoResponse): the "resting"
+	it("maps SpriliCred's pool_exhausted 429 to usageLimit on both wire formats, whatever its wording", async () => {
+		// Exact body shape from SpriliCred (src/lib.rs IntoResponse): the "resting"
 		// branch carries capacity wording that text classification treats as transient.
 		const body = JSON.stringify({
 			error: {

@@ -914,7 +914,7 @@ describe("usage status-line segment", () => {
 		expect(content).not.toContain("7d");
 	});
 
-	it("shows the Sprilicred pool headline, not one pooled account, when no account is active", async () => {
+	it("shows the SpriliCred pool headline, not one pooled account, when no account is active", async () => {
 		const pooled = (account: string, fiveHour: number, weekly: number, fable?: number) => ({
 			provider: "anthropic",
 			metadata: { sprilicredAccountId: account },

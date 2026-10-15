@@ -35,7 +35,7 @@ function gatewayModel(api: "anthropic-messages" | "openai-responses", provider: 
 			contextWindow: 200_000,
 			maxTokens: 8_192,
 		} as ModelSpec<typeof api>),
-		// models.yml `auth: oauth`: Sprilicred's Anthropic route takes the Claude Code request shape.
+		// models.yml `auth: oauth`: SpriliCred's Anthropic route takes the Claude Code request shape.
 		isOAuth: anthropic,
 	} as Model<Api>;
 }
@@ -47,7 +47,7 @@ function sse(events: Array<[string | null, unknown]>): Response {
 	return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
 }
 
-/** Sprilicred's own streamed Anthropic answer (src/proxy/trigger.rs `reply`), or a model's when `tokens` > 0. */
+/** SpriliCred's own streamed Anthropic answer (src/proxy/trigger.rs `reply`), or a model's when `tokens` > 0. */
 function anthropicReply(text: string, tokens = 0): Response {
 	const message = {
 		id: `msg_${HEX32}`,
@@ -76,7 +76,7 @@ function anthropicReply(text: string, tokens = 0): Response {
 	]);
 }
 
-/** Sprilicred's own streamed Responses answer, or a model's when `tokens` > 0. */
+/** SpriliCred's own streamed Responses answer, or a model's when `tokens` > 0. */
 function responsesReply(text: string, tokens = 0): Response {
 	const part = { type: "output_text", text, annotations: [], logprobs: [] };
 	const item = (status: string, content: unknown[]) => ({
@@ -163,7 +163,7 @@ async function sideCall(model: Model<Api>, options: SimpleStreamOptions, role: P
 	return message;
 }
 
-describe("private side calls through Sprilicred", () => {
+describe("private side calls through SpriliCred", () => {
 	for (const [family, api, role, reply] of [
 		["anthropic", "anthropic-messages", "skill", anthropicReply],
 		["openai", "openai-responses", "commit", responsesReply],
@@ -190,8 +190,8 @@ describe("private side calls through Sprilicred", () => {
 					expect(JSON.parse(userId).session_id).toBe(session);
 				}
 			}
-			// The trigger names no other session, so Sprilicred cannot mark the chat private:
-			// the chat id travels only as the parent link, which Sprilicred never marks.
+			// The trigger names no other session, so SpriliCred cannot mark the chat private:
+			// the chat id travels only as the parent link, which SpriliCred never marks.
 			expect(trigger.raw).not.toContain(CHAT_ID);
 			expect(trigger.headers.get("x-omp-parent-session-id")).toBe(CHAT_ID);
 			for (const [name, value] of trigger.headers) {
@@ -206,11 +206,11 @@ describe("private side calls through Sprilicred", () => {
 		expect(await privateSideCall(model, options, "title")).toBe(options);
 	});
 
-	it("does not send the side call when a model, not Sprilicred, answers the trigger", async () => {
+	it("does not send the side call when a model, not SpriliCred, answers the trigger", async () => {
 		const model = gatewayModel("anthropic-messages", "sprilicred-anthropic");
 		const wire = gateway(() => anthropicReply("OK", 9));
 		await expect(sideCall(model, chatScopedOptions(wire.fetch), "label")).rejects.toThrow(
-			"Sprilicred did not confirm a private side session",
+			"SpriliCred did not confirm a private side session",
 		);
 		// The failed trigger is not re-sent at once, and nothing else is sent either.
 		await expect(sideCall(model, chatScopedOptions(wire.fetch), "label")).rejects.toThrow();

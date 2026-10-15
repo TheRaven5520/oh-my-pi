@@ -4,7 +4,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 
 /**
- * Contracts for Sprilicred private mode as omp reads it from a stored session:
+ * Contracts for SpriliCred private mode as omp reads it from a stored session:
  * a user message that is exactly `` `private` `` (harness text beside it set
  * aside) whose next reply is the gateway's own "OK" makes the chat private,
  * wherever in the file it sits; a sentence that mentions the word, or a model

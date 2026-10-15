@@ -5122,7 +5122,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					getToolContext: toolCall => toolContextStore.getContext(toolCall),
 					// The capture turn runs under its own provider session id; link
 					// every request to the primary conversation it learns from.
-					// Sprilicred keeps no chat or Activity row for it (privateSideCall).
+					// SpriliCred keeps no chat or Activity row for it (privateSideCall).
 					streamFn: wrapStreamFnPrivate(
 						wrapStreamFnWithSideAgentHeaders(primaryStreamFn, () => agent.sessionId, "capture"),
 						"capture",

@@ -1,5 +1,5 @@
 /**
- * Private chats (Sprilicred private mode).
+ * Private chats (SpriliCred private mode).
  *
  * A person makes a chat private by typing exactly `` `private` `` as a user
  * message; the gateway answers "OK" itself and stores nothing after it. The

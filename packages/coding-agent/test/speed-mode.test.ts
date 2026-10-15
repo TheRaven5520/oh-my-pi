@@ -76,7 +76,7 @@ describe("/fast and /ultrafast", () => {
 		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 	});
 
-	// /ultrafast on asks Sprilicred's catalog; never the network: by default it offers ultrafast.
+	// /ultrafast on asks SpriliCred's catalog; never the network: by default it offers ultrafast.
 	const realFetch = globalThis.fetch;
 	let catalog: unknown;
 	beforeEach(() => {
@@ -168,7 +168,7 @@ describe("/fast and /ultrafast", () => {
 		expect(current.serviceTierByFamily).toEqual({ openai: "priority" });
 	});
 
-	it("says ultrafast isn't enabled for someone Sprilicred's catalog doesn't offer it to, and changes nothing", async () => {
+	it("says ultrafast isn't enabled for someone SpriliCred's catalog doesn't offer it to, and changes nothing", async () => {
 		const current = createSession(openaiModel("sprilicred-openai"));
 		const asked: string[] = [];
 		catalog = { models: [{ slug: "gpt-6-astra", service_tiers: [{ id: "priority" }] }] };
@@ -206,7 +206,7 @@ describe("/fast and /ultrafast", () => {
 			if (event.type === "notice") notices.push(event.message);
 		});
 		const forwarded: SpeedOutcome = { requested: "ultrafast", forwarded: "ultrafast", reason: "forwarded" };
-		// Sprilicred refuses Ultrafast it can't run; every refused turn says why.
+		// SpriliCred refuses Ultrafast it can't run; every refused turn says why.
 		const refused: SpeedOutcome = { requested: "ultrafast", reason: "no_pro500_capacity", refused: true };
 		for (const message of [
 			turn(forwarded),
@@ -226,7 +226,7 @@ describe("/fast and /ultrafast", () => {
 		]);
 	});
 
-	it("shows the selected speed, then what Sprilicred served of it, resetting on a new mode", async () => {
+	it("shows the selected speed, then what SpriliCred served of it, resetting on a new mode", async () => {
 		const current = createSession(openaiModel("sprilicred-openai"));
 		const status = async (message?: AssistantMessage) => {
 			if (message) {
@@ -251,7 +251,7 @@ describe("/fast and /ultrafast", () => {
 			text: "Ultrafast",
 			level: "normal",
 		});
-		// Sprilicred's fallback: Ultrafast served at fast, then at standard.
+		// SpriliCred's fallback: Ultrafast served at fast, then at standard.
 		const slower = (forwarded: "fast" | "standard") =>
 			turn({ requested: "ultrafast", forwarded, reason: "no_pro500_capacity" });
 		expect(await status(slower("fast"))).toEqual({ text: "Ultrafast→Fast", level: "warning" });
@@ -270,7 +270,7 @@ describe("/fast and /ultrafast", () => {
 		expect(await status()).toEqual({ text: "Fast", level: "normal" });
 	});
 
-	it("shows only the selected speed for providers that aren't Sprilicred", async () => {
+	it("shows only the selected speed for providers that aren't SpriliCred", async () => {
 		const current = createSession(openaiModel("personal-openai"));
 		current.setFastMode(true);
 		const message = { ...turn({ requested: "fast", served: "standard" }), provider: "personal-openai" };
@@ -337,7 +337,7 @@ describe("speed outcome messages", () => {
 			"Fast mode unavailable while this account runs on paid credits; using standard.",
 		],
 		[
-			"GPT fast on paid credits from an older Sprilicred never says subscription account",
+			"GPT fast on paid credits from an older SpriliCred never says subscription account",
 			{ requested: "fast", forwarded: "standard", reason: "subscription_extra_usage" },
 			"stop",
 			"Fast mode unavailable while this account runs on paid credits; using standard.",

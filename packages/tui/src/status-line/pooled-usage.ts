@@ -4,10 +4,10 @@ import type { Model } from "@oh-my-pi/pi-catalog/types";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 
 /**
- * Pool headline over Sprilicred's pooled usage reports.
+ * Pool headline over SpriliCred's pooled usage reports.
  *
  * Each account's used share for a named window is averaged across the enabled
- * pool accounts reporting that window. This matches Sprilicred's Overview pool
+ * pool accounts reporting that window. This matches SpriliCred's Overview pool
  * gauges; Fable is the provider's exact `7d:fable` window, not a synthetic
  * tighter-of-two bucket. OpenAI's pooled weekly headline is computed by
  * `computeProviderWindowStats`, shared with `omp usage --json`.
@@ -25,7 +25,7 @@ export interface PooledProviderUsage {
 	weekly?: PooledUsageWindow;
 	/** Anthropic only: the provider's pooled `7d:fable` average. */
 	fableWeekly?: PooledUsageWindow;
-	/** OpenAI only: Sprilicred's pooled Ultrafast rows (`scope.tier` "ultrafast", Pro 500 accounts). */
+	/** OpenAI only: SpriliCred's pooled Ultrafast rows (`scope.tier` "ultrafast", Pro 500 accounts). */
 	ultrafastWeekly?: PooledUsageWindow;
 }
 
@@ -34,14 +34,14 @@ export type PooledUsageSummary = ReadonlyMap<string, PooledProviderUsage>;
 
 type PooledWindowId = "5h" | "7d" | "7d:fable";
 
-/** Window labels and ids emitted by Sprilicred/upstream providers. */
+/** Window labels and ids emitted by SpriliCred/upstream providers. */
 const POOLED_WINDOW_IDS: Readonly<Record<string, PooledWindowId>> = {
 	"5h": "5h",
 	"7d": "7d",
 	"7d:fable": "7d:fable",
 };
 
-/** A usage report Sprilicred produced for one of its pooled accounts. */
+/** A usage report SpriliCred produced for one of its pooled accounts. */
 export function isPooledUsageReport(report: unknown): report is UsageReport {
 	if (!report || typeof report !== "object" || !("metadata" in report)) return false;
 	if (
@@ -73,7 +73,7 @@ export function pooledUsageProvider(
 	)
 		return undefined;
 	const provider = model.providerType ?? model.provider;
-	// Sprilicred's generic /v1 route has also served GLM and DeepSeek. Its
+	// SpriliCred's generic /v1 route has also served GLM and DeepSeek. Its
 	// credential alias alone cannot establish a model's subscription pool.
 	if (provider === "sprilicred-openai" && model.identity?.class !== "openai") return undefined;
 	if (provider === "sprilicred-anthropic" && model.identity?.class !== "anthropic") return undefined;
@@ -295,7 +295,7 @@ export function summarizePooledUsage(reports: unknown): PooledUsageSummary | nul
 		if (stat.durationMs !== undefined) return Math.abs(stat.durationMs - 7 * 86_400_000) <= 60_000;
 		return stat.window.toLowerCase() === "weekly" || stat.window === "7d";
 	});
-	// Sprilicred reports what each Pro 500 account has left for Ultrafast as
+	// SpriliCred reports what each Pro 500 account has left for Ultrafast as
 	// its own meter; averaged over those accounts, like Claude's 7d:fable.
 	const ultrafast = computeProviderWindowStats(codexReports)
 		.filter(stat => stat.meter === "ultrafast" && stat.accounts > 0)

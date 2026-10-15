@@ -156,7 +156,7 @@ async function applySpeedCommand(
 		else session.setFastMode(false);
 		return `${name} disabled.`;
 	}
-	// Sprilicred refuses Ultrafast to someone it is off for; say so now.
+	// SpriliCred refuses Ultrafast to someone it is off for; say so now.
 	if (ultrafast && session.isUltrafastAvailable() && (await session.isUltrafastPermitted()) === false) {
 		return `${ultrafastRefusalText("not_permitted")} Nothing changed.`;
 	}
@@ -600,7 +600,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "ultrafast",
 		icon: "fast",
-		description: "Toggle the ultrafast tier (Sprilicred OpenAI, OpenAI API, or Codex models that offer it)",
+		description: "Toggle the ultrafast tier (SpriliCred OpenAI, OpenAI API, or Codex models that offer it)",
 		acpDescription: "Toggle ultrafast mode",
 		acpInputHint: "[on|off|toggle|status]",
 		subcommands: [

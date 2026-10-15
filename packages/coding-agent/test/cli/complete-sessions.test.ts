@@ -10,7 +10,7 @@ import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
 
 /**
  * `omp __complete sessions` prints each cwd session's id and title or first
- * message. A model can run it through bash, so a private chat (Sprilicred
+ * message. A model can run it through bash, so a private chat (SpriliCred
  * private mode) is never printed; other sessions still are.
  */
 

@@ -599,8 +599,8 @@ export interface EphemeralTurnOptions {
 	dedupeReply?: boolean;
 	/**
 	 * Background side turns nobody asked for (the idle recap): on a `sprilicred-*` model, run on this
-	 * process's private side session for the role, so Sprilicred keeps no chat or Activity row for it
-	 * (`privateSideCall`). Throws, sending nothing, if Sprilicred does not confirm the session private.
+	 * process's private side session for the role, so SpriliCred keeps no chat or Activity row for it
+	 * (`privateSideCall`). Throws, sending nothing, if SpriliCred does not confirm the session private.
 	 */
 	privateRole?: PrivateSideRole;
 	/** UTF-8 byte cap of the deduped reply (default 4 KiB); `Infinity` keeps a long answer whole. */

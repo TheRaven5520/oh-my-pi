@@ -297,7 +297,7 @@ describe("AgentSession retry fallback", () => {
 				streamFn: (model, context, options) => {
 					requested.push(`${model.provider}/${model.id}`);
 					mock.push(requested.length <= failures
-						? { throw: "429 Sprilicred busy: upstream capacity is briefly saturated; retry-after-ms=1000" }
+						? { throw: "429 SpriliCred busy: upstream capacity is briefly saturated; retry-after-ms=1000" }
 						: { content: ["recovered"] });
 					return mock.stream(model, context, options);
 				},
@@ -3556,7 +3556,7 @@ describe("AgentSession retry fallback", () => {
 			return requestedModels;
 		};
 
-		// Sprilicred's pooled accounts are all resting: a usage limit, so the reserve serves.
+		// SpriliCred's pooled accounts are all resting: a usage limit, so the reserve serves.
 		const poolExhausted = new AIError.ProviderHttpError(
 			"429 No Anthropic account can serve claude-sonnet-4-5: 3 of 3 resting after provider errors",
 			429,

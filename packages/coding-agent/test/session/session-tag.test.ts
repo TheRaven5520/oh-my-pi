@@ -8,7 +8,7 @@ import {
 
 describe("normalizeSessionTag", () => {
 	it("upper-cases one- and two-word tags and rejects anything longer", () => {
-		expect(normalizeSessionTag("Sprilicred")).toBe("SPRILICRED");
+		expect(normalizeSessionTag("SpriliCred")).toBe("SPRILICRED");
 		expect(normalizeSessionTag(" pi05  evals. ")).toBe("PI05 EVALS");
 		expect(normalizeSessionTag("SAM2.1 BENCHMARK")).toBe("SAM2.1 BENCHMARK");
 		expect(normalizeSessionTag("Fix the statusline colors")).toBeNull();
