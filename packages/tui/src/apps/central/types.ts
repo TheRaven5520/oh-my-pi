@@ -1,5 +1,6 @@
 import type { ExtensionAskDialogQuestion, ExtensionAskDialogResult } from "../../overlays/ask-dialog";
 import type { CollabUiSelectItem } from "@oh-my-pi/pi-wire";
+import type { TranscriptEntryLike } from "../../chat/transcript-entry";
 
 /** Full question data, independent of which terminal displays the answer form. */
 export type CentralRequestDraft =
@@ -29,6 +30,7 @@ export interface CentralChat {
 	busy: boolean;
 	source?: string;
 	location?: { socket: string; pane: string };
+	transcriptRevision?: string;
 	requests: CentralRequest[];
 }
 
@@ -39,6 +41,7 @@ export interface CentralSnapshot {
 
 export interface CentralTuiHost {
 	refresh(): Promise<CentralSnapshot>;
+	transcript(chatId: string): Promise<TranscriptEntryLike[]>;
 	answer(chatId: string, requestId: string, answer: CentralAnswer): Promise<void>;
 	open(chatId: string): Promise<void>;
 }

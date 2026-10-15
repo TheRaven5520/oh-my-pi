@@ -4,6 +4,8 @@ import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire
 import type { CollabHost } from "../../collab/host";
 import type { CentralAnswer, CentralRequestDraft } from "@oh-my-pi/pi-tui/apps/central/types";
 import { type CentralHost, startCentralHost } from "../../central/bridge";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { formatKeyHint, formatKeyHints, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type {
 	CompactOptions,
@@ -45,6 +47,62 @@ import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 
 const MAX_WIDGET_LINES = 10;
+const CENTRAL_TRANSCRIPT_LIMIT = 600;
+const CENTRAL_TRANSCRIPT_BYTES = 512 * 1024;
+const CENTRAL_BLOCK_TEXT_LIMIT = 12_000;
+
+function centralTranscriptMessage(message: AgentMessage): AgentMessage {
+	const value = structuredClone(message) as unknown as Record<string, unknown>;
+	for (const key of [
+		"providerPayload",
+		"thinkingSignature",
+		"api",
+		"provider",
+		"model",
+		"usage",
+		"responseId",
+		"details",
+	])
+		delete value[key];
+	if (typeof value.content === "string") value.content = value.content.slice(0, CENTRAL_BLOCK_TEXT_LIMIT);
+	else if (Array.isArray(value.content)) {
+		value.content = value.content.map(block => {
+			if (!block || typeof block !== "object") return { type: "text", text: "[unavailable content]" };
+			const item = { ...(block as Record<string, unknown>) };
+			if (item.type === "image") return { type: "text", text: "[image attachment]" };
+			if (typeof item.text === "string") item.text = item.text.slice(0, CENTRAL_BLOCK_TEXT_LIMIT);
+			if (
+				item.type === "toolCall" &&
+				item.arguments !== undefined &&
+				JSON.stringify(item.arguments).length > CENTRAL_BLOCK_TEXT_LIMIT
+			)
+				item.arguments = { truncated: true };
+			return item;
+		});
+	}
+	return value as unknown as AgentMessage;
+}
+
+function centralTranscript(messages: readonly AgentMessage[]): TranscriptEntryLike[] {
+	const start = Math.max(0, messages.length - CENTRAL_TRANSCRIPT_LIMIT);
+	const entries: TranscriptEntryLike[] = [];
+	let bytes = 2;
+	for (let index = messages.length - 1; index >= start; index--) {
+		const message = messages[index]!;
+		const entry: TranscriptEntryLike = {
+			type: "message",
+			id: `central-${index}`,
+			parentId: null,
+			timestamp: new Date((message as AgentMessage & { timestamp?: number }).timestamp ?? Date.now()).toISOString(),
+			message: centralTranscriptMessage(message),
+		};
+		const entryBytes = Buffer.byteLength(JSON.stringify(entry));
+		if (entries.length > 0 && bytes + entryBytes > CENTRAL_TRANSCRIPT_BYTES) break;
+		entries.unshift(entry);
+		bytes += entryBytes;
+	}
+	return entries;
+}
 
 /**
  * Footer hint for a guest-rendered ask selector. The guest's selector handles
@@ -150,8 +208,10 @@ export class ExtensionUiController {
 							this.ctx.session.isStreaming ||
 							this.ctx.session.isCompacting ||
 							this.ctx.session.hasPostPromptWork,
+						transcriptRevision: `${this.ctx.session.messages.length}:${String((this.ctx.session.messages.at(-1) as AgentMessage & { timestamp?: number })?.timestamp ?? "")}`,
 					}),
 					{
+						getTranscript: () => centralTranscript(this.ctx.session.messages),
 						onClosed: () => {
 							if (this.#centralHost === host) this.#centralHost = undefined;
 						},

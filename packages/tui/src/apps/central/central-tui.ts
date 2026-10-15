@@ -1,4 +1,4 @@
-import { matchesAppInterrupt, matchesSelectCancel } from "../../keybinding-matchers";
+import { TUI, type Component } from "../../tui";
 import { ScrollView } from "../../components/scroll-view";
 import { matchesKey } from "../../keys";
 import { AskDialogComponent, type AskDialogPrompt } from "../../overlays/ask-dialog";
@@ -6,10 +6,11 @@ import { sanitizeDisplayLine, sanitizeDisplayText } from "../../overlays/extensi
 import { HookEditorComponent } from "../../overlays/hook-editor";
 import { HookSelectorComponent } from "../../overlays/hook-selector";
 import { wrapTextWithAnsi } from "../../render/render-utils";
+import { ChatTranscriptBuilder } from "../../chat/chat-transcript-builder";
+import { routeSgrMouseInput } from "../../mouse";
 import { ProcessTerminal } from "../../terminal";
 import { theme } from "../../theme/theme";
-import { type Component, TUI } from "../../tui";
-import { truncateToWidth } from "../../utils";
+import { truncateToWidth, visibleWidth } from "../../utils";
 import { CentralQueue, type CentralQueueEntry } from "./queue";
 import type { CentralAnswer, CentralSnapshot, CentralTuiHost } from "./types";
 
@@ -25,7 +26,7 @@ interface CentralForm {
 }
 
 /** One quiet inbox; all answer state stays attached to its original request. */
-class CentralComponent implements Component {
+export class CentralComponent implements Component {
 	readonly #queue = new CentralQueue<CentralForm>();
 	readonly #emptyView = new ScrollView([], { height: 1 });
 	readonly #finished = Promise.withResolvers<void>();
@@ -38,6 +39,14 @@ class CentralComponent implements Component {
 	#retired: CentralQueueEntry<CentralForm> | undefined;
 	#showRetired = false;
 	focused = false;
+	#selectedChatId: string | undefined;
+	#transcriptChatId: string | undefined;
+	#transcriptRevision: string | undefined;
+	#transcriptBuilder: ChatTranscriptBuilder | undefined;
+	#transcriptLoading = false;
+	#focus: "roster" | "main" = "main";
+	#questionTop = 0;
+	#transcriptView = new ScrollView([], { height: 1, followTail: true, scrollbar: "auto" });
 
 	constructor(
 		readonly ui: TUI,
@@ -61,6 +70,16 @@ class CentralComponent implements Component {
 					this.#showRetired = false;
 				} else if (entry.draft) this.#disposeForm(entry.draft);
 			}
+			const selected =
+				this.#snapshot.chats.find(chat => chat.id === this.#selectedChatId) ??
+				this.#snapshot.chats.find(chat => chat.id === this.#queue.current?.chat.id) ??
+				this.#snapshot.chats[0];
+			this.#selectedChatId = selected?.id;
+			if (
+				selected &&
+				(selected.id !== this.#transcriptChatId || selected.transcriptRevision !== this.#transcriptRevision)
+			)
+				void this.#loadTranscript(selected.id, selected.cwd, selected.transcriptRevision);
 		} catch (error) {
 			if (this.#stopped) return;
 			this.#snapshot = {
@@ -74,6 +93,33 @@ class CentralComponent implements Component {
 				// Schedule after completion: slow sources never overlap another poll.
 				this.#timer = setTimeout(() => void this.#refresh(), 1000);
 			}
+		}
+	}
+
+	async #loadTranscript(chatId: string, cwd: string, revision?: string): Promise<void> {
+		if (this.#transcriptLoading) return;
+		const switchingChat = chatId !== this.#transcriptChatId;
+		if (switchingChat) {
+			this.#transcriptView.setFollowTail(true);
+			this.#transcriptView.scrollToBottom();
+		}
+		this.#transcriptLoading = true;
+		try {
+			const entries = await this.host.transcript(chatId);
+			if (this.#stopped || this.#selectedChatId !== chatId) return;
+			const builder = new ChatTranscriptBuilder({ ui: this.ui, cwd, requestRender: () => this.ui.requestRender() });
+			builder.rebuild(entries);
+			this.#transcriptBuilder?.dispose();
+			this.#transcriptBuilder = builder;
+			this.#transcriptChatId = chatId;
+			this.#transcriptRevision = revision;
+		} catch {
+			this.#transcriptBuilder = undefined;
+			this.#transcriptChatId = chatId;
+			this.#transcriptRevision = revision;
+		} finally {
+			this.#transcriptLoading = false;
+			if (!this.#stopped) this.ui.requestRender();
 		}
 	}
 
@@ -190,55 +236,77 @@ class CentralComponent implements Component {
 		}
 	}
 
+	#selectAdjacent(direction: -1 | 1): void {
+		const chats = this.#snapshot.chats;
+		if (chats.length === 0) return;
+		const current = Math.max(
+			0,
+			chats.findIndex(chat => chat.id === this.#selectedChatId),
+		);
+		const next = chats[(current + direction + chats.length) % chats.length]!;
+		this.#selectedChatId = next.id;
+		void this.#loadTranscript(next.id, next.cwd, next.transcriptRevision);
+		this.ui.requestRender();
+	}
+
 	handleInput(data: string): void {
-		// Must precede the nested editor: Ctrl+C there means cancel/clear, not quit.
+		if (
+			data.startsWith("\x1b[<") &&
+			routeSgrMouseInput(data, event => {
+				if (event.wheel !== null) {
+					const entry = this.#showRetired ? this.#retired : this.#queue.current;
+					const form = entry ? this.#form(entry) : undefined;
+					const view = form && event.row >= this.#questionTop ? form.view : this.#transcriptView;
+					view.setFollowTail(false);
+					view.scroll(event.wheel * 3);
+					view.setFollowTail(view.getScrollOffset() >= view.getMaxScrollOffset());
+					this.ui.requestRender();
+				}
+				return true;
+			})
+		)
+			return;
 		if (matchesKey(data, "ctrl+c")) {
 			this.#finished.resolve();
 			return;
 		}
-		if (matchesKey(data, "f8") && this.#retired) {
-			this.#showRetired = !this.#showRetired;
+		if (matchesKey(data, "tab")) {
+			this.#focus = this.#focus === "main" ? "roster" : "main";
 			this.ui.requestRender();
 			return;
 		}
-		const entry = this.#showRetired ? this.#retired : this.#queue.current;
-		if (matchesKey(data, "f7") && entry) {
+		if (this.#focus === "roster" && (matchesKey(data, "up") || matchesKey(data, "down"))) {
+			this.#selectAdjacent(matchesKey(data, "up") ? -1 : 1);
+			return;
+		}
+		const entry = this.#queue.current;
+		const form = entry ? this.#form(entry) : undefined;
+		if (matchesKey(data, "ctrl+o") && entry) {
 			void this.#open(entry);
 			return;
 		}
-		const form = entry ? this.#form(entry) : undefined;
-		if (matchesKey(data, "f4") && form) {
-			form.details = !form.details;
-			form.view.setScrollOffset(0);
-		} else if (
-			matchesKey(data, "f6") ||
-			(!form?.prompt &&
-				(matchesKey(data, "escape") ||
-					(entry?.request.kind === "editor" ? matchesAppInterrupt(data) : matchesSelectCancel(data))))
-		) {
-			if (!form?.sending) {
-				if (!this.#showRetired) this.#queue.skip();
-				this.#showRetired = false;
-				this.#openError = undefined;
-			}
-		} else if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
-			const view = form?.view ?? this.#emptyView;
-			if (
-				form &&
-				!form.details &&
-				!this.#showRetired &&
-				!form.sending &&
-				form.answer === undefined &&
-				view.getMaxScrollOffset() === 0
-			) {
-				(form.prompt?.component ?? form.component).handleInput?.(data);
-			} else view.scroll((matchesKey(data, "pageUp") ? -1 : 1) * Math.max(1, this.ui.terminal.rows - 6));
-		} else if (form && !form.details && !this.#showRetired && !form.sending) {
+		const transcriptScrollKey =
+			(!form &&
+				(matchesKey(data, "up") ||
+					matchesKey(data, "down") ||
+					matchesKey(data, "home") ||
+					matchesKey(data, "end"))) ||
+			matchesKey(data, "shift+up") ||
+			matchesKey(data, "shift+down");
+		if (transcriptScrollKey) {
+			const view = this.#transcriptView;
+			if (matchesKey(data, "home")) view.scrollToTop();
+			else if (matchesKey(data, "end")) view.scrollToBottom();
+			else view.handleScrollKey(data);
+			view.setFollowTail(view.getScrollOffset() >= view.getMaxScrollOffset());
+		} else if (!form?.prompt && matchesKey(data, "escape")) {
+			if (!form?.sending) this.#queue.skip();
+		} else if (form && !form.sending) {
 			if (form.answer !== undefined) {
-				if (matchesKey(data, "enter") && entry) void this.#send(entry);
+				if (matchesKey(data, "enter")) void this.#send(entry!);
 			} else {
 				form.touched = true;
-				(form.prompt?.component ?? form.component).handleInput?.(data);
+				form.component.handleInput?.(data);
 			}
 		}
 		this.ui.requestRender();
@@ -246,19 +314,24 @@ class CentralComponent implements Component {
 
 	render(width: number): readonly string[] {
 		const height = Math.max(1, this.ui.terminal.rows);
+		const sidebarWidth = width >= 80 ? Math.min(32, Math.max(26, Math.floor(width * 0.28))) : 0;
+		const mainWidth = Math.max(1, width - (sidebarWidth > 0 ? sidebarWidth + 3 : 0));
 		const entry = this.#showRetired ? this.#retired : this.#queue.current;
 		const form = entry ? this.#form(entry) : undefined;
-		const heading = `OMP Central${this.#queue.chatCount ? `  ·  ${this.#queue.chatCount} waiting` : ""}`;
-		const identity = entry
-			? `${sanitizeDisplayLine(entry.chat.name) || "Untitled chat"}  ·  ${sanitizeDisplayLine(entry.chat.source ?? "local")}`
+		const busyCount = this.#snapshot.chats.filter(chat => chat.busy).length;
+		const heading = `OMP Central  ·  ${this.#snapshot.chats.length} active  ·  ${this.#queue.chatCount} waiting  ·  ${busyCount} busy`;
+		const selectedChat = this.#snapshot.chats.find(chat => chat.id === this.#selectedChatId);
+		const identity = selectedChat
+			? `${sanitizeDisplayLine(selectedChat.name) || "Untitled chat"}  ·  ${sanitizeDisplayLine(selectedChat.source ?? "local")}  ·  ${sanitizeDisplayLine(selectedChat.cwd)}`
 			: `${this.#snapshot.chats.length} active chats`;
 		const body: string[] = [];
 		for (const error of this.#snapshot.errors) {
-			body.push(...wrapTextWithAnsi(theme.fg("error", sanitizeDisplayText(error)), Math.max(1, width - 1)));
+			body.push(...wrapTextWithAnsi(theme.fg("error", sanitizeDisplayText(error)), Math.max(1, mainWidth - 2)));
 		}
-		if (this.#openError) body.push(...wrapTextWithAnsi(theme.fg("error", this.#openError), Math.max(1, width - 1)));
+		if (this.#openError)
+			body.push(...wrapTextWithAnsi(theme.fg("error", this.#openError), Math.max(1, mainWidth - 2)));
 		if (form) {
-			if (form.error) body.push(...wrapTextWithAnsi(theme.fg("error", form.error), Math.max(1, width - 1)));
+			if (form.error) body.push(...wrapTextWithAnsi(theme.fg("error", form.error), Math.max(1, mainWidth - 2)));
 			if (form.sending) body.push(theme.fg("muted", "Sending answer…"));
 			if (form.details && entry) {
 				const request = entry.request;
@@ -284,7 +357,7 @@ class CentralComponent implements Component {
 									),
 								].join("\n\n")
 							: request.title;
-				body.push(...wrapTextWithAnsi(sanitizeDisplayText(text), Math.max(1, width - 1)));
+				body.push(...wrapTextWithAnsi(sanitizeDisplayText(text), Math.max(1, mainWidth - 2)));
 			} else if (form.answer !== undefined) {
 				const text =
 					typeof form.answer === "string"
@@ -303,11 +376,11 @@ class CentralComponent implements Component {
 											.join("\n"),
 									)
 									.join("\n\n");
-				body.push(...wrapTextWithAnsi(sanitizeDisplayText(text), Math.max(1, width - 1)));
+				body.push(...wrapTextWithAnsi(sanitizeDisplayText(text), Math.max(1, mainWidth - 2)));
 			} else {
 				const component = form.prompt?.component ?? form.component;
 				if ("focused" in component) component.focused = this.focused && !this.#showRetired && !form.sending;
-				body.push(...component.render(Math.max(1, width - 1)));
+				body.push(...component.render(Math.max(1, mainWidth - 2)));
 			}
 		} else {
 			body.push(
@@ -321,21 +394,47 @@ class CentralComponent implements Component {
 				),
 			);
 		}
+		const questionBody = body;
+		const transcriptRows = this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? [];
+		const footerRows = 3;
+		const questionHeight = Math.min(questionBody.length + 1, Math.max(0, height - footerRows - 3));
+		const transcriptHeight = Math.max(0, height - footerRows - questionHeight - 3);
+		this.#questionTop = 2 + transcriptHeight + (questionBody.length > 0 ? 1 : 0);
+		this.#transcriptView.setHeight(transcriptHeight);
+		this.#transcriptView.setLines(transcriptRows);
 		const view = form?.view ?? this.#emptyView;
-		view.setHeight(Math.max(0, height - 4));
-		view.setLines(body);
+		view.setHeight(questionHeight);
+		view.setLines(questionBody);
 		const notice = this.#showRetired
-			? "Unsent draft · question ended in original chat · F8 returns"
+			? "Unsent draft · question ended in original chat"
 			: this.#retired
-				? "Question ended elsewhere; draft not sent · F8 view draft"
+				? "Question ended elsewhere; draft not sent"
 				: "";
-		return [
-			truncateToWidth(theme.fg("muted", heading), width),
-			truncateToWidth(identity, width),
-			...view.render(width),
-			truncateToWidth(theme.fg("muted", notice), width),
-			truncateToWidth(theme.fg("dim", "F6 Skip · F7 Open · F4 Question · PgUp/PgDn scroll · Ctrl+C close"), width),
+		const main = [
+			truncateToWidth(theme.fg("muted", heading), mainWidth),
+			truncateToWidth(identity, mainWidth),
+			...this.#transcriptView.render(mainWidth),
+			...(questionBody.length > 0 ? [truncateToWidth(theme.fg("dim", "── current question ──"), mainWidth)] : []),
+			...view.render(mainWidth),
+			truncateToWidth(theme.fg("muted", notice), mainWidth),
+			truncateToWidth(
+				theme.fg("dim", "Tab chats · ↑/↓ select or scroll · wheel scroll · Ctrl+O open · Ctrl+C close"),
+				mainWidth,
+			),
 		].slice(0, height);
+		if (sidebarWidth === 0) return main;
+		const roster = [
+			theme.bold(theme.fg("accent", `CHATS · ${this.#snapshot.chats.length} active`)),
+			...this.#snapshot.chats.flatMap(chat => [
+				`${chat.id === this.#selectedChatId ? "❯" : " "} ${chat.busy ? "●" : "○"} ${sanitizeDisplayLine(chat.name) || "Untitled chat"}`,
+				`  ${chat.requests.length ? `${chat.requests.length} question${chat.requests.length === 1 ? "" : "s"} waiting` : "no question"}`,
+			]),
+		];
+		return Array.from({ length: height }, (_, index) => {
+			const left = main[index] ?? "";
+			const padded = left + " ".repeat(Math.max(0, mainWidth - visibleWidth(left)));
+			return `${padded} ${theme.fg("dim", "│")} ${truncateToWidth(roster[index] ?? "", sidebarWidth)}`;
+		});
 	}
 
 	invalidate(): void {
@@ -377,7 +476,6 @@ export async function runCentralTui(host: CentralTuiHost): Promise<void> {
 		maxHeight: "100%",
 		margin: 0,
 		fullscreen: true,
-		mouseTracking: false,
 	});
 	ui.setFocus(component);
 	try {

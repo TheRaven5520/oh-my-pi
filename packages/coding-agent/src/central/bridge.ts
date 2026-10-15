@@ -8,6 +8,7 @@ import type {
 	CentralRequest,
 	CentralRequestDraft,
 } from "@oh-my-pi/pi-tui/apps/central/types";
+import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { getBaseConfigRoot, isEnoent } from "@oh-my-pi/pi-utils";
 import { isCentralRequestDraft, parseCentralChat, validateCentralAnswer } from "./validation";
 
@@ -19,7 +20,7 @@ const ID_PATTERN = /^[a-f0-9-]{32,36}$/;
 const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
 
 type ChatState = Omit<CentralChat, "id" | "pid" | "requests" | "location" | "source">;
-type Options = { dir?: string; onClosed?: () => void };
+type Options = { dir?: string; onClosed?: () => void; getTranscript?: () => TranscriptEntryLike[] };
 
 export interface CentralHost {
 	readonly closed: boolean;
@@ -270,6 +271,13 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 					});
 					return;
 				}
+				if (request.op === "transcript") {
+					const transcript = options?.getTranscript?.() ?? [];
+					if (Buffer.byteLength(JSON.stringify(transcript)) > 512 * 1024)
+						return respond({ ok: false, error: "frame_too_large" });
+					respond({ ok: true, transcript });
+					return;
+				}
 				if (request.op !== "answer" || typeof request.requestId !== "string")
 					return respond({ ok: false, error: "request_rejected" });
 				const item = pending.get(request.requestId);
@@ -418,6 +426,16 @@ export async function listCentralChats(options?: Options): Promise<CentralChat[]
 	};
 	await Promise.all(Array.from({ length: Math.min(8, names.length) }, worker));
 	return chats.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+export async function getCentralChatTranscript(chatId: string, options?: Options): Promise<TranscriptEntryLike[]> {
+	const dir = path.resolve(options?.dir ?? path.join(getBaseConfigRoot(), "run", "central-hosts"));
+	await privateDirectory(dir);
+	const meta = await readMetadata(dir, chatId);
+	if (!meta) throw new IpcError("host_unavailable");
+	const response = await query(meta, { op: "transcript" });
+	if (!Array.isArray(response.transcript)) throw new IpcError("invalid_response");
+	return response.transcript as TranscriptEntryLike[];
 }
 
 export async function answerCentralQuestion(

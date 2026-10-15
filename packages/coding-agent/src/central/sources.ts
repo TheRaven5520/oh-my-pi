@@ -3,7 +3,8 @@ import { $ } from "bun";
 import { $which, isRecord } from "@oh-my-pi/pi-utils";
 import { ConcatSink } from "@oh-my-pi/pi-utils/stream";
 import type { CentralAnswer, CentralChat, CentralSnapshot, CentralTuiHost } from "@oh-my-pi/pi-tui/apps/central/types";
-import { answerCentralQuestion, listCentralChats, parseCentralChat } from "./bridge";
+import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import { answerCentralQuestion, getCentralChatTranscript, listCentralChats, parseCentralChat } from "./bridge";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const DEADLINE_MS = 15_000;
@@ -21,7 +22,10 @@ export async function* centralLines(stream: ReadableStream<Uint8Array>): AsyncGe
 	if (!buffer.isEmpty) throw new Error("Incomplete Central frame");
 }
 
-type BridgeRequest = { op: "list" } | { op: "answer"; chatId: string; requestId: string; answer: CentralAnswer };
+type BridgeRequest =
+	| { op: "list" }
+	| { op: "transcript"; chatId: string }
+	| { op: "answer"; chatId: string; requestId: string; answer: CentralAnswer };
 
 /** No network listener: SSH supplies authenticated stdin/stdout. */
 export async function serveCentralStdio(): Promise<void> {
@@ -33,6 +37,10 @@ export async function serveCentralStdio(): Promise<void> {
 			id = request.id;
 			if (request.op === "list") {
 				process.stdout.write(`${JSON.stringify({ id, chats: await listCentralChats() })}\n`);
+			} else if (request.op === "transcript" && typeof request.chatId === "string") {
+				process.stdout.write(
+					`${JSON.stringify({ id, transcript: await getCentralChatTranscript(request.chatId) })}\n`,
+				);
 			} else if (
 				request.op === "answer" &&
 				typeof request.chatId === "string" &&
@@ -203,6 +211,18 @@ export class CentralSources implements CentralTuiHost {
 			}
 		}
 		return { chats, errors };
+	}
+
+	async transcript(chatId: string) {
+		const route = this.#routes.get(chatId);
+		if (!route || !route.source.available || this.#closed)
+			throw new Error("Chat is disconnected; wait for it to reconnect");
+		if (route.source.remote) {
+			const reply = await route.source.remote.request({ op: "transcript", chatId: route.local.id });
+			if (!Array.isArray(reply.transcript)) throw new Error("Invalid Central transcript");
+			return reply.transcript as TranscriptEntryLike[];
+		}
+		return getCentralChatTranscript(route.local.id);
 	}
 
 	async answer(chatId: string, requestId: string, answer: CentralAnswer): Promise<void> {
