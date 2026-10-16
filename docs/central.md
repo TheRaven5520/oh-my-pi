@@ -8,9 +8,10 @@
 2. The current chat's structured question is shown with its real options, previews,
    multi-select state, custom-answer editor, and notes.
 3. Submit an answer to advance. `Esc` skips the visible chat to the back without
-   cancelling or answering it. `Ctrl+O` opens the original chat when it needs work
-   beyond the question. `Tab` switches between the chat roster and question;
-   arrow keys select chats, and the wheel scrolls the transcript or question.
+   cancelling or answering it. `Ctrl+O` opens the selected chat even when it has
+   no pending question. `Tab` / `Shift+Tab` cycle through all chats forward/backward
+   without moving or submitting drafts. Arrow keys operate the question or scroll
+   its transcript when no question is waiting; the wheel scrolls either pane.
    `Ctrl+C` closes Central only.
 4. If the original chat answers or withdraws a question, Central advances without
    sending the Central draft elsewhere. An unsent draft is retained for viewing.
@@ -25,6 +26,13 @@ interactive OMP process publishes a short-lived owner-only local socket with the
 structured question payload. Answers are authenticated, validated against the
 pending question, and removed when either side answers. Continued questions stay
 pending while the agent works.
+
+`Ctrl+O` can focus an existing local chat only when it shares Central's tmux
+server and exactly one non-control tmux client is displaying Central's pane.
+It targets that client explicitly rather than choosing another attached client.
+If the caller is ambiguous or detached, or the chat belongs to a different tmux
+server, an SSH source, or a direct terminal, Central gives manual-open guidance;
+it does not open a duplicate chat or create a new terminal.
 
 ## Other hosts
 

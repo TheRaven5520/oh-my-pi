@@ -197,12 +197,14 @@ export class CentralSources implements CentralTuiHost {
 		if (image) {
 			const loaded = await loadImageAttachmentInput({
 				image: { type: "image", data: image.data.toBase64(), mimeType: image.mimeType },
-				uri: "clipboard", label: "clipboard", autoResize: true,
+				uri: "clipboard",
+				label: "clipboard",
+				autoResize: true,
 			});
 			if (!loaded) throw new Error(`Unsupported clipboard image format: ${image.mimeType}`);
 			return { text: "", images: [{ type: "image", data: loaded.data, mimeType: loaded.mimeType }] };
 		}
-		const text = await readTextFromClipboard() ?? "";
+		const text = (await readTextFromClipboard()) ?? "";
 		const imagePaths = extractImagePastePathsFromText(text);
 		return imagePaths ? { text: "", images: await Promise.all(imagePaths.map(loadPath)) } : { text };
 	}
@@ -268,8 +270,7 @@ export class CentralSources implements CentralTuiHost {
 	async open(chatId: string): Promise<void> {
 		const route = this.#routes.get(chatId);
 		if (!route) throw new Error("Chat is no longer available");
-		if (!route.source.available || this.#closed)
-			throw new Error("Chat is disconnected; wait for it to reconnect");
+		if (!route.source.available || this.#closed) throw new Error("Chat is disconnected; wait for it to reconnect");
 		const location = route.local.location;
 		if (!location) throw new Error(`Open ${route.local.name} in its original terminal`);
 		if (route.source.remote)
@@ -277,9 +278,25 @@ export class CentralSources implements CentralTuiHost {
 		const ownSocket = /^(.*),\d+,\d+$/.exec(process.env.TMUX ?? "")?.[1];
 		if (ownSocket !== location.socket)
 			throw new Error(`Open ${route.local.name} in its original tmux server (${location.pane})`);
+		const ownPane = process.env.TMUX_PANE;
+		if (!ownPane || !/^%\d+$/.test(ownPane))
+			throw new Error("Cannot identify Central's tmux pane; open the chat in its original terminal");
 		const tmux = $which("tmux");
 		if (!tmux) throw new Error("tmux is not installed");
-		await $`${tmux} -S ${location.socket} switch-client -t ${location.pane}`.quiet();
+		// tmux's implicit client selection can choose another user's most-active
+		// client. Only switch an unambiguous terminal currently displaying Central.
+		const format = "#{client_name}\t#{pane_id}\t#{client_control_mode}";
+		const clients = await $`${tmux} -S ${location.socket} list-clients -F ${format}`.quiet().text();
+		const callers = clients
+			.trim()
+			.split("\n")
+			.map(line => line.split("\t"))
+			.filter(([name, pane, control]) => name && pane === ownPane && control === "0");
+		if (callers.length !== 1)
+			throw new Error(
+				"Cannot identify a unique tmux client displaying Central; open the chat in its original terminal",
+			);
+		await $`${tmux} -S ${location.socket} switch-client -c ${callers[0][0]} -t ${location.pane}`.quiet();
 	}
 
 	close(): void {

@@ -289,8 +289,8 @@ export class ChatTranscriptBuilder {
 	}
 
 	#appendChatMessage(message: AgentMessage): void {
-		// Older persisted assistant entries may predate the usage field. Replay
-		// must render them without mutating the session entry or writing a repair
+		// Older Central producers omitted assistant usage from their projections.
+		// Render those snapshots without mutating the entry or writing a repair
 		// back to the live session, otherwise Central can diverge from its source.
 		if (message.role === "assistant" && !message.usage) {
 			message = { ...message, usage: EMPTY_ASSISTANT_USAGE };

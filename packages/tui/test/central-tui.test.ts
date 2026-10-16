@@ -15,6 +15,88 @@ beforeAll(async () => {
 });
 
 describe("Central workspace scrolling", () => {
+	it("cycles chats in both directions without moving drafts and opens a chat without a question", async () => {
+		const terminal = new VirtualTerminal(110, 30);
+		const scheduler = new VirtualRenderScheduler();
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const host: CentralTuiHost = {
+			refresh: async () => ({
+				chats: ["a", "b", "c"].map(id => ({
+					id,
+					sessionId: id,
+					pid: 1,
+					name: `Chat ${id}`,
+					cwd: `/chat/${id}`,
+					busy: false,
+					requests:
+						id === "c" ? [] : [{ id: `q-${id}`, createdAt: 1, kind: "editor" as const, title: `Question ${id}` }],
+				})),
+				errors: [],
+			}),
+			transcript: async id => [
+				{
+					type: "message",
+					id,
+					parentId: null,
+					timestamp: new Date(1).toISOString(),
+					message: { role: "user", content: `Transcript ${id}`, timestamp: 1 },
+				},
+			],
+			answer,
+			open: async id => {
+				throw new Error(`Open target ${id} unavailable`);
+			},
+		};
+		const ui = new TUI(terminal, false, { renderScheduler: scheduler });
+		const component = new CentralComponent(ui, host);
+		const overlay = ui.showOverlay(component, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+		});
+		ui.setFocus(component);
+		const text = () =>
+			terminal
+				.getViewport()
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+		const input = async (data: string) => {
+			terminal.sendInput(data);
+			await scheduler.settle(terminal);
+		};
+		try {
+			void component.run();
+			ui.start();
+			await scheduler.settle(terminal);
+			await input("draft-a");
+			await input("\t");
+			expect(text()).toContain("Transcript b");
+			expect(text()).not.toContain("draft-a");
+			await input("draft-b");
+			await input("\t");
+			expect(text()).toContain("Transcript c");
+			await input("\x0f");
+			expect(text()).toContain("Open target c unavailable");
+			await input("\t");
+			expect(text()).toContain("Transcript a");
+			expect(text()).toContain("draft-a");
+			expect(text()).not.toContain("draft-b");
+			await input("\x1b[Z");
+			expect(text()).toContain("Transcript c");
+			await input("\x1b[Z");
+			expect(text()).toContain("Transcript b");
+			expect(text()).toContain("draft-b");
+			expect(answer).not.toHaveBeenCalled();
+			await input("\x11");
+			expect(answer.mock.calls).toEqual([["b", "q-b", "draft-b"]]);
+		} finally {
+			component.dispose();
+			overlay.hide();
+			ui.stop();
+		}
+	});
 	it("routes a normal wheel report into the selected chat transcript", async () => {
 		const terminal = new VirtualTerminal(100, 30);
 		const scheduler = new VirtualRenderScheduler();
@@ -129,8 +211,6 @@ describe("Central workspace scrolling", () => {
 			expect(afterQuestionWheel).toContain("Central message 40");
 			terminal.sendInput("\t");
 			await scheduler.settle(terminal);
-			terminal.sendInput("\x1b[B");
-			await scheduler.settle(terminal);
 			await Promise.resolve();
 			await scheduler.settle(terminal);
 			const switched = terminal
@@ -186,8 +266,6 @@ describe("Central workspace scrolling", () => {
 			ui.start();
 			await scheduler.settle(terminal);
 			terminal.sendInput("\t");
-			await scheduler.settle(terminal);
-			terminal.sendInput("\x1b[B");
 			await scheduler.settle(terminal);
 			expect(
 				terminal
@@ -254,8 +332,6 @@ describe("Central workspace scrolling", () => {
 			ui.start();
 			await scheduler.settle(terminal);
 			terminal.sendInput("\t");
-			await scheduler.settle(terminal);
-			terminal.sendInput("\x1b[B");
 			await scheduler.settle(terminal);
 			second.resolve(message("b-message", "Chat B transcript"));
 			await Promise.resolve();
@@ -486,7 +562,7 @@ describe("Central ask image prompts", () => {
 			await rig.input("\r");
 			await rig.input("\x1b[200~\x1b[201~");
 			await rig.input("\r");
-			await rig.input("\x1b[Z");
+			await rig.input("\x1b[D");
 			await rig.input("\r");
 			expect(rig.text()).toContain("[Image #1]");
 			await rig.input("\r");

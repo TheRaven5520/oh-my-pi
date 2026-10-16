@@ -55,7 +55,6 @@ export class CentralComponent implements Component {
 	#transcriptLoadingRevision: string | undefined;
 	#transcriptError: string | undefined;
 	#transcriptLoading = false;
-	#focus: "roster" | "main" = "main";
 	#questionTop = 0;
 	#transcriptView = new ScrollView([], { height: 1, followTail: true, scrollbar: "auto" });
 
@@ -318,12 +317,12 @@ export class CentralComponent implements Component {
 		}
 	}
 
-	async #open(entry: CentralQueueEntry<CentralForm>): Promise<void> {
+	async #open(chatId: string): Promise<void> {
 		if (this.#opening) return;
 		this.#opening = true;
 		this.#openError = undefined;
 		try {
-			await this.host.open(entry.chat.id);
+			await this.host.open(chatId);
 		} catch (error) {
 			this.#openError = `Cannot open original chat: ${sanitizeDisplayLine(String(error))}. Switch to its terminal manually.`;
 		} finally {
@@ -363,19 +362,14 @@ export class CentralComponent implements Component {
 			this.#finished.resolve();
 			return;
 		}
-		if (matchesKey(data, "tab")) {
-			this.#focus = this.#focus === "main" ? "roster" : "main";
-			this.ui.requestRender();
-			return;
-		}
-		if (this.#focus === "roster" && (matchesKey(data, "up") || matchesKey(data, "down"))) {
-			this.#selectAdjacent(matchesKey(data, "up") ? -1 : 1);
+		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
+			this.#selectAdjacent(matchesKey(data, "shift+tab") ? -1 : 1);
 			return;
 		}
 		const entry = this.#entryForSelectedChat();
 		const form = entry ? this.#form(entry) : undefined;
-		if (matchesKey(data, "ctrl+o") && entry) {
-			void this.#open(entry);
+		if (matchesKey(data, "ctrl+o") && this.#selectedChatId) {
+			void this.#open(this.#selectedChatId);
 			return;
 		}
 		const transcriptScrollKey =
@@ -571,10 +565,7 @@ export class CentralComponent implements Component {
 			...(questionBody.length > 0 ? [truncateToWidth(theme.fg("dim", "── current question ──"), mainWidth)] : []),
 			...view.render(mainWidth),
 			truncateToWidth(theme.fg("muted", notice), mainWidth),
-			truncateToWidth(
-				theme.fg("dim", "Tab chats · ↑/↓ select or scroll · wheel scroll · Ctrl+O open · Ctrl+C close"),
-				mainWidth,
-			),
+			truncateToWidth(theme.fg("dim", "Tab/Shift+Tab chats · ↑/↓ scroll · Ctrl+O open · Ctrl+C close"), mainWidth),
 		].slice(0, contentHeight);
 		const roster = this.#rosterLines(height, sidebarWidth);
 		if (sidebarWidth === 0) return [...this.#compactRoster(width), ...main].slice(0, height);

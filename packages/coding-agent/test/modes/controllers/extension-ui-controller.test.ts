@@ -1,6 +1,15 @@
 import { afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { type Component, Container, isFocusable, type OverlayOptions, setKeybindings } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
+import { ChatTranscriptBuilder } from "@oh-my-pi/pi-tui/chat/chat-transcript-builder";
+import {
+	chatTranscriptDisplayPreferences,
+	setChatTranscriptDisplayPreferences,
+} from "@oh-my-pi/pi-tui/chat/display-preferences";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import * as centralBridge from "../../../src/central/bridge";
 import type { ExtensionAskDialogQuestion, ExtensionUIContext } from "../../../src/extensibility/extensions";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
@@ -70,6 +79,7 @@ function makeHarness() {
 	const controller = new ExtensionUiController(ctx);
 
 	return {
+		ctx,
 		editor,
 		requestRender,
 		addAutocompleteProvider,
@@ -96,6 +106,117 @@ function makeHarness() {
 		},
 	};
 }
+
+describe("ExtensionUiController Central transcript", () => {
+	it("renders real usage from the bridge while stripping payloads without changing the source chat", async () => {
+		using temp = TempDir.createSync("omp-central-projection-");
+		const dir = temp.join("hosts");
+		const harness = makeHarness();
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "Central preserves this answer" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			usage: {
+				input: 123,
+				output: 37,
+				cacheRead: 211,
+				cacheWrite: 16,
+				totalTokens: 387,
+				cost: { input: 0.003, output: 0.007, cacheRead: 0.0003, cacheWrite: 0.002, total: 0.0123 },
+			},
+			stopReason: "stop",
+			timestamp: 2,
+		};
+		Object.assign(assistant, {
+			providerPayload: { private: "provider payload" },
+			thinkingSignature: "private signature",
+			responseId: "private response id",
+			details: { private: "tool details" },
+		});
+		const messages: AgentMessage[] = [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "Describe the attachment" },
+					{ type: "image", mimeType: "image/png", data: "aGVsbG8=" },
+				],
+				timestamp: 1,
+			},
+			assistant,
+		];
+		const original = structuredClone(messages);
+		delete harness.ctx.collabGuest;
+		Object.assign(harness.ctx.session, {
+			messages,
+			sessionManager: {
+				getSessionId: () => "projection-session",
+				getSessionName: () => "Projection chat",
+				getCwd: () => temp.path(),
+			},
+			isStreaming: false,
+			isCompacting: false,
+			hasPostPromptWork: false,
+			registerSessionChangeCallback: () => () => {},
+			addDisposer: vi.fn(),
+		});
+		harness.ctx.showWarning = vi.fn();
+		const startHost = centralBridge.startCentralHost;
+		let host: centralBridge.CentralHost | undefined;
+		// Redirect only the publication directory; use the real producer and IPC.
+		const startSpy = vi.spyOn(centralBridge, "startCentralHost").mockImplementation(async (getState, options) => {
+			host = await startHost(getState, { ...options, dir });
+			return host;
+		});
+		const builder = new ChatTranscriptBuilder({
+			ui: harness.ctx.ui,
+			cwd: temp.path(),
+			requestRender: harness.requestRender,
+		});
+		const showTokenUsage = chatTranscriptDisplayPreferences.showTokenUsage;
+		try {
+			setChatTranscriptDisplayPreferences({ showTokenUsage: true });
+			await harness.init();
+			const chats = await centralBridge.listCentralChats({ dir });
+			expect(chats).toHaveLength(1);
+			const entries = await centralBridge.getCentralChatTranscript(chats[0]!.id, { dir });
+			expect(entries).toHaveLength(2);
+			const entry = entries[1]!;
+			if (entry.type !== "message" || entry.message.role !== "assistant") {
+				throw new Error("Expected the projected assistant message");
+			}
+			const projected = entry.message;
+			expect(projected).toMatchObject({
+				api: assistant.api,
+				provider: assistant.provider,
+				model: assistant.model,
+				usage: assistant.usage,
+			});
+			for (const key of ["providerPayload", "thinkingSignature", "responseId", "details"]) {
+				expect(projected).not.toHaveProperty(key);
+			}
+			expect(JSON.stringify(entries)).not.toContain("aGVsbG8=");
+			builder.rebuild(entries);
+			const rendered = Bun.stripANSI(builder.container.render(120).join("\n"));
+			expect(rendered).toContain("Central preserves this answer");
+			expect(rendered).toContain("[image attachment]");
+			expect(rendered).toMatch(/\b139\b/); // input + cache writes, not zero-filled fallback usage
+			expect(rendered).toMatch(/\b37\b/);
+			expect(rendered).toMatch(/\b211\b/);
+			expect(messages).toEqual(original);
+			projected.usage.input = 999;
+			projected.usage.cost.total = 999;
+			expect(messages).toEqual(original);
+		} finally {
+			setChatTranscriptDisplayPreferences({ showTokenUsage });
+			builder.reset();
+			await host?.close();
+			harness.controller.disposeCentral();
+			startSpy.mockRestore();
+		}
+	});
+});
 
 describe("ExtensionUiController Ask dialog input", () => {
 	const questions: ExtensionAskDialogQuestion[] = [

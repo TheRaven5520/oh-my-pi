@@ -53,17 +53,7 @@ const CENTRAL_BLOCK_TEXT_LIMIT = 12_000;
 
 function centralTranscriptMessage(message: AgentMessage): AgentMessage {
 	const value = structuredClone(message) as unknown as Record<string, unknown>;
-	for (const key of [
-		"providerPayload",
-		"thinkingSignature",
-		"api",
-		"provider",
-		"model",
-		"usage",
-		"responseId",
-		"details",
-	])
-		delete value[key];
+	for (const key of ["providerPayload", "thinkingSignature", "responseId", "details"]) delete value[key];
 	if (typeof value.content === "string") value.content = value.content.slice(0, CENTRAL_BLOCK_TEXT_LIMIT);
 	else if (Array.isArray(value.content)) {
 		value.content = value.content.map(block => {

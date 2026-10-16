@@ -137,9 +137,10 @@ describe("native transcript", () => {
 		expect(h.errors).toEqual([]);
 	});
 
-	it("replays legacy assistant entries without usage and does not mutate the session message", async () => {
-		const legacy = assistant([{ type: "text", text: "Older transcript" }]);
-		delete (legacy as { usage?: unknown }).usage;
+	it("renders older Central snapshots without usage and leaves the original message unchanged", async () => {
+		const legacy = assistant([{ type: "text", text: "Older Central transcript" }]);
+		Reflect.deleteProperty(legacy, "usage");
+		const original = structuredClone(legacy);
 		const entry: TranscriptEntryLike = {
 			type: "message",
 			id: "legacy-assistant",
@@ -156,8 +157,10 @@ describe("native transcript", () => {
 			builder.append([entry]);
 			h.tui.addChild(builder.container);
 		});
+		expect(h.find(node => node.k === "md")?.p).toMatchObject({ text: "Older Central transcript" });
 		expect(h.errors).toEqual([]);
 		expect(legacy).not.toHaveProperty("usage");
+		expect(legacy).toEqual(original);
 	});
 
 	it("keeps a streaming write open until it settles, then folds it like a finished thought", () => {
