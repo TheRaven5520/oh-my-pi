@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Fixed compaction's last-resort largest-window candidate crossing onto providers no preferred model or role routes to; it previously sent the whole conversation to personal accounts or ambient-credential Bedrock on EC2 hosts when their catalog window was largest.
 
 - Added opt-in timed primary retries (`retry.fallbackAfterMs`), minimum fallback holds (`retry.fallbackMinHoldMs`), and compact-to-fit fallback recovery (`retry.compactForFallback`). Provider Retry-After remains authoritative, oversized fallback requests are never sent, and a usage-limited fallback is not retried on every subsequent turn while both routes are unavailable.
 - Ctrl+N reserves its place in the composer input stream: pending pastes finish before saving, and subsequent typing or Enter waits until the durable save completes.

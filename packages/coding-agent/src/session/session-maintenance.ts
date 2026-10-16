@@ -3348,12 +3348,14 @@ export class SessionMaintenance {
 	): Model[] {
 		const candidates: Model[] = [];
 		const seen = new Set<string>();
+		const routedProviders = new Set<string>();
 
 		const addCandidate = (model: Model | undefined): void => {
 			if (!model) return;
 			const key = `${model.provider}/${model.id}`;
 			if (seen.has(key)) return;
 			seen.add(key);
+			routedProviders.add(model.provider);
 			// `seen` still tracks rejected models so the largest-context fallback
 			// scan below doesn't reintroduce them; the filter just suppresses
 			// inclusion in this caller's candidate chain.
@@ -3371,7 +3373,14 @@ export class SessionMaintenance {
 			);
 		}
 
-		const sortedByContext = [...availableModels].sort((a, b) => (b.contextWindow ?? 0) - (a.contextWindow ?? 0));
+		// Last resort widens the window only within providers this chain already
+		// routes to (preferred model, its compaction target, role assignments).
+		// Scanning every available model would hand the whole conversation to an
+		// unconfigured provider — a personal account, or ambient-credential
+		// Bedrock on an EC2 host — whenever its catalog window is the largest.
+		const sortedByContext = availableModels
+			.filter(model => routedProviders.has(model.provider))
+			.sort((a, b) => (b.contextWindow ?? 0) - (a.contextWindow ?? 0));
 		for (const model of sortedByContext) {
 			if (!seen.has(`${model.provider}/${model.id}`)) {
 				addCandidate(model);
