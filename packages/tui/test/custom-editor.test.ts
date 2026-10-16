@@ -19,6 +19,7 @@ import {
 	extractImagePathFromText,
 	extractPastePathsFromText,
 } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { imageAttachmentSource, tagImageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { SPACE_HOLD_MECHANICAL_RUN, SPACE_HOLD_RELEASE_MS, SPACE_REPEAT_MAX_GAP_MS } from "@oh-my-pi/pi-tui/space-hold";
 import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 
@@ -116,6 +117,48 @@ describe("CustomEditor draft snapshots", () => {
 		expect(editor.pendingImages[0]?.data).toBe("aW1hZ2U=");
 		editor.insertTextAttachment("another paste");
 		expect(editor.pendingTexts[1]?.n).toBe(2);
+	});
+
+	it("preserves independent file and video sources through capture, JSON, and restore", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const payload: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
+		const fileImage = tagImageAttachmentSource(payload, "/tmp/original image.png", "image");
+		const videoPreview = tagImageAttachmentSource(payload, "/tmp/original video.mp4", "video");
+		const localImage = tagImageAttachmentSource(payload, "local://clipboard.png", "image");
+		const expectedSources = [
+			{ path: "/tmp/original image.png", kind: "image" },
+			undefined,
+			{ path: "/tmp/original video.mp4", kind: "video" },
+			{ path: "local://clipboard.png", kind: "image" },
+		];
+		editor.pendingImages = [fileImage, { ...payload }, videoPreview, localImage];
+		editor.pendingImageLinks = [
+			"file:///tmp/original%20image.png",
+			"file:///tmp/untagged.png",
+			"file:///tmp/contact-sheet.png",
+			"local://clipboard.png",
+		];
+		const snapshot = editor.captureDraftSnapshot();
+		const persisted: ComposerDraftSnapshot = JSON.parse(JSON.stringify(snapshot));
+		Object.assign(imageAttachmentSource(fileImage)!, { path: "/tmp/changed.png" });
+		Object.assign(imageAttachmentSource(videoPreview)!, { kind: "image" });
+		fileImage.data = "changed";
+
+		for (const draft of [snapshot, persisted]) {
+			editor.clearDraft();
+			editor.restoreDraftSnapshot(draft);
+			expect(editor.pendingImages.map(imageAttachmentSource)).toEqual(expectedSources);
+			expect(editor.pendingImages.map(image => image.data)).toEqual(Array(4).fill(payload.data));
+			expect(imageAttachmentSource(editor.pendingImages[0]!)).not.toBe(imageAttachmentSource(fileImage));
+			expect(imageAttachmentSource(editor.pendingImages[2]!)).not.toBe(imageAttachmentSource(videoPreview));
+			// File provenance belongs to the draft, not serialized model-bound image content.
+			expect(JSON.parse(JSON.stringify(editor.pendingImages))).toEqual(Array(4).fill(payload));
+			Object.assign(imageAttachmentSource(editor.pendingImages[0]!)!, { path: "/tmp/restored-mutation.png" });
+			editor.pendingImages[2]!.data = "mutated restored preview";
+			editor.restoreDraftSnapshot(draft);
+			expect(editor.pendingImages.map(imageAttachmentSource)).toEqual(expectedSources);
+			expect(editor.pendingImages[2]!.data).toBe(payload.data);
+		}
 	});
 
 	it("does not alias captured or restored draft state", () => {

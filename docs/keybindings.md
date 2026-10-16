@@ -63,6 +63,7 @@ In the main composer, `Ctrl+N` saves a nonempty draft to this session's FIFO bac
 Saved drafts retain text, cursor, attachments, and collapsed-paste expansions across `/refresh` and resume. The backlog belongs to its session, stays out of provider messages, and is distinct from queued follow-up messages. Focused subagents, overlays, and other input dialogs keep ownership of their input. Repeated presses while a save is pending are coalesced. If persistence fails, the draft is kept; a failed restore commit can leave both the restored editor and the original saved copy rather than risk losing either.
 
 Backlog snapshots preserve full pasted text and image bytes, including payloads larger than the transcript persistence limit.
+Image and video attachments also retain their backing-file source notices when a saved draft is restored.
 
 ## Recover a cleared prompt
 

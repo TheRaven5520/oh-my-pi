@@ -21,7 +21,7 @@ import type { DescribeContext, NativeNode, NativeUiEvent } from "../native/node"
 import type { ComposerFacts, ComposerFactsSource } from "../status-line/types";
 import { allowsModelMentions, allowsSkillTokens, SKILL_TOKEN_RE } from "./skill-tokens";
 import { expandModelMentionTags, MODEL_MENTION_RE, modelMentionToken } from "./model-mention-syntax";
-import { imageAttachmentSource } from "./image-source";
+import { type ImageAttachmentSource, imageAttachmentSource, tagImageAttachmentSource } from "./image-source";
 import { isVideoPath } from "./video";
 import {
 	attachmentSgr,
@@ -434,6 +434,8 @@ export interface TextAttachment {
 export interface ComposerDraftSnapshot extends EditorDraftSnapshot {
 	version: 1;
 	pendingImages: ImageContent[];
+	/** JSON-safe provenance aligned with pendingImages; absent in older version-1 snapshots. */
+	pendingImageSources?: (ImageAttachmentSource | null)[];
 	pendingImageLinks: (string | null)[];
 	imageLinks: (string | null)[] | null;
 	pendingTexts: TextAttachment[];
@@ -549,6 +551,10 @@ export class CustomEditor extends Editor {
 			...super.captureDraftSnapshot(),
 			version: 1,
 			pendingImages: structuredClone(this.pendingImages),
+			pendingImageSources: this.pendingImages.map(image => {
+				const source = imageAttachmentSource(image);
+				return source ? { ...source } : null;
+			}),
 			pendingImageLinks: this.pendingImageLinks.map(link => link ?? null),
 			imageLinks: this.imageLinks?.map(link => link ?? null) ?? null,
 			pendingTexts: this.pendingTexts.map(text => ({ ...text })),
@@ -559,7 +565,10 @@ export class CustomEditor extends Editor {
 	/** Restore host state before text notifications, without sharing mutable snapshot data. */
 	override restoreDraftSnapshot(snapshot: ComposerDraftSnapshot): void {
 		this.restoreHistoryState(() => {
-			this.pendingImages = structuredClone(snapshot.pendingImages);
+			this.pendingImages = structuredClone(snapshot.pendingImages).map((image, index) => {
+				const source = snapshot.pendingImageSources?.[index];
+				return source ? tagImageAttachmentSource(image, source.path, source.kind) : image;
+			});
 			this.pendingImageLinks = snapshot.pendingImageLinks.map(link => link ?? undefined);
 			this.imageLinks = snapshot.imageLinks?.map(link => link ?? undefined);
 			this.pendingTexts = snapshot.pendingTexts.map(text => ({ ...text }));

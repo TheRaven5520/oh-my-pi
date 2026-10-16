@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Draft snapshots retain file, video, and clipboard backing-path metadata across capture, JSON persistence, and restore.
 - Pin nonempty drafts at the bottom while browsing conversation history; typing or pasting into an empty, hidden composer reveals it without moving the message being read. Clearing the draft hides it again. Bounded semantic-row scrolling uses synchronized differential frames and preserves native selection with the matching Kitty/tmux companion.
 - While browsing, only the input widgets and status line remain docked; todo, agent and other turn HUDs scroll away instead of occupying the fixed bottom dock.
 - Wrap Kitty graphics for SSH sessions whose local tmux marker is stripped but `TERM=tmux-*` or `screen-*` remains, preventing APCs from being swallowed as pane-title input.
