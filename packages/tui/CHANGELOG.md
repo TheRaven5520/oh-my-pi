@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Tools without a bespoke renderer show their `input` argument in the compact activity header again, not a bare "running".
 
 ### Fixed
 - Tmux viewport ownership uses `@omp-natural-scroll-helper` when configured, retaining the legacy helper path as a fallback.

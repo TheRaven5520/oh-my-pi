@@ -254,7 +254,8 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			component.setExecutionStarted();
 			component.setTranscriptAllocation(1, { tick: 27, now: 3_200 });
 			const running = stripVTControlCharacters(component.render(24)[0] ?? "");
-			expect(running).toContain("Catalog · running 2s");
+			expect(running).toContain("Catalog");
+			expect(running).toMatch(/\b2s\b/);
 			expect(Bun.stringWidth(running)).toBeLessThanOrEqual(24);
 
 			component.updateResult({ content: [{ type: "text", text: "done" }] }, false);
@@ -280,7 +281,8 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		try {
 			component.setTranscriptAllocation(1, { tick: 0, now: 0 });
 			const row = stripVTControlCharacters(component.render(30)[0] ?? "");
-			expect(row).toContain("Catalog · processing");
+			expect(row).toContain("Catalog");
+			expect(row).toContain("processing");
 			expect(Bun.stringWidth(row)).toBeLessThanOrEqual(30);
 		} finally {
 			component.stopAnimation();

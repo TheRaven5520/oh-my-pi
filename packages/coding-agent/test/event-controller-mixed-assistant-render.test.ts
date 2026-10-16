@@ -140,7 +140,9 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		expect(rows).not.toContain(firstThought);
 		expect(rows).toContain(INTRO_MARKER);
 		expect(rows).toContain("seq 1 12");
-		const batch = chatContainer.peekFinalizedBatch(80, 3);
+		// The pending tool header is one row, so the intro, separator and header fill a 3-row
+		// viewport exactly; 2 rows keep the pressure that offers the retired prefix.
+		const batch = chatContainer.peekFinalizedBatch(80, 2);
 		expect(batch).toBeDefined();
 		expect(Bun.stripANSI(batch!.rows.join("\n"))).not.toContain(firstThought);
 		chatContainer.acknowledgeFinalizedBatch(batch!.id);

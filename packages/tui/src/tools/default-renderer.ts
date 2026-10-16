@@ -53,7 +53,7 @@ export function defaultToolActivityDetail(value: unknown): string | undefined {
 		}
 	}
 	if (operation || target) return [operation, target].filter(Boolean).join(" · ");
-	for (const key of ["title", INTENT_FIELD, "command"] as const) {
+	for (const key of ["title", INTENT_FIELD, "command", "input"] as const) {
 		const item = value[key];
 		if (typeof item === "string" && item.trim()) return item.split("\n", 1)[0];
 	}

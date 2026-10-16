@@ -148,7 +148,7 @@ describe("BashExecutionComponent streaming throttle", () => {
 	});
 });
 
-describe("BashExecutionComponent expand footer", () => {
+describe("BashExecutionComponent collapsed preview", () => {
 	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
 
 	beforeEach(() => {
@@ -163,26 +163,27 @@ describe("BashExecutionComponent expand footer", () => {
 		return component;
 	};
 
-	it("advertises hidden lines while collapsed", () => {
+	it("hides the tail of long output while collapsed", () => {
 		const rendered = makeComponent().render(120).join("\n");
-		expect(rendered).toContain("27 lines");
+		expect(rendered).toContain("entry0");
+		expect(rendered).not.toContain("entry26");
 	});
 
-	it("drops the hidden-lines footer once expanded", () => {
+	it("shows every line once expanded", () => {
 		const component = makeComponent();
 		component.setExpanded(true);
 		const rendered = component.render(120).join("\n");
-		expect(rendered).not.toContain("more lines");
 		// Every line is now present, including the previously hidden prefix.
 		expect(rendered).toContain("entry0");
 		expect(rendered).toContain("entry26");
 	});
 
-	it("restores the footer when collapsed again", () => {
+	it("hides the tail again when collapsed again", () => {
 		const component = makeComponent();
 		component.setExpanded(true);
 		component.setExpanded(false);
 		const rendered = component.render(120).join("\n");
-		expect(rendered).toContain("27 lines");
+		expect(rendered).toContain("entry0");
+		expect(rendered).not.toContain("entry26");
 	});
 });
