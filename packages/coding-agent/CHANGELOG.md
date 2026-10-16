@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `omp login sprilicred` parity now covers SpriliCred withholding DeepSeek V4.1 Flash (empty `/deepseek/v1/models` for a granted key): the DeepSeek provider and every saved DeepSeek reference are dropped, never moved to `sprilicred-openai`.
 - Fixed compaction's last-resort largest-window candidate crossing onto providers no preferred model or role routes to; it previously sent the whole conversation to personal accounts or ambient-credential Bedrock on EC2 hosts when their catalog window was largest.
 
 - Added opt-in timed primary retries (`retry.fallbackAfterMs`), minimum fallback holds (`retry.fallbackMinHoldMs`), and compact-to-fit fallback recovery (`retry.compactForFallback`). Provider Retry-After remains authoritative, oversized fallback requests are never sent, and a usage-limited fallback is not retried on every subsequent turn while both routes are unavailable.

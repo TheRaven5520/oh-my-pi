@@ -860,6 +860,11 @@ describe("SpriliCred login", () => {
 	// before-files: catalog.json (listing bodies per route), models/config/state.before.json
 	// (migration cases), installer-{models,config,state}.json. `$HOME` is the scratch home and
 	// https://sprilicred.example the server.
+	// The `*-deepseek-withheld` cases are the same installer (connect.py at release-97 aedbc0e) with
+	// `/deepseek/v1/models` served empty to a granted key, as SpriliCred serves it while DeepSeek V4.1
+	// Flash is withheld (2026-10-16). SpriliCred keeps only the listed shape in its fixtures; to
+	// refresh these, rerun its test_parity_fixtures_are_what_the_installer_writes with
+	// SPRILICRED_WRITE_PARITY_FIXTURES=1 after OmpProviderLineupTests.serve lists `/deepseek/v1/models` empty.
 	// Every case the installer recorded, so a new one is never skipped.
 	const PARITY_DIR = path.join(import.meta.dir, "fixtures", "sprilicred-login-parity");
 	for (const parityCase of readdirSync(PARITY_DIR).sort()) {

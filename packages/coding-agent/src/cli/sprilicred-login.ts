@@ -46,7 +46,9 @@ const OPENAI_DISCOVERY = { type: "openai-models-list", injectV1: false };
 const OPENAI_PROVIDER = "sprilicred-openai";
 // Same layout as the SpriliCred installer (deploy/connect.py install_omp): models
 // with a dedicated route (`/<route>/v1`) live under their own `sprilicred-<route>`.
-// DeepSeek is listed only to keys with an API-key grant; others get an empty listing.
+// DeepSeek V4.1 Flash is withheld (SpriliCred release-97, 2026-10-16): its listing is empty for every
+// key, so the provider is withdrawn with its references; a server that lists it again (to keys with
+// an API-key grant) wins. DEDICATED_MODELS still places and migrates saved DeepSeek selectors.
 const DEEPSEEK_PROVIDER = "sprilicred-deepseek";
 const DEDICATED_ROUTES = ["deepseek"];
 // The installer's built-in dedicated IDs remain managed even without an ownership file.
