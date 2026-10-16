@@ -43,13 +43,14 @@ async function setup(draft = "", includeHud = false) {
 	return { terminal, scheduler, composer, transcript, view, wheel };
 }
 
-it("reveals a typed draft without moving the message being read, then hides only the empty composer", async () => {
+it("keeps the empty composer docked before typing and after clearing a draft", async () => {
 	const { terminal, scheduler, composer, view, wheel } = await setup();
 	try {
 		await wheel("up", 8);
 		const before = view();
 		expect(composer.isViewportBrowsing()).toBe(true);
 		expect(before.slice(0, -3).some(row => row.includes("─"))).toBe(false);
+		expect(before.slice(-3).some(row => row.includes("─"))).toBe(true);
 		terminal.sendInput("a draft while reading");
 		await scheduler.settle(terminal);
 		const typed = view();
@@ -62,9 +63,9 @@ it("reveals a typed draft without moving the message being read, then hides only
 		expect(view().slice(0, 5)).toEqual(before.slice(0, 5));
 		expect(
 			view()
-				.slice(0, -3)
+				.slice(-3)
 				.some(row => row.includes("─")),
-		).toBe(false);
+		).toBe(true);
 	} finally {
 		composer.stop();
 	}
@@ -131,12 +132,13 @@ it("holds the transcript anchor through paste, new output and draft deletion wit
 	}
 });
 
-it("moves by the wheel distance when an empty composer disappears", async () => {
+it("moves only the transcript by the wheel distance while the empty composer stays docked", async () => {
 	const { composer, view, wheel } = await setup();
 	try {
 		const before = view();
 		await wheel("up");
 		expect(view().slice(3, 9)).toEqual(before.slice(0, 6));
+		expect(view().slice(-3)).toEqual(before.slice(-3));
 	} finally {
 		composer.stop();
 	}

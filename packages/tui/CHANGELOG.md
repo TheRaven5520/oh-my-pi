@@ -4,9 +4,10 @@
 
 ### Fixed
 - Tmux viewport ownership uses `@omp-natural-scroll-helper` when configured, retaining the legacy helper path as a fallback.
+- With the matching tmux companion, copying a selection in a capable OMP pane returns to its existing app-owned viewport; selection entry and other panes' copy behavior are unchanged.
 - Central custom answers and notes accept image-only clipboard pastes, image paths, and configured image-paste shortcuts without losing attachments or racing Enter.
 - Draft snapshots retain file, video, and clipboard backing-path metadata across capture, JSON persistence, and restore.
-- Pin nonempty drafts at the bottom while browsing conversation history; typing or pasting into an empty, hidden composer reveals it without moving the message being read. Clearing the draft hides it again. Bounded semantic-row scrolling uses synchronized differential frames and preserves native selection with the matching Kitty/tmux companion.
+- Keep the composer docked at the bottom while browsing conversation history, even when empty; typing, pasting, and clearing a draft do not move the message being read. Bounded semantic-row scrolling uses synchronized differential frames and preserves native selection with the matching Kitty/tmux companion.
 - While browsing, only the input widgets and status line remain docked; todo, agent and other turn HUDs scroll away instead of occupying the fixed bottom dock.
 - Wrap Kitty graphics for SSH sessions whose local tmux marker is stripped but `TERM=tmux-*` or `screen-*` remains, preventing APCs from being swallowed as pane-title input.
 - Register Kitty placeholder placements independently of their first image row, so initially clipped images and clipped geometry changes retain their graphics in the viewport and fullscreen overlays.
