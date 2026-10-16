@@ -26,6 +26,14 @@ export class CentralQueue<T = unknown> {
 	get entries(): IterableIterator<CentralQueueEntry<T>> {
 		return this.#entries.values();
 	}
+	get orderedChatIds(): readonly string[] {
+		return this.#order;
+	}
+
+	entryForChat(chatId: string): CentralQueueEntry<T> | undefined {
+		for (const entry of this.#entries.values()) if (entry.chat.id === chatId) return entry;
+		return undefined;
+	}
 
 	has(entry: CentralQueueEntry<T>): boolean {
 		return this.#entries.get(entry.key) === entry;
@@ -61,9 +69,13 @@ export class CentralQueue<T = unknown> {
 		return retired;
 	}
 
-	skip(): void {
-		const id = this.#order.shift();
-		if (id !== undefined) this.#order.push(id);
+	skip(chatId?: string): void {
+		const id = chatId ?? this.#order[0];
+		if (id === undefined) return;
+		const index = this.#order.indexOf(id);
+		if (index < 0) return;
+		this.#order.splice(index, 1);
+		this.#order.push(id);
 	}
 
 	/** Hide an accepted request immediately, including from an already in-flight stale refresh. */

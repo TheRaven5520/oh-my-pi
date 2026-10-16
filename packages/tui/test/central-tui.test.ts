@@ -151,4 +151,60 @@ describe("Central workspace scrolling", () => {
 			ui.stop();
 		}
 	});
+	it("skips the manually selected chat rather than the queue head", async () => {
+		const terminal = new VirtualTerminal(100, 24);
+		const scheduler = new VirtualRenderScheduler();
+		const chat = (id: string) => ({
+			id,
+			sessionId: id,
+			pid: 1,
+			name: id,
+			cwd: "/tmp",
+			busy: false,
+			requests: [{ id: `question-${id}`, createdAt: 1, kind: "editor" as const, title: `Question ${id}` }],
+		});
+		const host: CentralTuiHost = {
+			refresh: async () => ({ chats: [chat("a"), chat("b")], errors: [] }),
+			transcript: async () => [],
+			answer: async () => {},
+			open: async () => {},
+		};
+		const ui = new TUI(terminal, false, { renderScheduler: scheduler });
+		const component = new CentralComponent(ui, host);
+		const overlay = ui.showOverlay(component, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+		});
+		ui.setFocus(component);
+		try {
+			void component.run();
+			ui.start();
+			await scheduler.settle(terminal);
+			terminal.sendInput("\t");
+			await scheduler.settle(terminal);
+			terminal.sendInput("\x1b[B");
+			await scheduler.settle(terminal);
+			expect(
+				terminal
+					.getViewport()
+					.map(row => Bun.stripANSI(row))
+					.join("\n"),
+			).toContain("Question b");
+			terminal.sendInput("\x1b");
+			await scheduler.settle(terminal);
+			const after = terminal
+				.getViewport()
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+			expect(after).toContain("Question a");
+			expect(after).not.toContain("Question b");
+		} finally {
+			component.dispose();
+			overlay.hide();
+			ui.stop();
+		}
+	});
 });

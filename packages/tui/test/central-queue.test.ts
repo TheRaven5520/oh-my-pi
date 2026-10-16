@@ -23,6 +23,13 @@ describe("CentralQueue", () => {
 		expect(queue.current?.request.id).toBe("a1");
 		expect(queue.chatCount).toBe(3);
 	});
+	it("moves the requested chat to the back without rotating another chat", () => {
+		const queue = new CentralQueue();
+		queue.update([chat("a"), chat("b"), chat("c")]);
+		queue.skip("b");
+		expect([...queue.orderedChatIds]).toEqual(["a", "c", "b"]);
+		expect(queue.current?.chat.id).toBe("a");
+	});
 
 	it("preserves per-chat FIFO and gives another chat the turn after acceptance", () => {
 		const queue = new CentralQueue();
