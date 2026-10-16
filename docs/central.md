@@ -7,13 +7,13 @@
 1. Start Central in its own terminal: `omp --central` (or `omp central`).
 2. The current chat's structured question is shown with its real options, previews,
    multi-select state, custom-answer editor, and notes.
-3. Submit an answer to advance. `F6` skips the whole chat to the back without
-   cancelling or answering it. `F7` opens the original chat when it needs work
-   beyond the question. `F4` toggles the full question/details view; `PgUp` and
-   `PgDn` scroll long forms. `Ctrl+C` closes Central only.
+3. Submit an answer to advance. `Esc` skips the visible chat to the back without
+   cancelling or answering it. `Ctrl+O` opens the original chat when it needs work
+   beyond the question. `Tab` switches between the chat roster and question;
+   arrow keys select chats, and the wheel scrolls the transcript or question.
+   `Ctrl+C` closes Central only.
 4. If the original chat answers or withdraws a question, Central advances without
-   sending the Central draft elsewhere. An unsent draft is retained in the retired
-   view with `F8`.
+   sending the Central draft elsewhere. An unsent draft is retained for viewing.
 
 Custom answers and per-option notes accept clipboard images and pasted image paths,
 including image-only answers. Enter waits for pending image reads; failed reads
