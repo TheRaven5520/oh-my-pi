@@ -26,7 +26,9 @@ pending while the agent works.
 Central uses only explicitly configured SSH destinations; it never scans the
 network. The probe is non-interactive and bounded. When a configured host is
 unavailable, local chats remain usable and Central shows that source's bounded
-unavailable status. An empty host list disables remote access:
+unavailable status. Its last-known questions and unsent drafts remain visible;
+answers and chat actions are blocked until it reconnects. Only a successful poll
+can retire a removed question. An empty host list disables remote access:
 
 ```sh
 omp config set central.hosts '["user@mini"]'

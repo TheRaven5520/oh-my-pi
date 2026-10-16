@@ -195,7 +195,8 @@ export class CentralSources implements CentralTuiHost {
 					source.available = true;
 				} catch (error) {
 					source.available = false;
-					source.chats = [];
+					// A failed poll cannot establish that a pending question was withdrawn.
+					// Keep its draft until a successful snapshot replaces the last known chats.
 					errors.push(`${source.name}: ${error instanceof Error ? error.message : "Connection failed"}`);
 				}
 			}),
@@ -240,6 +241,8 @@ export class CentralSources implements CentralTuiHost {
 	async open(chatId: string): Promise<void> {
 		const route = this.#routes.get(chatId);
 		if (!route) throw new Error("Chat is no longer available");
+		if (!route.source.available || this.#closed)
+			throw new Error("Chat is disconnected; wait for it to reconnect");
 		const location = route.local.location;
 		if (!location) throw new Error(`Open ${route.local.name} in its original terminal`);
 		if (route.source.remote)

@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Central keeps last-known questions and unsent drafts through transient local or SSH poll failures, while refusing disconnected chat actions until reconnect.
 - Fixed Ctrl+N draft persistence truncating oversized paste expansions and image bytes; unsent backlog snapshots now persist losslessly.
 - Skill-description compression and `/annotate` context summaries name the chat they serve (`x-omp-parent-session-id`, role `helper`), and the agents hub's agent generator runs as a side session of the host chat (`subagent`), so a proxy such as SpriliCred files them under that chat instead of listing each as a chat of its own.
 - Human-visible text spells the product SpriliCred; `omp login sprilicred` names models "<name> via SpriliCred" and renames a stored name an older login or installer wrote (" via Sprilicred"), keeping names you chose.
