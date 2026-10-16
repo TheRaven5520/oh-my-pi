@@ -141,6 +141,27 @@ describe("composer draft backlog", () => {
 		expect(other.editor.getText()).toBe("");
 	});
 
+	it("preserves oversized paste expansions and image bytes across backlog reopen", async () => {
+		const storage = new MemorySessionStorage();
+		const manager = SessionManager.create("/draft-tests", "/draft-sessions", storage);
+		const f = fixture(manager);
+		const snapshot = draft("[paste 1] [Image #1]");
+		const expanded = "p".repeat(500_001);
+		snapshot.pastes = [[1, expanded]];
+		snapshot.atoms = [["[paste 1]", expanded]];
+		snapshot.pasteCounter = 1;
+		snapshot.pendingTexts = [{ n: 1, label: "[paste 1]", content: expanded, lineCount: 1, charCount: expanded.length }];
+		snapshot.textAttachmentCounter = 1;
+		snapshot.pendingImages = [{ type: "image", data: "aGVsbG8=".repeat(100_000), mimeType: "image/png" }];
+		snapshot.pendingImageLinks = [null];
+		f.editor.restoreDraftSnapshot(snapshot);
+		await f.controller.handleDraftBacklog();
+		expect(f.editor.getText()).toBe("");
+		const resumed = fixture(await SessionManager.open(manager.getSessionFile()!, "/draft-sessions", storage));
+		await resumed.controller.handleDraftBacklog();
+		expect(resumed.editor.captureDraftSnapshot()).toEqual(snapshot);
+	});
+
 	it("keeps composer on failed enqueue and suppresses rapid duplicate operations", async () => {
 		const f = fixture();
 		f.editor.restoreDraftSnapshot(draft("keep me"));

@@ -477,6 +477,10 @@ function stripSpilledMcpStructuredContent(entry: FileEntry): FileEntry {
 }
 
 export function prepareEntryForPersistence(entry: FileEntry, blobStore: BlobStore): FileEntry {
+	// Drafts are unsent user input, not disposable transcript output. Preserve every
+	// expansion and attachment byte: truncating here would silently destroy the only
+	// durable copy after the composer clears its successfully saved draft.
+	if (entry.type === "custom" && entry.customType === "composer-draft-backlog") return entry;
 	const projected = stripSpilledMcpStructuredContent(stripReplayedReasoningSignatures(entry));
 	return truncateForPersistence(projected, blobStore) as FileEntry;
 }
