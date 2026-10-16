@@ -137,6 +137,29 @@ describe("native transcript", () => {
 		expect(h.errors).toEqual([]);
 	});
 
+	it("replays legacy assistant entries without usage and does not mutate the session message", async () => {
+		const legacy = assistant([{ type: "text", text: "Older transcript" }]);
+		delete (legacy as { usage?: unknown }).usage;
+		const entry: TranscriptEntryLike = {
+			type: "message",
+			id: "legacy-assistant",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00Z",
+			message: legacy,
+		};
+		const h = await startWith(h => {
+			const builder = new ChatTranscriptBuilder({
+				ui: h.tui,
+				cwd: "/tmp",
+				requestRender: () => h.tui.requestRender(),
+			});
+			builder.append([entry]);
+			h.tui.addChild(builder.container);
+		});
+		expect(h.errors).toEqual([]);
+		expect(legacy).not.toHaveProperty("usage");
+	});
+
 	it("keeps a streaming write open until it settles, then folds it like a finished thought", () => {
 		const ui = { requestRender: () => {}, requestComponentRender: () => {}, resetDisplay: () => {} };
 		const content = Array.from({ length: 40 }, (_, i) => `const v${i} = ${i};`).join("\n");

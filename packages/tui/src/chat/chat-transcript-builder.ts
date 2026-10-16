@@ -71,6 +71,15 @@ import { TranscriptContainer } from "../chrome/transcript-container";
 import { createUsageRowBlock, TurnUsageTally, turnElapsedMs } from "../overlays/usage-row";
 import { CollapsedSyntheticMessageComponent, UserMessageComponent } from "./user-message";
 
+const EMPTY_ASSISTANT_USAGE: Usage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
 export interface ChatTranscriptBuilderDeps {
 	ui: TUI;
 	getTool?: (name: string) => AgentTool | undefined;
@@ -280,6 +289,12 @@ export class ChatTranscriptBuilder {
 	}
 
 	#appendChatMessage(message: AgentMessage): void {
+		// Older persisted assistant entries may predate the usage field. Replay
+		// must render them without mutating the session entry or writing a repair
+		// back to the live session, otherwise Central can diverge from its source.
+		if (message.role === "assistant" && !message.usage) {
+			message = { ...message, usage: EMPTY_ASSISTANT_USAGE };
+		}
 		if (message.role !== "toolResult") this.#flushPendingUsage();
 		if (message.role !== "assistant" && message.role !== "toolResult") {
 			this.#readGroup?.seal();
