@@ -1407,7 +1407,21 @@ export class CustomEditor extends Editor {
 	}
 	/** Input chunks and explicit prompts deferred behind an in-flight paste,
 	 *  drained in FIFO order once the paste count returns to zero. */
-	#pendingInput: (string | Extract<NativeUiEvent, { type: "send" }>)[] = [];
+	#pendingInput: (string | Extract<NativeUiEvent, { type: "send" }> | (() => void))[] = [];
+
+	/** Reserve this position in the input stream before a host action awaits persistence.
+	 * Earlier pastes finish first; later typing and submission wait for the action. */
+	enqueueInputAction(action: () => Promise<void>): Promise<void> {
+		const result = Promise.withResolvers<void>();
+		const run = (): void => {
+			const execution = Promise.resolve().then(action);
+			this.#trackAsyncPaste(execution);
+			void execution.then(result.resolve, result.reject);
+		};
+		if (this.#pasteInFlight > 0) this.#pendingInput.push(run);
+		else run();
+		return result.promise;
+	}
 	#actionKeys = new Map<ConfigurableEditorAction, KeyId[]>(
 		Object.entries(DEFAULT_ACTION_KEYS).map(([action, keys]) => [action as ConfigurableEditorAction, [...keys]]),
 	);
@@ -1488,7 +1502,10 @@ export class CustomEditor extends Editor {
 	#drainPendingInput(): void {
 		const drained = this.#pendingInput.splice(0);
 		for (const input of drained) {
-			if (typeof input === "string") this.handleInput(input);
+			if (typeof input === "function") {
+				if (this.#pasteInFlight > 0) this.#pendingInput.push(input);
+				else input();
+			} else if (typeof input === "string") this.handleInput(input);
 			else this.handleNativeEvent(input);
 		}
 	}

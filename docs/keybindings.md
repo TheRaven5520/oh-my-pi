@@ -64,6 +64,7 @@ Saved drafts retain text, cursor, attachments, and collapsed-paste expansions ac
 
 Backlog snapshots preserve full pasted text and image bytes, including payloads larger than the transcript persistence limit.
 Image and video attachments also retain their backing-file source notices when a saved draft is restored.
+Ctrl+N is ordered with pending clipboard work: pasted attachments finish before capture, and later typing or Enter applies to the next draft after persistence finishes.
 
 ## Recover a cleared prompt
 

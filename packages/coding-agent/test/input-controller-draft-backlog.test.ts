@@ -3,8 +3,9 @@ import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/inp
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
-import type { ComposerDraftSnapshot } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { CustomEditor, type ComposerDraftSnapshot } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
+import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
 
 function draft(text = ""): ComposerDraftSnapshot {
 	return {
@@ -27,6 +28,10 @@ function fixture(manager = SessionManager.inMemory("/draft-tests")) {
 	const editor = {
 		getText: () => state.text,
 		awaitPendingPaste: async () => {},
+		enqueueInputAction: async (action: () => Promise<void>) => {
+			await editor.awaitPendingPaste();
+			await action();
+		},
 		hasDraftContent: () => !!state.text || state.pendingImages.length > 0 || state.pendingTexts.length > 0,
 		captureDraftSnapshot: () => structuredClone(state),
 		restoreDraftSnapshot: (snapshot: ComposerDraftSnapshot) => {
@@ -56,6 +61,33 @@ function queued(manager: SessionManager): ComposerDraftSnapshot[] {
 }
 
 describe("draft backlog failure boundaries", () => {
+	it("saves before typing and Enter queued after Ctrl+N during an image paste", async () => {
+		await initTheme();
+		const f = fixture();
+		const editor = new CustomEditor(getEditorTheme());
+		Object.assign(f.ctx, { editor });
+		f.ctx.ui.getFocused = () => editor;
+		editor.setText("saved draft");
+		const paste = Promise.withResolvers<void>();
+		editor.onPasteImage = async () => {
+			await paste.promise;
+			editor.pendingImages = [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }];
+			return true;
+		};
+		const submitted: string[] = [];
+		editor.onSubmit = text => submitted.push(text);
+		editor.handleInput("\x16");
+		const saving = f.controller.handleDraftBacklog();
+		editor.handleInput("next draft");
+		editor.handleInput("\r");
+		paste.resolve();
+		await saving;
+		await editor.awaitPendingPaste();
+		expect(queued(f.ctx.sessionManager).map(item => item.text)).toEqual(["saved draft"]);
+		expect(queued(f.ctx.sessionManager)[0]?.pendingImages).toHaveLength(1);
+		expect(submitted).toEqual(["next draft"]);
+	});
+
 	it("saves attachment-only drafts rather than dequeuing over them", async () => {
 		const f = fixture();
 		const attached = draft();

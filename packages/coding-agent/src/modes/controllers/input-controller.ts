@@ -359,42 +359,43 @@ export class InputController {
 			!this.ctx.ui.hasOverlay() &&
 			this.ctx.ui.getFocused() === editor;
 		try {
-			await editor.awaitPendingPaste();
-			if (!isCurrent()) return;
-			const drafts = this.#readDraftBacklog();
-			const saving = editor.hasDraftContent();
-			if (!saving && !drafts.length) return;
-			const snapshot = editor.captureDraftSnapshot();
-			let appended = false;
-			const unchanged = (): boolean =>
-				isCurrent() && JSON.stringify(editor.captureDraftSnapshot()) === JSON.stringify(snapshot);
-			await manager.appendEntriesAtomically(() => {
-				// The persistence lock may have waited behind another operation.
-				if (!unchanged()) return;
-				if (!saving) editor.restoreDraftSnapshot(drafts[0]);
-				manager.appendCustomEntry("composer-draft-backlog", {
-					version: 1,
-					sessionId,
-					drafts: saving ? [...drafts, snapshot] : drafts.slice(1),
+			await editor.enqueueInputAction(async () => {
+				if (!isCurrent()) return;
+				const drafts = this.#readDraftBacklog();
+				const saving = editor.hasDraftContent();
+				if (!saving && !drafts.length) return;
+				const snapshot = editor.captureDraftSnapshot();
+				let appended = false;
+				const unchanged = (): boolean =>
+					isCurrent() && JSON.stringify(editor.captureDraftSnapshot()) === JSON.stringify(snapshot);
+				await manager.appendEntriesAtomically(() => {
+					// The persistence lock may have waited behind another operation.
+					if (!unchanged()) return;
+					if (!saving) editor.restoreDraftSnapshot(drafts[0]);
+					manager.appendCustomEntry("composer-draft-backlog", {
+						version: 1,
+						sessionId,
+						drafts: saving ? [...drafts, snapshot] : drafts.slice(1),
+					});
+					appended = true;
 				});
-				appended = true;
+				// Clear only after durable publication, and never erase typing that arrived meanwhile.
+				if (appended && saving && unchanged()) {
+					editor.restoreDraftSnapshot({
+						version: 1,
+						text: "",
+						cursor: { line: 0, col: 0 },
+						pastes: [],
+						atoms: [],
+						pasteCounter: 0,
+						pendingImages: [],
+						pendingImageLinks: [],
+						imageLinks: null,
+						pendingTexts: [],
+						textAttachmentCounter: 0,
+					});
+				}
 			});
-			// Clear only after durable publication, and never erase typing that arrived meanwhile.
-			if (appended && saving && unchanged()) {
-				editor.restoreDraftSnapshot({
-					version: 1,
-					text: "",
-					cursor: { line: 0, col: 0 },
-					pastes: [],
-					atoms: [],
-					pasteCounter: 0,
-					pendingImages: [],
-					pendingImageLinks: [],
-					imageLinks: null,
-					pendingTexts: [],
-					textAttachmentCounter: 0,
-				});
-			}
 		} catch (error) {
 			// Atomic journal rollback retains the queued copy; a restored editor is also kept.
 			this.ctx.showError(`Draft backlog was not saved; your draft was kept. ${String(error)}`);
