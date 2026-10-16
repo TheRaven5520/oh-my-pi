@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Tmux viewport ownership uses `@omp-natural-scroll-helper` when configured, retaining the legacy helper path as a fallback.
 - Central custom answers and notes accept image-only clipboard pastes, image paths, and configured image-paste shortcuts without losing attachments or racing Enter.
 - Draft snapshots retain file, video, and clipboard backing-path metadata across capture, JSON persistence, and restore.
 - Pin nonempty drafts at the bottom while browsing conversation history; typing or pasting into an empty, hidden composer reveals it without moving the message being read. Clearing the draft hides it again. Bounded semantic-row scrolling uses synchronized differential frames and preserves native selection with the matching Kitty/tmux companion.

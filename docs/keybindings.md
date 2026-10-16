@@ -66,6 +66,8 @@ Backlog snapshots preserve full pasted text and image bytes, including payloads 
 Image and video attachments also retain their backing-file source notices when a saved draft is restored.
 Ctrl+N is ordered with pending clipboard work: pasted attachments finish before capture, and later typing or Enter applies to the next draft after persistence finishes.
 
+Tmux application-owned wheel scrolling uses the helper configured by `@omp-natural-scroll-helper`, falling back to `~/.config/tmux/natural-scroll.py`.
+
 ## Recover a cleared prompt
 
 Press `Ctrl+C` to clear an unsent composer draft, then `Up` to recall it. Older drafts and submitted prompts share the existing Up/Down navigation. Recalled drafts remain editable and are never sent until you submit them.

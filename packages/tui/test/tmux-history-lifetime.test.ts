@@ -25,7 +25,7 @@ async function until(check: () => boolean | Promise<boolean>, timeout = 3000): P
 	}
 }
 
-async function rig() {
+async function rig(viewportScroll = false) {
 	const directory = await mkdtemp(join(tmpdir(), "tui-history-test-"));
 	const server = join(directory, "tmux");
 	const tmux = async (...args: string[]) => {
@@ -45,6 +45,12 @@ async function rig() {
 	});
 	await tmux("new-session", "-d", "-s", "probe", "-x", "80", "-y", "24", "seq 1 100; sleep 120");
 	const pane = await tmux("display", "-p", "#{pane_id}");
+	const helperArgs = join(directory, "helper-args.json");
+	if (viewportScroll) {
+		const helper = join(directory, "configured helper.py");
+		await writeFile(helper, `import json, sys\nwith open(${JSON.stringify(helperArgs)}, "w") as f: json.dump(sys.argv[1:], f)\n`);
+		await tmux("set", "-g", "@omp-natural-scroll-helper", helper);
+	}
 	await tmux("set", "-p", "-t", pane, "@omp-history-generation", "0");
 	await tmux(
 		"set-hook",
@@ -84,6 +90,7 @@ async function rig() {
 		process.env.TMUX = `${server},1,0`;
 		process.env.TMUX_PANE = pane;
 		bridge = await TmuxHistoryBridge.create({
+			viewportScroll,
 			capture: (value, signal) => {
 				captures.push({ owner: value, signal });
 				return capture(value, signal);
@@ -174,6 +181,15 @@ async function rig() {
 // Real, private tmux servers exercise the atomic guards without replacing process
 // execution globally or changing the developer's tmux configuration/server.
 describe.skipIf(!Bun.which("tmux"))("tmux history request lifetime", () => {
+	it("uses the configured natural-scroll helper in the viewport-owner run-shell command", async () => {
+		const r = await rig(true);
+		const argsPath = join(r.directory, "helper-args.json");
+		await until(() => Bun.file(argsPath).exists());
+		expect(await Bun.file(argsPath).json()).toEqual(["--viewport-owner", r.pane, r.socketPath, join(r.directory, "tmux")]);
+		const source = await Bun.file(new URL("../src/tmux-history.ts", import.meta.url)).text();
+		expect(source).toContain("python3 #{?@omp-natural-scroll-helper,#{q:@omp-natural-scroll-helper},~/.config/tmux/natural-scroll.py} --viewport-owner");
+	});
+
 	it("releases successful captures without cancelling native copy mode", async () => {
 		const r = await rig();
 		await r.enter();

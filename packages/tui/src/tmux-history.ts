@@ -131,7 +131,7 @@ export class TmuxHistoryBridge {
 					undefined,
 					"run-shell",
 					"-b",
-					`python3 ~/.config/tmux/natural-scroll.py --viewport-owner ${quote(pane)} ${quote(bridge.socketPath)} ${quote(serverSocket)}`,
+					`python3 #{?@omp-natural-scroll-helper,#{q:@omp-natural-scroll-helper},~/.config/tmux/natural-scroll.py} --viewport-owner ${quote(pane)} ${quote(bridge.socketPath)} ${quote(serverSocket)}`,
 				);
 			}
 			return bridge;
