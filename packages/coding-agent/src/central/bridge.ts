@@ -21,6 +21,21 @@ const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
 
 type ChatState = Omit<CentralChat, "id" | "pid" | "requests" | "location" | "source">;
 type Options = { dir?: string; onClosed?: () => void; getTranscript?: () => TranscriptEntryLike[] };
+export const CENTRAL_MAX_TRANSCRIPT_BYTES = 512 * 1024;
+
+function trimTranscriptToBytes(entries: TranscriptEntryLike[]): TranscriptEntryLike[] {
+	const tail: TranscriptEntryLike[] = [];
+	let bytes = 2;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index]!;
+		const entryBytes = Buffer.byteLength(JSON.stringify(entry));
+		const separatorBytes = tail.length > 0 ? 1 : 0;
+		if (bytes + separatorBytes + entryBytes > CENTRAL_MAX_TRANSCRIPT_BYTES) break;
+		tail.unshift(entry);
+		bytes += separatorBytes + entryBytes;
+	}
+	return tail;
+}
 
 export interface CentralHost {
 	readonly closed: boolean;
@@ -272,9 +287,7 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 					return;
 				}
 				if (request.op === "transcript") {
-					const transcript = options?.getTranscript?.() ?? [];
-					if (Buffer.byteLength(JSON.stringify(transcript)) > 512 * 1024)
-						return respond({ ok: false, error: "frame_too_large" });
+					const transcript = trimTranscriptToBytes(options?.getTranscript?.() ?? []);
 					respond({ ok: true, transcript });
 					return;
 				}

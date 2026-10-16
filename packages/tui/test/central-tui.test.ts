@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { TranscriptEntryLike } from "../src/chat/transcript-entry";
 import { TUI } from "../src/tui";
 import { initTheme } from "../src/theme/theme";
 import { CentralComponent } from "../src/apps/central/central-tui";
@@ -208,42 +209,226 @@ describe("Central workspace scrolling", () => {
 			ui.stop();
 		}
 	});
+	it("keeps the selected chat transcript fresh after a chat switch", async () => {
+		const terminal = new VirtualTerminal(100, 24);
+		const scheduler = new VirtualRenderScheduler();
+		const first = Promise.withResolvers<TranscriptEntryLike[]>();
+		const second = Promise.withResolvers<TranscriptEntryLike[]>();
+		const chat = (id: string) => ({
+			id,
+			sessionId: id,
+			pid: 1,
+			name: `Chat ${id}`,
+			cwd: "/tmp",
+			busy: false,
+			transcriptRevision: "1",
+			requests: [{ id: `question-${id}`, createdAt: 1, kind: "editor" as const, title: `Question ${id}` }],
+		});
+		const host: CentralTuiHost = {
+			refresh: async () => ({ chats: [chat("a"), chat("b")], errors: [] }),
+			transcript: async id => (id === "a" ? first.promise : second.promise),
+			answer: async () => {},
+			open: async () => {},
+		};
+		const message = (id: string, text: string): TranscriptEntryLike[] => [
+			{
+				type: "message",
+				id,
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				message: { role: "user", content: text, timestamp: Date.now() },
+			},
+		];
+		const ui = new TUI(terminal, false, { renderScheduler: scheduler });
+		const component = new CentralComponent(ui, host);
+		const overlay = ui.showOverlay(component, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+		});
+		ui.setFocus(component);
+		try {
+			void component.run();
+			ui.start();
+			await scheduler.settle(terminal);
+			terminal.sendInput("\t");
+			await scheduler.settle(terminal);
+			terminal.sendInput("\x1b[B");
+			await scheduler.settle(terminal);
+			second.resolve(message("b-message", "Chat B transcript"));
+			await Promise.resolve();
+			await Promise.resolve();
+			await scheduler.settle(terminal);
+			let text = terminal
+				.getViewport()
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+			expect(text).toContain("Chat b  ·  local  ·  /tmp");
+			expect(text).toContain("Chat B transcript");
+			first.resolve(message("a-message", "Stale Chat A transcript"));
+			await Promise.resolve();
+			await Promise.resolve();
+			await scheduler.settle(terminal);
+			text = terminal
+				.getViewport()
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+			expect(text).toContain("Chat B transcript");
+			expect(text).not.toContain("Stale Chat A transcript");
+		} finally {
+			component.dispose();
+			overlay.hide();
+			ui.stop();
+		}
+	});
+	it("reserves transcript rows for a tall question", async () => {
+		const terminal = new VirtualTerminal(100, 30);
+		const scheduler = new VirtualRenderScheduler();
+		const host: CentralTuiHost = {
+			refresh: async () => ({
+				chats: [
+					{
+						id: "local/tall",
+						sessionId: "tall-session",
+						pid: 1,
+						name: "Tall question chat",
+						cwd: "/tmp/tall",
+						busy: false,
+						requests: [
+							{
+								id: "tall-question",
+								createdAt: 1,
+								kind: "ask" as const,
+								questions: [
+									{
+										id: "choice",
+										question: "Choose an option",
+										header: "Options",
+										options: Array.from({ length: 20 }, (_, index) => ({
+											label: `Option ${index}`,
+											description: "A long description that makes this question tall",
+											preview: "Preview text",
+										})),
+										recommended: 0,
+									},
+								],
+							},
+						],
+					},
+				],
+				errors: [],
+			}),
+			transcript: async () =>
+				Array.from({ length: 20 }, (_, index) => ({
+					type: "message" as const,
+					id: `history-${index}`,
+					parentId: null,
+					timestamp: new Date(index + 1).toISOString(),
+					message: { role: "user" as const, content: `History row ${index}`, timestamp: index + 1 },
+				})),
+			answer: async () => {},
+			open: async () => {},
+		};
+		const ui = new TUI(terminal, false, { renderScheduler: scheduler });
+		const component = new CentralComponent(ui, host);
+		const overlay = ui.showOverlay(component, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+		});
+		ui.setFocus(component);
+		try {
+			void component.run();
+			ui.start();
+			await scheduler.settle(terminal);
+			const text = terminal
+				.getViewport()
+				.map(row => Bun.stripANSI(row))
+				.join("\n");
+			expect(text).toContain("Tall question chat");
+			expect(text).toContain("History row 19");
+		} finally {
+			component.dispose();
+			overlay.hide();
+			ui.stop();
+		}
+	});
 });
 
 describe("Central ask image prompts", () => {
 	const image: ImageContent = { type: "image", data: "image-data", mimeType: "image/png" };
 
-	async function setup(readPromptPaste: (path?: string) => Promise<{ text: string; images?: ImageContent[] }>, multi = false) {
+	async function setup(
+		readPromptPaste: (path?: string) => Promise<{ text: string; images?: ImageContent[] }>,
+		multi = false,
+	) {
 		const terminal = new VirtualTerminal(100, 30);
 		const scheduler = new VirtualRenderScheduler();
 		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
 		const host = {
 			refresh: async () => ({
-				chats: [{
-					id: "local/chat", sessionId: "session", pid: 1, name: "Image chat", cwd: "/remote/chat",
-					busy: false,
-					requests: [{ id: "question", createdAt: 1, kind: "ask" as const,
-						questions: [{ id: "q1", question: "Choose?", options: [{ label: "Option A" }], multi }],
-					}],
-				}], errors: [],
+				chats: [
+					{
+						id: "local/chat",
+						sessionId: "session",
+						pid: 1,
+						name: "Image chat",
+						cwd: "/remote/chat",
+						busy: false,
+						requests: [
+							{
+								id: "question",
+								createdAt: 1,
+								kind: "ask" as const,
+								questions: [{ id: "q1", question: "Choose?", options: [{ label: "Option A" }], multi }],
+							},
+						],
+					},
+				],
+				errors: [],
 			}),
-			transcript: async () => [], answer, open: async () => {}, readPromptPaste,
+			transcript: async () => [],
+			answer,
+			open: async () => {},
+			readPromptPaste,
 		};
 		const ui = new TUI(terminal, false, { renderScheduler: scheduler });
 		const component = new CentralComponent(ui, host);
 		const overlay = ui.showOverlay(component, {
-			anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0, fullscreen: true,
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
 		});
 		ui.setFocus(component);
 		void component.run();
 		ui.start();
-		const settle = async () => { await scheduler.settle(terminal); };
+		const settle = async () => {
+			await scheduler.settle(terminal);
+		};
 		await settle();
 		return {
-			answer, settle,
-			input: async (data: string) => { terminal.sendInput(data); await settle(); },
-			text: () => terminal.getViewport().map(row => Bun.stripANSI(row)).join("\n"),
-			close: () => { component.dispose(); overlay.hide(); ui.stop(); },
+			answer,
+			settle,
+			input: async (data: string) => {
+				terminal.sendInput(data);
+				await settle();
+			},
+			text: () =>
+				terminal
+					.getViewport()
+					.map(row => Bun.stripANSI(row))
+					.join("\n"),
+			close: () => {
+				component.dispose();
+				overlay.hide();
+				ui.stop();
+			},
 		};
 	}
 
@@ -254,11 +439,17 @@ describe("Central ask image prompts", () => {
 				const load = vi.fn((_path?: string) => pending.promise);
 				const rig = await setup(load);
 				try {
-					if (prompt === "custom") { await rig.input("\x1b[B"); await rig.input("\r"); }
-					else await rig.input("n");
+					if (prompt === "custom") {
+						await rig.input("\x1b[B");
+						await rig.input("\r");
+					} else await rig.input("n");
 					expect(rig.text()).toContain(prompt === "custom" ? "Custom answer" : "Note for Option A");
-					const paste = transport === "path" ? "\x1b[200~/tmp/screenshot.png\x1b[201~"
-						: transport === "clipboard" ? "\x1b[200~\x1b[201~" : "\x16";
+					const paste =
+						transport === "path"
+							? "\x1b[200~/tmp/screenshot.png\x1b[201~"
+							: transport === "clipboard"
+								? "\x1b[200~\x1b[201~"
+								: "\x16";
 					await rig.input(paste);
 					await rig.input("\r");
 					expect(load).toHaveBeenCalledWith(transport === "path" ? "/tmp/screenshot.png" : undefined);
@@ -268,13 +459,22 @@ describe("Central ask image prompts", () => {
 					if (prompt === "note") await rig.input("\r");
 					expect(rig.answer).toHaveBeenCalledTimes(1);
 					expect(rig.answer.mock.calls[0]).toEqual([
-						"local/chat", "question", expect.objectContaining({ kind: "submit", results: [
-							expect.objectContaining(prompt === "custom"
-								? { customInput: "[Image #1]", customInputImages: [image] }
-								: { note: "[Image #1]", noteImages: [image] }),
-						] }),
+						"local/chat",
+						"question",
+						expect.objectContaining({
+							kind: "submit",
+							results: [
+								expect.objectContaining(
+									prompt === "custom"
+										? { customInput: "[Image #1]", customInputImages: [image] }
+										: { note: "[Image #1]", noteImages: [image] },
+								),
+							],
+						}),
 					]);
-				} finally { rig.close(); }
+				} finally {
+					rig.close();
+				}
 			});
 		}
 	}
@@ -292,18 +492,23 @@ describe("Central ask image prompts", () => {
 			await rig.input("\r");
 			await rig.input("\r");
 			expect(rig.answer.mock.calls[0]).toEqual([
-				"local/chat", "question", expect.objectContaining({ results: [
-					expect.objectContaining({ customInput: "[Image #1]", customInputImages: [image] }),
-				] }),
+				"local/chat",
+				"question",
+				expect.objectContaining({
+					results: [expect.objectContaining({ customInput: "[Image #1]", customInputImages: [image] })],
+				}),
 			]);
-		} finally { rig.close(); }
+		} finally {
+			rig.close();
+		}
 	});
 
 	it("reports failed image reads without submitting an empty answer", async () => {
 		const pending = Promise.withResolvers<{ text: string; images: ImageContent[] }>();
 		const rig = await setup(() => pending.promise);
 		try {
-			await rig.input("\x1b[B"); await rig.input("\r");
+			await rig.input("\x1b[B");
+			await rig.input("\r");
 			await rig.input("\x1b[200~/tmp/missing.png\x1b[201~\r");
 			pending.reject(new Error("Image not found"));
 			// Let the paste rejection handler enqueue its render before draining the virtual scheduler:
@@ -313,16 +518,19 @@ describe("Central ask image prompts", () => {
 			expect(rig.answer).not.toHaveBeenCalled();
 			expect(rig.text()).toContain("Image not found");
 			expect(rig.text()).toContain("Custom answer");
-		} finally { rig.close(); }
+		} finally {
+			rig.close();
+		}
 	});
 	it("keeps quoted image paths in paste order when reads finish out of order", async () => {
 		const first = Promise.withResolvers<{ text: string; images: ImageContent[] }>();
 		const second = Promise.withResolvers<{ text: string; images: ImageContent[] }>();
 		const other: ImageContent = { ...image, data: "second-image" };
-		const load = vi.fn((path?: string) => path === "/tmp/first image.png" ? first.promise : second.promise);
+		const load = vi.fn((path?: string) => (path === "/tmp/first image.png" ? first.promise : second.promise));
 		const rig = await setup(load);
 		try {
-			await rig.input("\x1b[B"); await rig.input("\r");
+			await rig.input("\x1b[B");
+			await rig.input("\r");
 			await rig.input("\x1b[200~'/tmp/first image.png' /tmp/second.png\x1b[201~\r");
 			expect(load.mock.calls).toEqual([["/tmp/first image.png"], ["/tmp/second.png"]]);
 			second.resolve({ text: "", images: [other] });
@@ -331,18 +539,21 @@ describe("Central ask image prompts", () => {
 			first.resolve({ text: "", images: [image] });
 			await rig.settle();
 			expect(rig.answer.mock.calls[0]).toEqual([
-				"local/chat", "question", expect.objectContaining({ results: [
-					expect.objectContaining({ customInputImages: [image, other] }),
-				] }),
+				"local/chat",
+				"question",
+				expect.objectContaining({ results: [expect.objectContaining({ customInputImages: [image, other] })] }),
 			]);
-		} finally { rig.close(); }
+		} finally {
+			rig.close();
+		}
 	});
 
 	it("does not deliver a late image into a cancelled prompt or its replacement", async () => {
 		const pending = Promise.withResolvers<{ text: string; images: ImageContent[] }>();
 		const rig = await setup(() => pending.promise);
 		try {
-			await rig.input("\x1b[B"); await rig.input("\r");
+			await rig.input("\x1b[B");
+			await rig.input("\r");
 			await rig.input("\x1b[200~\x1b[201~");
 			await rig.input("\x1b");
 			await rig.input("\r");
@@ -351,12 +562,17 @@ describe("Central ask image prompts", () => {
 			expect(rig.text()).toContain("Custom answer");
 			expect(rig.text()).not.toContain("[Image #1]");
 			expect(rig.answer).not.toHaveBeenCalled();
-			await rig.input("replacement"); await rig.input("\r");
+			await rig.input("replacement");
+			await rig.input("\r");
 			expect(rig.answer.mock.calls[0]).toEqual([
-				"local/chat", "question", expect.objectContaining({ results: [
-					expect.objectContaining({ customInput: "replacement", customInputImages: undefined }),
-				] }),
+				"local/chat",
+				"question",
+				expect.objectContaining({
+					results: [expect.objectContaining({ customInput: "replacement", customInputImages: undefined })],
+				}),
 			]);
-		} finally { rig.close(); }
+		} finally {
+			rig.close();
+		}
 	});
 });

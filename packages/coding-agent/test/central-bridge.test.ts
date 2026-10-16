@@ -6,8 +6,10 @@ import * as path from "node:path";
 import type { CentralAnswer, CentralRequestDraft } from "@oh-my-pi/pi-tui/apps/central/types";
 import type { ExtensionAskDialogSubmitResult } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import {
-	answerCentralQuestion,
 	CENTRAL_MAX_FRAME_BYTES,
+	CENTRAL_MAX_TRANSCRIPT_BYTES,
+	answerCentralQuestion,
+	getCentralChatTranscript,
 	type CentralHost,
 	listCentralChats,
 	parseCentralChat,
@@ -361,6 +363,28 @@ describe("private Central host IPC", () => {
 		expect(await listCentralChats({ dir })).toHaveLength(1);
 	});
 
+	it("returns a bounded tail for transcripts larger than the frame budget", async () => {
+		const base = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-long-transcript-"));
+		dirs.push(base);
+		const dir = path.join(base, "hosts");
+		const transcript = Array.from({ length: 1_000 }, (_, index) => ({
+			type: "message" as const,
+			id: `message-${index}`,
+			parentId: null,
+			timestamp: new Date(index + 1).toISOString(),
+			message: { role: "user" as const, content: "x".repeat(1_000), timestamp: index + 1 },
+		}));
+		const host = await startCentralHost(
+			() => ({ sessionId: "long", name: "Long chat", cwd: "/workspace", busy: false }),
+			{ dir, getTranscript: () => transcript },
+		);
+		hosts.add(host);
+		const [chat] = await listCentralChats({ dir });
+		const tail = await getCentralChatTranscript(chat!.id, { dir });
+		expect(Buffer.byteLength(JSON.stringify(tail))).toBeLessThanOrEqual(CENTRAL_MAX_TRANSCRIPT_BYTES);
+		expect(tail.length).toBeLessThan(transcript.length);
+		expect(tail.at(-1)?.id).toBe("message-999");
+	});
 	it("does not keep a process alive and withdraws metadata on natural exit", async () => {
 		const base = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-exit-"));
 		dirs.push(base);

@@ -19,7 +19,11 @@ import type { CentralAnswer, CentralChat, CentralSnapshot, CentralTuiHost } from
 interface CentralForm {
 	component: Component;
 	view: ScrollView;
-	prompt?: { component: HookEditorComponent; resolve: (value: AskDialogPromptValue | undefined) => void; paste: () => Promise<boolean> };
+	prompt?: {
+		component: HookEditorComponent;
+		resolve: (value: AskDialogPromptValue | undefined) => void;
+		paste: () => Promise<boolean>;
+	};
 	answer?: CentralAnswer;
 	sending: boolean;
 	touched: boolean;
@@ -46,6 +50,10 @@ export class CentralComponent implements Component {
 	#transcriptChatId: string | undefined;
 	#transcriptRevision: string | undefined;
 	#transcriptBuilder: ChatTranscriptBuilder | undefined;
+	#transcriptLoadGeneration = 0;
+	#transcriptLoadingChatId: string | undefined;
+	#transcriptLoadingRevision: string | undefined;
+	#transcriptError: string | undefined;
 	#transcriptLoading = false;
 	#focus: "roster" | "main" = "main";
 	#questionTop = 0;
@@ -127,29 +135,46 @@ export class CentralComponent implements Component {
 	}
 
 	async #loadTranscript(chatId: string, cwd: string, revision?: string): Promise<void> {
-		if (this.#transcriptLoading) return;
+		const sameInFlight =
+			this.#transcriptLoading &&
+			this.#transcriptLoadingChatId === chatId &&
+			this.#transcriptLoadingRevision === revision;
+		if (sameInFlight) return;
+		const generation = ++this.#transcriptLoadGeneration;
 		const switchingChat = chatId !== this.#transcriptChatId;
+		this.#transcriptLoading = true;
+		this.#transcriptLoadingChatId = chatId;
+		this.#transcriptLoadingRevision = revision;
+		this.#transcriptError = undefined;
 		if (switchingChat) {
+			this.#transcriptBuilder?.dispose();
+			this.#transcriptBuilder = undefined;
+			this.#transcriptChatId = undefined;
+			this.#transcriptRevision = undefined;
+			this.#transcriptView.setLines([]);
 			this.#transcriptView.setFollowTail(true);
 			this.#transcriptView.scrollToBottom();
 		}
-		this.#transcriptLoading = true;
+		this.ui.requestRender();
 		try {
 			const entries = await this.host.transcript(chatId);
-			if (this.#stopped || this.#selectedChatId !== chatId) return;
+			if (this.#stopped || generation !== this.#transcriptLoadGeneration || this.#selectedChatId !== chatId) return;
 			const builder = new ChatTranscriptBuilder({ ui: this.ui, cwd, requestRender: () => this.ui.requestRender() });
 			builder.rebuild(entries);
 			this.#transcriptBuilder?.dispose();
 			this.#transcriptBuilder = builder;
 			this.#transcriptChatId = chatId;
 			this.#transcriptRevision = revision;
-		} catch {
-			this.#transcriptBuilder = undefined;
-			this.#transcriptChatId = chatId;
-			this.#transcriptRevision = revision;
+		} catch (error) {
+			if (this.#stopped || generation !== this.#transcriptLoadGeneration || this.#selectedChatId !== chatId) return;
+			this.#transcriptError = `Cannot load chat transcript: ${sanitizeDisplayLine(String(error))}. Retrying automatically.`;
 		} finally {
-			this.#transcriptLoading = false;
-			if (!this.#stopped) this.ui.requestRender();
+			if (generation === this.#transcriptLoadGeneration) {
+				this.#transcriptLoading = false;
+				this.#transcriptLoadingChatId = undefined;
+				this.#transcriptLoadingRevision = undefined;
+				if (!this.#stopped) this.ui.requestRender();
+			}
 		}
 	}
 
@@ -170,7 +195,8 @@ export class CentralComponent implements Component {
 				{
 					onSubmit: submit,
 					onCancel: () => this.#skipChat(entry.chat.id),
-					onPrompt: async (prompt, prefill) => (await this.#prompt(entry, prompt, prefill === undefined ? undefined : { text: prefill }))?.text,
+					onPrompt: async (prompt, prefill) =>
+						(await this.#prompt(entry, prompt, prefill === undefined ? undefined : { text: prefill }))?.text,
 					onImagePrompt: (prompt, prefill) => this.#prompt(entry, prompt, prefill),
 				},
 				{ tui: this.ui },
@@ -239,7 +265,8 @@ export class CentralComponent implements Component {
 				form.error = undefined;
 				return true;
 			} catch (error) {
-				if (editor.acceptsImages) form.error = sanitizeDisplayText(error instanceof Error ? error.message : "Image paste failed");
+				if (editor.acceptsImages)
+					form.error = sanitizeDisplayText(error instanceof Error ? error.message : "Image paste failed");
 				return false;
 			} finally {
 				deliver(text);
@@ -258,7 +285,9 @@ export class CentralComponent implements Component {
 				acceptImages: true,
 				images: prefill?.images,
 				onPasteImage: () => paste(),
-				onPasteImagePath: async path => { await paste(path); },
+				onPasteImagePath: async path => {
+					await paste(path);
+				},
 				maxHeight: Math.max(3, this.ui.terminal.rows - 16),
 			},
 		);
@@ -372,9 +401,10 @@ export class CentralComponent implements Component {
 				form.touched = true;
 				if (form.prompt) {
 					const bindings = getKeybindings();
-					const pasteKey = bindings.getDefinition("app.clipboard.pasteImage") !== undefined
-						? bindings.matches(data, "app.clipboard.pasteImage")
-						: getDefaultPasteImageKeys().some(key => matchesKey(data, key));
+					const pasteKey =
+						bindings.getDefinition("app.clipboard.pasteImage") !== undefined
+							? bindings.matches(data, "app.clipboard.pasteImage")
+							: getDefaultPasteImageKeys().some(key => matchesKey(data, key));
 					if (pasteKey) void form.prompt.paste();
 					else form.prompt.component.handleInput(data);
 				} else form.component.handleInput?.(data);
@@ -447,6 +477,8 @@ export class CentralComponent implements Component {
 		}
 		if (this.#openError)
 			body.push(...wrapTextWithAnsi(theme.fg("error", this.#openError), Math.max(1, mainWidth - 2)));
+		if (this.#transcriptError)
+			body.push(...wrapTextWithAnsi(theme.fg("error", this.#transcriptError), Math.max(1, mainWidth - 2)));
 		if (form) {
 			if (form.error) body.push(...wrapTextWithAnsi(theme.fg("error", form.error), Math.max(1, mainWidth - 2)));
 			if (form.sending) body.push(theme.fg("muted", "Sending answer…"));
@@ -512,10 +544,15 @@ export class CentralComponent implements Component {
 			);
 		}
 		const questionBody = body;
-		const transcriptRows = this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? [];
+		const transcriptRows =
+			this.#transcriptLoading && !this.#transcriptBuilder
+				? [theme.fg("muted", "Loading chat transcript…")]
+				: (this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? []);
 		const footerRows = 3;
-		const questionHeight = Math.min(questionBody.length + 1, Math.max(0, contentHeight - footerRows - 3));
-		const transcriptHeight = Math.max(0, contentHeight - footerRows - questionHeight - 3);
+		const contentBudget = Math.max(0, contentHeight - footerRows - 3);
+		const minimumTranscriptHeight = contentBudget === 0 ? 0 : Math.min(8, Math.max(3, Math.floor(contentBudget / 3)));
+		const questionHeight = Math.min(questionBody.length + 1, Math.max(0, contentBudget - minimumTranscriptHeight));
+		const transcriptHeight = Math.max(minimumTranscriptHeight, contentHeight - footerRows - questionHeight - 3);
 		this.#questionTop = compactRosterRows + 2 + transcriptHeight + (questionBody.length > 0 ? 1 : 0);
 		this.#transcriptView.setHeight(transcriptHeight);
 		this.#transcriptView.setLines(transcriptRows);
