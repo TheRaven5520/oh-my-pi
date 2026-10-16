@@ -812,7 +812,7 @@ export const cfgRetryUsageLimitFallbackChains = register({
 		group: "Retry & Fallback",
 		label: "Usage-Limit Fallback Chains",
 		description:
-			'Same format as retry.fallbackChains, e.g. {"sprilicred-anthropic/*":["personal-anthropic/*"]}, but consulted only when a turn fails on a usage limit (quota reached, pool exhausted), before retry.fallbackChains. Transient errors, startup model resolution, roles, subagent inheritance, and title models never use these chains, so a reserve account is spent only when the primary has run out.',
+			'Same format as retry.fallbackChains, e.g. {"sprilicred-anthropic/*":["sprilicred-openai/gpt-6-astra"]}, but consulted only when a turn fails on a usage limit (quota reached, pool exhausted), before retry.fallbackChains — or, when retry.fallbackAfterMs is set, when the primary is still rate-limited or overloaded after that window. Other transient errors, startup model resolution, roles, subagent inheritance, and title models never use these chains, so a reserve account is spent only when the primary has run out.',
 	},
 });
 
@@ -834,6 +834,45 @@ export const cfgRetryFallbackRevertPolicy = register({
 			},
 			{ value: "never", label: "Never", description: "Stay on the fallback model until manually changed" },
 		],
+	},
+});
+
+export const cfgRetryFallbackAfterMs = register({
+	id: "retry.fallbackAfterMs",
+	type: "number",
+	default: 0,
+	ui: {
+		tab: "model",
+		group: "Retry & Fallback",
+		label: "Retry Primary Before Fallback",
+		description:
+			"How long (ms) to keep retrying the primary model, honoring the provider's Retry-After, once it starts failing on a usage limit, rate limit or overload, before switching to a fallback chain. When the window ends the usage-limit chains also cover rate limits and overloads. 0 switches on the first failure.",
+	},
+});
+
+export const cfgRetryFallbackMinHoldMs = register({
+	id: "retry.fallbackMinHoldMs",
+	type: "number",
+	default: 0,
+	ui: {
+		tab: "model",
+		group: "Retry & Fallback",
+		label: "Minimum Fallback Hold",
+		description:
+			"After the primary fails over, stay on the fallback at least this long (ms) before a turn tries the primary again. Provider waits longer than this still apply. If both models are unavailable the turn stops instead of resending to the blocked fallback. Session-local; 0 returns as soon as the primary's cooldown ends.",
+	},
+});
+
+export const cfgRetryCompactForFallback = register({
+	id: "retry.compactForFallback",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "model",
+		group: "Retry & Fallback",
+		label: "Compact To Fit Fallback",
+		description:
+			"When no fallback model's window can hold the context, compact the context to fit the first configured fallback and switch to it instead of skipping it. If compaction cannot make it fit, the turn stops with the original error.",
 	},
 });
 

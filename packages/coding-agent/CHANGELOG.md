@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added opt-in timed primary retries (`retry.fallbackAfterMs`), minimum fallback holds (`retry.fallbackMinHoldMs`), and compact-to-fit fallback recovery (`retry.compactForFallback`). Provider Retry-After remains authoritative, oversized fallback requests are never sent, and a usage-limited fallback is not retried on every subsequent turn while both routes are unavailable.
 - Ctrl+N reserves its place in the composer input stream: pending pastes finish before saving, and subsequent typing or Enter waits until the durable save completes.
 - Central keeps last-known questions and unsent drafts through transient local or SSH poll failures, while refusing disconnected chat actions until reconnect.
 - Fixed Ctrl+N draft persistence truncating oversized paste expansions and image bytes; unsent backlog snapshots now persist losslessly.

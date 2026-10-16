@@ -92,6 +92,10 @@ Flow (`#handleRetryableError`):
 9. Record the recoverable error, emit `auto_retry_start`, and remove the failed assistant from active context unless preserving a resolved interrupted tool turn or proven-unexecuted tool-call/result pairs.
 10. Sleep with abort support, then schedule `agent.continue()` through the post-prompt task scheduler for the same prompt generation.
 
+With `retry.fallbackAfterMs > 0`, availability failures on a primary covered by a chain first enter a time-bounded retry window, before the count-based flow above. Primary requests honor Retry-After; when that wait exceeds the remaining window, the deadline switches to a fallback without prematurely re-requesting the primary. This window is not granted to a fallback. `retry.fallbackMinHoldMs` floors the primary's suppression deadline; `cooldown-expiry` restores it on a subsequent turn after that deadline. These deadlines are session-local, not a global outage latch. A fallback that is itself usage-limited is suppressed, and subsequent turns fail closed while both routes are unavailable.
+
+`retry.compactForFallback` retains the existing fit check, but if no candidate fits it tries compaction on the first otherwise eligible fallback. The summarizer chunks oversized history to its own input budget. Compaction owns no continuation here: recovery checks the resulting context fits before retrying. If it cannot fit, the prior routing state is restored and the original provider error terminates the turn.
+
 ### What resets retry counters
 
 `#retryAttempt` resets to `0` in these cases:
