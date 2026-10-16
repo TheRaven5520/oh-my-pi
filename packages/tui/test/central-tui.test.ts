@@ -216,7 +216,7 @@ describe("Central ask image prompts", () => {
 	async function setup(readPromptPaste: (path?: string) => Promise<{ text: string; images?: ImageContent[] }>, multi = false) {
 		const terminal = new VirtualTerminal(100, 30);
 		const scheduler = new VirtualRenderScheduler();
-		const answer = vi.fn(async () => {});
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
 		const host = {
 			refresh: async () => ({
 				chats: [{

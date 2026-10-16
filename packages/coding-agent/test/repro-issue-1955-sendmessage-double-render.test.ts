@@ -110,6 +110,8 @@ function createHarness(): Harness {
 	};
 
 	const ctx = {
+		// Display-only messages do not start turns or require a Central host.
+		collabGuest: {},
 		chatContainer: new Container(),
 		pendingMessagesContainer: new Container(),
 		updatePendingMessagesDisplay: vi.fn(),

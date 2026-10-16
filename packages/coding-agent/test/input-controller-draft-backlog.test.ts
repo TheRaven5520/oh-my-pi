@@ -75,7 +75,7 @@ describe("draft backlog failure boundaries", () => {
 			return true;
 		};
 		const submitted: string[] = [];
-		editor.onSubmit = text => submitted.push(text);
+		editor.onSubmit = text => { submitted.push(text); };
 		editor.handleInput("\x16");
 		const saving = f.controller.handleDraftBacklog();
 		editor.handleInput("next draft");

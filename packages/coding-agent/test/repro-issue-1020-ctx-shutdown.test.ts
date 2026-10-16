@@ -35,6 +35,8 @@ async function createHost(initializeUi: boolean) {
 		async emit() {},
 	};
 	const host = Object.assign(Object.create(InteractiveMode.prototype), {
+		// Shutdown scheduling is local; this fixture does not own a Central host.
+		collabGuest: {},
 		shutdownRequested: false,
 		syncComposerShape() {},
 		session: {

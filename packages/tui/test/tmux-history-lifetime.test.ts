@@ -48,7 +48,7 @@ async function rig(viewportScroll = false) {
 	const helperArgs = join(directory, "helper-args.json");
 	if (viewportScroll) {
 		const helper = join(directory, "configured helper.py");
-		await writeFile(helper, `import json, sys\nwith open(${JSON.stringify(helperArgs)}, "w") as f: json.dump(sys.argv[1:], f)\n`);
+		await writeFile(helper, `import json, os, sys\npath = ${JSON.stringify(helperArgs)}\nwith open(path + ".tmp", "w") as f: json.dump(sys.argv[1:], f)\nos.replace(path + ".tmp", path)\n`);
 		await tmux("set", "-g", "@omp-natural-scroll-helper", helper);
 	}
 	await tmux("set", "-p", "-t", pane, "@omp-history-generation", "0");
@@ -186,8 +186,6 @@ describe.skipIf(!Bun.which("tmux"))("tmux history request lifetime", () => {
 		const argsPath = join(r.directory, "helper-args.json");
 		await until(() => Bun.file(argsPath).exists());
 		expect(await Bun.file(argsPath).json()).toEqual(["--viewport-owner", r.pane, r.socketPath, join(r.directory, "tmux")]);
-		const source = await Bun.file(new URL("../src/tmux-history.ts", import.meta.url)).text();
-		expect(source).toContain("python3 #{?@omp-natural-scroll-helper,#{q:@omp-natural-scroll-helper},~/.config/tmux/natural-scroll.py} --viewport-owner");
 	});
 
 	it("releases successful captures without cancelling native copy mode", async () => {

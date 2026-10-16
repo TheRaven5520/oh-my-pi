@@ -43,6 +43,8 @@ function makeHarness() {
 	const showOverlay = vi.fn(() => fakeHandle);
 	let uiContext: ExtensionUIContext | undefined;
 	const ctx = {
+		// Exercise local dialogs and editor behavior without publishing a Central host.
+		collabGuest: {},
 		editor,
 		ui: {
 			requestRender,

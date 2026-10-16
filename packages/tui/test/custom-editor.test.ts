@@ -19,7 +19,11 @@ import {
 	extractImagePathFromText,
 	extractPastePathsFromText,
 } from "@oh-my-pi/pi-tui/prompt/custom-editor";
-import { imageAttachmentSource, tagImageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
+import {
+	type ImageAttachmentSource,
+	imageAttachmentSource,
+	tagImageAttachmentSource,
+} from "@oh-my-pi/pi-tui/prompt/image-source";
 import { SPACE_HOLD_MECHANICAL_RUN, SPACE_HOLD_RELEASE_MS, SPACE_REPEAT_MAX_GAP_MS } from "@oh-my-pi/pi-tui/space-hold";
 import { getEditorTheme, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 
@@ -125,7 +129,7 @@ describe("CustomEditor draft snapshots", () => {
 		const fileImage = tagImageAttachmentSource(payload, "/tmp/original image.png", "image");
 		const videoPreview = tagImageAttachmentSource(payload, "/tmp/original video.mp4", "video");
 		const localImage = tagImageAttachmentSource(payload, "local://clipboard.png", "image");
-		const expectedSources = [
+		const expectedSources: (ImageAttachmentSource | undefined)[] = [
 			{ path: "/tmp/original image.png", kind: "image" },
 			undefined,
 			{ path: "/tmp/original video.mp4", kind: "video" },
