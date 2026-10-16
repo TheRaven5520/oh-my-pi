@@ -7,6 +7,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ImageAttachmentEntry, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { AGENT_ROLE_HEADER, PARENT_SESSION_ID_HEADER } from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
 import { cfgImagesAutoResize } from "@oh-my-pi/pi-coding-agent/modes/settings";
@@ -190,6 +191,23 @@ describe("read image questions", () => {
 		const parts = (Array.isArray(content) ? content : []) as Array<{ type: string; text?: string }>;
 		expect(parts[0]?.type).toBe("image");
 		expect(parts[1]).toEqual({ type: "text", text: "What text is visible?" });
+	});
+
+	it("links the question to the chat's provider session", async () => {
+		const stub = createCompleteSimpleSuccessStub("Linked");
+		const session = createSession(testDir, visionModel);
+		session.getSessionId = () => "omp-session-file-id";
+		session.getProviderSessionId = () => "chat-provider-session";
+		const tool = new ReadTool(session, stub.fn);
+
+		await tool.execute("call", { path: `${imagePath}?q=What is this?` });
+
+		expect(stub.calls).toHaveLength(1);
+		const options = stub.calls[0]?.[2] as { headers?: Record<string, string> } | undefined;
+		expect(options?.headers).toEqual({
+			[PARENT_SESSION_ID_HEADER]: "chat-provider-session",
+			[AGENT_ROLE_HEADER]: "helper",
+		});
 	});
 
 	it("answers questions about attachment URLs", async () => {

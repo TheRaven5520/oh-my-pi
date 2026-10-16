@@ -611,6 +611,7 @@ export class SelectorController {
 				() => this.ctx.session.effectiveExtensionRoots,
 				activeModelPattern,
 				defaultModelPattern,
+				() => this.ctx.session.sessionId,
 			),
 			{ onCancel: () => done() },
 		);

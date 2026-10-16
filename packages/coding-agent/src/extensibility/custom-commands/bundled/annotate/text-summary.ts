@@ -2,6 +2,7 @@ import { completeSimple } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { CustomCommandContext } from "../../../../extensibility/custom-commands/types";
 import { privateSideCall } from "../../../../session/private-side-calls";
+import { buildSideAgentHeaders } from "../../../../session/side-agent-headers";
 import summaryPrompt from "./prompts/text-summary.md" with { type: "text" };
 import { normalizeTextReviewContextSummary } from "./text-review";
 
@@ -31,6 +32,8 @@ export async function generateTextReviewContextSummary(
 				disableReasoning: true,
 				maxTokens: 512,
 				signal: requestSignal,
+				// The summary runs with no provider session id; link it to the chat.
+				headers: buildSideAgentHeaders(ctx.sessionManager.getSessionId(), "helper"),
 			},
 			"helper",
 		),

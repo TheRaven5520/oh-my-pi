@@ -18,6 +18,7 @@ import type { Settings } from "../config/settings";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import compressDescriptionPrompt from "../prompts/skills/compress-description.md" with { type: "text" };
 import { privateSideCall } from "../session/private-side-calls";
+import { buildSideAgentHeaders } from "../session/side-agent-headers";
 import { Semaphore } from "../task/parallel";
 import type { Skill } from "./skills";
 
@@ -31,13 +32,15 @@ export type SkillDescriptionCompressor = (name: string, description: string, req
 
 /**
  * Resolve the configured fast role for each background request, without using the foreground model.
- * `getTelemetry` supplies the telemetry handle for each request's chat span.
+ * `getTelemetry` supplies the telemetry handle for each request's chat span; `getParentSessionId`
+ * the provider session id of the chat that loaded the skills, linked on each request.
  */
 export function createSkillDescriptionCompressor(
 	registry: ModelRegistry,
 	settings: Settings,
 	sessionId?: string,
 	getTelemetry?: () => AgentTelemetry | undefined,
+	getParentSessionId?: () => string | undefined,
 ): SkillDescriptionCompressor {
 	return async (_name, _description, request) => {
 		const available = registry.getAvailable();
@@ -72,6 +75,8 @@ export function createSkillDescriptionCompressor(
 					disableReasoning: true,
 					temperature: 0,
 					signal: AbortSignal.timeout(30_000),
+					// The request runs with no provider session id; link it to the chat.
+					headers: buildSideAgentHeaders(getParentSessionId?.(), "helper"),
 				},
 				"skill",
 			),

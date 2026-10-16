@@ -3675,11 +3675,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// Like the other one-shot model calls, each compression request resolves
 			// its own telemetry handle, so its usage stays out of the run summary.
 			// The first requests can start before `agent` is constructed; they use
-			// the telemetry config and session id the agent is constructed with.
-			compress: createSkillDescriptionCompressor(modelRegistry, settings, undefined, () =>
-				agent
-					? resolveTelemetry(agent.telemetry, agent.sessionId)
-					: resolveTelemetry(options.telemetry, providerSessionId),
+			// the telemetry config and session id the agent is constructed with, and
+			// each request names that session as its parent.
+			compress: createSkillDescriptionCompressor(
+				modelRegistry,
+				settings,
+				undefined,
+				() =>
+					agent
+						? resolveTelemetry(agent.telemetry, agent.sessionId)
+						: resolveTelemetry(options.telemetry, providerSessionId),
+				() => agent?.sessionId ?? providerSessionId,
 			),
 		});
 		const rebuildSystemPrompt = async (

@@ -11,6 +11,7 @@ import {
 	startMemoryStartupTask,
 } from "@oh-my-pi/pi-coding-agent/memories";
 import * as memoryStorage from "@oh-my-pi/pi-coding-agent/memories/storage";
+import { AGENT_ROLE_HEADER, PARENT_SESSION_ID_HEADER } from "@oh-my-pi/pi-coding-agent/session/side-agent-headers";
 import { getAgentDbPath, Snowflake, TempDir } from "@oh-my-pi/pi-utils";
 import { restoreEnvValue } from "./helpers/settings-test-state";
 
@@ -199,6 +200,8 @@ describe("memories runtime", () => {
 
 	test("runs phase1 to phase2 and writes consolidated outputs", async () => {
 		const fx = await createFixture();
+		// The chat's provider session id: both phases link their requests to it.
+		fx.session.sessionId = "chat-provider-session";
 		const rolloutPath = path.join(fx.sessionDir, "thread-a.jsonl");
 		const rolloutRows = [
 			{ type: "session", id: "thread-a", cwd: fx.agentDir },
@@ -260,6 +263,12 @@ describe("memories runtime", () => {
 		expect(ai.completeSimple).toHaveBeenCalledTimes(2);
 		const phase2Prompt = completeSpy.mock.calls[1]?.[1];
 		expect(phase2Prompt?.systemPrompt?.[0]).toContain("memory-stage-two consolidator");
+		for (const call of completeSpy.mock.calls) {
+			expect(call[2]?.headers).toEqual({
+				[PARENT_SESSION_ID_HEADER]: "chat-provider-session",
+				[AGENT_ROLE_HEADER]: "memory",
+			});
+		}
 	});
 
 	test("phase1 never sends a chat the person made private to a model", async () => {

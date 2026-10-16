@@ -10,18 +10,21 @@
  * parent agent sends as its own session id (`X-Claude-Code-Session-Id` for
  * Anthropic, `session_id` for OpenAI) — plus the request's role:
  *
- * - `subagent`: task subagents, clones (`/tan`, `/fork`), vibe workers and
- *   security scan sessions — their main requests, side requests, and the
- *   auto-thinking judge that can precede their first request.
+ * - `subagent`: task subagents, clones (`/tan`, `/fork`), vibe workers,
+ *   security scan sessions and the agents hub's agent generator — their main
+ *   requests, side requests, and the auto-thinking judge that can precede
+ *   their first request.
  * - `fresh`: a top-level session's own main requests (and judge) while `/fresh`
  *   or reset-context has swapped in a provider session id nothing links to the
  *   chat; the parent is the id the chat is otherwise sent under.
- * - `advisor`, `memory`: advisors and the memory extractor.
+ * - `advisor`, `memory`: advisors (and their compaction one-shots) and the
+ *   memory extractor.
  * - `title`, `label`: session titles and subagent UI labels.
  * - `capture`: the auto-learn capture turn.
  * - `summary`: branch summaries.
  * - `helper`: one-shot helpers (image questions, vision fallback, eval
- *   completions) and side turns such as `/btw` and the idle recap.
+ *   completions, skill-description compression, `/annotate` summaries) and
+ *   side turns such as `/btw` and the idle recap.
  * - `judge`, `security`: reserved.
  *
  * Otherwise a top-level session's own main requests send none: their session

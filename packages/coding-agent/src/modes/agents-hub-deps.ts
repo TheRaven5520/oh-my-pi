@@ -59,6 +59,8 @@ export function createAgentsHubDeps(
 	extensionRoots: () => EffectiveExtensionRoots,
 	activeModelPattern?: string,
 	defaultModelPattern?: string,
+	/** The host chat's live provider session id; the agent-generation helper's requests link to it. */
+	hostProviderSessionId?: () => string | undefined,
 ): AgentsHubDeps {
 	return {
 		browserSource: createModelBrowserSource(settings),
@@ -165,6 +167,8 @@ export function createAgentsHubDeps(
 				slashCommands: [],
 				// A helper for the host session: the host keeps the process-wide effects and provider toggles.
 				bindProcessState: false,
+				// Its requests name the host chat, so a proxy files it there, not as a chat of its own.
+				parentProviderSessionId: hostProviderSessionId?.(),
 			});
 			const unsubscribe = session.subscribe(event => {
 				if (event.type === "message_update" && "assistantMessageEvent" in event) {
