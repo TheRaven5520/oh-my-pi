@@ -1,3 +1,7 @@
+import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { extractImagePastePathsFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { readImageFromClipboard, readTextFromClipboard, readMacFileUrlsFromClipboard } from "../utils/clipboard";
+import { loadImageInput, loadImageAttachmentInput } from "../utils/image-loading";
 import type { Subprocess } from "bun";
 import { $ } from "bun";
 import { $which, isRecord } from "@oh-my-pi/pi-utils";
@@ -178,6 +182,29 @@ export class CentralSources implements CentralTuiHost {
 				available: false,
 			})),
 		];
+	}
+
+	async readPromptPaste(path?: string): Promise<{ text: string; images?: ImageContent[] }> {
+		const loadPath = async (path: string): Promise<ImageContent> => {
+			const loaded = await loadImageInput({ path, cwd: process.cwd(), autoResize: true });
+			if (!loaded) throw new Error(`Not a supported image: ${path}`);
+			return { type: "image", data: loaded.data, mimeType: loaded.mimeType };
+		};
+		if (path !== undefined) return { text: "", images: [await loadPath(path)] };
+		const paths = await readMacFileUrlsFromClipboard();
+		if (paths.length > 0) return { text: "", images: await Promise.all(paths.map(loadPath)) };
+		const image = await readImageFromClipboard();
+		if (image) {
+			const loaded = await loadImageAttachmentInput({
+				image: { type: "image", data: image.data.toBase64(), mimeType: image.mimeType },
+				uri: "clipboard", label: "clipboard", autoResize: true,
+			});
+			if (!loaded) throw new Error(`Unsupported clipboard image format: ${image.mimeType}`);
+			return { text: "", images: [{ type: "image", data: loaded.data, mimeType: loaded.mimeType }] };
+		}
+		const text = await readTextFromClipboard() ?? "";
+		const imagePaths = extractImagePastePathsFromText(text);
+		return imagePaths ? { text: "", images: await Promise.all(imagePaths.map(loadPath)) } : { text };
 	}
 
 	async refresh(): Promise<CentralSnapshot> {

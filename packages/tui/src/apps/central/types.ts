@@ -1,3 +1,4 @@
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { ExtensionAskDialogQuestion, ExtensionAskDialogResult } from "../../overlays/ask-dialog";
 import type { CollabUiSelectItem } from "@oh-my-pi/pi-wire";
 import type { TranscriptEntryLike } from "../../chat/transcript-entry";
@@ -40,6 +41,8 @@ export interface CentralSnapshot {
 }
 
 export interface CentralTuiHost {
+	/** Read on the inbox host, not the selected chat's (possibly remote) filesystem. Text excludes image markers. */
+	readPromptPaste?(path?: string): Promise<{ text: string; images?: ImageContent[] }>;
 	refresh(): Promise<CentralSnapshot>;
 	transcript(chatId: string): Promise<TranscriptEntryLike[]>;
 	answer(chatId: string, requestId: string, answer: CentralAnswer): Promise<void>;

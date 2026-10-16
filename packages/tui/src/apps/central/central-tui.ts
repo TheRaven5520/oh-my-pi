@@ -1,7 +1,9 @@
 import { TUI, type Component } from "../../tui";
 import { ScrollView } from "../../components/scroll-view";
 import { matchesKey } from "../../keys";
-import { AskDialogComponent, type AskDialogPrompt } from "../../overlays/ask-dialog";
+import { getKeybindings } from "../../keybindings";
+import { getDefaultPasteImageKeys } from "../../app-keybindings";
+import { AskDialogComponent, type AskDialogPrompt, type AskDialogPromptValue } from "../../overlays/ask-dialog";
 import { sanitizeDisplayLine, sanitizeDisplayText } from "../../overlays/extensions/display-text";
 import { HookEditorComponent } from "../../overlays/hook-editor";
 import { HookSelectorComponent } from "../../overlays/hook-selector";
@@ -17,7 +19,7 @@ import type { CentralAnswer, CentralChat, CentralSnapshot, CentralTuiHost } from
 interface CentralForm {
 	component: Component;
 	view: ScrollView;
-	prompt?: { component: HookEditorComponent; resolve: (value: string | undefined) => void };
+	prompt?: { component: HookEditorComponent; resolve: (value: AskDialogPromptValue | undefined) => void; paste: () => Promise<boolean> };
 	answer?: CentralAnswer;
 	sending: boolean;
 	touched: boolean;
@@ -168,7 +170,8 @@ export class CentralComponent implements Component {
 				{
 					onSubmit: submit,
 					onCancel: () => this.#skipChat(entry.chat.id),
-					onPrompt: (prompt, prefill) => this.#prompt(entry, prompt, prefill),
+					onPrompt: async (prompt, prefill) => (await this.#prompt(entry, prompt, prefill === undefined ? undefined : { text: prefill }))?.text,
+					onImagePrompt: (prompt, prefill) => this.#prompt(entry, prompt, prefill),
 				},
 				{ tui: this.ui },
 			);
@@ -211,26 +214,55 @@ export class CentralComponent implements Component {
 	#prompt(
 		entry: CentralQueueEntry<CentralForm>,
 		prompt: AskDialogPrompt,
-		prefill?: string,
-	): Promise<string | undefined> {
+		prefill?: AskDialogPromptValue,
+	): Promise<AskDialogPromptValue | undefined> {
 		if (this.#stopped || !this.#queue.has(entry)) return Promise.resolve(undefined);
 		const form = entry.draft!;
-		const { promise, resolve } = Promise.withResolvers<string | undefined>();
-		const finish = (value: string | undefined): void => {
+		const { promise, resolve } = Promise.withResolvers<AskDialogPromptValue | undefined>();
+		const finish = (value: AskDialogPromptValue | undefined): void => {
 			form.prompt?.component.dispose();
 			form.prompt = undefined;
 			form.view.setScrollOffset(0);
 			resolve(value);
 			if (!this.#stopped) this.ui.requestRender();
 		};
-		form.prompt = {
-			component: new HookEditorComponent(this.ui, prompt.title, prefill, finish, () => finish(undefined), {
+		const paste = async (path?: string): Promise<boolean> => {
+			const deliver = editor.beginPaste();
+			let text: string | undefined;
+			try {
+				if (!this.host.readPromptPaste) throw new Error("Image paste is unavailable in this host");
+				const value = await this.host.readPromptPaste(path);
+				if (!editor.acceptsImages) return false;
+				text = value.text;
+				for (const image of value.images ?? []) text += editor.attachImage(image) ?? "";
+				if (!text) throw new Error("Clipboard contains no image or text");
+				form.error = undefined;
+				return true;
+			} catch (error) {
+				if (editor.acceptsImages) form.error = sanitizeDisplayText(error instanceof Error ? error.message : "Image paste failed");
+				return false;
+			} finally {
+				deliver(text);
+				if (!this.#stopped) this.ui.requestRender();
+			}
+		};
+		const editor = new HookEditorComponent(
+			this.ui,
+			prompt.title,
+			prefill?.text,
+			(text, images) => finish({ text, images }),
+			() => finish(undefined),
+			{
 				promptStyle: true,
 				question: prompt.question,
+				acceptImages: true,
+				images: prefill?.images,
+				onPasteImage: () => paste(),
+				onPasteImagePath: async path => { await paste(path); },
 				maxHeight: Math.max(3, this.ui.terminal.rows - 16),
-			}),
-			resolve: finish,
-		};
+			},
+		);
+		form.prompt = { component: editor, resolve: finish, paste: () => paste() };
 		form.view.setScrollOffset(0);
 		this.ui.requestRender();
 		return promise;
@@ -338,7 +370,14 @@ export class CentralComponent implements Component {
 				if (matchesKey(data, "enter")) void this.#send(entry!);
 			} else {
 				form.touched = true;
-				form.component.handleInput?.(data);
+				if (form.prompt) {
+					const bindings = getKeybindings();
+					const pasteKey = bindings.getDefinition("app.clipboard.pasteImage") !== undefined
+						? bindings.matches(data, "app.clipboard.pasteImage")
+						: getDefaultPasteImageKeys().some(key => matchesKey(data, key));
+					if (pasteKey) void form.prompt.paste();
+					else form.prompt.component.handleInput(data);
+				} else form.component.handleInput?.(data);
 			}
 		}
 		this.ui.requestRender();

@@ -15,6 +15,11 @@
    sending the Central draft elsewhere. An unsent draft is retained in the retired
    view with `F8`.
 
+Custom answers and per-option notes accept clipboard images and pasted image paths,
+including image-only answers. Enter waits for pending image reads; failed reads
+leave the prompt open with an error instead of submitting an empty answer. Image
+paths are read on the machine running Central, even for questions from SSH hosts.
+
 Central does not scrape terminal panes and does not type into another chat. Each
 interactive OMP process publishes a short-lived owner-only local socket with the
 structured question payload. Answers are authenticated, validated against the

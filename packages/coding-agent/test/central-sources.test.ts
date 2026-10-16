@@ -1,4 +1,9 @@
 import { describe, expect, it, spyOn } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import * as clipboard from "../src/utils/clipboard";
 import { CentralQueue } from "@oh-my-pi/pi-tui/apps/central/queue";
 import type { CentralChat } from "@oh-my-pi/pi-tui/apps/central/types";
 import * as bridge from "../src/central/bridge";
@@ -142,4 +147,108 @@ describe("Central source poll retention", () => {
 			}
 		});
 	}
+});
+
+describe("Central source image paste loading", () => {
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+	async function setup() {
+		const directory = await mkdtemp(join(tmpdir(), "omp-central-paste-"));
+		const imagePath = join(directory, "screen shot.png");
+		await Bun.write(imagePath, Buffer.from(png, "base64"));
+		const readImage = spyOn(clipboard, "readImageFromClipboard").mockResolvedValue(null);
+		const readText = spyOn(clipboard, "readTextFromClipboard").mockResolvedValue("");
+		const readFiles = spyOn(clipboard, "readMacFileUrlsFromClipboard").mockResolvedValue([]);
+		const sources = new CentralSources();
+		return {
+			sources, imagePath, readImage, readText, readFiles,
+			close: async () => {
+				sources.close();
+				readImage.mockRestore();
+				readText.mockRestore();
+				readFiles.mockRestore();
+				await rm(directory, { recursive: true, force: true });
+			},
+		};
+	}
+
+	it("loads a pasted local image path into bytes without reading the clipboard", async () => {
+		const rig = await setup();
+		try {
+			const value = await rig.sources.readPromptPaste(rig.imagePath);
+			expect(value.text).toBe("");
+			expect(value.images).toHaveLength(1);
+			expect(value.images![0]).toMatchObject({ type: "image", mimeType: expect.stringMatching(/^image\//) });
+			expect(Buffer.from(value.images![0]!.data, "base64").length).toBeGreaterThan(0);
+			expect(rig.readImage).not.toHaveBeenCalled();
+			expect(rig.readText).not.toHaveBeenCalled();
+			expect(rig.readFiles).not.toHaveBeenCalled();
+		} finally { await rig.close(); }
+	});
+
+	it("normalizes clipboard image bytes rather than returning clipboard text", async () => {
+		const rig = await setup();
+		try {
+			rig.readImage.mockResolvedValue({ data: Buffer.from(png, "base64"), mimeType: "image/png" });
+			rig.readText.mockResolvedValue("not the image");
+			const value = await rig.sources.readPromptPaste();
+			expect(value.text).toBe("");
+			expect(value.images).toHaveLength(1);
+			expect(Buffer.from(value.images![0]!.data, "base64").length).toBeGreaterThan(0);
+			expect(value.images![0]!.type).toBe("image");
+		} finally { await rig.close(); }
+	});
+
+	it("prefers Finder file selections over clipboard bitmap and text", async () => {
+		const rig = await setup();
+		try {
+			rig.readFiles.mockResolvedValue([rig.imagePath]);
+			const value = await rig.sources.readPromptPaste();
+			expect(value.images).toHaveLength(1);
+			expect(value.text).toBe("");
+			expect(rig.readImage).not.toHaveBeenCalled();
+			expect(rig.readText).not.toHaveBeenCalled();
+		} finally { await rig.close(); }
+	});
+
+	for (const encoding of ["quoted", "file-url"] as const) {
+		it(`loads image paths from ${encoding} clipboard text`, async () => {
+			const rig = await setup();
+			try {
+				rig.readText.mockResolvedValue(encoding === "quoted" ? `'${rig.imagePath}'` : pathToFileURL(rig.imagePath).href);
+				const value = await rig.sources.readPromptPaste();
+				expect(value.text).toBe("");
+				expect(value.images).toHaveLength(1);
+				expect(value.images![0]!.data.length).toBeGreaterThan(0);
+			} finally { await rig.close(); }
+		});
+	}
+
+	it("preserves ordinary clipboard text and reports an empty clipboard as empty", async () => {
+		const rig = await setup();
+		try {
+			rig.readText.mockResolvedValue("a plain answer\nwith another line");
+			expect(await rig.sources.readPromptPaste()).toEqual({ text: "a plain answer\nwith another line" });
+			rig.readText.mockResolvedValue("");
+			expect(await rig.sources.readPromptPaste()).toEqual({ text: "" });
+		} finally { await rig.close(); }
+	});
+
+	it("rejects missing and non-image paths rather than passing them through as answers", async () => {
+		const rig = await setup();
+		try {
+			await expect(rig.sources.readPromptPaste(`${rig.imagePath}.missing.png`)).rejects.toThrow();
+			await Bun.write(rig.imagePath, "not image bytes");
+			await expect(rig.sources.readPromptPaste(rig.imagePath)).rejects.toThrow("Not a supported image");
+		} finally { await rig.close(); }
+	});
+
+	it("rejects unsupported clipboard image formats without silently falling back to text", async () => {
+		const rig = await setup();
+		try {
+			rig.readImage.mockResolvedValue({ data: Buffer.from("not an image"), mimeType: "image/tiff" });
+			rig.readText.mockResolvedValue("misleading fallback");
+			await expect(rig.sources.readPromptPaste()).rejects.toThrow("Unsupported clipboard image format");
+		} finally { await rig.close(); }
+	});
 });
