@@ -53,6 +53,7 @@ describe("Central workspace producer through private IPC", () => {
 		const localFocus = { model: "Original model" };
 		const errors: string[] = [];
 		const editor = {
+			getBorderStyle: () => "band",
 			getText: () => draft,
 			setText(text: string) {
 				editorWrites++;
@@ -64,10 +65,16 @@ describe("Central workspace producer through private IPC", () => {
 			session,
 			editor,
 			statusLine: {
-				renderCentralWorkspace(statusWidth: number, usageWidth: number, sourceSession?: AgentSession) {
+				renderCentralWorkspace(
+					statusWidth: number,
+					usageWidth: number,
+					sourceSession?: AgentSession,
+					shape?: string,
+				) {
 					dimensions.push([statusWidth, usageWidth]);
 					renderedSessions.push(sourceSession);
 					return {
+						composer: { shape: shape ?? "box", topBorder: { content: "Source status", width: 13 } },
 						statusLines: [
 							`\x1b[38;2;10;20;30m${sourceSession === session ? "Original model" : localFocus.model}\x1b[0m`,
 						],
@@ -108,6 +115,8 @@ describe("Central workspace producer through private IPC", () => {
 		const workspace = await f.sources.workspace(f.chat.id, 80, 24);
 		expect(workspace.statusLines.map(line => Bun.stripANSI(line))).toEqual(["Original model"]);
 		expect(f.renderedSessions).toEqual([f.session]);
+		expect(workspace.composer?.shape).toBe("band");
+		expect(Bun.stripANSI(workspace.composer!.topBorder.content)).toBe("Source status");
 		expect(f.localFocus.model).toBe("Focused child model");
 		expect(f.session.messages).toEqual([]);
 		expect(f.editorWrites()).toBe(0);

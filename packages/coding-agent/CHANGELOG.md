@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Central publishes validated source-session composer chrome and explicit prompt-unavailable reasons, matching the original chat's layout without modifying its draft.
 - Central exposes the published chat's status and both providers' quota windows over its private local/SSH bridge, and admits messages into the original session without altering its terminal draft. Expected conversation identity and deduplicated request IDs protect session switches and uncertain retries.
 - `omp login sprilicred` parity now covers SpriliCred withholding DeepSeek V4.1 Flash (empty `/deepseek/v1/models` for a granted key): the DeepSeek provider and every saved DeepSeek reference are dropped, never moved to `sprilicred-openai`.
 - Fixed compaction's last-resort largest-window candidate crossing onto providers no preferred model or role routes to; it previously sent the whole conversation to personal accounts or ambient-credential Bedrock on EC2 hosts when their catalog window was largest.

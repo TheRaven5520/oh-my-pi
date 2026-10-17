@@ -203,9 +203,21 @@ export class ExtensionUiController {
 					{
 						getTranscript: () => centralTranscript(this.ctx.session.messages),
 						getWorkspace: (statusWidth, usageWidth) => ({
-							...this.ctx.statusLine.renderCentralWorkspace(statusWidth, usageWidth, this.ctx.session),
+							...this.ctx.statusLine.renderCentralWorkspace(
+								statusWidth,
+								usageWidth,
+								this.ctx.session,
+								this.ctx.editor.getBorderStyle(),
+							),
 							canPrompt:
 								!this.#centralStopped && !this.ctx.collabGuest && !this.ctx.session.isSessionTransitioning,
+							promptUnavailableReason: this.#centralStopped
+								? "Chat is stopping; resume it before sending."
+								: this.ctx.collabGuest
+									? "This is a collaboration guest; select the owning chat."
+									: this.ctx.session.isSessionTransitioning
+										? "Chat is switching sessions; wait and retry."
+										: undefined,
 						}),
 						prompt: (sessionId, text) => {
 							if (

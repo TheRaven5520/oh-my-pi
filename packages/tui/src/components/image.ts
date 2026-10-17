@@ -745,6 +745,7 @@ export class Image implements Component {
 	#imageId?: number;
 
 	#cachedLines?: string[];
+	#cachedVirtualPlacement?: string;
 	#cachedWidth?: number;
 	#cachedSuppressed = false;
 	#cachedImageProtocol: typeof TERMINAL.imageProtocol = null;
@@ -786,6 +787,7 @@ export class Image implements Component {
 
 	invalidate(): void {
 		this.#cachedLines = undefined;
+		this.#cachedVirtualPlacement = undefined;
 		this.#cachedWidth = undefined;
 	}
 
@@ -843,6 +845,12 @@ export class Image implements Component {
 			this.#cachedKittyUnicodePlaceholders === kittyUnicodePlaceholders &&
 			(!transmitsSeparately || this.#budget?.shouldTransmit(imageId) !== true)
 		) {
+			// Rows are reusable; registering their prototype is a frame side effect.
+			// A forced repaint or another view of this id may have replaced it,
+			// and the viewport can begin below the image's first logical row.
+			if (this.#cachedVirtualPlacement !== undefined && imageId !== undefined) {
+				this.#budget?.enqueueVirtualPlacement(imageId, this.#cachedVirtualPlacement);
+			}
 			return this.#cachedLines;
 		}
 
@@ -850,6 +858,7 @@ export class Image implements Component {
 		const maxWidth = cap != null && cap > 0 ? Math.min(width - 2, cap) : width - 2;
 
 		let lines: string[];
+		this.#cachedVirtualPlacement = undefined;
 
 		if (hasProtocol && !suppressed) {
 			// Transmit the data once (keyed by id); thereafter renderImage returns
@@ -866,6 +875,7 @@ export class Image implements Component {
 				this.#budget.enqueueTransmit(this.#imageId, result.transmit);
 			}
 			if (result?.virtualPlacement && this.#imageId != null && this.#budget !== undefined) {
+				this.#cachedVirtualPlacement = result.virtualPlacement;
 				this.#budget.enqueueVirtualPlacement(this.#imageId, result.virtualPlacement);
 			}
 

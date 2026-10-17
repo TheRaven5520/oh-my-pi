@@ -1,6 +1,6 @@
 import { TUI, CURSOR_MARKER, type Component } from "../../tui";
 import { ScrollView } from "../../components/scroll-view";
-import { Editor } from "../../components/editor";
+import { CustomEditor } from "../../prompt/custom-editor";
 import { matchesKey } from "../../keys";
 import { getKeybindings } from "../../keybindings";
 import { getDefaultPasteImageKeys } from "../../app-keybindings";
@@ -38,7 +38,7 @@ interface CentralForm {
 }
 
 interface CentralDraft {
-	input: Editor;
+	input: CustomEditor;
 	version: number;
 	sending: boolean;
 	error?: string;
@@ -81,6 +81,9 @@ export class CentralComponent implements Component {
 	#transcriptView = new ScrollView([], { height: 1, followTail: true, scrollbar: "auto" });
 	readonly #drafts = new Map<string, CentralDraft>();
 	#inputFocus = false;
+	#inputTop = Number.POSITIVE_INFINITY;
+	#inputBottom = 0;
+	#mainWidth = 0;
 	#workspace: CentralWorkspace | undefined;
 	#workspaceKey: string | undefined;
 	#workspaceLoadingKey: string | undefined;
@@ -244,7 +247,9 @@ export class CentralComponent implements Component {
 	#draft(chatId: string): CentralDraft {
 		let draft = this.#drafts.get(chatId);
 		if (!draft) {
-			const input = new Editor(getEditorTheme());
+			const input = new CustomEditor(getEditorTheme());
+			input.setBorderStyle("band");
+			input.setShimmerRepaintHandler(() => this.ui.requestRender());
 			input.disableSubmit = true;
 			input.setScrollbarVisible(true);
 			draft = { input, version: 0, sending: false };
@@ -253,12 +258,35 @@ export class CentralComponent implements Component {
 		return draft;
 	}
 
+	#promptUnavailable(): string | undefined {
+		if (!this.host.prompt) return "This Central host cannot send. Update OMP; use Ctrl+O to open the chat.";
+		if (!this.#workspace)
+			return this.#workspaceError
+				? "Ctrl+O: resume chat with current OMP. Sending unavailable; draft kept."
+				: "Loading chat capabilities; wait and retry. Draft kept here.";
+		if (!this.#workspace.canPrompt)
+			return (
+				this.#workspace.promptUnavailableReason ??
+				"Ctrl+O: resume chat with current OMP. Sending unavailable; draft kept."
+			);
+		return undefined;
+	}
+
 	async #sendPrompt(chat: CentralChat, draft: CentralDraft, retry = false): Promise<void> {
-		if (!this.host.prompt || draft.sending) return;
-		if (draft.pending && !retry) return;
+		if (draft.sending) return;
+		if (draft.pending && !retry) {
+			draft.error = "Delivery unconfirmed · Ctrl+R retries the saved message; your edited draft is kept.";
+			return;
+		}
+		const unavailable = this.#promptUnavailable();
+		if (unavailable) {
+			draft.error = unavailable;
+			this.ui.requestRender();
+			return;
+		}
 		if (!draft.pending) {
 			const text = draft.input.getExpandedText();
-			if (!this.#workspace?.canPrompt || !text.trim()) return;
+			if (!text.trim()) return;
 			if (new TextEncoder().encode(text).byteLength > 65536) {
 				draft.error = "Message exceeds 64 KiB; shorten it before sending.";
 				return;
@@ -276,7 +304,7 @@ export class CentralComponent implements Component {
 		draft.error = undefined;
 		this.ui.requestRender();
 		try {
-			await this.host.prompt(pending.chatId, pending.sessionId, pending.requestId, pending.text);
+			await this.host.prompt!(pending.chatId, pending.sessionId, pending.requestId, pending.text);
 			if (draft.version === pending.version) draft.input.setText("");
 			draft.pending = undefined;
 		} catch (error) {
@@ -461,6 +489,11 @@ export class CentralComponent implements Component {
 		if (
 			data.startsWith("\x1b[<") &&
 			routeSgrMouseInput(data, event => {
+				if (event.leftClick && event.col < this.#mainWidth) {
+					if (event.row >= this.#inputTop && event.row < this.#inputBottom) this.#inputFocus = true;
+					else if (event.row >= this.#questionTop && event.row < this.#inputTop) this.#inputFocus = false;
+					this.ui.requestRender();
+				}
 				if (event.wheel !== null) {
 					const entry = this.#showRetired ? this.#retired : this.#entryForSelectedChat();
 					const form = entry ? this.#form(entry) : undefined;
@@ -513,7 +546,7 @@ export class CentralComponent implements Component {
 					const pasteEnd = data.indexOf("\x1b[201~");
 					const split = pasteEnd < 0 ? data.length : pasteEnd + "\x1b[201~".length;
 					const editorInput = data.slice(0, split);
-					draft.input.handleInput(matchesKey(editorInput, "shift+enter") ? "\n" : editorInput);
+					draft.input.handleDraftEdit(matchesKey(editorInput, "shift+enter") ? "\n" : editorInput);
 					if (draft.input.getText() !== before) draft.version++;
 					if (split < data.length) this.handleInput(data.slice(split));
 				}
@@ -621,7 +654,9 @@ export class CentralComponent implements Component {
 		this.#usageWidth = Math.max(1, Math.min(512, sidebarWidth || width));
 		void this.#loadWorkspace();
 		const usageRows = workspaceLines(
-			this.#workspace?.usageLines.length ? this.#workspace.usageLines : ["Usage unavailable"],
+			this.#workspace?.usageLines.length
+				? this.#workspace.usageLines
+				: [this.#workspaceError ? "Usage unavailable · source chat needs current OMP" : "Usage unavailable"],
 			this.#usageWidth,
 		);
 		const usageHeight = Math.min(usageRows.length, compactQuestion ? 1 : height >= 5 ? Math.max(1, height - 10) : 0);
@@ -711,7 +746,7 @@ export class CentralComponent implements Component {
 			0,
 			compactQuestion ? 1 : Math.max(1, Math.min(3, contentHeight - 8)),
 		);
-		if (status.length === 0)
+		if (status.length === 0 && !this.#workspace?.composer)
 			status.push(truncateToWidth(theme.fg("dim", this.#workspaceError ?? "Status unavailable"), mainWidth));
 		const draft = selectedChat ? this.#draft(selectedChat.id) : undefined;
 		const inputFocused = this.#inputFocus || !form;
@@ -722,9 +757,11 @@ export class CentralComponent implements Component {
 			draft.input.focused = this.focused && inputFocused;
 			draft.input.setBorderVisible(inputHeight >= 3);
 			draft.input.setMaxHeight(inputHeight);
+			draft.input.setBorderStyle(this.#workspace?.composer?.shape ?? "band");
+			draft.input.setTopBorder(this.#workspace?.composer?.topBorder);
 		}
 		const input = draft?.input.render(mainWidth) ?? [theme.fg("dim", "No chat selected")];
-		const sendState = draft?.sending ? "Sending…" : draft?.error;
+		const sendState = draft?.sending ? "Sending…" : (draft?.error ?? this.#promptUnavailable());
 		const footer = [
 			...input,
 			...status,
@@ -780,6 +817,9 @@ export class CentralComponent implements Component {
 			...view.render(mainWidth).slice(0, questionHeight),
 			...footer,
 		].slice(-contentHeight);
+		this.#mainWidth = mainWidth;
+		this.#inputTop = compactRosterRows + main.length - footer.length;
+		this.#inputBottom = this.#inputTop + input.length;
 		const rosterHeight = height - usage.length;
 		const roster = this.#rosterLines(rosterHeight, sidebarWidth);
 		while (roster.length < rosterHeight) roster.push("");
@@ -823,6 +863,7 @@ export class CentralComponent implements Component {
 		this.#emptyView.dispose();
 		this.#transcriptBuilder?.dispose();
 		this.#transcriptView.dispose();
+		for (const draft of this.#drafts.values()) draft.input.setShimmerRepaintHandler(undefined);
 		this.#finished.resolve();
 	}
 }

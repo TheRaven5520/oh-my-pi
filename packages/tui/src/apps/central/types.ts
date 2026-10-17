@@ -2,6 +2,7 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { ExtensionAskDialogQuestion, ExtensionAskDialogResult } from "../../overlays/ask-dialog";
 import type { CollabUiSelectItem } from "@oh-my-pi/pi-wire";
 import type { TranscriptEntryLike } from "../../chat/transcript-entry";
+import type { EditorTopBorder } from "../../components/composer/types";
 
 /** Full question data, independent of which terminal displays the answer form. */
 export type CentralRequestDraft =
@@ -45,6 +46,9 @@ export interface CentralWorkspace {
 	statusLines: string[];
 	usageLines: string[];
 	canPrompt: boolean;
+	/** Source-session chrome, rendered with its own settings and account context. */
+	composer?: { shape: string; topBorder: EditorTopBorder };
+	promptUnavailableReason?: string;
 }
 
 /** The source proved this request was never admitted; the composer may issue a fresh request ID. */

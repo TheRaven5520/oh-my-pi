@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- Central uses the normal OMP composer and source-session status chrome, accepts click-to-focus while a question is open, and preserves drafts with an actionable error when an older source cannot receive messages.
+- Cached Kitty image rows re-register their virtual placement before painting, retaining clipped image geometry during redraws without retransmitting pixel data.
 - Central includes a per-chat multiline composer, selected-session status line, and bottom-right Codex/Claude quota stack using statusline gradients. Drafts remain separate across chats, uncertain sends retain their retry identity, and compact question layouts cannot accept invisible answers.
 - Tmux viewport ownership uses `@omp-natural-scroll-helper` when configured, retaining the legacy helper path as a fallback.
 - With the matching tmux companion, copying a selection in a capable OMP pane returns to its existing app-owned viewport; selection entry and other panes' copy behavior are unchanged.

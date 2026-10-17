@@ -716,6 +716,79 @@ describe("Central selected-chat workspace", () => {
 		};
 	}
 
+	it("shows an actionable old-peer state on Enter and keeps each draft", async () => {
+		const prompt = vi.fn(async () => {});
+		const rig = await setup({
+			prompt,
+			workspace: async () => {
+				throw new Error("Unsupported workspace");
+			},
+		});
+		try {
+			await rig.input("keep old peer draft");
+			await rig.input("\r");
+			expect(prompt).not.toHaveBeenCalled();
+			expect(rig.text()).toContain("Ctrl+O");
+			expect(rig.text()).toContain("keep old peer draft");
+			await rig.input("\t");
+			expect(rig.text()).not.toContain("keep old peer draft");
+			await rig.input("\t");
+			expect(rig.text()).toContain("keep old peer draft");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("focuses the normal band composer by mouse and sends through the fullscreen TUI", async () => {
+		const terminal = new VirtualTerminal(110, 30);
+		const scheduler = new VirtualRenderScheduler();
+		const ui = new TUI(terminal, false, { renderScheduler: scheduler });
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
+		const selected = chat("a");
+		selected.requests = [{ id: "question", createdAt: 1, kind: "editor", title: "Answer separately" }];
+		const component = new CentralComponent(ui, {
+			refresh: async () => ({ chats: [selected], errors: [] }),
+			transcript: async () => [],
+			answer: async () => {},
+			open: async () => {},
+			prompt,
+			workspace: async () => ({
+				...workspace("a"),
+				statusLines: [],
+				composer: {
+					shape: "band",
+					topBorder: { content: "Source Claude status", width: 20 },
+				},
+			}),
+		});
+		const overlay = ui.showOverlay(component, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+		});
+		ui.setFocus(component);
+		try {
+			void component.run();
+			ui.start();
+			await scheduler.settle(terminal);
+			const rows = terminal.getViewport().map(row => Bun.stripANSI(row));
+			const statusRow = rows.findIndex(row => row.includes("Source Claude status"));
+			expect(statusRow).toBeGreaterThanOrEqual(0);
+			const composerRow = statusRow + 1;
+			terminal.sendInput(`\x1b[<0;4;${composerRow + 1}M`);
+			terminal.sendInput("typed in composer");
+			terminal.sendInput("\r");
+			await scheduler.settle(terminal);
+			expect(prompt.mock.calls).toEqual([["a", "session-a", expect.any(String), "typed in composer"]]);
+		} finally {
+			component.dispose();
+			overlay.hide();
+			ui.stop();
+		}
+	});
+
 	it("sends a bracketed paste followed by Enter in the same input frame", async () => {
 		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
 		const rig = await setup({ prompt });

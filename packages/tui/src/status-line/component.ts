@@ -28,6 +28,7 @@ import type {
 import type { Editor } from "../components/editor";
 import type { EditorTopBorder } from "../components/composer/types";
 import { composerTitleSlot, renderComposerTopLine } from "../components/composer/top-line";
+import { getComposerStyle } from "../components/composer/registry";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../theme/session-color";
 import { sanitizeStatusText } from "../chrome/shared";
 import { sanitizeDisplaySgrLine } from "../overlays/extensions/display-text";
@@ -3806,7 +3807,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		statusWidth: number,
 		usageWidth: number,
 		session: TSession = this.session,
-	): { statusLines: string[]; usageLines: string[] } {
+		composerShape?: string,
+	): { statusLines: string[]; usageLines: string[]; composer?: { shape: string; topBorder: EditorTopBorder } } {
 		if (session !== this.session) {
 			let renderer = this.#centralWorkspaceRenderer;
 			if (!renderer || renderer.session !== session) {
@@ -3823,12 +3825,16 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			renderer.#runningSubagentIds = this.#runningSubagentIds;
 			renderer.#subagentTreeCost = this.#subagentTreeCost;
 			renderer.#invalidateStatusLineRenderCache();
-			return renderer.renderCentralWorkspace(statusWidth, usageWidth);
+			return renderer.renderCentralWorkspace(statusWidth, usageWidth, session, composerShape);
 		}
 		statusWidth = Number.isFinite(statusWidth) ? Math.max(1, Math.min(500, Math.floor(statusWidth))) : 1;
 		usageWidth = Number.isFinite(usageWidth) ? Math.max(1, Math.min(500, Math.floor(usageWidth))) : 1;
 		this.refreshUsageInBackground();
-		const status = this.renderBottomBar(statusWidth, "full");
+		const style = composerShape === undefined ? undefined : getComposerStyle(composerShape);
+		const status =
+			style?.bottomBar === "none"
+				? undefined
+				: this.renderBottomBar(statusWidth, style?.bottomBar === "left" ? "left" : "full");
 		const usage = this.#centralUsage.length
 			? this.#centralUsage
 			: (["openai-codex", "anthropic"] as const).map(provider => ({
@@ -3838,6 +3844,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 					metrics: [],
 				}));
 		return {
+			composer: style ? { shape: style.id, topBorder: this.getComposerTopBorder(statusWidth, style) } : undefined,
 			statusLines: status ? [truncateToWidth(sanitizeDisplaySgrLine(status), statusWidth)] : [],
 			usageLines: usage
 				.flatMap(provider => renderCentralUsage(provider, this.#centralUsageStale))

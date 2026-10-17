@@ -1,9 +1,10 @@
 import { getImageDimensions, TERMINAL } from "@oh-my-pi/pi-tui";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { Image } from "@oh-my-pi/pi-tui/components/image";
-import { Spacer } from "@oh-my-pi/pi-tui/components/spacer";
 import { Text } from "@oh-my-pi/pi-tui/components/text";
-import { ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
-import { TUI } from "@oh-my-pi/pi-tui/tui";
+import { matchesKey } from "@oh-my-pi/pi-tui/keys";
+import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 const testImagePath = Bun.argv[2] || "/tmp/test-image.png";
 
@@ -26,31 +27,54 @@ const dims = getImageDimensions(base64Data, "image/png");
 console.log("Image dimensions:", dims);
 console.log("");
 
-const terminal = new ProcessTerminal();
-const tui = new TUI(terminal);
-
-tui.addChild(new Text("Image Rendering Test", 1, 1));
-tui.addChild(new Spacer(1));
-
-if (dims) {
-	tui.addChild(
-		new Image(base64Data, "image/png", { fallbackColor: s => `\x1b[33m${s}\x1b[0m` }, { maxWidthCells: 60 }, dims),
-	);
-} else {
-	tui.addChild(new Text("Could not parse image dimensions", 1, 0));
-}
-
-tui.addChild(new Spacer(1));
-tui.addChild(new Text("Press Ctrl+C to exit", 1, 0));
-
-const editor = {
-	handleInput(data: string) {
-		if (data.charCodeAt(0) === 3) {
-			tui.stop();
-			process.exit(0);
-		}
+await initTheme();
+const composer = new Composer({
+	watermark: false,
+	preferences: {
+		quiet: true,
+		composerShape: "pi",
+		spellingAutocomplete: "off",
+		spellingTypoDetection: false,
+		spellingAutocorrect: false,
 	},
-};
-
-tui.setFocus(editor as any);
-tui.start();
+});
+const transcript = new TranscriptContainer();
+transcript.addChild(
+	new Text(
+		"Image smoke: wheel to browse; Ctrl+R repaints cached rows; Ctrl+L resets the display; Ctrl+Q exits.\n" +
+			"Type a draft, clip either edge of an image, select/copy, and resize: images must stay attached to their labels.",
+		0,
+		0,
+	),
+);
+for (let index = 1; index <= 3; index++) {
+	transcript.addChild(new Text(`Image ${index} — top`, 0, 0));
+	transcript.addChild(
+		new Image(
+			base64Data,
+			"image/png",
+			{ fallbackColor: text => text },
+			{ budget: composer.ui.imageBudget, imageKey: `smoke:${index}`, maxWidthCells: 60, maxHeightCells: 14 },
+			dims ?? undefined,
+		),
+	);
+	transcript.addChild(
+		new Text(
+			`Image ${index} — bottom\n` +
+				Array.from({ length: 8 }, (_, row) => `Following image ${index}: row ${row + 1}`).join("\n"),
+			0,
+			0,
+		),
+	);
+}
+composer.setRuntimeChildren([transcript, composer.editor], { transient: [composer.editor] });
+composer.ui.addInputListener(data => {
+	if (matchesKey(data, "ctrl+r")) composer.ui.requestRender(true);
+	else if (matchesKey(data, "ctrl+l")) composer.ui.resetDisplay();
+	else if (matchesKey(data, "ctrl+q")) {
+		composer.stop();
+		process.exit(0);
+	} else return;
+	return { consume: true };
+});
+composer.start({ playWelcomeIntro: false });

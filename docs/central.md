@@ -12,8 +12,9 @@ per-chat message drafts, status lines, and source-local Codex/Claude quotas.
    cancelling or answering it. `Ctrl+O` opens the selected chat even when it has
    no pending question. `Tab` / `Shift+Tab` cycle through all chats forward/backward
    without moving or submitting drafts. `F2` switches between a pending question
-   and the message composer. Arrow keys operate the focused input; `Shift+Up/Down`
-   scrolls the transcript, and the wheel scrolls the transcript or question.
+   and the message composer; clicking the composer focuses it directly. Arrow
+   keys operate the focused input; `Shift+Up/Down` scrolls the transcript, and
+   the wheel scrolls the transcript or question.
    `Ctrl+C` closes Central only.
 4. If the original chat answers or withdraws a question, Central advances without
    sending the Central draft elsewhere. An unsent draft is retained for viewing.
@@ -34,13 +35,20 @@ the original target and request ID: `Ctrl+R` retries that same message, rather
 than sending a duplicate. New text typed during delivery is retained. A changed
 source session rejects the old request instead of sending it to a different chat.
 
-The selected session's status line stays below the composer. The bottom-right
-usage stack shows both Codex and Claude, using the same remaining-quota gradient
+The composer uses the normal OMP editor and the source session's composer shape
+and status-line settings (including the Claude preset). Status appears in the
+same top chrome or bottom bar as that shape, not a separate Central theme. The
+bottom-right usage stack shows both Codex and Claude, using the same remaining-quota gradient
 as the status line, including available tier windows and reset credits. Usage is
 scoped to that source's accounts, not summed across chats or hosts. Missing or
 stale data is labeled, never represented as zero usage. Narrow terminals stack
 the quota rows below the workspace; `Alt+Up/Down` scrolls rows that do not fit.
-Older source processes show workspace/send unavailable until refreshed.
+Older source processes show an actionable unavailable message, including on
+Enter, rather than silently discarding the send. Open the original chat with
+`Ctrl+O` (or manually when directed) and resume it with current OMP to enable
+Central sending. The Central draft stays intact. When the selected source cannot
+provide account-scoped usage, Central labels it unavailable rather than borrowing
+another chat's potentially different account metrics.
 
 Central does not scrape terminal panes and does not type into another chat. Each
 interactive OMP process publishes a short-lived owner-only local socket with the

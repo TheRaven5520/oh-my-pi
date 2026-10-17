@@ -3,7 +3,9 @@ import * as natives from "@oh-my-pi/pi-natives";
 import { TUI } from "@oh-my-pi/pi-tui";
 import { Image, ImageBudget } from "@oh-my-pi/pi-tui/components/image";
 import { Text } from "@oh-my-pi/pi-tui/components/text";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import {
+	encodeKittyPlaceholderGrid,
 	encodeKittyVirtualPlacement,
 	getKittyGraphics,
 	KITTY_PLACEHOLDER,
@@ -646,6 +648,71 @@ describe("Image budget + Unicode placeholders", () => {
 		expect([...budget.takeTransmits()]).toEqual([]);
 	});
 
+	it("registers cached placeholder geometry on every pass without retransmitting data", () => {
+		const budget = new ImageBudget(3);
+		const image = new Image(
+			BASE64_ONE_PIXEL_PNG,
+			"image/png",
+			{ fallbackColor: text => text },
+			{ budget, imageKey: "cached", maxWidthCells: 4, maxHeightCells: 4 },
+			{ widthPx: 40, heightPx: 40 },
+		);
+		budget.beginPass();
+		const first = image.render(20);
+		budget.endPass();
+		const placement = budget.takeVirtualPlacements();
+		expect(placement).toHaveLength(1);
+		expect(budget.takeTransmits()).toHaveLength(1);
+
+		budget.beginPass();
+		expect(image.render(20)).toBe(first);
+		budget.endPass();
+		expect(budget.takeVirtualPlacements()).toEqual(placement);
+		expect(budget.takeTransmits()).toEqual([]);
+
+		// A new cell grid replaces the prototype but keeps the image's content id.
+		const id = budget.acquireId("cached");
+		budget.beginPass();
+		const resized = image.render(5);
+		budget.endPass();
+		expect(resized).toEqual(encodeKittyPlaceholderGrid({ imageId: id, placementId: id, columns: 3, rows: 3 }));
+		expect(budget.takeVirtualPlacements()).toEqual([
+			encodeKittyVirtualPlacement({ imageId: id, placementId: id, columns: 3, rows: 3 }),
+		]);
+		expect(budget.takeTransmits()).toEqual([]);
+	});
+
+	it("restores a cached view's prototype after another view changes the same logical image geometry", () => {
+		const budget = new ImageBudget(3);
+		const views = [4, 2].map(
+			size =>
+				new Image(
+					BASE64_ONE_PIXEL_PNG,
+					"image/png",
+					{ fallbackColor: text => text },
+					{ budget, imageKey: "shared", maxWidthCells: size, maxHeightCells: size },
+					{ widthPx: 40, heightPx: 40 },
+				),
+		);
+		const large = views[0]!;
+		const small = views[1]!;
+		budget.beginPass();
+		const rows = large.render(20);
+		budget.endPass();
+		const largePlacement = budget.takeVirtualPlacements();
+		budget.takeTransmits();
+
+		budget.beginPass();
+		small.render(20);
+		budget.endPass();
+		expect(budget.takeVirtualPlacements().join("")).toContain("c=2,r=2");
+		budget.beginPass();
+		expect(large.render(20)).toBe(rows);
+		budget.endPass();
+		expect(budget.takeVirtualPlacements()).toEqual(largePlacement);
+		expect(budget.takeTransmits()).toEqual([]);
+	});
+
 	it("cancels a discovery pass's virtual placement when its image is demoted", () => {
 		const budget = new ImageBudget(1, () => {});
 		budget.beginPass();
@@ -713,6 +780,82 @@ describe("TUI inline-image budget", () => {
 			{ maxWidthCells: 4, maxHeightCells: 4, budget, imageKey: key },
 		);
 	}
+
+	it("registers cached clipped transcript images on scroll and forced repaint", async () => {
+		const originalGraphics = { ...getKittyGraphics() };
+		const term = new VirtualTerminal(20, 6);
+		const writes: string[] = [];
+		const realWrite = term.write.bind(term);
+		vi.spyOn(term, "write").mockImplementation(data => {
+			writes.push(data);
+			realWrite(data);
+		});
+		setKittyGraphics({ unicodePlaceholders: true });
+		const tui = new TUI(term);
+		const image = new Image(
+			BASE64_ONE_PIXEL_PNG,
+			"image/png",
+			{ fallbackColor: text => text },
+			{ budget: tui.imageBudget, imageKey: "clipped-window", maxWidthCells: 4, maxHeightCells: 4 },
+			{ widthPx: 40, heightPx: 40 },
+		);
+		const transcript = new TranscriptContainer();
+		transcript.addChild(image);
+		let top = 1;
+		let window: readonly string[] = [];
+		tui.setFrameProvider({
+			renderFrame: size => {
+				window = transcript.renderWindow(size.columns, 2, { component: image, row: top }).rows;
+				return { viewport: [...window, "draft"] };
+			},
+			acknowledgeHistory: () => {},
+		});
+		try {
+			tui.start();
+			await settle(term);
+			const initial = writes.join("");
+			expect(initial.indexOf("a=t")).toBeLessThan(initial.indexOf("a=p,U=1"));
+			expect(initial.indexOf("a=p,U=1")).toBeLessThan(initial.indexOf(KITTY_PLACEHOLDER));
+			const id = tui.imageBudget.acquireId("clipped-window");
+			const rows = encodeKittyPlaceholderGrid({ imageId: id, placementId: id, columns: 4, rows: 4 });
+			expect(window).toEqual(rows.slice(1, 3));
+
+			for (const nextTop of [2, 0, 1]) {
+				writes.length = 0;
+				top = nextTop;
+				tui.requestRender();
+				await settle(term);
+				expect(window).toEqual(rows.slice(top, top + 2));
+				expect(writes.join("")).toContain("a=p,U=1");
+				expect(writes.join("")).not.toContain("a=t");
+			}
+			writes.length = 0;
+			tui.requestRender(true);
+			await settle(term);
+			const repaint = writes.join("");
+			expect(repaint).toContain("a=p,U=1");
+			expect(repaint).toContain(KITTY_PLACEHOLDER);
+			expect(repaint).not.toContain("a=t");
+			expect(window).toEqual(rows.slice(1, 3));
+			writes.length = 0;
+			tui.requestRender();
+			await settle(term);
+			expect(writes.join("")).toContain("a=p,U=1");
+			expect(writes.join("")).not.toContain(KITTY_PLACEHOLDER);
+			expect(writes.join("")).not.toContain("a=t");
+			writes.length = 0;
+			tui.resetDisplay();
+			await settle(term);
+			const reset = writes.join("");
+			expect(reset.indexOf("\x1b[2J")).toBeLessThan(reset.indexOf("a=t"));
+			expect(reset.indexOf("a=t")).toBeLessThan(reset.indexOf("a=p,U=1"));
+			expect(reset).toContain(`i=${id},p=${id},c=4,r=4`);
+			expect(window).toEqual(rows.slice(1, 3));
+		} finally {
+			tui.stop();
+			setKittyGraphics(originalGraphics);
+		}
+	});
 
 	it("renders following text below a multi-row direct Kitty placement", async () => {
 		const originalGraphics = { ...getKittyGraphics() };
@@ -1019,7 +1162,12 @@ describe("TUI inline-image budget", () => {
 				graphics.writes.length = 0;
 				tui.requestRender();
 				await settle(term);
-				expect(graphics.writes.join("")).not.toContain("\x1b_G");
+				const cached = graphics.writes.join("");
+				expect(cached).toContain(resizedPlacement);
+				expect(cached).not.toContain("\x1b_Ga=t");
+				expect(cached).not.toContain("\x1b_Ga=T");
+				expect(cached).not.toContain(BASE64_ONE_PIXEL_PNG);
+				expect(cached).not.toContain(KITTY_PLACEHOLDER);
 			} finally {
 				tui.stop();
 				setKittyGraphics(originalGraphics);

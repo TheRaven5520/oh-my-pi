@@ -9,6 +9,7 @@ import type {
 import type { ExtensionAskDialogResultItem } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { sanitizeDisplaySgrLine } from "@oh-my-pi/pi-tui/overlays/extensions/display-text";
 import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
+import { isBuiltinComposerStyle } from "@oh-my-pi/pi-tui/components/composer/registry";
 
 export const CENTRAL_MAX_PROMPT_BYTES = 64 * 1024;
 export const CENTRAL_MAX_WORKSPACE_WIDTH = 1_000;
@@ -49,7 +50,36 @@ export function parseCentralWorkspace(
 	};
 	const statusLines = lines(value.statusLines, statusWidth, 16);
 	const usageLines = lines(value.usageLines, usageWidth, 64);
-	return statusLines && usageLines ? { statusLines, usageLines, canPrompt: value.canPrompt } : null;
+	if (!statusLines || !usageLines) return null;
+	const workspace: CentralWorkspace = { statusLines, usageLines, canPrompt: value.canPrompt };
+	if (typeof value.promptUnavailableReason === "string")
+		workspace.promptUnavailableReason = sanitizeDisplaySgrLine(value.promptUnavailableReason.slice(0, 1024));
+	if (
+		record(value.composer) &&
+		typeof value.composer.shape === "string" &&
+		isBuiltinComposerStyle(value.composer.shape)
+	) {
+		const border = value.composer.topBorder;
+		if (
+			record(border) &&
+			typeof border.content === "string" &&
+			typeof border.width === "number" &&
+			Number.isFinite(border.width)
+		) {
+			const content = lines([border.content], statusWidth, 1);
+			const title = border.title === undefined ? [] : lines([border.title], statusWidth, 1);
+			if (!content || !title) return null;
+			workspace.composer = {
+				shape: value.composer.shape,
+				topBorder: {
+					content: content[0]!,
+					width: Math.max(0, Math.min(statusWidth, border.width)),
+					title: title[0],
+				},
+			};
+		}
+	}
+	return workspace;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
