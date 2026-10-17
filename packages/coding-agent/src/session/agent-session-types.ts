@@ -394,6 +394,10 @@ export interface PromptOptions {
 	 * reaching the agent, instead of resolving `true` (default: false).
 	 */
 	throwOnDrop?: boolean;
+	/** Pin admission to sessionManager.getSessionId(), never the rotating provider-routing sessionId. */
+	expectedSessionId?: string;
+	/** External composers own their drafts; false prevents restoring their dropped text into the local editor. */
+	restoreOnDrop?: boolean;
 	/** Image attachments. */
 	images?: ImageContent[];
 	/** Queue behavior while streaming. `"aside"` is non-interrupting — it does not steer/follow-up
@@ -423,6 +427,9 @@ export interface PromptOptions {
 	 * failed before admission still only settles through the returned promise.
 	 */
 	onPromptAdmitted?: () => void;
+	/** Called once the existing queue owns the prompt, or the core run has appended its input message.
+	 * Unlike onPromptAdmitted, pre-dispatch setup failures never invoke this callback. */
+	onPromptAccepted?: () => void;
 }
 
 /** Payload for {@link AgentSession.setPromptDropped}: a user prompt cancelled

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Central includes a per-chat multiline composer, selected-session status line, and bottom-right Codex/Claude quota stack using statusline gradients. Drafts remain separate across chats, uncertain sends retain their retry identity, and compact question layouts cannot accept invisible answers.
 - Tmux viewport ownership uses `@omp-natural-scroll-helper` when configured, retaining the legacy helper path as a fallback.
 - With the matching tmux companion, copying a selection in a capable OMP pane returns to its existing app-owned viewport; selection entry and other panes' copy behavior are unchanged.
 - Central custom answers and notes accept image-only clipboard pastes, image paths, and configured image-paste shortcuts without losing attachments or racing Enter.

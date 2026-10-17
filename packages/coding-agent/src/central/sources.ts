@@ -6,9 +6,24 @@ import type { Subprocess } from "bun";
 import { $ } from "bun";
 import { $which, isRecord } from "@oh-my-pi/pi-utils";
 import { ConcatSink } from "@oh-my-pi/pi-utils/stream";
-import type { CentralAnswer, CentralChat, CentralSnapshot, CentralTuiHost } from "@oh-my-pi/pi-tui/apps/central/types";
+import type {
+	CentralAnswer,
+	CentralChat,
+	CentralSnapshot,
+	CentralTuiHost,
+	CentralWorkspace,
+} from "@oh-my-pi/pi-tui/apps/central/types";
+import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types";
 import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
-import { answerCentralQuestion, getCentralChatTranscript, listCentralChats, parseCentralChat } from "./bridge";
+import {
+	answerCentralQuestion,
+	getCentralChatTranscript,
+	getCentralChatWorkspace,
+	listCentralChats,
+	parseCentralChat,
+	promptCentralChat,
+} from "./bridge";
+import { isCentralPrompt, isCentralWorkspaceWidth, parseCentralWorkspace } from "./validation";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const DEADLINE_MS = 15_000;
@@ -29,6 +44,8 @@ export async function* centralLines(stream: ReadableStream<Uint8Array>): AsyncGe
 type BridgeRequest =
 	| { op: "list" }
 	| { op: "transcript"; chatId: string }
+	| { op: "workspace"; chatId: string; statusWidth: number; usageWidth: number }
+	| { op: "prompt"; chatId: string; sessionId: string; requestId: string; text: string }
 	| { op: "answer"; chatId: string; requestId: string; answer: CentralAnswer };
 
 /** No network listener: SSH supplies authenticated stdin/stdout. */
@@ -46,6 +63,23 @@ export async function serveCentralStdio(): Promise<void> {
 					`${JSON.stringify({ id, transcript: await getCentralChatTranscript(request.chatId) })}\n`,
 				);
 			} else if (
+				request.op === "workspace" &&
+				typeof request.chatId === "string" &&
+				isCentralWorkspaceWidth(request.statusWidth) &&
+				isCentralWorkspaceWidth(request.usageWidth)
+			) {
+				const workspace = await getCentralChatWorkspace(request.chatId, request.statusWidth, request.usageWidth);
+				process.stdout.write(`${JSON.stringify({ id, workspace })}\n`);
+			} else if (
+				request.op === "prompt" &&
+				typeof request.chatId === "string" &&
+				typeof request.sessionId === "string" &&
+				typeof request.requestId === "string" &&
+				typeof request.text === "string"
+			) {
+				await promptCentralChat(request.chatId, request.sessionId, request.requestId, request.text);
+				process.stdout.write(`${JSON.stringify({ id, ok: true })}\n`);
+			} else if (
 				request.op === "answer" &&
 				typeof request.chatId === "string" &&
 				typeof request.requestId === "string"
@@ -54,10 +88,10 @@ export async function serveCentralStdio(): Promise<void> {
 				await answerCentralQuestion(request.chatId, request.requestId, request.answer as CentralAnswer);
 				process.stdout.write(`${JSON.stringify({ id, ok: true })}\n`);
 			} else throw new Error("Invalid Central operation");
-		} catch {
+		} catch (error) {
 			// Answers and room credentials must never be reflected into diagnostics.
 			process.stdout.write(
-				`${JSON.stringify({ id, error: "Question unavailable or answer rejected; refresh and try again" })}\n`,
+				`${JSON.stringify({ id, error: "Central operation unavailable or rejected; refresh the chat and update OMP on its host", confirmedNoAdmission: error instanceof CentralPromptRejectedError })}\n`,
 			);
 		}
 	}
@@ -119,8 +153,13 @@ class SshCentralSource {
 			if (!pending) continue;
 			this.#pending.delete(reply.id);
 			clearTimeout(pending.timer);
-			if (reply.error) pending.reject(new Error("Remote question unavailable or answer rejected"));
-			else pending.resolve(reply);
+			if (reply.error) {
+				const message =
+					"Remote Central operation unavailable or rejected; refresh the chat and update OMP on its host";
+				pending.reject(
+					reply.confirmedNoAdmission === true ? new CentralPromptRejectedError(message) : new Error(message),
+				);
+			} else pending.resolve(reply);
 		}
 		this.#disconnect(child);
 	}
@@ -141,7 +180,7 @@ class SshCentralSource {
 		const child = this.#connect();
 		const id = ++this.#nextId;
 		const line = `${JSON.stringify({ ...request, id })}\n`;
-		if (Buffer.byteLength(line) > MAX_LINE_BYTES) throw new Error("Answer is too large");
+		if (Buffer.byteLength(line) > MAX_LINE_BYTES) throw new Error("Central request is too large");
 		const result = Promise.withResolvers<Record<string, unknown>>();
 		const timer = setTimeout(() => this.#disconnect(child), DEADLINE_MS);
 		this.#pending.set(id, { ...result, timer });
@@ -253,6 +292,42 @@ export class CentralSources implements CentralTuiHost {
 			return reply.transcript as TranscriptEntryLike[];
 		}
 		return getCentralChatTranscript(route.local.id);
+	}
+
+	async workspace(chatId: string, statusWidth: number, usageWidth: number): Promise<CentralWorkspace> {
+		const route = this.#routes.get(chatId);
+		if (!route || !route.source.available || this.#closed)
+			throw new Error("Chat is disconnected; wait for it to reconnect");
+		if (!isCentralWorkspaceWidth(statusWidth) || !isCentralWorkspaceWidth(usageWidth))
+			throw new Error("Invalid Central workspace dimensions");
+		if (!route.source.remote) return getCentralChatWorkspace(route.local.id, statusWidth, usageWidth);
+		const reply = await route.source.remote.request({
+			op: "workspace",
+			chatId: route.local.id,
+			statusWidth,
+			usageWidth,
+		});
+		const workspace = parseCentralWorkspace(reply.workspace, statusWidth, usageWidth);
+		if (!workspace) throw new Error("Workspace unavailable; update OMP on the chat's host");
+		return workspace;
+	}
+
+	async prompt(chatId: string, sessionId: string, requestId: string, text: string): Promise<void> {
+		const route = this.#routes.get(chatId);
+		if (!route || !route.source.available || this.#closed)
+			throw new Error("Chat is disconnected; delivery may be unknown, retry only with the same request ID");
+		if (!isCentralPrompt(sessionId, requestId, text))
+			throw new CentralPromptRejectedError("Invalid Central prompt or prompt exceeds 64 KiB");
+		if (route.source.remote) {
+			const reply = await route.source.remote.request({
+				op: "prompt",
+				chatId: route.local.id,
+				sessionId,
+				requestId,
+				text,
+			});
+			if (reply.ok !== true) throw new Error("Prompt delivery unknown; retry only with the same request ID");
+		} else await promptCentralChat(route.local.id, sessionId, requestId, text);
 	}
 
 	async answer(chatId: string, requestId: string, answer: CentralAnswer): Promise<void> {

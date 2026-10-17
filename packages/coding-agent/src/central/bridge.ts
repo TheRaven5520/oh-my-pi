@@ -7,10 +7,19 @@ import type {
 	CentralChat,
 	CentralRequest,
 	CentralRequestDraft,
+	CentralWorkspace,
 } from "@oh-my-pi/pi-tui/apps/central/types";
+import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types";
 import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { getBaseConfigRoot, isEnoent } from "@oh-my-pi/pi-utils";
-import { isCentralRequestDraft, parseCentralChat, validateCentralAnswer } from "./validation";
+import {
+	isCentralPrompt,
+	isCentralRequestDraft,
+	isCentralWorkspaceWidth,
+	parseCentralChat,
+	parseCentralWorkspace,
+	validateCentralAnswer,
+} from "./validation";
 
 export { parseCentralChat } from "./validation";
 export const CENTRAL_MAX_FRAME_BYTES = 8 * 1024 * 1024;
@@ -20,7 +29,14 @@ const ID_PATTERN = /^[a-f0-9-]{32,36}$/;
 const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
 
 type ChatState = Omit<CentralChat, "id" | "pid" | "requests" | "location" | "source">;
-type Options = { dir?: string; onClosed?: () => void; getTranscript?: () => TranscriptEntryLike[] };
+type Options = {
+	dir?: string;
+	onClosed?: () => void;
+	getTranscript?: () => TranscriptEntryLike[];
+	getWorkspace?: (statusWidth: number, usageWidth: number) => CentralWorkspace;
+	/** Resolves only when the run/queue owns the input; rejects pre-acceptance failures. */
+	prompt?: (sessionId: string, text: string) => Promise<void>;
+};
 export const CENTRAL_MAX_TRANSCRIPT_BYTES = 512 * 1024;
 
 function trimTranscriptToBytes(entries: TranscriptEntryLike[]): TranscriptEntryLike[] {
@@ -67,7 +83,7 @@ class IpcError extends Error {
 		readonly code: string,
 		readonly dead = false,
 	) {
-		super(`OMP Central: ${code}`);
+		super(`OMP Central: ${code}${code === "unsupported_operation" ? "; update OMP on the chat host" : ""}`);
 	}
 }
 
@@ -131,7 +147,7 @@ function query(meta: Metadata, request: object): Promise<Record<string, unknown>
 	let buffer = "";
 	let bytes = 0;
 	let done = false;
-	const finish = (error?: IpcError, response?: Record<string, unknown>): void => {
+	const finish = (error?: Error, response?: Record<string, unknown>): void => {
 		if (done) return;
 		done = true;
 		clearTimeout(timer);
@@ -165,12 +181,28 @@ function query(meta: Metadata, request: object): Promise<Record<string, unknown>
 			const payload = response as Record<string, unknown>;
 			if (payload.v !== VERSION) return finish(new IpcError("invalid_response"));
 			if (payload.ok !== true) {
-				const code = ["stale_request", "invalid_answer", "snapshot_unavailable", "frame_too_large"].includes(
-					String(payload.error),
-				)
+				const code = [
+					"stale_request",
+					"invalid_answer",
+					"snapshot_unavailable",
+					"frame_too_large",
+					"unsupported_operation",
+					"invalid_request",
+					"stale_session",
+					"prompt_rejected",
+					"request_id_conflict",
+					"prompt_capacity",
+				].includes(String(payload.error))
 					? String(payload.error)
-					: "request_rejected";
-				return finish(new IpcError(code));
+					: "op" in request && (request.op === "workspace" || request.op === "prompt")
+						? "unsupported_operation"
+						: "request_rejected";
+				const error = new IpcError(code);
+				return finish(
+					"op" in request && request.op === "prompt" && payload.confirmedNoAdmission === true
+						? new CentralPromptRejectedError(error.message)
+						: error,
+				);
 			}
 			finish(undefined, payload);
 		} catch {
@@ -217,6 +249,9 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 	}
 	const metadataPath = path.join(dir, `${id}.json`);
 	const pending = new Map<string, Pending>();
+	// Never evict an ID and accidentally admit an old retry again. Once full,
+	// refuse new requests; existing IDs remain retryable until this host exits.
+	const prompts = new Map<string, { sessionId: string; digest: string; result: Promise<void> }>();
 	const sockets = new Set<net.Socket>();
 	let closed = false;
 	const state = (): ChatState => {
@@ -226,7 +261,7 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 		}
 		return current;
 	};
-	const server = net.createServer(socket => {
+	const server = net.createServer({ allowHalfOpen: true }, socket => {
 		sockets.add(socket);
 		socket.unref();
 		const timer = setTimeout(() => socket.destroy(), TIMEOUT_MS);
@@ -289,6 +324,51 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 				if (request.op === "transcript") {
 					const transcript = trimTranscriptToBytes(options?.getTranscript?.() ?? []);
 					respond({ ok: true, transcript });
+					return;
+				}
+				if (request.op === "workspace") {
+					if (!isCentralWorkspaceWidth(request.statusWidth) || !isCentralWorkspaceWidth(request.usageWidth))
+						return respond({ ok: false, error: "invalid_request" });
+					if (!options?.getWorkspace) return respond({ ok: false, error: "unsupported_operation" });
+					const workspace = parseCentralWorkspace(
+						options.getWorkspace(request.statusWidth, request.usageWidth),
+						request.statusWidth,
+						request.usageWidth,
+					);
+					if (!workspace) return respond({ ok: false, error: "snapshot_unavailable" });
+					workspace.canPrompt &&= typeof options.prompt === "function";
+					return respond({ ok: true, workspace });
+				}
+				if (request.op === "prompt") {
+					if (!isCentralPrompt(request.sessionId, request.requestId, request.text))
+						return respond({ ok: false, error: "invalid_request", confirmedNoAdmission: true });
+					const sessionId = request.sessionId as string;
+					const requestId = request.requestId as string;
+					const text = request.text as string;
+					const digest = crypto.createHash("sha256").update(text).digest("hex");
+					let entry = prompts.get(requestId);
+					if (entry && (entry.sessionId !== sessionId || entry.digest !== digest))
+						return respond({ ok: false, error: "request_id_conflict" });
+					if (!entry) {
+						if (sessionId !== current.sessionId)
+							return respond({ ok: false, error: "stale_session", confirmedNoAdmission: true });
+						if (!options?.prompt)
+							return respond({ ok: false, error: "unsupported_operation", confirmedNoAdmission: true });
+						if (prompts.size >= 4_096)
+							return respond({ ok: false, error: "prompt_capacity", confirmedNoAdmission: true });
+						const pendingPrompt = Promise.withResolvers<void>();
+						entry = { sessionId, digest, result: pendingPrompt.promise };
+						prompts.set(requestId, entry);
+						try {
+							options.prompt(sessionId, text).then(pendingPrompt.resolve, pendingPrompt.reject);
+						} catch (error) {
+							pendingPrompt.reject(error);
+						}
+					}
+					void entry.result.then(
+						() => respond({ ok: true }),
+						() => respond({ ok: false, error: "prompt_rejected", confirmedNoAdmission: true }),
+					);
 					return;
 				}
 				if (request.op !== "answer" || typeof request.requestId !== "string")
@@ -466,4 +546,39 @@ export async function answerCentralQuestion(
 	const meta = await readMetadata(dir, chatId);
 	if (!meta) throw new IpcError("host_unavailable");
 	await query(meta, { op: "answer", requestId, answer });
+}
+
+export async function getCentralChatWorkspace(
+	chatId: string,
+	statusWidth: number,
+	usageWidth: number,
+	options?: Options,
+): Promise<CentralWorkspace> {
+	if (!isCentralWorkspaceWidth(statusWidth) || !isCentralWorkspaceWidth(usageWidth))
+		throw new IpcError("invalid_request");
+	const dir = path.resolve(options?.dir ?? path.join(getBaseConfigRoot(), "run", "central-hosts"));
+	await privateDirectory(dir);
+	const meta = await readMetadata(dir, chatId);
+	if (!meta) throw new IpcError("host_unavailable");
+	const response = await query(meta, { op: "workspace", statusWidth, usageWidth });
+	const workspace = parseCentralWorkspace(response.workspace, statusWidth, usageWidth);
+	if (!workspace) throw new IpcError("invalid_response");
+	return workspace;
+}
+
+export async function promptCentralChat(
+	chatId: string,
+	sessionId: string,
+	requestId: string,
+	text: string,
+	options?: Options,
+): Promise<void> {
+	if (!isCentralPrompt(sessionId, requestId, text))
+		throw new CentralPromptRejectedError("OMP Central: invalid_request");
+	const dir = path.resolve(options?.dir ?? path.join(getBaseConfigRoot(), "run", "central-hosts"));
+	await privateDirectory(dir);
+	const meta = await readMetadata(dir, chatId);
+	if (!meta) throw new IpcError("host_unavailable");
+	// No automatic retry: only the caller may retry, with this same request ID.
+	await query(meta, { op: "prompt", sessionId, requestId, text });
 }

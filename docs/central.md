@@ -1,6 +1,7 @@
 # OMP Central
 
-`omp central` is a private inbox for questions waiting in active OMP chats.
+`omp central` is a private workspace for active OMP chats: transcripts, questions,
+per-chat message drafts, status lines, and source-local Codex/Claude quotas.
 
 ## Workflow
 
@@ -10,8 +11,9 @@
 3. Submit an answer to advance. `Esc` skips the visible chat to the back without
    cancelling or answering it. `Ctrl+O` opens the selected chat even when it has
    no pending question. `Tab` / `Shift+Tab` cycle through all chats forward/backward
-   without moving or submitting drafts. Arrow keys operate the question or scroll
-   its transcript when no question is waiting; the wheel scrolls either pane.
+   without moving or submitting drafts. `F2` switches between a pending question
+   and the message composer. Arrow keys operate the focused input; `Shift+Up/Down`
+   scrolls the transcript, and the wheel scrolls the transcript or question.
    `Ctrl+C` closes Central only.
 4. If the original chat answers or withdraws a question, Central advances without
    sending the Central draft elsewhere. An unsent draft is retained for viewing.
@@ -20,6 +22,25 @@ Custom answers and per-option notes accept clipboard images and pasted image pat
 including image-only answers. Enter waits for pending image reads; failed reads
 leave the prompt open with an error instead of submitting an empty answer. Image
 paths are read on the machine running Central, even for questions from SSH hosts.
+
+The bottom composer sends plain-text messages to the selected existing session.
+`Enter` sends, `Shift+Enter` adds a line, and multiline pastes keep their text.
+These drafts are independent of the original terminal's input. Sending never
+overwrites that input, forks the chat, or interprets slash commands locally.
+Busy chats receive the message through their normal steering queue.
+
+A confirmed rejection leaves the draft editable. An uncertain delivery retains
+the original target and request ID: `Ctrl+R` retries that same message, rather
+than sending a duplicate. New text typed during delivery is retained. A changed
+source session rejects the old request instead of sending it to a different chat.
+
+The selected session's status line stays below the composer. The bottom-right
+usage stack shows both Codex and Claude, using the same remaining-quota gradient
+as the status line, including available tier windows and reset credits. Usage is
+scoped to that source's accounts, not summed across chats or hosts. Missing or
+stale data is labeled, never represented as zero usage. Narrow terminals stack
+the quota rows below the workspace; `Alt+Up/Down` scrolls rows that do not fit.
+Older source processes show workspace/send unavailable until refreshed.
 
 Central does not scrape terminal panes and does not type into another chat. Each
 interactive OMP process publishes a short-lived owner-only local socket with the

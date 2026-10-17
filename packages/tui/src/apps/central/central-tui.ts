@@ -1,20 +1,26 @@
-import { TUI, type Component } from "../../tui";
+import { TUI, CURSOR_MARKER, type Component } from "../../tui";
 import { ScrollView } from "../../components/scroll-view";
+import { Editor } from "../../components/editor";
 import { matchesKey } from "../../keys";
 import { getKeybindings } from "../../keybindings";
 import { getDefaultPasteImageKeys } from "../../app-keybindings";
 import { AskDialogComponent, type AskDialogPrompt, type AskDialogPromptValue } from "../../overlays/ask-dialog";
-import { sanitizeDisplayLine, sanitizeDisplayText } from "../../overlays/extensions/display-text";
+import {
+	sanitizeDisplayLine,
+	sanitizeDisplaySgrLine,
+	sanitizeDisplayText,
+} from "../../overlays/extensions/display-text";
 import { HookEditorComponent } from "../../overlays/hook-editor";
 import { HookSelectorComponent } from "../../overlays/hook-selector";
 import { wrapTextWithAnsi } from "../../render/render-utils";
 import { ChatTranscriptBuilder } from "../../chat/chat-transcript-builder";
 import { routeSgrMouseInput } from "../../mouse";
 import { ProcessTerminal } from "../../terminal";
-import { theme } from "../../theme/theme";
+import { getEditorTheme, theme } from "../../theme/theme";
 import { truncateToWidth, visibleWidth } from "../../utils";
 import { CentralQueue, type CentralQueueEntry } from "./queue";
-import type { CentralAnswer, CentralChat, CentralSnapshot, CentralTuiHost } from "./types";
+import type { CentralAnswer, CentralChat, CentralSnapshot, CentralTuiHost, CentralWorkspace } from "./types";
+import { CentralPromptRejectedError } from "./types";
 
 interface CentralForm {
 	component: Component;
@@ -31,6 +37,21 @@ interface CentralForm {
 	error?: string;
 }
 
+interface CentralDraft {
+	input: Editor;
+	version: number;
+	sending: boolean;
+	error?: string;
+	pending?: { chatId: string; sessionId: string; requestId: string; text: string; version: number };
+}
+
+/** Remote status rows may retain colors, but never terminal actions or extra rows. */
+function workspaceLines(lines: readonly string[], width: number): string[] {
+	return lines
+		.slice(0, 64)
+		.map(line => `${truncateToWidth(sanitizeDisplaySgrLine(line.slice(0, 16384)), width)}\x1b[0m`);
+}
+
 /** One quiet inbox; all answer state stays attached to its original request. */
 export class CentralComponent implements Component {
 	readonly #queue = new CentralQueue<CentralForm>();
@@ -39,7 +60,6 @@ export class CentralComponent implements Component {
 	#snapshot: CentralSnapshot = { chats: [], errors: [] };
 	#timer: NodeJS.Timeout | undefined;
 	#stopped = false;
-	#loaded = false;
 	#opening = false;
 	#openError: string | undefined;
 	#retired: CentralQueueEntry<CentralForm> | undefined;
@@ -56,7 +76,20 @@ export class CentralComponent implements Component {
 	#transcriptError: string | undefined;
 	#transcriptLoading = false;
 	#questionTop = 0;
+	#questionBudget = 12;
+	#questionVisibleFor: CentralQueueEntry<CentralForm> | undefined;
 	#transcriptView = new ScrollView([], { height: 1, followTail: true, scrollbar: "auto" });
+	readonly #drafts = new Map<string, CentralDraft>();
+	#inputFocus = false;
+	#workspace: CentralWorkspace | undefined;
+	#workspaceKey: string | undefined;
+	#workspaceLoadingKey: string | undefined;
+	#workspaceGeneration = 0;
+	#statusWidth = 1;
+	#usageWidth = 1;
+	#workspaceError: string | undefined;
+	#usageOffset = 0;
+	#usageMaxOffset = 0;
 
 	constructor(
 		readonly ui: TUI,
@@ -99,7 +132,7 @@ export class CentralComponent implements Component {
 			};
 		} finally {
 			if (!this.#stopped) {
-				this.#loaded = true;
+				void this.#loadWorkspace(true);
 				this.ui.requestRender();
 				// Schedule after completion: slow sources never overlap another poll.
 				this.#timer = setTimeout(() => void this.#refresh(), 1000);
@@ -116,6 +149,7 @@ export class CentralComponent implements Component {
 		const next = this.#queue.current;
 		const selected = next?.chat ?? this.#snapshot.chats[0];
 		this.#selectedChatId = selected?.id;
+		void this.#loadWorkspace();
 		if (selected) void this.#loadTranscript(selected.id, selected.cwd, selected.transcriptRevision);
 		this.ui.requestRender();
 	}
@@ -129,6 +163,7 @@ export class CentralComponent implements Component {
 		if (!chat) return;
 		this.#manualSelection = manual;
 		this.#selectedChatId = chatId;
+		void this.#loadWorkspace();
 		void this.#loadTranscript(chat.id, chat.cwd, chat.transcriptRevision);
 		this.ui.requestRender();
 	}
@@ -177,6 +212,86 @@ export class CentralComponent implements Component {
 		}
 	}
 
+	async #loadWorkspace(refresh = false): Promise<void> {
+		const chat = this.#snapshot.chats.find(candidate => candidate.id === this.#selectedChatId);
+		const key = chat ? JSON.stringify([chat.id, chat.sessionId, this.#statusWidth, this.#usageWidth]) : undefined;
+		if (key === this.#workspaceKey && (!refresh || key === this.#workspaceLoadingKey)) return;
+		const generation = ++this.#workspaceGeneration;
+		if (key !== this.#workspaceKey) {
+			this.#workspace = undefined;
+			this.#usageOffset = 0;
+		}
+		this.#workspaceKey = key;
+		this.#workspaceError = undefined;
+		if (!chat || !this.host.workspace) return;
+		this.#workspaceLoadingKey = key;
+		try {
+			const workspace = await this.host.workspace(chat.id, this.#statusWidth, this.#usageWidth);
+			if (this.#stopped || generation !== this.#workspaceGeneration || chat.id !== this.#selectedChatId) return;
+			this.#workspace = workspace;
+		} catch (error) {
+			if (this.#stopped || generation !== this.#workspaceGeneration || chat.id !== this.#selectedChatId) return;
+			this.#workspace = undefined;
+			this.#workspaceError = `Status unavailable: ${sanitizeDisplayLine(String(error))}`;
+		} finally {
+			if (generation === this.#workspaceGeneration) {
+				this.#workspaceLoadingKey = undefined;
+				if (!this.#stopped) this.ui.requestRender();
+			}
+		}
+	}
+
+	#draft(chatId: string): CentralDraft {
+		let draft = this.#drafts.get(chatId);
+		if (!draft) {
+			const input = new Editor(getEditorTheme());
+			input.disableSubmit = true;
+			input.setScrollbarVisible(true);
+			draft = { input, version: 0, sending: false };
+			this.#drafts.set(chatId, draft);
+		}
+		return draft;
+	}
+
+	async #sendPrompt(chat: CentralChat, draft: CentralDraft, retry = false): Promise<void> {
+		if (!this.host.prompt || draft.sending) return;
+		if (draft.pending && !retry) return;
+		if (!draft.pending) {
+			const text = draft.input.getExpandedText();
+			if (!this.#workspace?.canPrompt || !text.trim()) return;
+			if (new TextEncoder().encode(text).byteLength > 65536) {
+				draft.error = "Message exceeds 64 KiB; shorten it before sending.";
+				return;
+			}
+			draft.pending = {
+				chatId: chat.id,
+				sessionId: chat.sessionId,
+				requestId: crypto.randomUUID(),
+				text,
+				version: draft.version,
+			};
+		}
+		const pending = draft.pending;
+		draft.sending = true;
+		draft.error = undefined;
+		this.ui.requestRender();
+		try {
+			await this.host.prompt(pending.chatId, pending.sessionId, pending.requestId, pending.text);
+			if (draft.version === pending.version) draft.input.setText("");
+			draft.pending = undefined;
+		} catch (error) {
+			if (error instanceof CentralPromptRejectedError) {
+				draft.pending = undefined;
+				draft.error = `Not sent · edit or Enter to send again · ${sanitizeDisplayLine(error.message)}`;
+			} else {
+				draft.error = `Delivery unconfirmed · Ctrl+R retry saved message · ${sanitizeDisplayLine(String(error))}`;
+			}
+		} finally {
+			draft.sending = false;
+			if (!this.#stopped) this.ui.requestRender();
+		}
+	}
+
 	#form(entry: CentralQueueEntry<CentralForm>): CentralForm {
 		if (entry.draft) return entry.draft;
 		const request = entry.request;
@@ -198,7 +313,7 @@ export class CentralComponent implements Component {
 						(await this.#prompt(entry, prompt, prefill === undefined ? undefined : { text: prefill }))?.text,
 					onImagePrompt: (prompt, prefill) => this.#prompt(entry, prompt, prefill),
 				},
-				{ tui: this.ui },
+				{ tui: this.ui, showTabHint: false, showExpandHint: false, availableRows: () => this.#questionBudget },
 			);
 		} else if (request.kind === "select") {
 			component = new HookSelectorComponent(
@@ -214,6 +329,7 @@ export class CentralComponent implements Component {
 					markableCount: request.markableCount,
 					disabledIndices: request.disabledIndices,
 					maxVisible: Math.max(3, this.ui.terminal.rows - 14),
+					markSelectedRow: true,
 				},
 			);
 		} else {
@@ -366,10 +482,52 @@ export class CentralComponent implements Component {
 			this.#selectAdjacent(matchesKey(data, "shift+tab") ? -1 : 1);
 			return;
 		}
+		if (matchesKey(data, "alt+up") || matchesKey(data, "alt+down")) {
+			this.#usageOffset = Math.max(
+				0,
+				Math.min(this.#usageMaxOffset, this.#usageOffset + (matchesKey(data, "alt+up") ? -1 : 1)),
+			);
+			this.ui.requestRender();
+			return;
+		}
 		const entry = this.#entryForSelectedChat();
 		const form = entry ? this.#form(entry) : undefined;
 		if (matchesKey(data, "ctrl+o") && this.#selectedChatId) {
 			void this.#open(this.#selectedChatId);
+			return;
+		}
+		if (matchesKey(data, "f2") && form) {
+			this.#inputFocus = !this.#inputFocus;
+			this.ui.requestRender();
+			return;
+		}
+		const inputFocused = this.#inputFocus || !form;
+		if (inputFocused && this.#selectedChatId && !matchesKey(data, "shift+up") && !matchesKey(data, "shift+down")) {
+			const chat = this.#snapshot.chats.find(candidate => candidate.id === this.#selectedChatId);
+			if (chat) {
+				const draft = this.#draft(chat.id);
+				if (matchesKey(data, "enter") && data !== "\n") void this.#sendPrompt(chat, draft);
+				else if (matchesKey(data, "ctrl+r") && draft.pending) void this.#sendPrompt(chat, draft, true);
+				else {
+					const before = draft.input.getText();
+					const pasteEnd = data.indexOf("\x1b[201~");
+					const split = pasteEnd < 0 ? data.length : pasteEnd + "\x1b[201~".length;
+					const editorInput = data.slice(0, split);
+					draft.input.handleInput(matchesKey(editorInput, "shift+enter") ? "\n" : editorInput);
+					if (draft.input.getText() !== before) draft.version++;
+					if (split < data.length) this.handleInput(data.slice(split));
+				}
+			}
+			this.ui.requestRender();
+			return;
+		}
+		if (
+			form &&
+			this.#questionVisibleFor !== entry &&
+			!matchesKey(data, "shift+up") &&
+			!matchesKey(data, "shift+down")
+		) {
+			this.ui.requestRender();
 			return;
 		}
 		const transcriptScrollKey =
@@ -455,10 +613,24 @@ export class CentralComponent implements Component {
 		const height = Math.max(1, this.ui.terminal.rows);
 		const sidebarWidth = width >= 80 ? Math.min(32, Math.max(26, Math.floor(width * 0.28))) : 0;
 		const mainWidth = Math.max(1, width - (sidebarWidth > 0 ? sidebarWidth + 3 : 0));
-		const compactRosterRows = sidebarWidth === 0 ? 2 : 0;
-		const contentHeight = Math.max(1, height - compactRosterRows);
 		const entry = this.#showRetired ? this.#retired : this.#entryForSelectedChat();
 		const form = entry ? this.#form(entry) : undefined;
+		const compactQuestion = !!form && (height < 20 || sidebarWidth === 0);
+		const compactRosterRows = sidebarWidth === 0 && height >= 12 && !compactQuestion ? 1 : 0;
+		this.#statusWidth = Math.min(512, mainWidth);
+		this.#usageWidth = Math.max(1, Math.min(512, sidebarWidth || width));
+		void this.#loadWorkspace();
+		const usageRows = workspaceLines(
+			this.#workspace?.usageLines.length ? this.#workspace.usageLines : ["Usage unavailable"],
+			this.#usageWidth,
+		);
+		const usageHeight = Math.min(usageRows.length, compactQuestion ? 1 : height >= 5 ? Math.max(1, height - 10) : 0);
+		this.#usageMaxOffset = Math.max(0, usageRows.length - usageHeight);
+		this.#usageOffset = Math.min(this.#usageOffset, this.#usageMaxOffset);
+		const usage = usageRows.slice(this.#usageOffset, this.#usageOffset + usageHeight);
+		const compactUsageRows = sidebarWidth === 0 ? usage.length : 0;
+		const contentHeight = Math.max(1, height - compactRosterRows - compactUsageRows);
+		this.#questionBudget = Math.max(1, contentHeight - (compactQuestion ? 5 : 14));
 		const busyCount = this.#snapshot.chats.filter(chat => chat.busy).length;
 		const heading = `OMP Central  ·  ${this.#snapshot.chats.length} active  ·  ${this.#queue.chatCount} waiting  ·  ${busyCount} busy`;
 		const selectedChat = this.#snapshot.chats.find(chat => chat.id === this.#selectedChatId);
@@ -473,9 +645,11 @@ export class CentralComponent implements Component {
 			body.push(...wrapTextWithAnsi(theme.fg("error", this.#openError), Math.max(1, mainWidth - 2)));
 		if (this.#transcriptError)
 			body.push(...wrapTextWithAnsi(theme.fg("error", this.#transcriptError), Math.max(1, mainWidth - 2)));
+		let formStart = Number.POSITIVE_INFINITY;
 		if (form) {
 			if (form.error) body.push(...wrapTextWithAnsi(theme.fg("error", form.error), Math.max(1, mainWidth - 2)));
 			if (form.sending) body.push(theme.fg("muted", "Sending answer…"));
+			formStart = body.length;
 			if (form.details && entry) {
 				const request = entry.request;
 				const text =
@@ -522,53 +696,98 @@ export class CentralComponent implements Component {
 				body.push(...wrapTextWithAnsi(sanitizeDisplayText(text), Math.max(1, mainWidth - 2)));
 			} else {
 				const component = form.prompt?.component ?? form.component;
-				if ("focused" in component) component.focused = this.focused && !this.#showRetired && !form.sending;
+				if ("focused" in component)
+					component.focused = this.focused && !this.#inputFocus && !this.#showRetired && !form.sending;
 				body.push(...component.render(Math.max(1, mainWidth - 2)));
 			}
-		} else {
-			body.push(
-				theme.fg(
-					"muted",
-					!this.#loaded
-						? "Looking for questions…"
-						: this.#snapshot.errors.length
-							? "Some chats are unavailable; questions may be missing."
-							: "No questions waiting",
-				),
-			);
 		}
+		if (!form && this.#retired) body.push(theme.fg("muted", "Question ended elsewhere; draft not sent"));
 		const questionBody = body;
 		const transcriptRows =
 			this.#transcriptLoading && !this.#transcriptBuilder
 				? [theme.fg("muted", "Loading chat transcript…")]
 				: (this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? []);
-		const footerRows = 3;
-		const contentBudget = Math.max(0, contentHeight - footerRows - 3);
-		const minimumTranscriptHeight = contentBudget === 0 ? 0 : Math.min(8, Math.max(3, Math.floor(contentBudget / 3)));
-		const questionHeight = Math.min(questionBody.length + 1, Math.max(0, contentBudget - minimumTranscriptHeight));
-		const transcriptHeight = Math.max(minimumTranscriptHeight, contentHeight - footerRows - questionHeight - 3);
-		this.#questionTop = compactRosterRows + 2 + transcriptHeight + (questionBody.length > 0 ? 1 : 0);
+		const status = workspaceLines(this.#workspace?.statusLines ?? [], mainWidth).slice(
+			0,
+			compactQuestion ? 1 : Math.max(1, Math.min(3, contentHeight - 8)),
+		);
+		if (status.length === 0)
+			status.push(truncateToWidth(theme.fg("dim", this.#workspaceError ?? "Status unavailable"), mainWidth));
+		const draft = selectedChat ? this.#draft(selectedChat.id) : undefined;
+		const inputFocused = this.#inputFocus || !form;
+		const inputHeight = compactQuestion
+			? 1
+			: Math.max(1, Math.min(5, contentHeight - status.length - (this.#usageMaxOffset ? 2 : 1) - 3));
+		if (draft) {
+			draft.input.focused = this.focused && inputFocused;
+			draft.input.setBorderVisible(inputHeight >= 3);
+			draft.input.setMaxHeight(inputHeight);
+		}
+		const input = draft?.input.render(mainWidth) ?? [theme.fg("dim", "No chat selected")];
+		const sendState = draft?.sending ? "Sending…" : draft?.error;
+		const footer = [
+			...input,
+			...status,
+			truncateToWidth(
+				theme.fg(
+					sendState ? "muted" : "dim",
+					sendState ??
+						`${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}Ctrl+O open · Tab/Shift+Tab chats · ${inputFocused ? (this.#workspace?.canPrompt && this.host.prompt ? "Enter send · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · Shift+↑/↓ scroll · Ctrl+C close`,
+				),
+				mainWidth,
+			),
+			...(this.#usageMaxOffset ? [truncateToWidth(theme.fg("dim", "Alt+↑/↓ usage"), mainWidth)] : []),
+		];
+		const headerRows = !compactQuestion && contentHeight >= footer.length + (form ? 7 : 5) ? 2 : 0;
+		const contentBudget = Math.max(0, contentHeight - footer.length - headerRows);
+		const minimumTranscriptHeight = Math.min(compactQuestion ? 1 : 3, contentBudget);
+		const questionHeight = Math.min(
+			questionBody.length,
+			Math.max(0, contentBudget - minimumTranscriptHeight - (compactQuestion ? 0 : 1)),
+		);
+		const questionHeaderRows = questionHeight > 0 && !compactQuestion ? 1 : 0;
+		const transcriptHeight = Math.max(0, contentBudget - questionHeight - questionHeaderRows);
+		this.#questionTop = compactRosterRows + headerRows + transcriptHeight + questionHeaderRows;
 		this.#transcriptView.setHeight(transcriptHeight);
 		this.#transcriptView.setLines(transcriptRows);
 		const view = form?.view ?? this.#emptyView;
 		view.setHeight(questionHeight);
 		view.setLines(questionBody);
-		const notice = this.#showRetired
-			? "Unsent draft · question ended in original chat"
-			: this.#retired
-				? "Question ended elsewhere; draft not sent"
-				: "";
+		const requiresControlMarker =
+			!!form && form.answer === undefined && (form.prompt !== undefined || entry?.request.kind !== "ask");
+		const visibleQuestionRows = questionBody.slice(view.getScrollOffset(), view.getScrollOffset() + questionHeight);
+		this.#questionVisibleFor =
+			questionHeight > 0 &&
+			(requiresControlMarker
+				? visibleQuestionRows.some(line => line.includes(CURSOR_MARKER))
+				: formStart < view.getScrollOffset() + questionHeight)
+				? entry
+				: undefined;
+		const notice = this.#retired ? " · question ended elsewhere; draft retained" : "";
 		const main = [
-			truncateToWidth(theme.fg("muted", heading), mainWidth),
-			truncateToWidth(identity, mainWidth),
-			...this.#transcriptView.render(mainWidth),
-			...(questionBody.length > 0 ? [truncateToWidth(theme.fg("dim", "── current question ──"), mainWidth)] : []),
-			...view.render(mainWidth),
-			truncateToWidth(theme.fg("muted", notice), mainWidth),
-			truncateToWidth(theme.fg("dim", "Tab/Shift+Tab chats · ↑/↓ scroll · Ctrl+O open · Ctrl+C close"), mainWidth),
-		].slice(0, contentHeight);
-		const roster = this.#rosterLines(height, sidebarWidth);
-		if (sidebarWidth === 0) return [...this.#compactRoster(width), ...main].slice(0, height);
+			...(headerRows
+				? [truncateToWidth(theme.fg("muted", heading), mainWidth), truncateToWidth(identity, mainWidth)]
+				: []),
+			...this.#transcriptView.render(mainWidth).slice(0, transcriptHeight),
+			...(questionHeaderRows
+				? [
+						truncateToWidth(
+							theme.fg("dim", `── ${inputFocused ? "question" : "question focused"}${notice} ──`),
+							mainWidth,
+						),
+					]
+				: []),
+			...view.render(mainWidth).slice(0, questionHeight),
+			...footer,
+		].slice(-contentHeight);
+		const rosterHeight = height - usage.length;
+		const roster = this.#rosterLines(rosterHeight, sidebarWidth);
+		while (roster.length < rosterHeight) roster.push("");
+		roster.push(...usage);
+		if (sidebarWidth === 0)
+			return [...(compactRosterRows ? this.#compactRoster(width).slice(0, 1) : []), ...main, ...usage].slice(
+				-height,
+			);
 		return Array.from({ length: height }, (_, index) => {
 			const left = main[index] ?? "";
 			const padded = left + " ".repeat(Math.max(0, mainWidth - visibleWidth(left)));
@@ -586,6 +805,7 @@ export class CentralComponent implements Component {
 		this.#retired?.draft?.prompt?.component.invalidate?.();
 		this.#retired?.draft?.view.invalidate();
 		this.#emptyView.invalidate();
+		for (const draft of this.#drafts.values()) draft.input.invalidate();
 	}
 
 	#disposeForm(form: CentralForm): void {
@@ -601,6 +821,8 @@ export class CentralComponent implements Component {
 		for (const entry of this.#queue.entries) if (entry.draft) this.#disposeForm(entry.draft);
 		if (this.#retired?.draft) this.#disposeForm(this.#retired.draft);
 		this.#emptyView.dispose();
+		this.#transcriptBuilder?.dispose();
+		this.#transcriptView.dispose();
 		this.#finished.resolve();
 	}
 }

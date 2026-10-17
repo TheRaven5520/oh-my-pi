@@ -202,6 +202,52 @@ export class ExtensionUiController {
 					}),
 					{
 						getTranscript: () => centralTranscript(this.ctx.session.messages),
+						getWorkspace: (statusWidth, usageWidth) => ({
+							...this.ctx.statusLine.renderCentralWorkspace(statusWidth, usageWidth, this.ctx.session),
+							canPrompt:
+								!this.#centralStopped && !this.ctx.collabGuest && !this.ctx.session.isSessionTransitioning,
+						}),
+						prompt: (sessionId, text) => {
+							if (
+								this.#centralStopped ||
+								this.ctx.collabGuest ||
+								this.ctx.session.isSessionTransitioning ||
+								this.ctx.session.sessionManager.getSessionId() !== sessionId
+							) {
+								return Promise.reject(new Error("Central prompt target is unavailable"));
+							}
+							const admission = Promise.withResolvers<void>();
+							let admitted = false;
+							// Same plain-text/steer path as sendUserMessage. Receipt means the
+							// run/queue owns the input, never merely that preflight started.
+							void this.ctx.session
+								.prompt(text, {
+									expandPromptTemplates: false,
+									streamingBehavior: "steer",
+									expectedSessionId: sessionId,
+									restoreOnDrop: false,
+									throwOnDrop: true,
+									onPromptAccepted: () => {
+										admitted = true;
+										admission.resolve();
+										this.ctx.updatePendingMessagesDisplay();
+										this.ctx.ui.requestRender();
+									},
+								})
+								.then(
+									() => {
+										if (!admitted) admission.reject(new Error("Central prompt was not admitted"));
+									},
+									(error: unknown) => {
+										if (!admitted) admission.reject(error);
+										else
+											this.ctx.showError(
+												`Central prompt failed after admission: ${error instanceof Error ? error.message : String(error)}`,
+											);
+									},
+								);
+							return admission.promise;
+						},
 						onClosed: () => {
 							if (this.#centralHost === host) this.#centralHost = undefined;
 						},

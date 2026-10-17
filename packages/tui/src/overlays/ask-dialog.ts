@@ -160,6 +160,12 @@ interface AskDialogOptions {
 	onTimeout?: () => void;
 	tui?: TUI;
 	inputGuard?: AskDialogInputGuard;
+	/** Hosts that reserve Tab for switching chats advertise arrow navigation only. */
+	showTabHint?: boolean;
+	/** Hide expansion keys when the embedding host reserves that shortcut. */
+	showExpandHint?: boolean;
+	/** Space reserved by an embedding workspace; compact chrome when the full panel cannot fit. */
+	availableRows?: () => number;
 }
 
 interface QuestionState {
@@ -682,12 +688,30 @@ export class AskDialogComponent implements Component {
 		this.options.inputGuard?.syncPresentation?.();
 		const innerWidth = Math.max(1, width - 4);
 		this.#contentWidth = innerWidth;
+		const availableRows = this.options.availableRows?.();
+		if (availableRows !== undefined && availableRows < MIN_DIALOG_ROWS) {
+			const rows = Math.max(1, availableRows);
+			const header = this.#renderHeader(innerWidth, 1).slice(0, Math.max(0, rows - 2));
+			const footerRows = rows >= 3 ? 1 : 0;
+			this.#bodyRows = Math.max(1, rows - header.length - footerRows);
+			const body = this.#isSubmitTab()
+				? this.#renderSubmitBody(innerWidth, this.#bodyRows)
+				: this.#renderQuestionBody(innerWidth, this.#bodyRows);
+			return [
+				...header,
+				...body.lines.slice(0, this.#bodyRows),
+				...(footerRows ? [theme.fg("dim", truncateToWidth(this.#footerHintText(body.indicator), width))] : []),
+			].slice(0, rows);
+		}
 		// Fixed panel height: measured from the tallest tab at spawn and
 		// re-measured only when the viewport changes. Tab switches, cursor
 		// moves, and later answers never resize the box; content that
 		// outgrows it scrolls. Expanding a truncated question uses the space
 		// available within the existing height cap.
-		const totalRows = this.#dialogHeight(innerWidth, process.stdout.rows || 40);
+		const totalRows = Math.min(
+			this.#dialogHeight(innerWidth, process.stdout.rows || 40),
+			availableRows ?? Number.POSITIVE_INFINITY,
+		);
 		const tabBarRows = this.#hasSubmitTab() ? 1 : 0;
 		const maxTitleRows = Math.max(1, totalRows - 5 - MIN_BODY_ROWS - tabBarRows);
 		const headerLines = this.#renderHeader(innerWidth, maxTitleRows);
@@ -883,7 +907,8 @@ export class AskDialogComponent implements Component {
 			return actionBar([text([span(plainText(inputGuard.hint), "muted")], { truncate: "end" }), null, skip]);
 		}
 		const moves = ["up/down move"];
-		if (this.#hasSubmitTab()) moves.push("tab switches question");
+		if (this.#hasSubmitTab())
+			moves.push(this.options.showTabHint === false ? "left/right switches question" : "tab switches question");
 		if (this.#isSubmitTab()) {
 			const submit = actionButton("Submit", "submit", {
 				keys: "enter",
@@ -1112,6 +1137,7 @@ export class AskDialogComponent implements Component {
 	}
 
 	#expandHint(): string {
+		if (this.options.showExpandHint === false) return "";
 		if (!this.#headerExpandable && !this.#descExpandable) return "";
 		return ` · ${expandKeyHint()} ${this.#expanded ? "collapse" : "expand"}`;
 	}
@@ -1132,7 +1158,9 @@ export class AskDialogComponent implements Component {
 		const action = question?.multi
 			? `${formatKeyHint("space")} toggle · ${enter} ${enterAction}`
 			: `${enter} select · ${formatKeyHint("n")} note`;
-		const tabs = this.#hasSubmitTab() ? ` · ${formatKeyHints(["tab", "left", "right"])}` : "";
+		const tabs = this.#hasSubmitTab()
+			? ` · ${formatKeyHints(this.options.showTabHint === false ? ["left", "right"] : ["tab", "left", "right"])}`
+			: "";
 		const expand = this.#expandHint();
 		if (this.#questionCanPage && indicator) {
 			const pageKeys = editorKeys("tui.select.pageUp", "tui.select.pageDown");

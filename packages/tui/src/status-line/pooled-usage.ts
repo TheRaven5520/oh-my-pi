@@ -113,7 +113,7 @@ function remainingPercent(limit: object): number | undefined {
 	return Math.min(100, Math.max(0, 100 - usedPct));
 }
 
-function pooledWindowId(limit: object): PooledWindowId | undefined {
+export function pooledWindowId(limit: object): PooledWindowId | undefined {
 	const scope = "scope" in limit ? limit.scope : undefined;
 	const window = "window" in limit ? limit.window : undefined;
 	const windowObject = window && typeof window === "object" ? window : undefined;
@@ -171,7 +171,7 @@ export interface ProviderWindowStat {
  * put the subscription plan there, which must not split one window per plan. Codex meters that
  * carry no tier fall back to the limit-id slug.
  */
-function meterForLimit(report: UsageReport, limit: UsageLimit): string | undefined {
+export function meterForLimit(report: UsageReport, limit: UsageLimit): string | undefined {
 	if (report.provider !== "anthropic" && report.provider !== "openai-codex") return undefined;
 	const tier = limit.scope.tier?.trim().toLowerCase();
 	if (tier) return tier;

@@ -19,6 +19,19 @@ export function sanitizeDisplaySingleLine(text: string): string {
 	return sanitizeDisplayText(text).replace(/[\r\n]+/g, " ");
 }
 
+/** Single-line terminal text retaining only SGR styling, never OSC links or terminal commands. */
+export function sanitizeDisplaySgrLine(text: string): string {
+	// Remove string controls as a unit, including SGR-looking text inside their payloads.
+	const withoutStrings = text.replace(/(?:\x1b[\]P^_X]|[\x90\x98\x9d-\x9f])[\s\S]*?(?:\x07|\x1b\\|\x9c|$)/g, "");
+	let result = "";
+	let offset = 0;
+	for (const match of withoutStrings.matchAll(/\x1b\[[0-9;:]*m/g)) {
+		result += sanitizeDisplaySingleLine(withoutStrings.slice(offset, match.index)) + match[0];
+		offset = match.index + match[0].length;
+	}
+	return result + sanitizeDisplaySingleLine(withoutStrings.slice(offset));
+}
+
 /** Collapse newlines so a hostile title cannot inject extra TUI rows. */
 export function sanitizeDisplayLine(text: string): string {
 	return sanitizeDisplaySingleLine(text).trim();

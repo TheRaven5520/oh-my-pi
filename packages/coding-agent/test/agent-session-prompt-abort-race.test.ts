@@ -16,6 +16,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { SessionMaintenance } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
 import * as imageVisionFallback from "@oh-my-pi/pi-coding-agent/utils/image-vision-fallback";
 import * as imageLoading from "@oh-my-pi/pi-coding-agent/utils/image-loading";
 import { withTimeout } from "@oh-my-pi/pi-utils";
@@ -73,6 +74,106 @@ describe("AgentSession prompt admission racing abort", () => {
 		restores.push(() => spy.mockRestore());
 		return { started: started.promise, release: () => release.resolve() };
 	}
+
+	it("rejects an externally owned prompt after abort without restoring it into the source editor", async () => {
+		const { session, dropped } = await createSession([() => ({ content: ["Must not run"] })]);
+		const normalization = holdImageNormalization();
+		let admitted = false;
+		const pending = session
+			.prompt("Central owns this draft", {
+				images: [IMAGE],
+				expectedSessionId: session.sessionManager.getSessionId(),
+				restoreOnDrop: false,
+				throwOnDrop: true,
+				onPromptAdmitted: () => {
+					admitted = true;
+				},
+			})
+			.then(
+				() => "resolved",
+				(error: unknown) => error,
+			);
+		await withTimeout(normalization.started, 2_000, "Normalization never started");
+		await session.abort({ reason: USER_INTERRUPT_LABEL });
+		normalization.release();
+		expect(await pending).toBeInstanceOf(Error);
+		expect(admitted).toBe(false);
+		expect(dropped).toEqual([]);
+		expect(session.messages).toEqual([]);
+	});
+
+	it("rechecks the pinned session after manual cleanup before admitting a plain-text prompt", async () => {
+		const { session, dropped } = await createSession([() => ({ content: ["Must not run"] })]);
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const wait = spyOn(SessionMaintenance.prototype, "waitForManualMaintenanceCleanup").mockImplementationOnce(
+			async () => {
+				started.resolve();
+				await release.promise;
+				return undefined;
+			},
+		);
+		restores.push(() => wait.mockRestore());
+		let admitted = false;
+		const previousSessionId = session.sessionManager.getSessionId();
+		const pending = session
+			.prompt("Central stale target", {
+				expandPromptTemplates: false,
+				streamingBehavior: "steer",
+				expectedSessionId: previousSessionId,
+				restoreOnDrop: false,
+				throwOnDrop: true,
+				onPromptAdmitted: () => {
+					admitted = true;
+				},
+			})
+			.then(
+				() => "resolved",
+				(error: unknown) => error,
+			);
+		try {
+			await withTimeout(started.promise, 2_000, "Prompt never reached cleanup");
+			await session.newSession();
+			expect(session.sessionManager.getSessionId()).not.toBe(previousSessionId);
+		} finally {
+			release.resolve();
+		}
+		expect(String(await pending)).toContain("target session is no longer current");
+		expect(admitted).toBe(false);
+		expect(dropped).toEqual([]);
+		expect(session.messages.filter(message => message.role === "user")).toEqual([]);
+	});
+
+	it("rechecks the pinned session after image preprocessing before queueing or starting a turn", async () => {
+		const { session, dropped } = await createSession([() => ({ content: ["Must not run"] })]);
+		const normalization = holdImageNormalization();
+		let admitted = false;
+		const pending = session
+			.prompt("Central stale normalization", {
+				images: [IMAGE],
+				expectedSessionId: session.sessionManager.getSessionId(),
+				restoreOnDrop: false,
+				throwOnDrop: true,
+				onPromptAdmitted: () => {
+					admitted = true;
+				},
+			})
+			.then(
+				() => "resolved",
+				(error: unknown) => error,
+			);
+		try {
+			await withTimeout(normalization.started, 2_000, "Normalization never started");
+			await session.newSession();
+		} finally {
+			normalization.release();
+		}
+		expect(String(await pending)).toContain("target session is no longer current");
+		expect(admitted).toBe(false);
+		expect(dropped).toEqual([]);
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(session.messages.filter(message => message.role === "user")).toEqual([]);
+	});
 
 	it("drops an idle prompt instead of dispatching it when abort lands mid-normalization", async () => {
 		const streamCalls: string[] = [];

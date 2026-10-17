@@ -125,6 +125,7 @@ function makeCodexSession(
 	};
 	session.model = { contextWindow: 200_000, provider: "openai-codex" };
 	session.modelRegistry = {
+		isUsingOAuth: () => true,
 		authStorage: {
 			oauth: { identity: resolveActiveIdentity },
 		},
@@ -154,6 +155,218 @@ describe("StatusLineComponent usage refresh", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		resetSettingsForTest();
+	});
+
+	it("renders both Central pools and all tiers without refetching or exposing account metadata", async () => {
+		const report = (provider: string, account: string, fraction: number, tier?: string) => ({
+			provider,
+			fetchedAt: Date.now(),
+			metadata: { sprilicredAccountId: account, token: "secret-token" },
+			limits: [
+				{
+					id: `${provider}:secondary`,
+					label: "private-label",
+					scope: { windowId: "7d", tier },
+					window: { label: "7d" },
+					amount: { unit: "percent", usedFraction: fraction },
+				},
+			],
+		});
+		const codex = report("openai-codex", "private-codex", 0.25);
+		const fetch = vi.fn(async () => [
+			codex,
+			codex,
+			report("openai-codex", "private-second-codex", 0.75),
+			report("openai-codex", "private-ultrafast", 0.5, "ultrafast"),
+			report("anthropic", "private-claude", 0.125),
+			report("anthropic", "private-fable", 0.375, "fable"),
+		]);
+		const component = new StatusLineComponent(makeSession(fetch), statusLineHost);
+		try {
+			component.updateSettings({ preset: "custom", leftSegments: ["session_name"], rightSegments: [] });
+			await refreshUsage(component);
+			const workspace = component.renderCentralWorkspace(120, 40);
+			const rows = workspace.usageLines.map(plain);
+			expect(rows).toContain("Codex pool");
+			expect(rows).toContain("Claude pool");
+			expect(rows).toContain("wk 50%");
+			expect(rows).toContain("ultrafast wk 50%");
+			expect(rows).toContain("wk 87%");
+			expect(rows).toContain("fable wk 62%");
+			expect(plain(workspace.statusLines.join(""))).toContain("test");
+			expect(workspace.usageLines.join("")).toContain("\x1b[38;5;211m");
+			expect(rows.join("\n")).not.toMatch(/private|secret|\|/);
+			component.renderCentralWorkspace(120, 40);
+			vi.advanceTimersByTime(0);
+			expect(fetch).toHaveBeenCalledTimes(1);
+		} finally {
+			component.dispose();
+		}
+	});
+
+	it("renders the supplied main session without retargeting the focused child", async () => {
+		const mainFetch = vi.fn(async () => usageReport(20));
+		const main = makeSession(mainFetch);
+		const child = makeSession(async () => usageReport(80));
+		Object.assign(main.sessionManager, { getSessionName: () => "source-main" });
+		Object.assign(child.sessionManager, { getSessionName: () => "focused-child" });
+		Object.assign(main, { getContextUsage: () => ({ tokens: 50_000, contextWindow: 200_000, percent: 25 }) });
+		Object.assign(child, { getContextUsage: () => ({ tokens: 100_000, contextWindow: 200_000, percent: 50 }) });
+		const component = new StatusLineComponent(main, statusLineHost);
+		try {
+			component.updateSettings({
+				preset: "custom",
+				leftSegments: ["session_name", "context_pct"],
+				rightSegments: [],
+			});
+			component.setSession(child, "child-id");
+			await refreshUsage(component);
+			component.renderCentralWorkspace(120, 40, main);
+			vi.advanceTimersByTime(0);
+			await flushMicrotasks();
+			const source = component.renderCentralWorkspace(120, 40, main);
+			const focused = component.renderCentralWorkspace(120, 40);
+			expect(plain(source.statusLines.join(" "))).toContain("source-main");
+			expect(plain(source.statusLines.join(" "))).toMatch(/\b25(?:\.0)?%/);
+			expect(source.usageLines.map(plain).join(" ")).toContain("5h 80%");
+			expect(plain(focused.statusLines.join(" "))).toContain("focused-child");
+			expect(plain(focused.statusLines.join(" "))).toMatch(/\b50(?:\.0)?%/);
+			expect(focused.usageLines.map(plain).join(" ")).toContain("5h 20%");
+			expect(mainFetch).toHaveBeenCalledTimes(1);
+		} finally {
+			component.dispose();
+		}
+	});
+
+	it("disposes the dedicated source renderer with its owner", async () => {
+		const fetch = vi.fn(async () => usageReport(20));
+		const source = makeSession(fetch);
+		const component = new StatusLineComponent(
+			makeSession(async () => []),
+			statusLineHost,
+		);
+		component.renderCentralWorkspace(120, 40, source);
+		component.dispose();
+		vi.advanceTimersByTime(0);
+		await flushMicrotasks();
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it("names real provider windows and derives the Fable meter without a tier field", async () => {
+		const reports = [
+			{
+				provider: "anthropic",
+				fetchedAt: Date.now(),
+				metadata: { sprilicredAccountId: "claude-source-account" },
+				limits: [
+					{
+						id: "claude-short",
+						scope: { windowId: "5h" },
+						window: { label: "5-hour" },
+						amount: { usedFraction: 0.03125 },
+					},
+					{
+						id: "claude-long",
+						scope: { windowId: "7d" },
+						window: { label: "Weekly total" },
+						amount: { usedFraction: 0.8125 },
+					},
+					{
+						id: "claude-model",
+						scope: { windowId: "7d:fable" },
+						window: { label: "Fable weekly" },
+						amount: { usedFraction: 0.65625 },
+					},
+				],
+			},
+			{
+				provider: "openai-codex",
+				fetchedAt: Date.now(),
+				metadata: { sprilicredAccountId: "codex-source-account" },
+				limits: [
+					{
+						id: "openai-codex:secondary",
+						scope: { windowId: "chat:secondary" },
+						window: { label: "Weekly" },
+						amount: { usedFraction: 0.25 },
+					},
+					{
+						id: "openai-codex:secondary",
+						scope: { windowId: "chat:secondary", tier: "ultrafast" },
+						window: { label: "Weekly" },
+						amount: { usedFraction: 0.5 },
+					},
+				],
+			},
+		];
+		const component = new StatusLineComponent(
+			makeSession(async () => reports),
+			statusLineHost,
+		);
+		try {
+			await refreshUsage(component);
+			const workspace = component.renderCentralWorkspace(120, 40);
+			expect(workspace.usageLines.map(plain)).toEqual([
+				"Codex pool",
+				"wk 75%",
+				"ultrafast wk 50%",
+				"Claude pool",
+				"5h 96%",
+				"wk 18%",
+				"fable wk 34%",
+			]);
+			expect(workspace.usageLines.join(" ")).toContain("\x1b[38;5;176m5h");
+			expect(workspace.usageLines.join(" ")).toContain("\x1b[38;5;217mfable wk");
+			expect(reports[0]!.limits[2]!.scope).toEqual({ windowId: "7d:fable" });
+		} finally {
+			component.dispose();
+		}
+	});
+
+	it("keeps Central account credits scoped and marks failed refreshes stale", async () => {
+		const fetch = vi.fn(async () =>
+			codexUsageReport({ sevenDayPercent: 20, sevenDayResetAt: Date.now() + 60_000, savedResets: 2 }),
+		);
+		const component = new StatusLineComponent(makeCodexSession(fetch), statusLineHost);
+		try {
+			await refreshUsage(component);
+			const rows = component.renderCentralWorkspace(120, 40).usageLines.map(plain);
+			expect(rows).toContain("resets 2");
+			expect(rows).toContain("usable 2");
+			expect(rows).toContain("Claude unavailable");
+			fetch.mockRejectedValueOnce(new Error("secret backend error"));
+			await refreshUsage(component, 300_000);
+			const stale = component.renderCentralWorkspace(120, 40).usageLines.map(plain);
+			expect(stale).toContain("Codex stale");
+			expect(stale.join(" ")).not.toContain("secret");
+		} finally {
+			component.dispose();
+		}
+	});
+
+	it("invalidates the inactive provider account without mixing subscriptions", async () => {
+		let accountId = "account-1";
+		const reports = [
+			...codexUsageReport({ sevenDayPercent: 20, sevenDayResetAt: 0 }, "account-1", "first@example.com"),
+			...codexUsageReport({ sevenDayPercent: 70, sevenDayResetAt: 0 }, "account-2", "second@example.com"),
+		];
+		const session = makeCodexSession(
+			async () => reports,
+			() => ({ accountId }),
+		);
+		const model = { contextWindow: 200_000, provider: "anthropic" };
+		Object.assign(session, { model, state: { messages: [], model } });
+		const component = new StatusLineComponent(session, statusLineHost);
+		try {
+			await refreshUsage(component);
+			expect(component.renderCentralWorkspace(120, 40).usageLines.map(plain).join(" ")).toContain("wk 80%");
+			accountId = "account-2";
+			expect(component.renderCentralWorkspace(120, 40).usageLines.map(plain)).toContain("Codex unavailable");
+			await refreshUsage(component);
+			expect(component.renderCentralWorkspace(120, 40).usageLines.map(plain).join(" ")).toContain("wk 30%");
+		} finally {
+			component.dispose();
+		}
 	});
 
 	it("shows only the active route's pool, never a Claude model's unrelated subscription", async () => {

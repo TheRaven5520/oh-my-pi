@@ -4,12 +4,15 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { CentralAnswer, CentralRequestDraft } from "@oh-my-pi/pi-tui/apps/central/types";
+import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types";
 import type { ExtensionAskDialogSubmitResult } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import {
 	CENTRAL_MAX_FRAME_BYTES,
 	CENTRAL_MAX_TRANSCRIPT_BYTES,
 	answerCentralQuestion,
 	getCentralChatTranscript,
+	getCentralChatWorkspace,
+	promptCentralChat,
 	type CentralHost,
 	listCentralChats,
 	parseCentralChat,
@@ -82,6 +85,131 @@ function controlledLocal(): {
 }
 
 describe("private Central host IPC", () => {
+	it("returns width-bounded SGR-only source workspace and never invents unsupported metrics", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-workspace-"));
+		dirs.push(dir);
+		const dimensions: number[][] = [];
+		const host = await startCentralHost(
+			() => ({ sessionId: "source", name: "Source", cwd: "/workspace", busy: false }),
+			{
+				dir,
+				getWorkspace: (statusWidth, usageWidth) => {
+					dimensions.push([statusWidth, usageWidth]);
+					return {
+						statusLines: ["\x1b[38;2;10;20;30mSource\x1b[0m\x1b[2J"],
+						usageLines: ["\x1b[32m42%\x1b[0m\nunsafe"],
+						canPrompt: true,
+					};
+				},
+			},
+		);
+		hosts.add(host);
+		const [chat] = await listCentralChats({ dir });
+		const workspace = await getCentralChatWorkspace(chat!.id, 5, 3, { dir });
+		expect(dimensions).toEqual([[5, 3]]);
+		expect(workspace.canPrompt).toBe(false);
+		expect(workspace.statusLines[0]).toContain("\x1b[38;2;10;20;30m");
+		expect(workspace.statusLines[0]).not.toContain("\x1b[2J");
+		expect(Bun.stringWidth(workspace.statusLines[0]!)).toBeLessThanOrEqual(5);
+		expect(Bun.stringWidth(workspace.usageLines[0]!)).toBeLessThanOrEqual(3);
+		expect(workspace.usageLines[0]).not.toContain("\n");
+		await expect(getCentralChatWorkspace(chat!.id, 1_001, 3, { dir })).rejects.toThrow("invalid_request");
+	});
+
+	it("preserves up to 64 usage rows and prompt capability through the bridge", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-usage-rows-"));
+		dirs.push(dir);
+		const usageLines = Array.from({ length: 64 }, (_, index) => `${index < 32 ? "Codex" : "Claude"} metric ${index}`);
+		const host = await startCentralHost(
+			() => ({ sessionId: "source", name: "Source", cwd: "/workspace", busy: false }),
+			{ dir, getWorkspace: () => ({ statusLines: ["Model"], usageLines, canPrompt: true }), prompt: async () => {} },
+		);
+		hosts.add(host);
+		const [chat] = await listCentralChats({ dir });
+		const workspace = await getCentralChatWorkspace(chat!.id, 80, 40, { dir });
+		expect(workspace.usageLines.map(line => Bun.stripANSI(line))).toEqual(usageLines);
+		expect(workspace.canPrompt).toBe(true);
+	});
+
+	it("makes unsupported workspace and prompting explicit for old hosts", async () => {
+		const { dir } = await fixture();
+		const [chat] = await listCentralChats({ dir });
+		await expect(getCentralChatWorkspace(chat!.id, 80, 20, { dir })).rejects.toThrow("unsupported_operation");
+		await expect(promptCentralChat(chat!.id, chat!.sessionId, "request-one", "hello", { dir })).rejects.toThrow(
+			"unsupported_operation",
+		);
+	});
+
+	it("pins prompts to the live session and acknowledges concurrent retries only after admission", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-prompt-"));
+		dirs.push(dir);
+		const state = { sessionId: "original", name: "Source", cwd: "/workspace", busy: true };
+		const delivered: Array<{ sessionId: string; text: string }> = [];
+		const admission = Promise.withResolvers<void>();
+		const invoked = Promise.withResolvers<void>();
+		const host = await startCentralHost(() => state, {
+			dir,
+			prompt: (sessionId, text) => {
+				delivered.push({ sessionId, text });
+				invoked.resolve();
+				return admission.promise;
+			},
+		});
+		hosts.add(host);
+		const [chat] = await listCentralChats({ dir });
+		let acknowledged = false;
+		const first = promptCentralChat(chat!.id, "original", "request-one", "plain /new text", { dir }).then(() => {
+			acknowledged = true;
+		});
+		await invoked.promise;
+		expect(acknowledged).toBe(false);
+		const duplicate = promptCentralChat(chat!.id, "original", "request-one", "plain /new text", { dir });
+		admission.resolve();
+		await Promise.all([first, duplicate]);
+		await promptCentralChat(chat!.id, "original", "request-one", "plain /new text", { dir });
+		expect(delivered).toEqual([{ sessionId: "original", text: "plain /new text" }]);
+		await expect(promptCentralChat(chat!.id, "original", "request-one", "changed", { dir })).rejects.toThrow(
+			"request_id_conflict",
+		);
+		await expect(promptCentralChat(chat!.id, "original", "too-large", "x".repeat(65_537), { dir })).rejects.toThrow(
+			"invalid_request",
+		);
+		state.sessionId = "replacement";
+		// A lost-ACK retry reports the original admission, never a new send into the replacement session.
+		await promptCentralChat(chat!.id, "original", "request-one", "plain /new text", { dir });
+		await expect(promptCentralChat(chat!.id, "original", "request-two", "hello", { dir })).rejects.toBeInstanceOf(
+			CentralPromptRejectedError,
+		);
+		expect(delivered).toHaveLength(1);
+	});
+
+	it("retains rejected request IDs instead of invoking an uncertain send again", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-rejected-"));
+		dirs.push(dir);
+		let calls = 0;
+		let rejected = true;
+		const host = await startCentralHost(
+			() => ({ sessionId: "source", name: "Source", cwd: "/workspace", busy: false }),
+			{
+				dir,
+				prompt: async () => {
+					calls++;
+					if (rejected) throw new Error("not admitted");
+				},
+			},
+		);
+		hosts.add(host);
+		const [chat] = await listCentralChats({ dir });
+		for (let retry = 0; retry < 2; retry++) {
+			await expect(promptCentralChat(chat!.id, "source", "request-one", "hello", { dir })).rejects.toBeInstanceOf(
+				CentralPromptRejectedError,
+			);
+		}
+		expect(calls).toBe(1);
+		rejected = false;
+		await promptCentralChat(chat!.id, "source", "fresh-request", "hello", { dir });
+		expect(calls).toBe(2);
+	});
 	it("publishes full rich questions and accepts a central answer exactly once", async () => {
 		const { dir, host } = await fixture();
 		let localSignal: AbortSignal | undefined;

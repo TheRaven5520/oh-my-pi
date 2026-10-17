@@ -98,7 +98,7 @@ function accentFg(ctx: SegmentContext, color: ThemeColor, text: string): string 
  * pink. These are deliberately not theme colors: the preset reproduces the
  * Claude line exactly, independent of the active omp theme.
  */
-const CLAUDE_COLORS = {
+export const CLAUDE_COLORS = {
 	path: 80,
 	branch: 74,
 	model: 69,
@@ -122,12 +122,7 @@ function claudeFg(color: number, text: string): string {
  * truncated toward zero like the shell's `${v%.*}`), or `<label> —` when the
  * backend cannot report the window.
  */
-function claudeGauge(
-	ctx: SegmentContext,
-	color: number,
-	label: string,
-	usedPercent: number | null | undefined,
-): string {
+export function renderUsageGauge(color: number, label: string, usedPercent: number | null | undefined): string {
 	if (usedPercent === null || usedPercent === undefined || !Number.isFinite(usedPercent)) {
 		return `${claudeFg(color, label)} ${CLAUDE_DIM_ANSI}—\x1b[39m`;
 	}
@@ -995,7 +990,7 @@ const contextPctSegment: StatusLineSegment = {
 		const window = ctx.contextWindow;
 
 		if (ctx.claudeStyle) {
-			return { content: claudeGauge(ctx, CLAUDE_COLORS.context, "ctx", pct), visible: true };
+			return { content: renderUsageGauge(CLAUDE_COLORS.context, "ctx", pct), visible: true };
 		}
 
 		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window));
@@ -1368,16 +1363,16 @@ const usageSegment: StatusLineSegment = {
 			// meter, so do not invent a `5h —` gauge for it.
 			const week = u?.sevenDay?.percent ?? u?.monthly?.percent;
 			if (provider === "openai-codex") {
-				let content = claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week);
+				let content = renderUsageGauge(CLAUDE_COLORS.week, "wk", week);
 				if (u?.modelWeekly)
-					content += ` ${CLAUDE_DIM_ANSI}|\x1b[39m ${claudeGauge(ctx, CLAUDE_COLORS.fable, "ultrafast", u.modelWeekly.percent)}`;
+					content += ` ${CLAUDE_DIM_ANSI}|\x1b[39m ${renderUsageGauge(CLAUDE_COLORS.fable, "ultrafast", u.modelWeekly.percent)}`;
 				return { content, visible: true };
 			}
 			const fiveHour = u?.fiveHour?.percent ?? u?.daily?.percent;
 			const sep = ` ${CLAUDE_DIM_ANSI}|\x1b[39m `;
-			let content = `${claudeGauge(ctx, CLAUDE_COLORS.fiveHour, "5h", fiveHour)}${sep}${claudeGauge(ctx, CLAUDE_COLORS.week, "wk", week)}`;
+			let content = `${renderUsageGauge(CLAUDE_COLORS.fiveHour, "5h", fiveHour)}${sep}${renderUsageGauge(CLAUDE_COLORS.week, "wk", week)}`;
 			if (u?.modelWeekly)
-				content += `${sep}${claudeGauge(ctx, CLAUDE_COLORS.fable, "fable", u.modelWeekly.percent)}`;
+				content += `${sep}${renderUsageGauge(CLAUDE_COLORS.fable, "fable", u.modelWeekly.percent)}`;
 			return { content, visible: true };
 		}
 		if (!u || (!u.fiveHour && !u.daily && !u.sevenDay && !u.monthly && !u.resetCredits)) {

@@ -38,6 +38,7 @@ import type { DescribeContext, NativeChild, NativeNode, NativeUiEvent } from "..
 import { actionHint, hintsRow, overlayCard } from "../native/overlay";
 import { plainText } from "../native/spans";
 import { CLOSE_ACTION, dockedPicker, PICKER_KEY, pickerAction, pickerEvent, pickerQuery } from "../native/picker";
+import { CURSOR_MARKER } from "../tui";
 import type { TspPickerItem } from "@oh-my-pi/pi-wire";
 
 /** One segment of a {@link HookSelectorSlider} — a label and an optional
@@ -75,6 +76,8 @@ export interface HookSelectorOptions {
 	initialIndex?: number;
 	outline?: boolean;
 	maxVisible?: number;
+	/** Emit cursor markers on the selected option and visible search control for clipped embedding hosts. */
+	markSelectedRow?: boolean;
 	onLeft?: () => void;
 	onRight?: () => void;
 	onExternalEditor?: () => void;
@@ -195,6 +198,7 @@ export class HookSelectorComponent extends OverlayPanel {
 	#checkedIndices: Set<number>;
 	#markableCount: number;
 	#maxVisible: number;
+	#markSelectedRow = false;
 	#listContainer: Container | undefined;
 	#outlinedList: OutlinedList | undefined;
 	#onSelectCallback: (option: string) => void;
@@ -259,6 +263,7 @@ export class HookSelectorComponent extends OverlayPanel {
 		);
 		this.#markableCount = Math.max(0, Math.min(opts?.markableCount ?? this.#options.length, this.#options.length));
 		this.#maxVisible = Math.max(3, opts?.maxVisible ?? 12);
+		this.#markSelectedRow = opts?.markSelectedRow ?? false;
 		this.#onSelectCallback = onSelect;
 		this.#onCancelCallback = onCancel;
 		this.#baseTitle = this.title;
@@ -347,7 +352,7 @@ export class HookSelectorComponent extends OverlayPanel {
 		const label = renderInlineMarkdown(option.label, mdTheme, t => theme.fg(textColor, t));
 		const marker = index !== undefined ? this.#renderMarkerPrefix(index, isSelected, isDisabled) : undefined;
 		const prefix = marker ?? (isSelected ? theme.fg(prefixColor, `${theme.nav.cursor} `) : "  ");
-		const lines = [prefix + label];
+		const lines = [(isSelected && this.#markSelectedRow ? CURSOR_MARKER : "") + prefix + label];
 		if (option.description && descRows !== 0) {
 			const descriptionColor: ThemeColor = isDisabled ? "dim" : "muted";
 			if (descRows === "full") {
@@ -582,7 +587,9 @@ export class HookSelectorComponent extends OverlayPanel {
 			this.#menu.query.trim() && total !== this.#options.length
 				? `${selectedCount}/${total} of ${this.#options.length}`
 				: `${selectedCount}/${total}`;
-		if (!this.#menu.query.trim()) return theme.fg("dim", `  (${count})  Type to search`);
+		if (!this.#menu.query.trim())
+			return `${this.#markSelectedRow ? CURSOR_MARKER : ""}${theme.fg("dim", `  (${count})  Type to search`)}`;
+		this.#search.focused = this.#markSelectedRow;
 		const field = this.#search.render(visibleWidth(this.#search.getValue()) + 1)[0] ?? "";
 		return `${theme.fg("dim", `  (${count})  Search: `)}${field}`;
 	}

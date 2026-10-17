@@ -4,8 +4,53 @@ import type {
 	CentralChat,
 	CentralRequest,
 	CentralRequestDraft,
+	CentralWorkspace,
 } from "@oh-my-pi/pi-tui/apps/central/types";
 import type { ExtensionAskDialogResultItem } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
+import { sanitizeDisplaySgrLine } from "@oh-my-pi/pi-tui/overlays/extensions/display-text";
+import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
+
+export const CENTRAL_MAX_PROMPT_BYTES = 64 * 1024;
+export const CENTRAL_MAX_WORKSPACE_WIDTH = 1_000;
+
+export function isCentralWorkspaceWidth(value: unknown): value is number {
+	return (
+		typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= CENTRAL_MAX_WORKSPACE_WIDTH
+	);
+}
+
+export function isCentralPrompt(sessionId: unknown, requestId: unknown, text: unknown): boolean {
+	return (
+		typeof sessionId === "string" &&
+		sessionId.length > 0 &&
+		sessionId.length <= 256 &&
+		typeof requestId === "string" &&
+		/^[A-Za-z0-9_-]{1,128}$/.test(requestId) &&
+		typeof text === "string" &&
+		text.trim().length > 0 &&
+		Buffer.byteLength(text) <= CENTRAL_MAX_PROMPT_BYTES
+	);
+}
+
+/** Only SGR may survive the host boundary; all other terminal control data is inert. */
+export function parseCentralWorkspace(
+	value: unknown,
+	statusWidth: number,
+	usageWidth: number,
+): CentralWorkspace | null {
+	if (!record(value) || typeof value.canPrompt !== "boolean") return null;
+	const lines = (input: unknown, width: number, maxRows: number): string[] | null => {
+		if (!strings(input) || input.length > maxRows || input.some(line => Buffer.byteLength(line) > 64 * 1024))
+			return null;
+		return input.map(line => {
+			const safe = sanitizeDisplaySgrLine(line);
+			return width === 0 ? "" : `${truncateToWidth(safe, width)}\x1b[0m`;
+		});
+	};
+	const statusLines = lines(value.statusLines, statusWidth, 16);
+	const usageLines = lines(value.usageLines, usageWidth, 64);
+	return statusLines && usageLines ? { statusLines, usageLines, canPrompt: value.canPrompt } : null;
+}
 
 function record(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);

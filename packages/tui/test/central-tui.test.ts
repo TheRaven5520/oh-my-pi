@@ -4,7 +4,9 @@ import type { TranscriptEntryLike } from "../src/chat/transcript-entry";
 import { TUI } from "../src/tui";
 import { initTheme } from "../src/theme/theme";
 import { CentralComponent } from "../src/apps/central/central-tui";
-import type { CentralTuiHost } from "../src/apps/central/types";
+import type { CentralChat, CentralTuiHost, CentralWorkspace } from "../src/apps/central/types";
+import { CentralPromptRejectedError } from "../src/apps/central/types";
+import { AskDialogComponent } from "../src/overlays/ask-dialog";
 import { VirtualTerminal } from "./virtual-terminal";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { withoutTerminalMultiplexer } from "./terminal-multiplexer-environment";
@@ -649,6 +651,605 @@ describe("Central ask image prompts", () => {
 			]);
 		} finally {
 			rig.close();
+		}
+	});
+});
+
+describe("Central selected-chat workspace", () => {
+	const chat = (id: string): CentralChat => ({
+		id,
+		sessionId: `session-${id}`,
+		pid: 1,
+		name: `Chat ${id}`,
+		cwd: `/chat/${id}`,
+		busy: false,
+		requests: [],
+	});
+	const workspace = (id: string): CentralWorkspace => ({
+		statusLines: [`\x1b[38;2;41;82;123mStatus ${id}\x1b[0m`],
+		usageLines: [`\x1b[38;2;44;88;132mCodex ${id}\x1b[0m`, `\x1b[38;2;55;99;144mClaude ${id}\x1b[0m`],
+		canPrompt: true,
+	});
+	const flush = async () => {
+		for (let index = 0; index < 8; index++) await Promise.resolve();
+	};
+	async function setup(overrides: Partial<CentralTuiHost> = {}, width = 110, height = 24) {
+		const terminal = new VirtualTerminal(width, height);
+		const ui = new TUI(terminal, false, { renderScheduler: new VirtualRenderScheduler() });
+		const host: CentralTuiHost = {
+			refresh: async () => ({ chats: [chat("a"), chat("b")], errors: [] }),
+			transcript: async id => [
+				{
+					type: "message",
+					id,
+					parentId: null,
+					timestamp: new Date(1).toISOString(),
+					message: { role: "user", content: `Transcript ${id}`, timestamp: 1 },
+				},
+			],
+			answer: async () => {},
+			open: async () => {},
+			workspace: async id => workspace(id),
+			prompt: async () => {},
+			...overrides,
+		};
+		const component = new CentralComponent(ui, host);
+		component.focused = true;
+		component.render(width);
+		void component.run();
+		await flush();
+		component.render(width);
+		await flush();
+		return {
+			component,
+			host,
+			input: async (value: string) => {
+				component.handleInput(value);
+				await flush();
+			},
+			lines: () => component.render(width),
+			text: () =>
+				component
+					.render(width)
+					.map(line => Bun.stripANSI(line))
+					.join("\n"),
+		};
+	}
+
+	it("sends a bracketed paste followed by Enter in the same input frame", async () => {
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
+		const rig = await setup({ prompt });
+		try {
+			const text = "  first\nsecond\n";
+			await rig.input(`\x1b[200~${text}\x1b[201~\r`);
+			expect(prompt.mock.calls).toEqual([["a", "session-a", expect.any(String), text]]);
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("routes Enter after the final frame of a split paste through Central", async () => {
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
+		const rig = await setup({ prompt });
+		try {
+			await rig.input("\x1b[200~first\n");
+			await rig.input("second\x1b[201~\r");
+			expect(prompt.mock.calls[0]?.[3]).toBe("first\nsecond");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("preserves multiline pasted text and whitespace exactly when sending", async () => {
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
+		const rig = await setup({ prompt });
+		try {
+			const text = "  first line\n\n    second line\n";
+			await rig.input(`\x1b[200~${text}\x1b[201~`);
+			await rig.input("\t");
+			await rig.input("\x1b[Z");
+			await rig.input("\r");
+			expect(prompt.mock.calls[0]).toEqual(["a", "session-a", expect.any(String), text]);
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("expands large pasted text rather than sending display placeholders", async () => {
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
+		const rig = await setup({ prompt });
+		try {
+			const text = Array.from({ length: 20 }, (_, index) => `line ${index}: ${"body ".repeat(30)}`).join("\n");
+			await rig.input(`\x1b[200~${text}\x1b[201~`);
+			await rig.input("\r");
+			expect(prompt.mock.calls[0]?.[3]).toBe(text);
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("inserts Shift+Enter newlines and sends only on plain Enter", async () => {
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
+		const rig = await setup({ prompt });
+		try {
+			await rig.input("line one");
+			await rig.input("\x1b[13;2u");
+			await rig.input("line two");
+			expect(prompt).not.toHaveBeenCalled();
+			await rig.input("\r");
+			expect(prompt.mock.calls[0]?.[3]).toBe("line one\nline two");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("captures the original destination and preserves newer typing and another chat's draft", async () => {
+		const pending = Promise.withResolvers<void>();
+		const prompt = vi.fn((..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => pending.promise);
+		const rig = await setup({ prompt });
+		try {
+			await rig.input("first");
+			await rig.input("\r");
+			expect(prompt.mock.calls[0]).toEqual(["a", "session-a", expect.any(String), "first"]);
+			await rig.input(" newer");
+			await rig.input("\t");
+			await rig.input("other draft");
+			pending.resolve();
+			await flush();
+			expect(rig.text()).toContain("other draft");
+			await rig.input("\x1b[Z");
+			expect(rig.text()).toContain("first newer");
+			expect(prompt).toHaveBeenCalledTimes(1);
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("keeps definitively rejected text editable and uses a fresh ID for the next send", async () => {
+		let attempts = 0;
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {
+			if (++attempts === 1) throw new CentralPromptRejectedError("Session is changing");
+		});
+		const rig = await setup({ prompt });
+		try {
+			await rig.input("retained");
+			await rig.input("\r");
+			expect(rig.text()).toContain("Not sent");
+			expect(rig.text()).toContain("retained");
+			await rig.input(" edited");
+			await rig.input("\r");
+			expect(prompt).toHaveBeenCalledTimes(2);
+			expect(prompt.mock.calls[1]?.[2]).not.toBe(prompt.mock.calls[0]?.[2]);
+			expect(prompt.mock.calls[1]?.[3]).toBe("retained edited");
+			expect(rig.text()).not.toContain("retained edited");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("keeps every supported usage row accessible through scrolling", async () => {
+		const rig = await setup(
+			{
+				workspace: async () => ({
+					statusLines: ["Selected status"],
+					canPrompt: true,
+					usageLines: Array.from({ length: 64 }, (_, index) => `Window ${index + 1}`),
+				}),
+			},
+			80,
+			12,
+		);
+		try {
+			expect(rig.text()).toContain("Window 1");
+			for (let index = 0; index < 64; index++) await rig.input("\x1b[1;3B");
+			expect(rig.text()).toContain("Window 64");
+			expect(rig.text()).toContain("Transcript a");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("requires explicit retry after uncertain delivery and reuses the original payload and ID", async () => {
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {
+			if (prompt.mock.calls.length === 1) throw new Error("Disconnected");
+		});
+		const rig = await setup({ prompt });
+		try {
+			await rig.input("saved");
+			await rig.input("\r");
+			expect(rig.text()).toContain("Delivery unconfirmed");
+			expect(rig.text()).toContain("Ctrl+R retry");
+			await rig.input("\r");
+			await rig.input(" edit");
+			await rig.input("\r");
+			expect(prompt).toHaveBeenCalledTimes(1);
+			await rig.input("\x12");
+			expect(prompt.mock.calls[1]).toEqual(prompt.mock.calls[0]);
+			expect(rig.text()).toContain("saved edit");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("clears an unchanged sent draft without touching a different chat", async () => {
+		const rig = await setup();
+		try {
+			await rig.input("send only this");
+			await rig.input("\r");
+			expect(rig.text()).not.toContain("send only this");
+			await rig.input("\t");
+			await rig.input("keep b");
+			await rig.input("\t");
+			expect(rig.text()).not.toContain("keep b");
+			await rig.input("\t");
+			expect(rig.text()).toContain("keep b");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("ignores late workspace responses after switching away and back", async () => {
+		const requests: Array<{ id: string; pending: PromiseWithResolvers<CentralWorkspace> }> = [];
+		const rig = await setup({
+			workspace: id => {
+				const pending = Promise.withResolvers<CentralWorkspace>();
+				requests.push({ id, pending });
+				return pending.promise;
+			},
+		});
+		try {
+			const original = requests[requests.length - 1]!;
+			await rig.input("\t");
+			const other = requests[requests.length - 1]!;
+			await rig.input("\x1b[Z");
+			const latest = requests[requests.length - 1]!;
+			latest.pending.resolve(workspace("new a"));
+			await flush();
+			original.pending.resolve(workspace("old a"));
+			other.pending.resolve(workspace("old b"));
+			await flush();
+			expect(rig.text()).toContain("Status new a");
+			expect(rig.text()).not.toContain("Status old");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("anchors status/input and unseparated gradient usage rows, including narrow layouts", async () => {
+		for (const width of [140, 110, 80, 48]) {
+			const rig = await setup({}, width, 16);
+			try {
+				await rig.input("visible draft");
+				const lines = rig.lines();
+				expect(lines).toHaveLength(16);
+				expect(rig.text()).toContain("Transcript a");
+				expect(rig.text()).toContain("Status a");
+				expect(rig.text()).toContain("visible draft");
+				expect(lines[14]).toContain("\x1b[38;2;44;88;132mCodex a");
+				expect(lines[15]).toContain("\x1b[38;2;55;99;144mClaude a");
+				expect(lines.every(line => Bun.stringWidth(line, { countAnsiEscapeCodes: false }) <= width)).toBe(true);
+			} finally {
+				rig.component.dispose();
+			}
+		}
+	});
+
+	it("keeps both providers reachable in short viewports without sacrificing the input", async () => {
+		for (const width of [140, 80, 48]) {
+			const rig = await setup(
+				{
+					workspace: async () => ({
+						statusLines: ["Selected status"],
+						canPrompt: true,
+						usageLines: ["Codex", "5h 14%", "7d 28%", "Claude", "5h 35%", "7d 46%"],
+					}),
+				},
+				width,
+				12,
+			);
+			try {
+				await rig.input("short draft");
+				expect(rig.text()).toContain("Codex");
+				expect(rig.text()).toContain("Alt+↑/↓ usage");
+				for (let index = 0; index < 3; index++) {
+					await rig.input("\x1b[1;3B");
+					rig.lines();
+				}
+				expect(rig.text()).toContain("Claude");
+				expect(rig.text()).toContain("short draft");
+				expect(rig.text()).toContain("Transcript a");
+			} finally {
+				rig.component.dispose();
+			}
+		}
+	});
+
+	it("refreshes workspace after polling failures without losing Central drafts", async () => {
+		const polls: Array<() => void> = [];
+		const originalSetTimeout = globalThis.setTimeout;
+		globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+			const [callback, delay] = args;
+			if (delay === 1000 && typeof callback === "function") {
+				polls.push(() => callback());
+				return 0 as unknown as NodeJS.Timeout;
+			}
+			return originalSetTimeout(...args);
+		}) as typeof globalThis.setTimeout;
+		let fail = false;
+		let revision = "initial";
+		let component: CentralComponent | undefined;
+		try {
+			const rig = await setup({
+				refresh: async () => {
+					if (fail) throw new Error("poll offline");
+					return { chats: [chat("a"), chat("b")], errors: [] };
+				},
+				workspace: async () => workspace(revision),
+			});
+			component = rig.component;
+			await rig.input("draft during failure");
+			fail = true;
+			revision = "updated";
+			expect(polls.length).toBeGreaterThan(0);
+			polls.shift()!();
+			await flush();
+			expect(rig.text()).toContain("poll offline");
+			expect(rig.text()).toContain("Status updated");
+			await rig.input("\t");
+			await rig.input("\x1b[Z");
+			expect(rig.text()).toContain("draft during failure");
+		} finally {
+			globalThis.setTimeout = originalSetTimeout;
+			component?.dispose();
+		}
+	});
+
+	it("strips terminal actions from host workspace rows without stripping gradient colors", async () => {
+		const rig = await setup({
+			workspace: async () => ({
+				statusLines: ["\x1b[2J\x1b]0;hostile title\x07\x1b[38;2;10;20;30mSafe status\x1b[0m\nextra"],
+				usageLines: ["\x1b[31mCodex\x1b[0m\x1b[H"],
+				canPrompt: true,
+			}),
+		});
+		try {
+			const rows = rig.lines();
+			expect(rows).toHaveLength(24);
+			expect(rows.join("\n")).toContain("\x1b[38;2;10;20;30mSafe status");
+			expect(rows.join("\n")).not.toContain("\x1b[2J");
+			expect(rows.join("\n")).not.toContain("\x1b]0;");
+			expect(rows.join("\n")).not.toContain("\x1b[H");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("retains editable drafts for unavailable old peers without sending or fabricating usage", async () => {
+		const rig = await setup({ workspace: undefined, prompt: undefined });
+		try {
+			await rig.input("offline draft");
+			await rig.input("\r");
+			await rig.input("\t");
+			await rig.input("\x1b[Z");
+			expect(rig.text()).toContain("offline draft");
+			expect(rig.text()).toContain("Status unavailable");
+			expect(rig.text()).toContain("Usage unavailable");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("keeps an unmatched selector search editable and recovers with Backspace", async () => {
+		const first = chat("a");
+		first.requests = [
+			{
+				id: "searchable",
+				createdAt: 1,
+				kind: "select",
+				title: "Search options",
+				options: Array.from({ length: 11 }, (_, index) => `Option ${index}`),
+			},
+		];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const rig = await setup({ refresh: async () => ({ chats: [first], errors: [] }), answer }, 48, 24);
+		try {
+			expect(rig.text()).toContain("Option 0");
+			await rig.input("z");
+			expect(rig.text()).toContain("No matching options");
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+			await rig.input("\x7f");
+			expect(rig.text()).toContain("Option 0");
+			await rig.input("\r");
+			expect(answer.mock.calls[0]).toEqual(["a", "searchable", "Option 0"]);
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	for (const kind of ["editor", "select"] as const) {
+		it(`reserves a visible ${kind} control before long narrow usage panels`, async () => {
+			const first = chat("a");
+			first.requests = [
+				kind === "editor"
+					? {
+							id: "visible-control",
+							createdAt: 1,
+							kind,
+							title: "Visible editor",
+							prefill: "Visible editable text",
+						}
+					: {
+							id: "visible-control",
+							createdAt: 1,
+							kind,
+							title: "Visible selector",
+							options: ["Visible selected choice"],
+						},
+			];
+			const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+			const rig = await setup(
+				{
+					refresh: async () => ({ chats: [first], errors: [] }),
+					answer,
+					workspace: async () => ({
+						statusLines: ["Selected status"],
+						canPrompt: true,
+						usageLines: Array.from({ length: 13 }, (_, index) => `Usage row ${index}`),
+					}),
+				},
+				48,
+				24,
+			);
+			try {
+				expect(rig.text()).toContain(kind === "editor" ? "Visible editable text" : "Visible selected choice");
+				await rig.input(kind === "editor" ? "\x11" : "\r");
+				expect(answer).toHaveBeenCalledTimes(1);
+			} finally {
+				rig.component.dispose();
+			}
+		});
+
+		it(`never submits a ${kind} when only its title is visible`, async () => {
+			const first = chat("a");
+			const title = Array.from({ length: 30 }, (_, index) => `Title detail ${index}`).join("\n");
+			first.requests = [
+				kind === "editor"
+					? { id: "hidden-control", createdAt: 1, kind, title, prefill: "Hidden editable text" }
+					: { id: "hidden-control", createdAt: 1, kind, title, options: ["Hidden selected choice"] },
+			];
+			const answer = vi.fn(async () => {});
+			const rig = await setup({ refresh: async () => ({ chats: [first], errors: [] }), answer }, 48, 12);
+			try {
+				expect(rig.text()).toContain("Title detail");
+				expect(rig.text()).not.toContain(kind === "editor" ? "Hidden editable text" : "Hidden selected choice");
+				await rig.input("should not edit");
+				await rig.input(kind === "editor" ? "\x11" : "\r");
+				expect(answer).not.toHaveBeenCalled();
+			} finally {
+				rig.component.dispose();
+			}
+		});
+	}
+
+	it("keeps a pending question and selected option visible at 48 columns by 12 rows", async () => {
+		const first = chat("a");
+		first.requests = [
+			{
+				id: "visible-ask",
+				createdAt: 1,
+				kind: "ask",
+				questions: [{ id: "q", question: "Visible question?", options: [{ label: "Visible choice" }] }],
+			},
+		];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const rig = await setup(
+			{
+				refresh: async () => ({ chats: [first], errors: [] }),
+				answer,
+				workspace: async () => ({
+					statusLines: ["Selected status"],
+					canPrompt: true,
+					usageLines: ["Codex", "5h 10%", "7d 20%", "Claude", "5h 30%", "7d 40%"],
+				}),
+			},
+			48,
+			12,
+		);
+		try {
+			expect(rig.lines()).toHaveLength(12);
+			expect(rig.text()).toContain("Visible question?");
+			expect(rig.text()).toContain("Visible choice");
+			expect(rig.text()).toContain("Selected status");
+			await rig.input("\r");
+			expect(answer).toHaveBeenCalledTimes(1);
+			expect(answer.mock.calls[0]?.[1]).toBe("visible-ask");
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("does not answer a question when the terminal is too short to show it", async () => {
+		const first = chat("a");
+		first.requests = [
+			{
+				id: "hidden-ask",
+				createdAt: 1,
+				kind: "ask",
+				questions: [{ id: "q", question: "Hidden question?", options: [{ label: "Do not accept invisibly" }] }],
+			},
+		];
+		const answer = vi.fn(async () => {});
+		const rig = await setup({ refresh: async () => ({ chats: [first], errors: [] }), answer }, 48, 5);
+		try {
+			rig.lines();
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("keeps question arrows and F2 input focus separate while Tab still switches chats", async () => {
+		const first = chat("a");
+		first.requests = [
+			{
+				id: "ask-a",
+				createdAt: 1,
+				kind: "ask",
+				questions: [
+					{ id: "one", question: "First question", options: [{ label: "One" }] },
+					{ id: "two", question: "Second question", options: [{ label: "Two" }] },
+				],
+			},
+		];
+		const answer = vi.fn(async () => {});
+		const prompt = vi.fn(async () => {});
+		const rig = await setup({ refresh: async () => ({ chats: [first, chat("b")], errors: [] }), answer, prompt });
+		try {
+			expect(rig.text()).toContain("First question");
+			await rig.input("\x1b[C");
+			expect(rig.text()).toContain("Second question");
+			await rig.input("\x1bOQ");
+			await rig.input("separate composer");
+			await rig.input("\t");
+			expect(rig.text()).not.toContain("separate composer");
+			await rig.input("\x1b[Z");
+			expect(rig.text()).toContain("separate composer");
+			await rig.input("\r");
+			expect(prompt).toHaveBeenCalledTimes(1);
+			expect(answer).not.toHaveBeenCalled();
+		} finally {
+			rig.component.dispose();
+		}
+	});
+
+	it("suppresses reserved Tab and expansion hints at the question renderer source", () => {
+		const dialog = new AskDialogComponent(
+			[
+				{ id: "one", question: "Long question ".repeat(100), options: [{ label: "One" }] },
+				{ id: "two", question: "Second", options: [{ label: "Two" }] },
+			],
+			{ onSubmit: () => {}, onCancel: () => {}, onPrompt: async () => undefined },
+			{ showTabHint: false, showExpandHint: false },
+		);
+		try {
+			const text = dialog
+				.render(100)
+				.map(line => Bun.stripANSI(line))
+				.join("\n")
+				.toLowerCase();
+			expect(text).not.toContain("tab");
+			expect(text).not.toContain("ctrl+o");
+			dialog.handleInput("\x1b[C");
+			expect(
+				dialog
+					.render(100)
+					.map(line => Bun.stripANSI(line))
+					.join("\n"),
+			).toContain("Second");
+		} finally {
+			dialog.dispose();
 		}
 	});
 });

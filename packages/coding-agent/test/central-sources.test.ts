@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import * as clipboard from "../src/utils/clipboard";
 import { CentralQueue } from "@oh-my-pi/pi-tui/apps/central/queue";
 import type { CentralChat } from "@oh-my-pi/pi-tui/apps/central/types";
+import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types";
 import * as utils from "@oh-my-pi/pi-utils";
 import * as bridge from "../src/central/bridge";
 import { CentralSources } from "../src/central/sources";
@@ -98,6 +99,10 @@ describe("Central source poll retention", () => {
 					await expect(sources.answer(entry.chat.id, entry.request.id, "answer")).rejects.toThrow(
 						"Chat is disconnected",
 					);
+					await expect(sources.workspace(entry.chat.id, 80, 20)).rejects.toThrow("Chat is disconnected");
+					await expect(
+						sources.prompt(entry.chat.id, entry.chat.sessionId, "request-one", "hello"),
+					).rejects.toThrow("Chat is disconnected");
 					await expect(sources.open(entry.chat.id)).rejects.toThrow("Chat is disconnected");
 					expect(transcript).not.toHaveBeenCalled();
 					expect(answer).not.toHaveBeenCalled();
@@ -144,6 +149,68 @@ describe("Central source poll retention", () => {
 				spawn.mockRestore();
 				answer.mockRestore();
 				transcript.mockRestore();
+				list.mockRestore();
+			}
+		});
+	}
+});
+
+describe("Central source workspace and prompt routing", () => {
+	for (const source of ["local", "remote-host"] as const) {
+		it(`routes ${source} workspace and immutable prompt IDs without retrying sends`, async () => {
+			const workspace = { statusLines: ["\x1b[38;2;10;20;30mModel\x1b[0m"], usageLines: ["42%"], canPrompt: true };
+			const requests: Record<string, unknown>[] = [];
+			let rejectPrompt = false;
+			const list = spyOn(bridge, "listCentralChats").mockResolvedValue(source === "local" ? [chat] : []);
+			const render = spyOn(bridge, "getCentralChatWorkspace").mockResolvedValue(workspace);
+			const prompt = spyOn(bridge, "promptCentralChat").mockImplementation(async (_chatId, sessionId) => {
+				if (sessionId === "stale") throw new CentralPromptRejectedError("stale_session");
+				if (rejectPrompt) throw new Error("Delivery unknown");
+			});
+			const spawn = spyOn(Bun, "spawn").mockImplementation((() =>
+				sshProcess(request => {
+					requests.push(request);
+					if (request.op === "list") return { chats: [chat] };
+					if (request.op === "workspace") return { workspace };
+					if (request.op === "prompt")
+						return request.sessionId === "stale"
+							? { error: "stale_session", confirmedNoAdmission: true }
+							: rejectPrompt
+								? { error: "unavailable" }
+								: { ok: true };
+					throw new Error("Unexpected request");
+				})) as typeof Bun.spawn);
+			const sources = new CentralSources(source === "local" ? [] : [source]);
+			try {
+				await sources.refresh();
+				const id = `${source}/chat`;
+				const rendered = await sources.workspace(id, 80, 20);
+				expect(rendered.canPrompt).toBe(true);
+				expect(rendered.statusLines[0]).toContain("\x1b[38;2;10;20;30m");
+				await sources.prompt(id, "session", "stable-request", "hello");
+				rejectPrompt = true;
+				await expect(sources.prompt(id, "session", "stable-request", "hello")).rejects.not.toBeInstanceOf(
+					CentralPromptRejectedError,
+				);
+				await expect(sources.prompt(id, "stale", "other-request", "hello")).rejects.toBeInstanceOf(
+					CentralPromptRejectedError,
+				);
+				if (source === "local") {
+					expect(render).toHaveBeenCalledWith("chat", 80, 20);
+					expect(prompt).toHaveBeenCalledTimes(3);
+					expect(prompt).toHaveBeenLastCalledWith("chat", "stale", "other-request", "hello");
+				} else {
+					expect(requests.filter(request => request.op === "prompt")).toMatchObject([
+						{ chatId: "chat", sessionId: "session", requestId: "stable-request", text: "hello" },
+						{ chatId: "chat", sessionId: "session", requestId: "stable-request", text: "hello" },
+						{ chatId: "chat", sessionId: "stale", requestId: "other-request", text: "hello" },
+					]);
+				}
+			} finally {
+				sources.close();
+				spawn.mockRestore();
+				prompt.mockRestore();
+				render.mockRestore();
 				list.mockRestore();
 			}
 		});

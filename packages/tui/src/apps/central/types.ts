@@ -40,11 +40,30 @@ export interface CentralSnapshot {
 	errors: string[];
 }
 
+/** Read-only presentation rendered by the selected chat at Central's available widths. */
+export interface CentralWorkspace {
+	statusLines: string[];
+	usageLines: string[];
+	canPrompt: boolean;
+}
+
+/** The source proved this request was never admitted; the composer may issue a fresh request ID. */
+export class CentralPromptRejectedError extends Error {
+	readonly confirmedNoAdmission = true;
+	constructor(message: string) {
+		super(message);
+		this.name = "CentralPromptRejectedError";
+	}
+}
+
 export interface CentralTuiHost {
 	/** Read on the inbox host, not the selected chat's (possibly remote) filesystem. Text excludes image markers. */
 	readPromptPaste?(path?: string): Promise<{ text: string; images?: ImageContent[] }>;
 	refresh(): Promise<CentralSnapshot>;
 	transcript(chatId: string): Promise<TranscriptEntryLike[]>;
+	workspace?(chatId: string, statusWidth: number, usageWidth: number): Promise<CentralWorkspace>;
+	/** Submit to the existing session; reuse requestId when delivery is uncertain. */
+	prompt?(chatId: string, sessionId: string, requestId: string, text: string): Promise<void>;
 	answer(chatId: string, requestId: string, answer: CentralAnswer): Promise<void>;
 	open(chatId: string): Promise<void>;
 }

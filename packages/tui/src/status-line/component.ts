@@ -30,6 +30,7 @@ import type { EditorTopBorder } from "../components/composer/types";
 import { composerTitleSlot, renderComposerTopLine } from "../components/composer/top-line";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../theme/session-color";
 import { sanitizeStatusText } from "../chrome/shared";
+import { sanitizeDisplaySgrLine } from "../overlays/extensions/display-text";
 import { getThemeEpoch, theme } from "../theme";
 import { type CompactionBoundaries, EMPTY_STRING_PARTS, getToolSchemaMetadataRevision } from "./context-usage";
 import {
@@ -42,6 +43,7 @@ import { summarizeUsageResetCredits } from "../overlays/usage-display";
 import { getPreset } from "./presets";
 import { isPooledUsageReport, pooledProviderMatches, pooledUsageProvider, summarizePooledUsage } from "./pooled-usage";
 import { CLAUDE_DIM_ANSI, describeSegment, renderSegment, type SegmentContext } from "./segments";
+import { type CentralProviderUsage, projectCentralUsage, renderCentralUsage } from "./central-usage";
 import type { TspMeterMark, TspProps } from "@oh-my-pi/pi-wire";
 import type { NativeNode, NativeUiEvent } from "../native/node";
 import { col, node, span } from "../native/describe";
@@ -740,6 +742,9 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#usageFetchedAt = 0;
 	#usageInFlight = false;
 	#usageStartTimer: Timer | null = null;
+	#centralUsage: CentralProviderUsage[] = [];
+	#centralUsageStale = false;
+	#centralWorkspaceRenderer: StatusLineComponent<TSession> | undefined;
 	// A timed-out request may still resolve. Its result remains eligible only
 	// until a newer request has applied.
 	#usageRefreshSequence = 0;
@@ -1190,6 +1195,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#centralWorkspaceRenderer?.dispose();
+		this.#centralWorkspaceRenderer = undefined;
 		this.#branchResolveActive?.controller.abort();
 		this.#branchResolveActive = undefined;
 		this.#resetJjRequests();
@@ -1367,6 +1374,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#invalidateSessionCaches(): void {
 		this.#clearUsageStartTimer();
 		this.#cachedUsage = null;
+		this.#centralUsage = [];
 		this.#usageFetchedAt = 0;
 		this.#usageInFlight = false;
 		this.#contextUsageCache = undefined;
@@ -1867,7 +1875,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		// fireworks key): normalized usage now selects a model-scoped window group,
 		// so switching models must drop the previous model's cached scope instead
 		// of showing it for the rest of the TTL.
-		return `${this.#formatUsageContextKey(activeProvider, identity)}\0${model?.id ?? ""}\0${model?.providerType ?? ""}\0${model?.baseUrl ?? ""}\0${model?.identity?.class ?? ""}`;
+		const centralAccounts = ["openai-codex", "anthropic"]
+			.map(provider => this.#formatUsageContextKey(provider, this.host.activeAccount(session, provider)))
+			.join("\0");
+		return `${this.#formatUsageContextKey(activeProvider, identity)}\0${model?.id ?? ""}\0${model?.providerType ?? ""}\0${model?.baseUrl ?? ""}\0${model?.identity?.class ?? ""}\0${centralAccounts}`;
 	}
 
 	/**
@@ -1880,6 +1891,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const usageContextKey = this.#getUsageContextKey(session);
 		if (this.#cachedUsageContextKey !== usageContextKey) {
 			this.#cachedUsage = null;
+			this.#centralUsage = [];
 			this.#usageFetchedAt = 0;
 			this.#cachedUsageContextKey = usageContextKey;
 			this.#invalidateStatusLineRenderCache();
@@ -1914,6 +1926,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		} catch {
 			if (this.session !== session || this.#getUsageContextKey(session) !== usageContextKey) return;
 			this.#usageFetchedAt = Date.now();
+			this.#centralUsageStale = true;
 			if (signal.aborted && reportsPromise) {
 				this.#observeLateUsageRefresh(session, reportsPromise, sequence, usageContextKey);
 			}
@@ -1932,6 +1945,23 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			return;
 		}
 		this.#latestAppliedUsageRefreshSequence = sequence;
+		this.#centralUsage = (["openai-codex", "anthropic"] as const).map(provider => {
+			const identity = this.host.activeAccount(session, provider);
+			return projectCentralUsage(
+				reports,
+				provider,
+				(report, limit) =>
+					limit
+						? this.host.limitMatchesActiveAccount(report, limit, identity!)
+						: reportMatchesExactIdentity(report, identity) ||
+							report.limits.some(
+								candidate =>
+									candidate?.scope && this.host.limitMatchesActiveAccount(report, candidate, identity!),
+							),
+				!!identity,
+			);
+		});
+		this.#centralUsageStale = false;
 		const activeProvider = session.state.model?.provider ?? session.model?.provider;
 		const activeModelId = session.state.model?.id ?? session.model?.id;
 		const activeIdentity = activeProvider ? this.host.activeAccount(session, activeProvider) : undefined;
@@ -3769,6 +3799,51 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#lastRenderEndsWithStatusLine = false;
 	get lastRenderEndsWithStatusLine(): boolean {
 		return this.#lastRenderEndsWithStatusLine;
+	}
+
+	/** Selected-session chrome and source-local quotas; shares the normal five-minute fetch cache. */
+	renderCentralWorkspace(
+		statusWidth: number,
+		usageWidth: number,
+		session: TSession = this.session,
+	): { statusLines: string[]; usageLines: string[] } {
+		if (session !== this.session) {
+			let renderer = this.#centralWorkspaceRenderer;
+			if (!renderer || renderer.session !== session) {
+				renderer?.dispose();
+				renderer = new StatusLineComponent(session, this.host);
+				// Time accounting is already keyed by session; share it without ever
+				// moving the live editor/statusline's focus to the source session.
+				renderer.#activeMeters = this.#activeMeters;
+				this.#centralWorkspaceRenderer = renderer;
+			}
+			if (renderer.#settings !== this.#settings) renderer.updateSettings(this.#settings);
+			// These describe the source host's task tree, not the focused child.
+			renderer.#subagentCount = this.#subagentCount;
+			renderer.#runningSubagentIds = this.#runningSubagentIds;
+			renderer.#subagentTreeCost = this.#subagentTreeCost;
+			renderer.#invalidateStatusLineRenderCache();
+			return renderer.renderCentralWorkspace(statusWidth, usageWidth);
+		}
+		statusWidth = Number.isFinite(statusWidth) ? Math.max(1, Math.min(500, Math.floor(statusWidth))) : 1;
+		usageWidth = Number.isFinite(usageWidth) ? Math.max(1, Math.min(500, Math.floor(usageWidth))) : 1;
+		this.refreshUsageInBackground();
+		const status = this.renderBottomBar(statusWidth, "full");
+		const usage = this.#centralUsage.length
+			? this.#centralUsage
+			: (["openai-codex", "anthropic"] as const).map(provider => ({
+					provider,
+					pooled: false,
+					fetchedAt: 0,
+					metrics: [],
+				}));
+		return {
+			statusLines: status ? [truncateToWidth(sanitizeDisplaySgrLine(status), statusWidth)] : [],
+			usageLines: usage
+				.flatMap(provider => renderCentralUsage(provider, this.#centralUsageStale))
+				.slice(0, 64)
+				.map(line => truncateToWidth(line, usageWidth)),
+		};
 	}
 
 	render(width: number): readonly string[] {

@@ -7087,7 +7087,17 @@ export class AgentSession implements SettingsScope {
 	 * {@link PromptDroppedError} instead.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
+		this.#assertPromptSession(options?.expectedSessionId);
 		return this.#admitSubmission(() => this.#prompt(text, options));
+	}
+
+	#assertPromptSession(expectedSessionId: string | undefined): void {
+		if (
+			expectedSessionId !== undefined &&
+			(this.sessionManager.getSessionId() !== expectedSessionId || this.isSessionTransitioning || this.#isDisposed)
+		) {
+			throw new Error("Prompt target session is no longer current");
+		}
 	}
 
 	async #prompt(text: string, options?: PromptOptions): Promise<boolean> {
@@ -7116,6 +7126,7 @@ export class AgentSession implements SettingsScope {
 		submittedAt: number,
 		outcome: PromptDispatchOutcome,
 	): Promise<boolean> {
+		this.#assertPromptSession(options?.expectedSessionId);
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		// Slash/custom-command handling below rewrites `text`; keep the original
 		// so a dropped prompt is handed back exactly as the user typed it.
@@ -7188,12 +7199,20 @@ export class AgentSession implements SettingsScope {
 				prependMessages: keywordNotices,
 				rawText: typedText,
 				onPromptAdmitted: options?.onPromptAdmitted,
+				onPromptAccepted: options?.onPromptAccepted,
+				expectedSessionId: options?.expectedSessionId,
 				promptGeneration: queueGeneration,
 			});
 			outcome.sessionClaimed = queued;
-			if (!queued && this.#promptGeneration !== queueGeneration && !options?.synthetic) {
+			if (
+				!queued &&
+				this.#promptGeneration !== queueGeneration &&
+				!options?.synthetic &&
+				options?.restoreOnDrop !== false
+			) {
 				this.#promptDropped?.({ text: typedText, images: options?.images });
 			}
+			if (!queued && options?.throwOnDrop) throw new PromptDroppedError();
 			return true;
 		}
 
@@ -7228,6 +7247,7 @@ export class AgentSession implements SettingsScope {
 		const imageDescriptionNotice = normalizedImages?.length
 			? await this.#buildImageDescriptionNotice(normalizedImages)
 			: undefined;
+		this.#assertPromptSession(options?.expectedSessionId);
 
 		// abort() bumps #promptGeneration and can land while normalization and the
 		// vision-description call above are still in flight. #promptWithMessage below
@@ -7237,9 +7257,10 @@ export class AgentSession implements SettingsScope {
 		// generation-race checks further down.
 		if (this.#promptGeneration !== preflightGeneration) {
 			outcome.sessionClaimed = false;
-			if (!options?.synthetic) {
+			if (!options?.synthetic && options?.restoreOnDrop !== false) {
 				this.#promptDropped?.({ text: typedText, images: options?.images });
 			}
+			if (options?.throwOnDrop) throw new PromptDroppedError();
 			return true;
 		}
 
@@ -7257,7 +7278,7 @@ export class AgentSession implements SettingsScope {
 				outcome.sessionClaimed = this.agent.state.isStreaming;
 				throw new AgentBusyError();
 			}
-			await this.#queueUserMessage(expandedText, options?.images, streamingBehavior, {
+			const queued = await this.#queueUserMessage(expandedText, options?.images, streamingBehavior, {
 				timestamp: submittedAt,
 				attribution: promptAttribution,
 				prependMessages: keywordNotices,
@@ -7267,8 +7288,11 @@ export class AgentSession implements SettingsScope {
 					descriptionNotice: imageDescriptionNotice,
 				},
 				onPromptAdmitted: options?.onPromptAdmitted,
+				onPromptAccepted: options?.onPromptAccepted,
+				expectedSessionId: options?.expectedSessionId,
 			});
-			outcome.sessionClaimed = true;
+			outcome.sessionClaimed = queued;
+			if (!queued && options?.throwOnDrop) throw new PromptDroppedError();
 			return true;
 		}
 
@@ -7321,7 +7345,11 @@ export class AgentSession implements SettingsScope {
 						: undefined,
 			});
 		} catch (error) {
-			if (error instanceof AgentStartPolicyChangedError && message.role === "user") {
+			if (
+				error instanceof AgentStartPolicyChangedError &&
+				message.role === "user" &&
+				options?.restoreOnDrop !== false
+			) {
 				this.#promptDropped?.({ text: typedText, images: options?.images });
 			}
 			throw error;
@@ -7332,7 +7360,7 @@ export class AgentSession implements SettingsScope {
 			this.#toolChoiceQueue.removeByLabel("external-thinking");
 		}
 		outcome.sessionClaimed = dispatched;
-		if (!dispatched && message.role === "user") {
+		if (!dispatched && message.role === "user" && options?.restoreOnDrop !== false) {
 			// An abort (Esc) or preflight denial raced turn setup: the prompt never
 			// reached the agent or the session file. Hand it back to the host so the
 			// user can edit/resubmit instead of losing it (tree/branch can't offer
@@ -7629,13 +7657,20 @@ export class AgentSession implements SettingsScope {
 		expandedText: string,
 		options?: Pick<
 			PromptOptions,
-			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted"
+			| "toolChoice"
+			| "images"
+			| "skipCompactionCheck"
+			| "solutionSpace"
+			| "onPromptAdmitted"
+			| "onPromptAccepted"
+			| "expectedSessionId"
 		> & {
 			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<boolean> {
+		this.#assertPromptSession(options?.expectedSessionId);
 		// Returns false when the prompt was dropped before reaching the agent —
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
@@ -7649,6 +7684,7 @@ export class AgentSession implements SettingsScope {
 			options?.onPromptAdmitted?.();
 			await this.#recovery.maybeRestoreRetryFallbackPrimary();
 			if (!(await this.#runUsageAwarePreflightForNextModelCall())) return false;
+			this.#assertPromptSession(options?.expectedSessionId);
 			// Flush any pending bash messages before the new prompt
 			await this.#bash.flushPending();
 			this.#eval.flushPending();
@@ -7690,6 +7726,7 @@ export class AgentSession implements SettingsScope {
 			}
 
 			await this.#prewalk.armPlanYoloIfNeeded();
+			this.#assertPromptSession(options?.expectedSessionId);
 
 			// Build messages array (session context, eager todo prelude, then active prompt message)
 			const messages: AgentMessage[] = [];
@@ -7713,6 +7750,7 @@ export class AgentSession implements SettingsScope {
 				messages.push(...options.prependMessages);
 			}
 
+			this.#assertPromptSession(options?.expectedSessionId);
 			// Early bail-out: if a newer abort/prompt cycle started during setup,
 			// return before mutating shared state (nextTurn messages, system prompt).
 			if (this.#promptGeneration !== generation) {
@@ -7754,6 +7792,7 @@ export class AgentSession implements SettingsScope {
 				setupAbort.signal,
 				"direct",
 			);
+			this.#assertPromptSession(options?.expectedSessionId);
 			const preparedMessages = preparation.commit();
 			if (!preparedMessages) return false;
 			messages.push(...preparedMessages);
@@ -7769,6 +7808,7 @@ export class AgentSession implements SettingsScope {
 			const isUserTurn = message.role === "user" || (message.role === "custom" && isUserInvokedSkillPrompt(message));
 			if (this.isAutoThinking && isUserTurn) {
 				await this.#models.applyAutoThinkingLevel(expandedText, generation, options?.solutionSpace);
+				this.#assertPromptSession(options?.expectedSessionId);
 				if (this.#promptGeneration !== generation) {
 					return false;
 				}
@@ -7788,6 +7828,7 @@ export class AgentSession implements SettingsScope {
 				maintenanceMessages.splice(xdevMountNoticeIndex, 0, previewXdevMountNotice.notice);
 			}
 			await this.#maintenance.runPrePromptCompactionIfNeeded(maintenanceMessages);
+			this.#assertPromptSession(options?.expectedSessionId);
 			if (this.#promptGeneration !== generation) {
 				return false;
 			}
@@ -7845,9 +7886,22 @@ export class AgentSession implements SettingsScope {
 			if (planReferenceMessage) {
 				this.#planReferenceSent = true;
 			}
+			// Core emits this exact input object after appendMessage, not merely
+			// when preflight starts. Scope the listener to this dispatch so another
+			// concurrent prompt or a failed setup can never acknowledge this one.
+			let stopAcceptance: (() => void) | undefined;
+			if (options?.onPromptAccepted) {
+				stopAcceptance = this.agent.subscribe(event => {
+					if (event.type !== "message_end" || event.message !== message) return;
+					stopAcceptance?.();
+					stopAcceptance = undefined;
+					options.onPromptAccepted?.();
+				});
+			}
 			try {
 				await this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions);
 			} finally {
+				stopAcceptance?.();
 				this.#stats.setPendingSnapshot(undefined);
 			}
 			if (!options?.skipPostPromptRecoveryWait) {
@@ -8148,6 +8202,8 @@ export class AgentSession implements SettingsScope {
 			};
 			/** Called synchronously once the message is pushed onto its queue. See {@link PromptOptions.onPromptAdmitted}. */
 			onPromptAdmitted?: () => void;
+			onPromptAccepted?: () => void;
+			expectedSessionId?: string;
 			/**
 			 * `#promptGeneration` captured when prompt() took this submission. abort() (or a
 			 * history rewrite) bumps it; if that lands while images are being prepared, the
@@ -8190,6 +8246,7 @@ export class AgentSession implements SettingsScope {
 			: normalizedImages?.length
 				? await this.#buildImageDescriptionNotice(normalizedImages)
 				: undefined;
+		this.#assertPromptSession(options?.expectedSessionId);
 		if (options?.promptGeneration !== undefined && this.#promptGeneration !== options.promptGeneration) {
 			return false;
 		}
@@ -8202,6 +8259,7 @@ export class AgentSession implements SettingsScope {
 			records.push(userMessage);
 			this.#irc.queueAside(records);
 			options?.onPromptAdmitted?.();
+			options?.onPromptAccepted?.();
 			// The awaits above (image normalization / vision description) can span the run's
 			// settle, so the run may already be idle by the time the record lands in the aside
 			// queue with no loop left to drain it. Resuming here is a no-op while streaming and
@@ -8238,6 +8296,7 @@ export class AgentSession implements SettingsScope {
 			this.agent.steer(userMessage);
 		}
 		options?.onPromptAdmitted?.();
+		options?.onPromptAccepted?.();
 		this.#scheduleIdleQueueDrain();
 		return true;
 	}
