@@ -865,6 +865,12 @@ export interface ResolvedOpenAISharedCompat {
 	promptCacheBreakpointTtl?: "30m";
 	/** The model sits behind OpenRouter (routing prefs and max-token omission apply). */
 	isOpenRouterHost: boolean;
+	/**
+	 * The host forwards OpenRouter's `provider` routing: OpenRouter itself, or a
+	 * relay (`openrouterRelay` host). Built catalog models always materialize it;
+	 * optionality preserves hand-authored resolved compat fixtures.
+	 */
+	forwardsOpenRouterRouting?: boolean;
 	/** Whether this endpoint needs a max-token field even when caller did not set one. */
 	alwaysSendMaxTokens: boolean;
 	/** Clamp a requested output-token count to the model's advertised ceiling. */

@@ -30,6 +30,12 @@ export const KNOWN_HOSTS = {
 		urlMarkers: [".openai.azure.com", "azure.com/openai", "models.inference.ai.azure.com"],
 	},
 	openrouter: { providers: ["openrouter"], urlMarkers: ["openrouter.ai"] },
+	/**
+	 * Relays that serve OpenRouter's catalog under their own wire contract and
+	 * forward only OpenRouter's `provider` routing (SpriliCred's `/openrouter/v1`).
+	 * Routing applies; no other OpenRouter wire behavior does.
+	 */
+	openrouterRelay: { providers: ["sprilicred-openrouter"], urlMarkers: [] },
 	vercelAIGateway: { providers: ["vercel-ai-gateway"], urlMarkers: ["ai-gateway.vercel.sh"] },
 	githubCopilot: { providers: ["github-copilot"], urlMarkers: ["githubcopilot.com", "copilot-api."] },
 	anthropic: { providers: ["anthropic"], urlMarkers: ["api.anthropic.com"] },

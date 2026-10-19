@@ -193,7 +193,10 @@ function getSingleUpstreamRoute(model: Model<Api>): string | undefined {
 	if (modelMatchesHost(model, "vercelAIGateway") && "vercelGatewayRouting" in compat) {
 		return getSingleRoutingOnly(compat.vercelGatewayRouting);
 	}
-	if (modelMatchesHost(model, "openrouter") && "openRouterRouting" in compat) {
+	if (
+		(modelMatchesHost(model, "openrouter") || modelMatchesHost(model, "openrouterRelay")) &&
+		"openRouterRouting" in compat
+	) {
 		return getSingleRoutingOnly(compat.openRouterRouting);
 	}
 	return undefined;
@@ -313,9 +316,13 @@ function resolveBedrockInferenceProfileReference(
 	return resolveBedrockInferenceProfileModelId(modelId, availableModels);
 }
 
-/** OpenRouter and Vercel AI Gateway are the aggregators that honor per-request upstream routing. */
+/** OpenRouter (and relays forwarding its routing) and Vercel AI Gateway honor per-request upstream routing. */
 function supportsUpstreamRouting(model: Model<Api>): boolean {
-	return modelMatchesHost(model, "openrouter") || modelMatchesHost(model, "vercelAIGateway");
+	return (
+		modelMatchesHost(model, "openrouter") ||
+		modelMatchesHost(model, "openrouterRelay") ||
+		modelMatchesHost(model, "vercelAIGateway")
+	);
 }
 
 /** Pin a resolved aggregator model to a single upstream provider via its compat routing block. */

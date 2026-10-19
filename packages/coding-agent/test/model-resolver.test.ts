@@ -2525,6 +2525,27 @@ describe("provider routing selector (@upstream)", () => {
 		expect(openRouterOnly(result.model)).toBeUndefined();
 	});
 
+	test("routes a SpriliCred OpenRouter relay model via openRouterRouting only", () => {
+		const relayModel: Model<"openai-responses"> = buildModel({
+			id: "deepseek/deepseek-v4.1-flash",
+			name: "DeepSeek V4.1 Flash",
+			api: "openai-responses",
+			provider: "sprilicred-openrouter",
+			baseUrl: "https://sprilicred.example.ts.net/openrouter/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0.3, output: 1.2, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1048576,
+			maxTokens: 128000,
+		});
+		const result = parseModelPattern("sprilicred-openrouter/deepseek/deepseek-v4.1-flash@baseten/fast", [relayModel]);
+		expect(result.model?.id).toBe("deepseek/deepseek-v4.1-flash");
+		expect(result.upstream).toBe("baseten/fast");
+		expect(openRouterOnly(result.model)).toEqual(["baseten/fast"]);
+		// The relay forwards routing but is not OpenRouter on the wire.
+		expect(result.model?.compat).toMatchObject({ forwardsOpenRouterRouting: true, isOpenRouterHost: false });
+	});
+
 	test("does not split a model id that legitimately ends in @ (Vertex)", () => {
 		const vertexModel: Model<"anthropic-messages"> = buildModel({
 			id: "claude-opus-4-8@default",

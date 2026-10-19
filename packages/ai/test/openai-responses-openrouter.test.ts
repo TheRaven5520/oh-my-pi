@@ -389,6 +389,31 @@ describe("OpenRouter Responses request shape", () => {
 		expect(body.provider).toEqual(routing);
 	});
 
+	it("sends provider routing through a SpriliCred OpenRouter relay without OpenRouter-only fields", async () => {
+		const routing = { only: ["baseten/fast"] };
+		const { body } = await captureRequest(
+			buildOpenRouterResponsesModel({
+				provider: "sprilicred-openrouter",
+				baseUrl: "https://sprilicred.example.ts.net/openrouter/v1",
+				compat: { openRouterRouting: routing },
+			}),
+			{ sessionId: "relay-session" },
+		);
+		expect(body.provider).toEqual(routing);
+		expect(body.session_id).toBeUndefined();
+	});
+
+	it("drops provider routing on a host that does not forward it", async () => {
+		const { body } = await captureRequest(
+			buildOpenRouterResponsesModel({
+				provider: "custom-proxy",
+				baseUrl: "https://proxy.example.com/v1",
+				compat: { openRouterRouting: { only: ["baseten/fast"] } },
+			}),
+		);
+		expect(body.provider).toBeUndefined();
+	});
+
 	it("explicitly disables OpenRouter Responses reasoning with enabled=false", async () => {
 		const { body } = await captureRequest(
 			buildOpenRouterResponsesModel({ id: "deepseek/deepseek-r1", name: "DeepSeek R1", reasoning: true }),

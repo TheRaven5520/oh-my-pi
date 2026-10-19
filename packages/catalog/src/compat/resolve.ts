@@ -327,6 +327,8 @@ interface OpenAIDetection {
 	isLocalOpenAICompatBackend: boolean;
 	isLocalServingBackend: boolean;
 	isOpenRouter: boolean;
+	/** OpenRouter or a relay forwarding its `provider` routing. */
+	forwardsOpenRouterRouting: boolean;
 }
 
 function detectOpenAI(
@@ -365,6 +367,8 @@ function detectOpenAI(
 		isLocalOpenAICompatBackend,
 		isLocalServingBackend: isLocalOpenAICompatBackend || hasLocalLoopbackBaseUrl(baseUrl),
 		isOpenRouter: modelMatchesHost(hostModel, "openrouter"),
+		forwardsOpenRouterRouting:
+			modelMatchesHost(hostModel, "openrouter") || modelMatchesHost(hostModel, "openrouterRelay"),
 	};
 }
 
@@ -561,6 +565,7 @@ function detectOpenAICompat(
 		openRouterRouting: undefined,
 		vercelGatewayRouting: undefined,
 		isOpenRouterHost: d.isOpenRouter,
+		forwardsOpenRouterRouting: d.forwardsOpenRouterRouting,
 		wireModelIdMode,
 		isVercelGatewayHost: isVercelGateway,
 		supportsStrictMode:
@@ -776,6 +781,7 @@ function resolveOpenAIResponsesPolicy(
 		openRouterRouting: undefined,
 		vercelGatewayRouting: undefined,
 		isOpenRouterHost: isOpenRouter,
+		forwardsOpenRouterRouting: isOpenRouter || modelMatchesHost(hostModel, "openrouterRelay"),
 		isVercelGatewayHost: isVercelGateway,
 		wireModelIdMode: isOpenRouter ? "openrouter" : "raw",
 		toolSchemaFlavor: facts.is("kimi") ? "moonshot-mfjs" : undefined,

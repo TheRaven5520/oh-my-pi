@@ -37,6 +37,8 @@ const NEW_COMPAT_FIELDS = new Set([
 	"antigravityUsageLabel",
 	// Fork: gateway fast mode (resolved `false` by default; baked rows predate it).
 	"supportsFastMode",
+	// Fork: OpenRouter routing through relays (baked rows predate it; unset reads as `isOpenRouterHost`).
+	"forwardsOpenRouterRouting",
 ]);
 
 /** APIs whose compat record is new with the engine (no baked baseline). */

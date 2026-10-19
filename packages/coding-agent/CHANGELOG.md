@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `sprilicred-openrouter/<model>@<upstream>` (e.g. `@baseten/fast`) now pins SpriliCred's OpenRouter relay to one OpenRouter endpoint, as `openrouter/<model>@<upstream>` does; only the `provider` routing is forwarded. Previously the selector was "not found".
 - Central publishes validated source-session composer chrome and explicit prompt-unavailable reasons, matching the original chat's layout without modifying its draft.
 - Central exposes the published chat's status and both providers' quota windows over its private local/SSH bridge, and admits messages into the original session without altering its terminal draft. Expected conversation identity and deduplicated request IDs protect session switches and uncertain retries.
 - `omp login sprilicred` parity now covers SpriliCred withholding DeepSeek V4.1 Flash (empty `/deepseek/v1/models` for a granted key): the DeepSeek provider and every saved DeepSeek reference are dropped, never moved to `sprilicred-openai`.

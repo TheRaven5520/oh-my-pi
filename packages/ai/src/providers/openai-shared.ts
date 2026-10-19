@@ -678,22 +678,24 @@ export interface OpenAIGatewayRoutingParams {
 
 export interface OpenAIGatewayRoutingCompat {
 	isOpenRouterHost: boolean;
+	/** OpenRouter or a relay forwarding its `provider` routing (unset on hand-built fixtures: OpenRouter only). */
+	forwardsOpenRouterRouting?: boolean;
 	openRouterRouting?: OpenRouterRouting;
 	isVercelGatewayHost?: boolean;
 	vercelGatewayRouting?: VercelGatewayRouting;
 }
 
 /**
- * Apply gateway routing preferences to the request body. OpenRouter routes via
- * the top-level `provider` field; the Vercel AI Gateway routes Chat
- * Completions through `providerOptions.gateway`.
+ * Apply gateway routing preferences to the request body. OpenRouter (and a
+ * relay forwarding its routing) routes via the top-level `provider` field; the
+ * Vercel AI Gateway routes Chat Completions through `providerOptions.gateway`.
  */
 export function applyOpenAIGatewayRouting(
 	params: OpenAIGatewayRoutingParams,
 	compat: OpenAIGatewayRoutingCompat,
 	cacheEnabled = true,
 ): void {
-	if (compat.isOpenRouterHost && compat.openRouterRouting) {
+	if ((compat.forwardsOpenRouterRouting ?? compat.isOpenRouterHost) && compat.openRouterRouting) {
 		params.provider = compat.openRouterRouting;
 	}
 	if (compat.isVercelGatewayHost && compat.vercelGatewayRouting) {

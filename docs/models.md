@@ -562,7 +562,7 @@ not an allowlist of model transports.
 - fuzzy/substring matching
 - glob scope patterns in `--models` (e.g. `openai/*`, `*sonnet*`)
 - optional `:thinkingLevel` suffix (`off|minimal|low|medium|high|xhigh|max|auto|inherit`)
-- `@upstream` routing suffix on OpenRouter and Vercel Gateway selectors (for example, `openrouter/anthropic/claude-sonnet-5@anthropic:high`); an exact literal model id still wins
+- `@upstream` routing suffix on OpenRouter and Vercel Gateway selectors (for example, `openrouter/anthropic/claude-sonnet-5@anthropic:high`); an exact literal model id still wins. SpriliCred's OpenRouter relay (`sprilicred-openrouter`) takes the same suffix (`sprilicred-openrouter/deepseek/deepseek-v4.1-flash@baseten/fast`) and forwards only the `provider` routing, none of OpenRouter's other wire fields
 
 `--provider` is legacy; `--model` is preferred. An exact `provider/modelId` is unambiguous; bare ids
 and fuzzy patterns are resolved against the available concrete models.
