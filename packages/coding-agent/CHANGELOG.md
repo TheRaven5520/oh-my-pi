@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Answering a chat's question, or sending it a message, from OMP Central now clears that chat's red tmux reply-alert tab: a local tmux chat runs `~/.config/tmux/reply-alert.py ack` for its own pane, and an SSH-hosted chat emits an `omp_reply_ack` frame for the outer pane's observer. Local answers and other chats' tabs are unaffected.
 - `/fork` stays open in the agents panel after its final `hand_back` report, ready for follow-up requests. Close it explicitly with `x`; switching or exiting the main session still releases its forks.
 - `sprilicred-openrouter/<model>@<upstream>` (e.g. `@baseten/fast`) now pins SpriliCred's OpenRouter relay to one OpenRouter endpoint, as `openrouter/<model>@<upstream>` does; only the `provider` routing is forwarded. Previously the selector was "not found".
 - Central publishes validated source-session composer chrome and explicit prompt-unavailable reasons, matching the original chat's layout without modifying its draft.

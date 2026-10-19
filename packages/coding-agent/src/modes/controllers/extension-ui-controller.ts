@@ -4,6 +4,7 @@ import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire
 import type { CollabHost } from "../../collab/host";
 import type { CentralAnswer, CentralRequestDraft } from "@oh-my-pi/pi-tui/apps/central/types";
 import { type CentralHost, startCentralHost } from "../../central/bridge";
+import { resolveReplyAlertAck } from "@oh-my-pi/pi-tui/tmux-reply-alert";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { formatKeyHint, formatKeyHints, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
@@ -188,6 +189,8 @@ export class ExtensionUiController {
 		if (this.ctx.collabGuest || this.#centralStopped) return;
 		this.#centralStart ??= (async () => {
 			let host: CentralHost | undefined;
+			// Replying from Central clears this chat's tmux reply alert (red tab).
+			const acknowledgeReply = resolveReplyAlertAck(bytes => this.ctx.ui.terminal.write(bytes));
 			try {
 				host = await startCentralHost(
 					() => ({
@@ -260,6 +263,7 @@ export class ExtensionUiController {
 								);
 							return admission.promise;
 						},
+						onResponded: acknowledgeReply,
 						onClosed: () => {
 							if (this.#centralHost === host) this.#centralHost = undefined;
 						},

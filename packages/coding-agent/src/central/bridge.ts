@@ -36,6 +36,8 @@ type Options = {
 	getWorkspace?: (statusWidth: number, usageWidth: number) => CentralWorkspace;
 	/** Resolves only when the run/queue owns the input; rejects pre-acceptance failures. */
 	prompt?: (sessionId: string, text: string) => Promise<void>;
+	/** Runs once per Central answer or newly admitted prompt: the user replied from Central, not this terminal. */
+	onResponded?: () => void;
 };
 export const CENTRAL_MAX_TRANSCRIPT_BYTES = 512 * 1024;
 
@@ -360,7 +362,10 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 						entry = { sessionId, digest, result: pendingPrompt.promise };
 						prompts.set(requestId, entry);
 						try {
-							options.prompt(sessionId, text).then(pendingPrompt.resolve, pendingPrompt.reject);
+							options.prompt(sessionId, text).then(() => {
+								pendingPrompt.resolve();
+								options.onResponded?.();
+							}, pendingPrompt.reject);
 						} catch (error) {
 							pendingPrompt.reject(error);
 						}
@@ -379,6 +384,7 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 				if (answer === undefined) return respond({ ok: false, error: "invalid_answer" });
 				item.answer(answer);
 				respond({ ok: true });
+				options?.onResponded?.();
 			} catch {
 				respond({ ok: false, error: "snapshot_unavailable" });
 			}
