@@ -21,7 +21,7 @@ function previewRequest(request: string): string {
 
 const handBackSchema = type({
 	message: type("string").describe("update or final report for the main session"),
-	"done?": type("boolean").describe("true when this fork's purpose is complete; closes the fork after this turn"),
+	"done?": type("boolean").describe("true when this fork's purpose is complete; keeps the fork open for follow-ups"),
 });
 
 interface HandBackDetails {
@@ -29,16 +29,12 @@ interface HandBackDetails {
 	done: boolean;
 }
 
-function createHandBackTool(
-	forkId: string,
-	parentId: string,
-	onDone: () => void,
-): CustomTool<typeof handBackSchema, HandBackDetails> {
+function createHandBackTool(forkId: string, parentId: string): CustomTool<typeof handBackSchema, HandBackDetails> {
 	return {
 		name: "hand_back",
 		label: "Hand back",
 		description:
-			"Send the main session an update (done: false) or this fork's final report (done: true). done: true closes this fork once the current turn ends.",
+			"Send the main session an update (done: false) or this fork's final report (done: true). The fork stays open for follow-ups after either report.",
 		parameters: handBackSchema,
 		loadMode: "essential",
 		approval: "read",
@@ -64,13 +60,12 @@ function createHandBackTool(
 					details: { delivered: false, done },
 				};
 			}
-			if (done) onDone();
 			return {
 				content: [
 					{
 						type: "text",
 						text: done
-							? "Final report delivered to the main session. This fork closes when your turn ends; stop now."
+							? "Final report delivered to the main session. End this turn; the fork stays open for follow-ups."
 							: "Update delivered to the main session.",
 					},
 				],
@@ -89,9 +84,8 @@ interface ForkEntry {
 /**
  * `/fork`: a clone of the current chat that lives in the agents panel. The
  * user opens it from the panel and talks to it directly; it posts updates and
- * a final report back to the main session with `hand_back`, and the final
- * report closes it. Forks stay live until they finish, are closed from the
- * panel, or the main session changes.
+ * a final report back to the main session with `hand_back`. Forks stay live
+ * for follow-ups until closed from the panel or the main session changes.
  */
 export class ForkCommandController {
 	readonly #forks = new Map<string, ForkEntry>();
@@ -144,7 +138,7 @@ export class ForkCommandController {
 		const lifecycle = AgentLifecycleManager.global();
 		const ref = AgentRegistry.global().get(forkId);
 		if (ref) {
-			// No idle TTL: a fork waits for the user as long as it is unfinished.
+			// No idle TTL: a fork waits for follow-ups until explicitly closed.
 			lifecycle.adopt(
 				forkId,
 				{
@@ -178,7 +172,7 @@ export class ForkCommandController {
 		}
 	}
 
-	/** Close a fork without a report (from the agents panel). */
+	/** Close a fork from the agents panel, whether or not it has reported. */
 	async close(id: string): Promise<boolean> {
 		const entry = this.#forks.get(id);
 		if (!entry || entry.closing) return false;
@@ -202,7 +196,7 @@ export class ForkCommandController {
 		sessionManager: SessionManager,
 		expectedAgentRef: AgentRef | undefined,
 	): Promise<AgentSession> {
-		const handBack = createHandBackTool(entry.id, parent.ownerId, () => void this.#finish(entry));
+		const handBack = createHandBackTool(entry.id, parent.ownerId);
 		const { session } = await sdk.createAgentSession(
 			parent.sessionOptions({
 				sessionManager,
@@ -243,15 +237,6 @@ export class ForkCommandController {
 		live.prompt(request, { attribution: "user" }).catch((error: unknown) => {
 			this.ctx.showError(`Fork ${forkId}: ${error instanceof Error ? error.message : String(error)}`);
 		});
-	}
-
-	/** `hand_back` with done: let the reporting turn end, then close. */
-	async #finish(entry: ForkEntry): Promise<void> {
-		if (entry.closing) return;
-		entry.closing = true;
-		await AgentRegistry.global().get(entry.id)?.session?.waitForIdle();
-		await this.#release(entry);
-		this.ctx.showStatus(`Fork ${entry.id} finished and closed`);
 	}
 
 	async #release(entry: ForkEntry): Promise<void> {

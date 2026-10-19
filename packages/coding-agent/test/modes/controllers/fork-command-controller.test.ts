@@ -159,18 +159,6 @@ function forkIds(): string[] {
 		.map(ref => ref.id);
 }
 
-/** Resolves when `id` leaves the registry, which is where a fork's close is observable. */
-function removed(id: string): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	const unsubscribe = AgentRegistry.global().onChange(event => {
-		if (event.type === "removed" && event.ref.id === id) {
-			unsubscribe();
-			resolve();
-		}
-	});
-	return promise;
-}
-
 describe("ForkCommandController", () => {
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
@@ -235,24 +223,32 @@ describe("ForkCommandController", () => {
 		expect(controller.has(forkId)).toBe(true);
 	});
 
-	it("delivers the final report, lets the reporting turn finish, then closes the fork", async () => {
+	it("keeps a reported fork available after its turn until explicitly closed", async () => {
 		const h = createHarness();
 		const controller = new ForkCommandController(h.ctx);
 		await controller.start("investigate");
 		const [forkId = ""] = forkIds();
 		h.fork.holdIdle();
-		const closed = removed(forkId);
 
-		await h.handBack().execute("call-1", { message: "Fixed it in foo.ts", done: true }, undefined, {} as never);
-
+		const result = await h
+			.handBack()
+			.execute("call-1", { message: "Fixed it in foo.ts", done: true }, undefined, {} as never);
+		expect(result.details).toEqual({ delivered: true, done: true });
 		expect(h.sends).toEqual([
 			{ from: forkId, to: MAIN_AGENT_ID, body: "Fixed it in foo.ts", forkReport: { done: true } },
 		]);
-		// Still registered while the turn that called hand_back is finishing.
-		expect(forkIds()).toEqual([forkId]);
 		h.fork.finishTurn();
-		await closed;
+		await h.fork.session.waitForIdle();
+		expect(controller.has(forkId)).toBe(true);
+		expect(forkIds()).toEqual([forkId]);
+		expect(AgentLifecycleManager.global().has(forkId)).toBe(true);
+		expect(h.fork.session.dispose).not.toHaveBeenCalled();
+
+		await h.handBack().execute("call-2", { message: "Follow-up finding", done: true }, undefined, {} as never);
+		expect(h.sends[1]?.body).toBe("Follow-up finding");
+		expect(await controller.close(forkId)).toBe(true);
 		expect(controller.has(forkId)).toBe(false);
+		expect(forkIds()).toEqual([]);
 		expect(h.fork.session.dispose).toHaveBeenCalled();
 	});
 
@@ -265,7 +261,6 @@ describe("ForkCommandController", () => {
 
 		const result = await h.handBack().execute("call-1", { message: "done", done: true }, undefined, {} as never);
 
-		// A failed delivery never schedules the close.
 		expect(result.details).toEqual({ delivered: false, done: true });
 		expect(controller.has(forkId)).toBe(true);
 		expect(forkIds()).toEqual([forkId]);
