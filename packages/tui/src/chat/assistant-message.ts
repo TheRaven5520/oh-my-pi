@@ -540,8 +540,17 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	setHideThinkingBlock(hide: boolean): void {
+		if (this.#hideThinkingBlock === hide) return;
 		this.#hideThinkingBlock = hide;
 		this.#thinkingCollapsed.clear();
+		// Revealing hidden thinking must expose its text, not just the finished
+		// section's collapsed heading. Later per-section folds remain independent.
+		if (!hide && this.#displayedMessage) {
+			for (let index = 0; index < this.#displayedMessage.content.length; index++) {
+				if (this.#displayedMessage.content[index]?.type === "thinking") this.#thinkingCollapsed.set(index, false);
+			}
+		}
+		this.#nativeViewVersion++;
 	}
 
 	/**
@@ -1075,8 +1084,8 @@ export class AssistantMessageComponent extends Container {
 	 * run of finished blocks, ending inside the streaming block at Markdown's
 	 * frozen boundary. Undefined whenever any prefix byte could still change
 	 * (finalized or non-transient renders, marker rows, extension components,
-	 * thinking, or no frozen prefix yet). Visible thinking hides once a later
-	 * tool call starts, and rows already in native scrollback could not follow.
+	 * thinking, or no frozen prefix yet). Thinking remains mutable until the
+	 * block finalizes, including display formatting as more tokens arrive.
 	 */
 	#currentStableSnapshot(): readonly StablePart[] | undefined {
 		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return undefined;
@@ -1628,9 +1637,6 @@ export class AssistantMessageComponent extends Container {
 					resolveThinkingDisplay(c, this.#proseOnlyThinking).visible),
 		);
 
-		// Thinking shows while it streams and hides once a later tool call starts:
-		// the model has moved on, and the tool card takes its place.
-		const lastToolCall = message.content.findLastIndex(c => c.type === "toolCall");
 		// Render content in order
 		let thinkingIndex = 0;
 		let hasRenderedContent = false;
@@ -1646,7 +1652,7 @@ export class AssistantMessageComponent extends Container {
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
 				hasRenderedContent = true;
 			} else if (content.type === "thinking") {
-				if (this.#hideThinkingBlock || i < lastToolCall) {
+				if (this.#hideThinkingBlock) {
 					thinkingIndex += 1;
 					continue;
 				}

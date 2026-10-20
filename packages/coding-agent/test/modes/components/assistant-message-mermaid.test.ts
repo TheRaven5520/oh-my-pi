@@ -82,7 +82,7 @@ describe("AssistantMessageComponent transcript lifecycle", () => {
 		expect(Bun.stripANSI(batch?.rows.join("\n") ?? "")).toContain("Revised opening paragraph");
 	});
 
-	it("keeps visible thinking out of history until a later tool call hides it", () => {
+	it("keeps thinking mutable while streaming and retains it across a later tool call", () => {
 		const thinking =
 			"Alpha reasoning paragraph.\n\nBeta reasoning paragraph.\n\nPartial tail keeps growing.\n\nNewer tail";
 		const message = (content: AssistantMessage["content"]): AssistantMessage => ({
@@ -104,24 +104,24 @@ describe("AssistantMessageComponent transcript lifecycle", () => {
 		const live = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 0, tick: 0 }).join("\n"));
 		expect(live).toContain("Alpha reasoning paragraph.");
 		expect(live).toContain("Checking the config.");
-		// Nothing retires under pressure: rows in native history could not be hidden later.
+		// Thinking stays mutable until its block finalizes.
 		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
 
-		// A tool call hides the thinking; the text before it stays.
+		// A tool call must not erase reasoning the user has chosen to display.
 		const withTool = message([
 			{ type: "thinking", thinking },
 			{ type: "text", text: "Checking the config." },
 			{ type: "toolCall", id: "t1", name: "read", arguments: { path: "x" } },
 		]);
 		component.updateContent(withTool, { transient: true });
-		const hidden = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 1, tick: 1 }).join("\n"));
-		expect(hidden).not.toContain("reasoning paragraph");
-		expect(hidden).toContain("Checking the config.");
+		const withToolRows = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 1, tick: 1 }).join("\n"));
+		expect(withToolRows).toContain("Alpha reasoning paragraph.");
+		expect(withToolRows).toContain("Checking the config.");
 
 		component.updateContent(withTool);
 		component.markTranscriptBlockFinalized();
 		const flushText = Bun.stripANSI(transcript.peekFlushBatch(80)?.rows.join("\n") ?? "");
-		expect(flushText).not.toContain("reasoning paragraph");
+		expect(flushText).toContain("Alpha reasoning paragraph.");
 		expect(flushText).toContain("Checking the config.");
 	});
 

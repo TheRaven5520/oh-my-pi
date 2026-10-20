@@ -19,7 +19,6 @@ import { ToolActivityContainer } from "../chrome/tool-activity";
 import { type TranscriptBlock } from "../chrome/transcript-container";
 import { TranscriptStatusBlock, type TranscriptStatusRow } from "../chrome/transcript-status";
 import { theme } from "../theme";
-import { isNativeRendering } from "../native/state";
 
 type CustomOrHookMessage = Extract<AgentMessage, { role: "custom" | "hookMessage" }>;
 type AssistantAgentMessage = Extract<AgentMessage, { role: "assistant" }>;
@@ -224,26 +223,24 @@ export function splitAssistantMessageToolTimeline(message: AssistantAgentMessage
 	let lastToolCallId: string | undefined;
 	let sawToolCall = false;
 
-	// Tool calls are stripped from display segments, so hide superseded terminal
-	// thinking here, before that boundary is lost. Native keeps its folded cards.
-	const hideClosedThinking = !isNativeRendering();
-	const displaySegment = (content: AssistantAgentMessage["content"], closed: boolean): AssistantAgentMessage => ({
+	// Retain thinking in every segment so the display toggle can reveal it later.
+	const displaySegment = (content: AssistantAgentMessage["content"]): AssistantAgentMessage => ({
 		...message,
-		content: closed && hideClosedThinking ? content.filter(block => block.type !== "thinking") : content,
+		content,
 		stopReason: "stop",
 		errorMessage: undefined,
 		retryRecovery: undefined,
 	});
 
-	const flushPendingAfterTool = (closed: boolean) => {
+	const flushPendingAfterTool = () => {
 		if (!lastToolCallId || pendingAfterTool.length === 0) return;
-		afterToolCalls.set(lastToolCallId, displaySegment(pendingAfterTool, closed));
+		afterToolCalls.set(lastToolCallId, displaySegment(pendingAfterTool));
 		pendingAfterTool = [];
 	};
 
 	for (const content of message.content) {
 		if (content.type === "toolCall") {
-			flushPendingAfterTool(true);
+			flushPendingAfterTool();
 			sawToolCall = true;
 			lastToolCallId = content.id;
 			continue;
@@ -254,13 +251,13 @@ export function splitAssistantMessageToolTimeline(message: AssistantAgentMessage
 			beforeTools.push(content);
 		}
 	}
-	flushPendingAfterTool(false);
+	flushPendingAfterTool();
 
 	if (!sawToolCall) {
 		return { beforeTools: message, afterToolCalls, hasToolCalls: false };
 	}
 
-	return { beforeTools: displaySegment(beforeTools, true), afterToolCalls, hasToolCalls: true, lastToolCallId };
+	return { beforeTools: displaySegment(beforeTools), afterToolCalls, hasToolCalls: true, lastToolCallId };
 }
 
 /**

@@ -56,6 +56,12 @@ Inside a model picker, `Ctrl+P` moves to the next model and `Ctrl+Shift+P` moves
 
 The terminal must send a distinct modified-key sequence for `Ctrl+Shift+P`. If it sends the same byte as `Ctrl+P`, remap `app.model.cycleBackward` to a distinguishable chord.
 
+## Thinking visibility
+
+`Ctrl+T` shows or hides thinking already received in the current transcript, including reasoning before and between tool calls and rows in terminal scrollback. Showing it in a native terminal also opens retained thinking sections; individual sections can still be folded afterward. Hiding thinking does not discard it, and toggling preserves the editor draft.
+
+This is a display toggle, separate from the model's thinking effort (`Shift+Tab` or `/effort`). It does not request new reasoning or recover content the provider never sent.
+
 ## Persistent draft backlog
 
 In the main composer, `Ctrl+N` saves a nonempty draft to this session's FIFO backlog and clears it only after persistence succeeds. With an empty composer it restores the oldest saved draft for editing; it never sends anything. An empty backlog is a no-op. Whitespace and attachment-only drafts count as nonempty. A count above the prompt shows saved drafts.

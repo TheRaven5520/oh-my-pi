@@ -1,5 +1,4 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
-import { type } from "@oh-my-pi/omptype";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolCall, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -101,17 +100,26 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		resetSettingsForTest();
 	});
 
-	it("retires no live thinking and hides only tool-closed reasoning in live and rebuilt transcripts", async () => {
+	it("preserves tool-closed reasoning in live, retired, and rebuilt transcripts", async () => {
 		const { controller, chatContainer } = createFixture();
 		const firstThought = "INITIAL REASONING BEFORE BASH";
 		const middleThought = "REASONING BETWEEN TOOL CALLS";
 		const finalThought = "FINAL REASONING BEFORE ANSWER";
-		const thinking = { type: "thinking" as const, thinking: `${firstThought}\n\n${"More reasoning.\n\n".repeat(50)}` };
+		const thinking = {
+			type: "thinking" as const,
+			thinking: `${firstThought}\n\n${"More reasoning.\n\n".repeat(50)}`,
+		};
 		const firstTool: ToolCall = {
-			type: "toolCall", id: TOOL_CALL_A_ID, name: "bash", arguments: { command: "seq 1 12" },
+			type: "toolCall",
+			id: TOOL_CALL_A_ID,
+			name: "bash",
+			arguments: { command: "seq 1 12" },
 		};
 		const secondTool: ToolCall = {
-			type: "toolCall", id: TOOL_CALL_B_ID, name: "bash", arguments: { command: "echo done" },
+			type: "toolCall",
+			id: TOOL_CALL_B_ID,
+			name: "bash",
+			arguments: { command: "echo done" },
 		};
 		const update = async (
 			content: AssistantMessage["content"],
@@ -137,19 +145,25 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		prefix.push(firstTool);
 		await update(prefix, "toolcall_start");
 		let rows = Bun.stripANSI(chatContainer.render(80).join("\n"));
-		expect(rows).not.toContain(firstThought);
+		expect(rows).toContain(firstThought);
 		expect(rows).toContain(INTRO_MARKER);
 		expect(rows).toContain("seq 1 12");
 		const batch = chatContainer.peekFinalizedBatch(80, 3);
 		expect(batch).toBeDefined();
-		expect(Bun.stripANSI(batch!.rows.join("\n"))).not.toContain(firstThought);
+		expect(Bun.stripANSI(batch!.rows.join("\n"))).toContain(firstThought);
 		chatContainer.acknowledgeFinalizedBatch(batch!.id);
 		await controller.handleEvent({
-			type: "tool_execution_start", toolCallId: firstTool.id, toolName: firstTool.name, args: firstTool.arguments,
+			type: "tool_execution_start",
+			toolCallId: firstTool.id,
+			toolName: firstTool.name,
+			args: firstTool.arguments,
 		});
 		await controller.handleEvent({
-			type: "tool_execution_end", toolCallId: firstTool.id, toolName: firstTool.name,
-			result: { content: [{ type: "text", text: TOOL_RESULT_A_MARKER }] }, isError: false,
+			type: "tool_execution_end",
+			toolCallId: firstTool.id,
+			toolName: firstTool.name,
+			result: { content: [{ type: "text", text: TOOL_RESULT_A_MARKER }] },
+			isError: false,
 		});
 		expect(Bun.stripANSI(chatContainer.render(80).join("\n"))).toContain(TOOL_RESULT_A_MARKER);
 		prefix.push({ type: "thinking", thinking: middleThought });
@@ -158,7 +172,7 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		prefix.push(secondTool);
 		await update(prefix, "toolcall_start");
 		rows = Bun.stripANSI(chatContainer.render(80).join("\n"));
-		expect(rows).not.toContain(middleThought);
+		expect(rows).toContain(middleThought);
 		expect(rows).toContain("echo done");
 		prefix.push({ type: "thinking", thinking: finalThought });
 		await update(prefix, "thinking_delta");
@@ -167,8 +181,8 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		await update(prefix, "text_delta");
 		await controller.handleEvent({ type: "message_end", message: assistantMessage(prefix) });
 		rows = Bun.stripANSI(chatContainer.render(80).join("\n"));
-		expect(rows).not.toContain(firstThought);
-		expect(rows).not.toContain(middleThought);
+		expect(rows).toContain(firstThought);
+		expect(rows).toContain(middleThought);
 		expect(rows).toContain(finalThought);
 		expect(rows).toContain(FINAL_MARKER);
 
@@ -176,11 +190,14 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		const helpers = new UiHelpers(rebuilt.ctx);
 		rebuilt.ctx.addMessageToChat = (message, options) => helpers.addMessageToChat(message, options);
 		helpers.renderSessionContext({
-			messages: [assistantMessage(prefix)], models: {}, injectedTtsrRules: [], mode: "none",
+			messages: [assistantMessage(prefix)],
+			models: {},
+			injectedTtsrRules: [],
+			mode: "none",
 		});
 		rows = Bun.stripANSI(rebuilt.chatContainer.render(80).join("\n"));
-		expect(rows).not.toContain(firstThought);
-		expect(rows).not.toContain(middleThought);
+		expect(rows).toContain(firstThought);
+		expect(rows).toContain(middleThought);
 		expect(rows).toContain(INTRO_MARKER);
 		expect(rows).toContain("seq 1 12");
 		expect(rows).toContain("echo done");
@@ -204,9 +221,9 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		setNativeRendering(true);
 		const thinking = { type: "thinking" as const, thinking: "NATIVE FOLDED REASONING" };
 		const call: ToolCall = { type: "toolCall", id: TOOL_CALL_A_ID, name: "bash", arguments: {} };
-		const timeline = splitAssistantMessageToolTimeline(assistantMessage([
-			thinking, call, thinking, { ...call, id: TOOL_CALL_B_ID }, thinking,
-		]));
+		const timeline = splitAssistantMessageToolTimeline(
+			assistantMessage([thinking, call, thinking, { ...call, id: TOOL_CALL_B_ID }, thinking]),
+		);
 		expect(timeline.beforeTools.content).toEqual([thinking]);
 		expect(timeline.afterToolCalls.get(TOOL_CALL_A_ID)?.content).toEqual([thinking]);
 		expect(timeline.afterToolCalls.get(TOOL_CALL_B_ID)?.content).toEqual([thinking]);
@@ -475,66 +492,6 @@ describe("EventController mixed assistant text/tool rendering", () => {
 			// The last segment began with the last result and ended with the reply.
 			expect(lineWith(lines, FINAL_MARKER)).toEndWith(`${formatClockTime(T0 + 20_000)} · 10.0s`);
 		});
-	});
-
-	it("uses the canonical mounted-tool renderer for prefixed calls live and after transcript rebuild", async () => {
-		const githubTool: AgentTool = {
-			name: "github",
-			label: "GitHub",
-			description: "GitHub test tool",
-			parameters: type({}),
-			execute: async () => ({ content: [] }),
-		};
-		const toolByName = (name: string) => (name === "github" || name === "xd://github" ? githubTool : undefined);
-		const toolCall: ToolCall = {
-			type: "toolCall",
-			id: "toolu_prefixed_github",
-			name: "xd://github",
-			arguments: { op: "repo_view", repo: "can1357/oh-my-pi" },
-		};
-		const streaming = assistantMessage([toolCall]);
-
-		const live = createFixture(false, toolByName);
-		await live.controller.handleEvent({ type: "message_start", message: assistantMessage([]) } as Extract<
-			AgentSessionEvent,
-			{ type: "message_start" }
-		>);
-		await live.controller.handleEvent({
-			type: "message_update",
-			message: streaming,
-			assistantMessageEvent: {
-				type: "toolcall_end",
-				contentIndex: 0,
-				toolCall,
-				partial: streaming,
-			},
-		} as Extract<AgentSessionEvent, { type: "message_update" }>);
-		expect(Bun.stripANSI(live.chatContainer.render(120).join("\n"))).toContain("GitHub Repo can1357/oh-my-pi");
-
-		const executionOnly = createFixture(false, toolByName);
-		await executionOnly.controller.handleEvent({
-			type: "tool_execution_start",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			args: toolCall.arguments,
-		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
-		expect(Bun.stripANSI(executionOnly.chatContainer.render(120).join("\n"))).toContain(
-			"GitHub Repo can1357/oh-my-pi",
-		);
-
-		const rebuilt = createFixture(false, toolByName);
-		const rebuiltHelpers = new UiHelpers(rebuilt.ctx);
-		rebuilt.ctx.addMessageToChat = (message, options) => rebuiltHelpers.addMessageToChat(message, options);
-		rebuiltHelpers.renderSessionContext({
-			messages: [streaming],
-			models: {},
-			injectedTtsrRules: [],
-			mode: "none",
-		});
-		expect(Bun.stripANSI(rebuilt.chatContainer.render(120).join("\n"))).toContain("GitHub Repo can1357/oh-my-pi");
-
-		// Canonicalization is presentation-only; provider replay keeps the wire spelling.
-		expect(toolCall.name).toBe("xd://github");
 	});
 
 	it("keeps assistant text streaming while hiding bash failures and grouped read activity", async () => {

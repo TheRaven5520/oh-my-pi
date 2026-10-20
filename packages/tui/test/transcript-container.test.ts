@@ -904,7 +904,7 @@ describe("TranscriptContainer progressive assistant retirement", () => {
 		`${label} ${index} weighs **retirement** against native scrollback, with enough words to wrap.\n\n`;
 	// An answer streams as two text blocks: every update freezes one more
 	// paragraph, and the second block turns the first into a closed part.
-	// (Visible thinking never publishes mid-stream: a later tool call hides it.)
+	// Visible thinking remains mutable until its block finalizes.
 	const steps: AssistantMessage[] = [];
 	let opening = "";
 	for (let index = 0; index < 8; index++) {

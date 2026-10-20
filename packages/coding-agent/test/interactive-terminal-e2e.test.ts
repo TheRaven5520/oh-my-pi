@@ -179,7 +179,7 @@ describe("libkitty end-to-end", () => {
 		}
 	});
 
-	it("hides thinking already retired to native scrollback when Ctrl+T toggles", async () => {
+	it("toggles retained pre-tool thinking in terminal scrollback without losing the draft", async () => {
 		const usage: Usage = {
 			input: 0,
 			output: 0,
@@ -203,6 +203,7 @@ describe("libkitty end-to-end", () => {
 			role: "assistant",
 			content: [
 				{ type: "thinking", thinking: THINK },
+				{ type: "toolCall", id: "thinking-read", name: "read", arguments: { path: "example.ts" } },
 				{ type: "text", text: "First visible answer." },
 			],
 			api: "anthropic-messages",
@@ -253,6 +254,12 @@ describe("libkitty end-to-end", () => {
 		// The retired history was cleared and replayed hidden — the marker is gone
 		// from scrollback and viewport alike — while the live editor stays mounted.
 		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(THINK))).toBe(false);
+		expect(plainRows(term.getViewport()).some(row => row.includes("LIVE_EDITOR_DRAFT"))).toBe(true);
+
+		// Reveal again through the same keybinding, including the pre-tool block.
+		term.sendInput("\x14");
+		await term.waitForRender(() => plainRows(term.getScrollBuffer()).some(row => row.includes(THINK)));
+		expect(plainRows(term.getScrollBuffer()).filter(row => row.includes(THINK))).toHaveLength(1);
 		expect(plainRows(term.getViewport()).some(row => row.includes("LIVE_EDITOR_DRAFT"))).toBe(true);
 	});
 	it("hides tool activity already retired to native scrollback when the real shortcut toggles", async () => {

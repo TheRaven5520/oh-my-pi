@@ -304,6 +304,27 @@ Average Latency: 1,240 ms
 		}
 	});
 
+	it("reveals reasoning retained before a tool call in ANSI output", () => {
+		const reasoning = "Retained reasoning before a tool call.";
+		const component = new AssistantMessageComponent(
+			msg([
+				{ type: "thinking", thinking: reasoning },
+				{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "example.ts" } },
+				{ type: "text", text: "Result after the tool." },
+			]),
+			true,
+		);
+		expect(Bun.stripANSI(component.render(W).join("\n"))).not.toContain(reasoning);
+		component.setHideThinkingBlock(false);
+		component.invalidate();
+		const revealed = Bun.stripANSI(component.render(W).join("\n"));
+		expect(revealed.split(reasoning)).toHaveLength(2);
+		expect(revealed).toContain("Result after the tool.");
+		component.setHideThinkingBlock(true);
+		component.invalidate();
+		expect(Bun.stripANSI(component.render(W).join("\n"))).not.toContain(reasoning);
+	});
+
 	it("does not re-format an already-display thinking block (rawThinking set)", () => {
 		// buildDisplayMessage emits a thinking block whose `thinking` is already the
 		// formatted display text and stamps the original under `rawThinking`.

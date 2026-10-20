@@ -143,6 +143,70 @@ describe("native transcript redesign", () => {
 		expect(harness.errors).toEqual([]);
 	});
 
+	it("keeps thinking revealed mid-stream open when the response finishes", async () => {
+		const component = new AssistantMessageComponent(undefined, true);
+		harness = await TspHarness.start();
+		harness.tui.addChild(component);
+		const message: AssistantMessage = {
+			...failed(""),
+			stopReason: "stop",
+			errorMessage: undefined,
+			content: [{ type: "thinking", thinking: "Streamed while hidden." }],
+		};
+		component.updateContent(message, { transient: true });
+		await harness.render();
+		component.setHideThinkingBlock(false);
+		await harness.render();
+		expect(harness.find(node => node.p?.role === "omp.thinking.live")?.p).toMatchObject({ collapsed: false });
+		component.updateContent(message);
+		component.markTranscriptBlockFinalized();
+		await harness.render();
+		const section = harness.find(node => node.p?.role === "omp.thinking");
+		expect(section?.p).toMatchObject({ collapsed: false });
+		expect(texts(section)).toContain("Streamed while hidden.");
+	});
+
+	it("reveals retained thinking text and preserves individual folding until the next reveal", async () => {
+		const component = new AssistantMessageComponent(
+			{
+				...failed(""),
+				stopReason: "stop",
+				errorMessage: undefined,
+				content: [
+					{ type: "thinking", thinking: "Retained reasoning before the tool." },
+					{ type: "toolCall", id: "read-1", name: "read", arguments: { path: "example.ts" } },
+					{ type: "thinking", thinking: "Retained reasoning after the tool." },
+				],
+			},
+			true,
+		);
+		harness = await TspHarness.start();
+		harness.tui.addChild(component);
+		await harness.render();
+		expect(harness.find(node => node.p?.role === "omp.thinking")).toBeUndefined();
+
+		component.setHideThinkingBlock(false);
+		await harness.render();
+		for (const reasoning of ["Retained reasoning before the tool.", "Retained reasoning after the tool."]) {
+			const section = harness.find(node => node.p?.role === "omp.thinking" && texts(node).includes(reasoning));
+			expect(section?.p).toMatchObject({ collapsed: false });
+		}
+
+		component.handleNativeEvent({ type: "toggle", key: "k0", collapsed: true });
+		await harness.render();
+		expect(harness.find(node => node.p?.role === "omp.thinking")?.p).toMatchObject({ collapsed: true });
+		component.setHideThinkingBlock(false);
+		await harness.render();
+		expect(harness.find(node => node.p?.role === "omp.thinking")?.p).toMatchObject({ collapsed: true });
+		component.setHideThinkingBlock(true);
+		await harness.render();
+		expect(harness.find(node => node.p?.role === "omp.thinking")).toBeUndefined();
+		component.setHideThinkingBlock(false);
+		await harness.render();
+		expect(harness.find(node => node.p?.role === "omp.thinking")?.p).toMatchObject({ collapsed: false });
+		expect(harness.errors).toEqual([]);
+	});
+
 	it("gives a user message no head row, and routes its toolbar to omp's copy and rewind", async () => {
 		const actions: TranscriptAction[] = [];
 		setTranscriptActionHandler(action => actions.push(action));
