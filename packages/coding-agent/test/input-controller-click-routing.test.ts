@@ -7,6 +7,8 @@ import { SpaceHoldGesture } from "@oh-my-pi/pi-tui/space-hold";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { Container } from "@oh-my-pi/pi-tui";
 
 import { cfgTuiMouse } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
@@ -49,6 +51,8 @@ function makeHarness(
 			},
 			addStartListener: () => {},
 			getFocused: () => undefined,
+			clearInlineImages: () => {},
+			resetDisplay: () => {},
 		},
 		handlesBtwBranchKey: () => false,
 		editor: {
@@ -64,7 +68,9 @@ function makeHarness(
 		session: {
 			extensionRunner: undefined,
 		},
-		hideToolActivity: true,
+		toolDisplayState: "hidden",
+		chatContainer: new TranscriptContainer(),
+		pendingMessagesContainer: new Container(),
 		resolveViewportClickCandidates: (index: number) =>
 			options.candidates?.(index) ?? (index === 2 ? [PINNED_HUD_TOGGLE_ID] : []),
 		resolveViewportClickTool: (index: number) => options.tool?.(index),

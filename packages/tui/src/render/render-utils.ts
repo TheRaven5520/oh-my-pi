@@ -201,12 +201,12 @@ export const TRUNCATE_LENGTHS = {
 	RECAP: 280,
 } as const;
 
-/** Keybinding action that toggles tool-output expansion. */
+/** Configurable action for cycling transcript tool display. */
 const EXPAND_ACTION = "app.tools.expand";
 /** Fallback key when no binding is resolvable (e.g. outside an interactive session). */
 const DEFAULT_EXPAND_KEY: KeyId = "ctrl+o";
 
-/** Human-readable primary key bound to tool-output expansion, e.g. `Ctrl+O`. */
+/** Human-readable primary key for tool display and overlay-local expansion. */
 export function expandKeyHint(): string {
 	const [key = DEFAULT_EXPAND_KEY] = getKeybindings().getKeys(EXPAND_ACTION);
 	return formatKeyHint(key);
@@ -344,7 +344,7 @@ export function formatStatusIcon(status: ToolUIStatus, theme: Theme, spinnerFram
 export function formatExpandHint(theme: Theme, expanded?: boolean, hasMore?: boolean): string {
 	if (expanded) return "";
 	if (hasMore === false) return "";
-	return theme.fg("dim", wrapBrackets(`${expandKeyHint()}: Expand`, theme));
+	return theme.fg("dim", wrapBrackets(`${expandKeyHint()}: Tool display`, theme));
 }
 
 /**
@@ -392,7 +392,7 @@ export function previewWindowRows(): number {
  * (ctrl+o) uncaps it.
  *
  * `prefix` (raw, e.g. a dim tree gutter) is prepended to the marker line so
- * nested previews stay aligned. `expandHint: false` drops the "ctrl+o: Expand"
+ * nested previews stay aligned. `expandHint: false` drops the tool-display
  * suffix for callers that cap even inside the expanded view (task recent
  * output), where the hint would point the wrong way.
  */

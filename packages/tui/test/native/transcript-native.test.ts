@@ -118,22 +118,23 @@ describe("native transcript", () => {
 		expect(h.errors).toEqual([]);
 	});
 
-	it("mirrors a native toggle into the tool card and re-collapses it on a transcript-wide collapse", async () => {
+	it("mirrors a native toggle and restores expansion on a verbose state gesture", async () => {
 		let builder: ChatTranscriptBuilder | undefined;
 		const h = await startWith(h => {
 			builder = new ChatTranscriptBuilder({ ui: h.tui, cwd: "/tmp", requestRender: () => h.tui.requestRender() });
+			builder.setToolDisplayState("verbose");
 			builder.append(toolTranscript());
 			h.tui.addChild(builder.container);
 		});
 		const cardNode = h.find(node => node.k === "tool" && node.p?.role === "omp.tool.lookup_thing");
-		expect(cardNode?.p).toMatchObject({ status: "done", collapsible: true, collapsed: true });
+		expect(cardNode?.p).toMatchObject({ status: "done", collapsible: true, collapsed: false });
 
-		h.event({ ev: "toggle", sf: h.terminal.surface!, id: cardNode!.id, collapsed: false });
-		expect(h.byId(cardNode!.id)?.p).toMatchObject({ collapsed: false });
-
-		builder!.setExpanded(false);
-		await h.render();
+		h.event({ ev: "toggle", sf: h.terminal.surface!, id: cardNode!.id, collapsed: true });
 		expect(h.byId(cardNode!.id)?.p).toMatchObject({ collapsed: true });
+
+		builder!.setToolDisplayState("verbose");
+		await h.render();
+		expect(h.byId(cardNode!.id)?.p).toMatchObject({ collapsed: false });
 		expect(h.errors).toEqual([]);
 	});
 
@@ -213,6 +214,7 @@ describe("native transcript", () => {
 		let builder: ChatTranscriptBuilder | undefined;
 		const h = await startWith(h => {
 			builder = new ChatTranscriptBuilder({ ui: h.tui, cwd: "/tmp", requestRender: () => h.tui.requestRender() });
+			builder.setToolDisplayState("claude");
 			builder.append(toolTranscript());
 			h.tui.addChild(builder.container);
 		});
@@ -220,7 +222,7 @@ describe("native transcript", () => {
 		expect(opsSince(h, 0)).toContainEqual(["settle", cardNode!.id]);
 
 		const before = h.frames.length;
-		builder!.setExpanded(true);
+		builder!.setToolDisplayState("verbose");
 		await h.render();
 		expect(opsSince(h, before)).toContainEqual(["set", cardNode!.id, expect.objectContaining({ collapsed: false })]);
 		expect(h.byId(cardNode!.id)?.p).toMatchObject({ collapsed: false });
@@ -262,6 +264,7 @@ describe("native transcript", () => {
 				cwd: "/tmp",
 				requestRender: () => h.tui.requestRender(),
 			});
+			builder.setToolDisplayState("verbose");
 			builder.append(toolTranscript());
 			const container = builder.container;
 			const user = new UserMessageComponent("Please **fix** the build");

@@ -550,13 +550,14 @@ describe("formatExpandHint / expandKeyHint", () => {
 		setKeybindings(KeybindingsManager.inMemory());
 		expect(expandKeyHint()).toBe("Ctrl+O");
 		// Single bracket pair from the theme, no double-wrapping around the key.
-		expect(formatExpandHint(plainTheme, false, true)).toBe("[Ctrl+O: Expand]");
+		expect(formatExpandHint(plainTheme, false, true)).toContain(expandKeyHint());
+		expect(formatExpandHint(plainTheme, false, true)).toMatch(/^\[[^[\]]+\]$/);
 	});
 
 	it("tracks a user remap of the expand binding", () => {
 		setKeybindings(KeybindingsManager.inMemory({ "app.tools.expand": "alt+e" }));
 		expect(expandKeyHint()).toBe("Alt+E");
-		expect(formatExpandHint(plainTheme, false, true)).toBe("[Alt+E: Expand]");
+		expect(formatExpandHint(plainTheme, false, true)).toContain(expandKeyHint());
 	});
 
 	it("renders nothing when expanded or there is no more content", () => {

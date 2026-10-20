@@ -133,7 +133,7 @@ export const KEYBINDINGS = {
 	},
 	"app.tools.expand": {
 		defaultKeys: "ctrl+o",
-		description: "Expand tools",
+		description: "Cycle tool display (hidden / claude / verbose)",
 	},
 	"app.tools.toggleVisibility": {
 		defaultKeys: "ctrl+shift+o",

@@ -3,7 +3,7 @@ import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-messa
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import { cfgDisplayHideToolActivity } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { cfgDisplayToolState } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { Container, Text } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-tui/prompt/composer";
@@ -12,80 +12,32 @@ import { withoutTerminalMultiplexer } from "../../../../tui/test/terminal-multip
 import { VirtualRenderScheduler } from "../../../../tui/test/virtual-render-scheduler";
 import { VirtualTerminal } from "../../../../tui/test/virtual-terminal";
 
-describe("InputController tool output expansion", () => {
-	it("expands children and forces a full repaint when no block has retired rows", () => {
+describe("InputController tool display state", () => {
+	it("cycles hidden, claude, verbose and persists each state without changing thinking", () => {
 		const expandable = { setExpanded: vi.fn() };
 		const pending = { setExpanded: vi.fn() };
-		const inert = { render: vi.fn(() => []) };
-		const canRemoveBlock = vi.fn(() => true);
-		const requestRender = vi.fn();
 		const resetDisplay = vi.fn();
-		const showStatus = vi.fn();
 		const ctx = {
+			toolDisplayState: "hidden",
 			toolOutputExpanded: false,
-			chatContainer: { children: [expandable, inert], canRemoveBlock },
+			hideThinkingBlock: true,
+			settings: Settings.isolated(),
+			chatContainer: { children: [expandable], setToolDisplayState: vi.fn(), resetStableEmission: vi.fn() },
 			pendingMessagesContainer: { children: [pending] },
-			ui: { requestRender, resetDisplay },
-			showStatus,
-		} as unknown as InteractiveModeContext;
-
-		new InputController(ctx).toggleToolOutputExpansion();
-
-		expect(ctx.toolOutputExpanded).toBe(true);
-		expect(expandable.setExpanded).toHaveBeenCalledWith(true);
-		expect(pending.setExpanded).toHaveBeenCalledWith(true);
-		expect(canRemoveBlock).toHaveBeenCalledWith(expandable);
-		// Every affected block is still live, so the forced repaint re-renders
-		// them at their new heights in the same frame; nothing to replay.
-		expect(requestRender).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalledWith(true);
-		expect(resetDisplay).not.toHaveBeenCalled();
-		expect(showStatus).toHaveBeenCalledWith("Tool output expansion: enabled");
-	});
-
-	it("replays history when an affected block has retired rows", () => {
-		const retired = { setExpanded: vi.fn() };
-		const live = { setExpanded: vi.fn() };
-		const canRemoveBlock = vi.fn((block: unknown) => block === live);
-		const requestRender = vi.fn();
-		const resetDisplay = vi.fn();
-		const ctx = {
-			toolOutputExpanded: true,
-			chatContainer: { children: [retired, live], canRemoveBlock },
-			pendingMessagesContainer: { children: [] },
-			ui: { requestRender, resetDisplay },
+			ui: { resetDisplay, clearInlineImages: vi.fn() },
 			showStatus: vi.fn(),
 		} as unknown as InteractiveModeContext;
-
-		new InputController(ctx).toggleToolOutputExpansion();
-
-		expect(ctx.toolOutputExpanded).toBe(false);
-		expect(retired.setExpanded).toHaveBeenCalledWith(false);
-		expect(live.setExpanded).toHaveBeenCalledWith(false);
-		// Collapsing a block already in terminal history must rewrite it there.
-		expect(resetDisplay).toHaveBeenCalledTimes(1);
-		expect(requestRender).not.toHaveBeenCalled();
-	});
-
-	it("does not expand hidden tool activity and explains why", () => {
-		const expandable = { setExpanded: vi.fn() };
-		const requestRender = vi.fn();
-		const showStatus = vi.fn();
-		const ctx = {
-			hideToolActivity: true,
-			toolOutputExpanded: false,
-			chatContainer: { children: [expandable] },
-			keybindings: { getKeys: vi.fn(() => ["alt+h"]) },
-			showStatus,
-			ui: { requestRender },
-		} as unknown as InteractiveModeContext;
-
-		new InputController(ctx).toggleToolOutputExpansion();
-
-		expect(ctx.toolOutputExpanded).toBe(false);
-		expect(expandable.setExpanded).not.toHaveBeenCalled();
-		expect(requestRender).not.toHaveBeenCalled();
-		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("/settings"));
+		const controller = new InputController(ctx);
+		for (const state of ["claude", "verbose", "hidden"] as const) {
+			controller.cycleToolDisplayState();
+			expect(ctx.toolDisplayState).toBe(state);
+			expect(cfgDisplayToolState.get(ctx.settings)).toBe(state);
+			expect(ctx.toolOutputExpanded).toBe(state === "verbose");
+			expect(expandable.setExpanded).toHaveBeenLastCalledWith(state === "verbose");
+			expect(pending.setExpanded).toHaveBeenLastCalledWith(state === "verbose");
+			expect(ctx.hideThinkingBlock).toBe(true);
+		}
+		expect(resetDisplay).toHaveBeenCalledTimes(3);
 	});
 });
 
@@ -123,6 +75,8 @@ describe("global tool expansion history refill", () => {
 		composer.setRuntimeChildren([transcript, editor]);
 		const controller = new InputController({
 			toolOutputExpanded: false,
+			toolDisplayState: "claude",
+			settings: Settings.isolated(),
 			chatContainer: transcript,
 			pendingMessagesContainer: new Container(),
 			ui: composer.ui,
@@ -135,11 +89,11 @@ describe("global tool expansion history refill", () => {
 			const initialBuffer = terminal.getScrollBuffer();
 			const initialPosition = terminal.getBufferPosition();
 			for (let cycle = 0; cycle < 2; cycle++) {
-				controller.toggleToolOutputExpansion();
+				controller.setToolDisplayState("verbose");
 				await scheduler.settle(terminal);
 				expect(transcript.canRemoveBlock(tool)).toBe(true);
 				expect(transcript.canRemoveBlock(prompt)).toBe(false);
-				controller.toggleToolOutputExpansion();
+				controller.setToolDisplayState("claude");
 				await scheduler.settle(terminal);
 				expect(terminal.getViewport()).toEqual(initialViewport);
 				expect(terminal.getScrollBuffer()).toEqual(initialBuffer);
@@ -169,12 +123,13 @@ describe("InputController tool activity visibility", () => {
 		const clearInlineImages = vi.fn();
 		const resetDisplay = vi.fn();
 		const showStatus = vi.fn();
-		const setToolActivityVisible = vi.fn();
+		const setToolDisplayState = vi.fn();
 		const ctx = {
-			hideToolActivity: false,
+			toolDisplayState: "verbose",
 			toolOutputExpanded: true,
 			settings,
-			chatContainer: { children, clear, addChild, setToolActivityVisible },
+			chatContainer: { children, clear, addChild, setToolDisplayState, resetStableEmission: vi.fn() },
+			pendingMessagesContainer: new Container(),
 			rebuildChatFromMessages,
 			showStatus,
 			ui: { clearInlineImages, resetDisplay },
@@ -185,8 +140,8 @@ describe("InputController tool activity visibility", () => {
 
 		controller.toggleToolActivityVisibility();
 
-		expect(ctx.hideToolActivity).toBe(true);
-		expect(cfgDisplayHideToolActivity.get(settings)).toBe(true);
+		expect(ctx.toolDisplayState).toBe("hidden");
+		expect(cfgDisplayToolState.get(settings)).toBe("hidden");
 		expect(ctx.chatContainer.children).toEqual(children);
 		expect(clear).not.toHaveBeenCalled();
 		expect(addChild).not.toHaveBeenCalled();
@@ -194,23 +149,23 @@ describe("InputController tool activity visibility", () => {
 		expect(clearInlineImages).toHaveBeenCalledTimes(1);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
 		expect(clearInlineImages.mock.invocationCallOrder[0]).toBeLessThan(resetDisplay.mock.invocationCallOrder[0]);
-		expect(showStatus).toHaveBeenLastCalledWith("Tool activity: hidden");
+		expect(showStatus).toHaveBeenLastCalledWith("Tool display: hidden");
 		expect(setToolResultImagesVisible).toHaveBeenLastCalledWith(false);
-		expect(setToolActivityVisible).toHaveBeenLastCalledWith(false);
+		expect(setToolDisplayState).toHaveBeenLastCalledWith("hidden");
 
 		controller.toggleToolActivityVisibility();
 
-		expect(ctx.hideToolActivity).toBe(false);
+		expect(ctx.toolDisplayState).toBe("claude");
 		expect(ctx.toolOutputExpanded).toBe(false);
-		expect(cfgDisplayHideToolActivity.get(settings)).toBe(false);
+		expect(cfgDisplayToolState.get(settings)).toBe("claude");
 		expect(ctx.chatContainer.children).toEqual(children);
 		expect(clear).not.toHaveBeenCalled();
 		expect(addChild).not.toHaveBeenCalled();
 		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
-		expect(clearInlineImages).toHaveBeenCalledTimes(1);
+		expect(clearInlineImages).toHaveBeenCalledTimes(2);
 		expect(resetDisplay).toHaveBeenCalledTimes(2);
-		expect(showStatus).toHaveBeenLastCalledWith("Tool activity: visible");
-		expect(setToolResultImagesVisible).toHaveBeenLastCalledWith(true);
-		expect(setToolActivityVisible).toHaveBeenLastCalledWith(true);
+		expect(showStatus).toHaveBeenLastCalledWith("Tool display: claude");
+		expect(setToolResultImagesVisible).toHaveBeenLastCalledWith(false);
+		expect(setToolDisplayState).toHaveBeenLastCalledWith("claude");
 	});
 });

@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Added `/state hidden|claude|verbose` and a three-way Ctrl+O cycle: no tool activity, active tools only, or expanded tool history. `/thinking on|off` controls received thinking text independently of `/effort`; bare `/state`, `/thinking`, and `/time` cycle or toggle their display preference.
 - Fixed sparse custom thinking metadata erasing resolved capabilities after discovery. SpriliCred adaptive Claude models now retain thinking-display support and request summaries instead of silently receiving empty thinking blocks; explicit capability opt-outs remain respected.
 - Answering a chat's question, or sending it a message, from OMP Central now clears that chat's red tmux reply-alert tab: a local tmux chat runs `~/.config/tmux/reply-alert.py ack` for its own pane, and an SSH-hosted chat emits an `omp_reply_ack` frame for the outer pane's observer. Local answers and other chats' tabs are unaffected.
 - `/fork` stays open in the agents panel after its final `hand_back` report, ready for follow-up requests. Close it explicitly with `x`; switching or exiting the main session still releases its forks.
@@ -18,7 +19,7 @@
 - Fixed Ctrl+N draft persistence truncating oversized paste expansions and image bytes; unsent backlog snapshots now persist losslessly.
 - Skill-description compression and `/annotate` context summaries name the chat they serve (`x-omp-parent-session-id`, role `helper`), and the agents hub's agent generator runs as a side session of the host chat (`subagent`), so a proxy such as SpriliCred files them under that chat instead of listing each as a chat of its own.
 - Human-visible text spells the product SpriliCred; `omp login sprilicred` names models "<name> via SpriliCred" and renames a stored name an older login or installer wrote (" via Sprilicred"), keeping names you chose.
-- Focused subagent views now route `/model`, `/switch`, `/effort`, `/thinking`, `/fast`, `/ultrafast`, `/slow`, and model/thinking keyboard cycles to that agent's session without changing the main session.
+- Focused subagent views route `/model`, `/switch`, `/effort`, `/fast`, `/ultrafast`, `/slow`, and model/effort keyboard cycles to that agent's session without changing the main session. `/state`, `/thinking`, and `/time` remain local display controls.
 
 - Added `omp central` and `omp --central`, a private structured inbox for pending questions across active OMP chats. It preserves rich ask options, multi-select/custom answers, notes and previews; the selected chat transcript follows the newest rows on open, scrolls independently, and keeps the pending question pinned below; `Esc` skips the visible chat to the back, `Ctrl+O` opens the original terminal, and `Ctrl+C` closes only Central. Local owner-only sockets and explicit SSH JSONL sources avoid pane scraping and terminal key injection; answers are validated against live pending questions.
 

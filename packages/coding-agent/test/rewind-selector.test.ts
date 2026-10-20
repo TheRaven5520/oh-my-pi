@@ -113,7 +113,7 @@ describe("RewindSelectorComponent", () => {
 		await initTheme();
 	});
 	beforeEach(async () => {
-		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		await Settings.init({ inMemory: true, cwd: process.cwd(), overrides: { "display.toolState": "verbose" } });
 		setKeybindings(KeybindingsManager.inMemory());
 	});
 	afterEach(() => {

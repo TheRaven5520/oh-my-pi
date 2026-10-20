@@ -1,3 +1,5 @@
+import type { ToolDisplayState } from "../chrome/tool-activity";
+import { chatTranscriptDisplayPreferences } from "../chat/display-preferences";
 /**
  * Fullscreen esc-esc rewind selector.
  *
@@ -165,7 +167,7 @@ export class RewindSelectorComponent implements Component {
 	#mainVisible: boolean[] | undefined;
 	/** Same, for the active sibling column. */
 	#siblingVisible: boolean[] | undefined;
-	#expanded = false;
+	#toolDisplayState: ToolDisplayState = chatTranscriptDisplayPreferences.toolState;
 
 	// Branch strip: present when the selected turn has sibling branches.
 	// Column 0 is the current path; siblings follow in tree order.
@@ -229,7 +231,7 @@ export class RewindSelectorComponent implements Component {
 			linkTargets: this.deps.linkTargets,
 			requestRender: this.deps.requestRender,
 		});
-		builder.setExpanded(this.#expanded);
+		builder.setToolDisplayState(this.#toolDisplayState);
 		return builder;
 	}
 
@@ -365,7 +367,7 @@ export class RewindSelectorComponent implements Component {
 			return;
 		}
 		if (matchesAppToolsExpand(data)) {
-			this.#toggleExpanded();
+			this.#cycleToolDisplayState();
 			return;
 		}
 		if (matchesSelectUp(data)) {
@@ -441,11 +443,11 @@ export class RewindSelectorComponent implements Component {
 		if (target) this.deps.onSelect(target.entryId);
 	}
 
-	#toggleExpanded(): void {
-		this.#expanded = !this.#expanded;
-		this.#builder.setExpanded(this.#expanded);
+	#cycleToolDisplayState(): void {
+		this.#builder.cycleToolDisplayState();
+		this.#toolDisplayState = this.#builder.toolDisplayState;
 		for (const columns of this.#variantCache.values()) {
-			for (const column of columns) column.builder.setExpanded(this.#expanded);
+			for (const column of columns) column.builder.setToolDisplayState(this.#toolDisplayState);
 		}
 		this.deps.requestRender();
 	}
@@ -464,7 +466,7 @@ export class RewindSelectorComponent implements Component {
 			return;
 		}
 		if (matchesAppToolsExpand(data)) {
-			this.#toggleExpanded();
+			this.#cycleToolDisplayState();
 			return;
 		}
 		if (matchesSelectUp(data) || matchesKey(data, "left")) {
@@ -523,8 +525,8 @@ export class RewindSelectorComponent implements Component {
 	 * `ls` matches `ls -la` but not `tools`). Other scripts match substrings so
 	 * a Chinese query can find text inside a sentence without spaces.
 	 * All visible targets match an empty query.
-	 * Matching the rendered rows keeps results honest: collapsed tool output
-	 * only matches once Ctrl+O expands it.
+	 * Matching the rendered rows keeps results honest: tool output only matches
+	 * when Ctrl+O selects verbose display.
 	 */
 	#filterMatches(): number[] {
 		const words = (this.#filter ?? "").toLowerCase().split(/\s+/).filter(Boolean);
@@ -856,7 +858,7 @@ export class RewindSelectorComponent implements Component {
 		const upDown = editorKeys("tui.select.up", "tui.select.down");
 		const leftRight = formatKeyHints(["left", "right"]);
 		const lateral = columns.length > 0 ? `${leftRight} branches` : `${leftRight} user turns`;
-		const keys = `${upDown} step  ${lateral}  ${formatKeyHint("f")} filter  ${formatKeyHint("enter")} rewind  ${this.#truncated ? `${formatKeyHint("a")} earlier turns  ` : ""}${expandKeyHint()} expand  ${editorKey("tui.select.cancel")} cancel`;
+		const keys = `${upDown} step  ${lateral}  ${formatKeyHint("f")} filter  ${formatKeyHint("enter")} rewind  ${this.#truncated ? `${formatKeyHint("a")} earlier turns  ` : ""}${expandKeyHint()} tool display  ${editorKey("tui.select.cancel")} cancel`;
 		return {
 			header: [this.#header()],
 			body: {

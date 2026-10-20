@@ -167,7 +167,6 @@ export class AgentTranscriptViewer implements Component {
 	#browser: TranscriptBrowser;
 	#editor: Editor | undefined;
 	#notice: string | undefined;
-	#expanded = false;
 
 	#localState: LocalTranscriptState | undefined;
 	#localUnavailable = "";
@@ -515,8 +514,7 @@ export class AgentTranscriptViewer implements Component {
 
 		for (const key of this.#deps.expandKeys) {
 			if (matchesKey(data, key)) {
-				this.#expanded = !this.#expanded;
-				this.#builder.setExpanded(this.#expanded);
+				this.#builder.cycleToolDisplayState();
 				this.#deps.requestRender();
 				return;
 			}
@@ -693,7 +691,7 @@ export class AgentTranscriptViewer implements Component {
 			hintsRow([
 				this.#editor ? actionHint("tui.input.submit", "send") : undefined,
 				{ keys: ["escape"], label: "close" },
-				{ keys: [this.#deps.expandKeys[0] ?? "ctrl+o"], label: "expand" },
+				{ keys: [this.#deps.expandKeys[0] ?? "ctrl+o"], label: "tool display" },
 			]),
 		);
 		const head = [span("Agent Hub", "accent"), span(` ${theme.sep.dot} `, "dim"), span(id, "accent")];
@@ -758,7 +756,7 @@ export class AgentTranscriptViewer implements Component {
 		const statsLine = this.#statsLine();
 		if (statsLine) lines.push(statsLine);
 		const keys =
-			`${formatKeyHint("escape")}:close  ${formatKeyHint(this.#deps.expandKeys[0] ?? "ctrl+o")}:expand  ` +
+			`${formatKeyHint("escape")}:close  ${formatKeyHint(this.#deps.expandKeys[0] ?? "ctrl+o")}:tool display  ` +
 			`${this.#editor ? "empty input → " : ""}${formatKeyHints(["j", "k"])}:scroll  ${formatKeyHints(["g", "shift+g"])}:top/bottom`;
 		const hint = this.#editor ? `${editorKey("tui.input.submit")}:send  ${keys}` : keys;
 		lines.push(theme.fg("dim", hint));

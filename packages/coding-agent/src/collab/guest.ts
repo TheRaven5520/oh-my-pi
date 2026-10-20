@@ -57,8 +57,10 @@ export const COLLAB_GUEST_ALLOWED_COMMANDS: Record<string, true> = {
 	hotkeys: true,
 	theme: true,
 	settings: true,
-	// Timestamps are a local display preference, like theme and settings.
+	// Local display preferences, like theme and settings.
 	time: true,
+	state: true,
+	thinking: true,
 	leave: true,
 	collab: true,
 	exit: true,

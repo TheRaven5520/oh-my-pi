@@ -231,10 +231,11 @@ async function createContext() {
 		updatePendingMessagesDisplay,
 		isBashMode: false,
 		isPythonMode: false,
-		hideToolActivity: false,
+		toolDisplayState: "claude",
 		toolOutputExpanded: false,
 		settings: Settings.isolated(),
-		chatContainer: { children: [], setToolActivityVisible: vi.fn() },
+		chatContainer: { children: [], setToolDisplayState: vi.fn(), resetStableEmission: vi.fn() },
+		pendingMessagesContainer: { children: [] },
 		handleHotkeysCommand: vi.fn(),
 		handlePlanModeCommand: vi.fn(),
 		handleClearCommand: vi.fn(),
@@ -1100,7 +1101,7 @@ describe("InputController global editor actions", () => {
 		expect(dispatchInput(listeners, CTRL_G)).toEqual({ consume: true });
 		expect(openExternalEditor).toHaveBeenCalledTimes(1);
 		expect(dispatchInput(listeners, CTRL_SHIFT_O)).toEqual({ consume: true });
-		expect(context.ctx.hideToolActivity).toBe(true);
+		expect(context.ctx.toolDisplayState).toBe("hidden");
 		expect(dispatchInput(listeners, ALT_L)).toEqual({ consume: true });
 		expect(context.spies.resetDisplayAfterAppearanceRefresh).toHaveBeenCalledTimes(1);
 	});
@@ -1199,7 +1200,7 @@ describe("InputController global editor actions", () => {
 		const listeners = registeredInputListeners(context.spies.addInputListener);
 
 		expect(dispatchInput(listeners, CTRL_SHIFT_O)).toBeUndefined();
-		expect(context.ctx.hideToolActivity).toBe(false);
+		expect(context.ctx.toolDisplayState).toBe("claude");
 	});
 });
 
@@ -1225,6 +1226,11 @@ describe("InputController global tool-output expand (ctrl+o)", () => {
 
 		expect(dispatchInput(listeners, CTRL_O)).toEqual({ consume: true });
 		expect(ctx.toolOutputExpanded).toBe(true);
+		expect(ctx.toolDisplayState).toBe("verbose");
+		expect(dispatchInput(listeners, CTRL_O)).toEqual({ consume: true });
+		expect(ctx.toolDisplayState).toBe("hidden");
+		expect(dispatchInput(listeners, CTRL_O)).toEqual({ consume: true });
+		expect(ctx.toolDisplayState).toBe("claude");
 	});
 
 	it("still toggles when the editor holds focus", async () => {

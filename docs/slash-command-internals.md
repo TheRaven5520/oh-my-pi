@@ -26,6 +26,14 @@ This document describes how slash commands are discovered, deduplicated, surface
 - [`src/modes/controllers/input-controller.ts`](../packages/coding-agent/src/modes/controllers/input-controller.ts)
 - [`src/modes/utils/ui-helpers.ts`](../packages/coding-agent/src/modes/utils/ui-helpers.ts)
 
+## Transcript display controls
+
+- `/state [hidden|claude|verbose]` chooses no tools, active tools only, or expanded tool history. No argument cycles the states, as does `Ctrl+O`.
+- `/thinking [on|off]` controls received thinking text. No argument toggles visibility, as does `Ctrl+T`. Model reasoning effort remains `/effort`.
+- `/time [on|off]` controls transcript timestamps. No argument toggles them.
+
+These are independent local display preferences, also available when viewing a focused agent or participating as a collaboration guest.
+
 ## 1) Discovery model
 
 Slash commands are a capability (`id: "slash-commands"`) keyed by command name (`key: cmd => cmd.name`).
@@ -438,7 +446,7 @@ unchanged.
   session; `done: true` delivers its final report and leaves the fork open for
   follow-up requests. Each one appears in the main chat as a `Fork update` or `Fork report`
   card that stays on screen (ordinary agent messages retire after a few seconds),
-  with the whole report wrapped (`Ctrl+O` expands a long one).
+  with the whole report wrapped (`/state verbose` expands a long one).
 - The main agent is asked to tell you the fork's result, not to reply to the fork,
   and the report is marked as fork output rather than a user instruction on every
   path (wake, `wait`, inbox). An idle main agent wakes to do so; a busy one gets the

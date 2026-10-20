@@ -1,6 +1,8 @@
+import type { ToolDisplayState } from "../chrome/tool-activity";
+
 /** Process-wide display preferences applied by the host settings hooks. */
 export interface ChatTranscriptDisplayPreferences {
-	hideToolActivity: boolean;
+	toolState: ToolDisplayState;
 	readToolResultPreview: boolean;
 	showImages: boolean;
 	cacheMissMarker: boolean;
@@ -12,7 +14,7 @@ export interface ChatTranscriptDisplayPreferences {
 
 /** Current transcript display preferences. */
 export const chatTranscriptDisplayPreferences: ChatTranscriptDisplayPreferences = {
-	hideToolActivity: false,
+	toolState: "claude",
 	readToolResultPreview: false,
 	showImages: true,
 	cacheMissMarker: false,

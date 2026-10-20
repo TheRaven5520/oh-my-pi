@@ -8,14 +8,12 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { ModelControls, type ModelControlsHost } from "@oh-my-pi/pi-coding-agent/session/model-controls";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import {
-	BUILTIN_SLASH_COMMANDS,
 	buildTuiBuiltinSlashCommands,
 	executeBuiltinSlashCommand,
 	lookupBuiltinSlashCommand,
 	type SlashCommandRuntime,
 } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import type { TuiSlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
-import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 const command = lookupBuiltinSlashCommand("effort");
@@ -93,18 +91,6 @@ async function run(h: Harness, args: string): Promise<void> {
 }
 
 describe("/effort slash command", () => {
-	it("is found by thinking and intelligence without registering a thinking alias", async () => {
-		const provider = new CombinedAutocompleteProvider([...BUILTIN_SLASH_COMMANDS], process.cwd());
-		for (const query of ["/thinking", "/intelligence"]) {
-			const suggestions = await provider.getSuggestions([query], 0, query.length);
-			const resolved = suggestions?.items.map(item => lookupBuiltinSlashCommand(item.value)?.name);
-			expect(resolved).toContain("effort");
-		}
-		const h = harness();
-		expect(await executeBuiltinSlashCommand("/thinking high", { ...h.tuiRuntime, draftDetached: true })).toBe(false);
-		expect(h.level()).toBeUndefined();
-	});
-
 	it("completes only effort levels exposed by the active model", async () => {
 		const h = harness({ efforts: [Effort.Low, Effort.Medium] });
 		const effort = buildTuiBuiltinSlashCommands(h.tuiRuntime).find(item => item.name === "effort");

@@ -1,3 +1,4 @@
+import type { ToolDisplayState } from "../chrome/tool-activity";
 /**
  * Builds transcript components from persisted session message entries — the
  * file/remote-backed counterpart to {@link UiHelpers.addMessageToChat} (which is
@@ -113,13 +114,15 @@ export class ChatTranscriptBuilder {
 	#todoSnapshot: ToolExecutionComponent | null = null;
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
+	toolDisplayState: ToolDisplayState = displayPreferences.toolState;
 	#entryComponents = new Map<string, Component[]>();
 
 	readonly #deps: ChatTranscriptBuilderDeps;
 
 	constructor(deps: ChatTranscriptBuilderDeps) {
 		this.#deps = deps;
-		this.container.setToolActivityVisible(!displayPreferences.hideToolActivity);
+		this.container.setToolDisplayState(displayPreferences.toolState);
+		this.#expanded = displayPreferences.toolState === "verbose";
 	}
 
 	/** Whether the transcript currently holds any rendered rows. */
@@ -143,19 +146,20 @@ export class ChatTranscriptBuilder {
 		if (this.#readArgs.size === 0 && this.#pendingTools.size === 0) this.#flushPendingUsage();
 	}
 
-	/**
-	 * Toggle tool-output expansion across every expandable component. Cards a
-	 * TSP terminal collapsed or expanded locally mirror that into their own
-	 * state, so this re-applies the transcript-wide state to every one of them
-	 * even when it equals the previous value.
-	 */
-	setExpanded(expanded: boolean): void {
-		this.#expanded = expanded;
-		for (const component of this.#expandables) component.setExpanded(expanded);
+	/** Apply the same display policy in focused and remote transcript views. */
+	setToolDisplayState(state: ToolDisplayState): void {
+		this.toolDisplayState = state;
+		this.#expanded = state === "verbose";
+		this.container.setToolDisplayState(state);
+		for (const component of this.#expandables) {
+			component.setExpanded(this.#expanded);
+			if (component instanceof AssistantMessageComponent) component.setToolResultImagesVisible(this.#expanded);
+		}
 	}
 
-	get expanded(): boolean {
-		return this.#expanded;
+	cycleToolDisplayState(): void {
+		const state = this.toolDisplayState;
+		this.setToolDisplayState(state === "hidden" ? "claude" : state === "claude" ? "verbose" : "hidden");
 	}
 
 	/** Rendered row where a persisted entry begins, after the container has painted once. */
@@ -430,7 +434,7 @@ export class ChatTranscriptBuilder {
 			this.#deps.linkTargets,
 		);
 		assistantComponent.setImagesVisible(displayPreferences.showImages);
-		assistantComponent.setToolResultImagesVisible(!displayPreferences.hideToolActivity);
+		assistantComponent.setToolResultImagesVisible(this.toolDisplayState === "verbose");
 		this.#trackExpandable(assistantComponent);
 		assistantComponent.pickReactionTarget(this.container.children);
 		this.container.addChild(assistantComponent);
@@ -467,7 +471,7 @@ export class ChatTranscriptBuilder {
 				this.#deps.linkTargets,
 			);
 			component.setImagesVisible(displayPreferences.showImages);
-			component.setToolResultImagesVisible(!displayPreferences.hideToolActivity);
+			component.setToolResultImagesVisible(this.toolDisplayState === "verbose");
 			this.#trackExpandable(component);
 			this.container.addChild(component);
 			lastAssistantComponent = component;

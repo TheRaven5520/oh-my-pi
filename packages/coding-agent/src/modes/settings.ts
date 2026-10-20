@@ -611,15 +611,16 @@ export const cfgDisplaySmoothStreaming = register({
 	},
 });
 
-export const cfgDisplayHideToolActivity = register({
-	id: "display.hideToolActivity",
-	type: "boolean",
-	default: false,
+export const cfgDisplayToolState = register({
+	id: "display.toolState",
+	type: "enum",
+	values: ["hidden", "claude", "verbose"] as const,
+	default: "claude",
 	ui: {
 		tab: "appearance",
 		group: "Display",
-		label: "Hide Tool Activity",
-		description: "Hide model-initiated tool calls and results from the transcript",
+		label: "Tool Display State",
+		description: "Hide tool activity, show only active tools, or show expanded tool history",
 	},
 });
 
@@ -686,7 +687,7 @@ export const cfgDisplayCacheMissMarker = register({
 });
 effect(
 	combine({
-		hideToolActivity: cfgDisplayHideToolActivity,
+		toolState: cfgDisplayToolState,
 		readToolResultPreview: cfgReadToolResultPreview,
 		showImages: cfgTerminalShowImages,
 		cacheMissMarker: cfgDisplayCacheMissMarker,

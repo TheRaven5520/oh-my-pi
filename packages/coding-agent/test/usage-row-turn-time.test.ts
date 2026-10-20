@@ -129,11 +129,13 @@ describe("ChatTranscriptBuilder turn elapsed", () => {
 	});
 
 	function builder(): ChatTranscriptBuilder {
-		return new ChatTranscriptBuilder({
+		const transcript = new ChatTranscriptBuilder({
 			ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
 			cwd: process.cwd(),
 			requestRender: () => {},
 		});
+		transcript.setToolDisplayState("verbose");
+		return transcript;
 	}
 
 	it("shows the prompt→yield delta when display.showTurnTime is on", () => {
@@ -336,7 +338,7 @@ describe("focus-attach mid-turn keeps the prompt→yield delta", () => {
 				},
 			},
 		});
-		ctx.chatContainer.setToolActivityVisible(true);
+		ctx.chatContainer.setToolDisplayState("verbose");
 		const helpers = new UiHelpers(ctx);
 		ctx.addMessageToChat = (message, options) => helpers.addMessageToChat(message, options);
 		const controller = new EventController(ctx);

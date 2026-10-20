@@ -306,6 +306,7 @@ describe("libkitty end-to-end", () => {
 		const composer = new Composer({ terminal: term });
 		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
 		await mode.init({ suppressWelcomeIntro: true });
+		mode.setToolDisplayState("verbose");
 		void mode.getUserInput();
 		await term.waitForRender();
 
@@ -340,7 +341,7 @@ describe("libkitty end-to-end", () => {
 		// Alt+O is the configured app.tools.toggleVisibility binding from this test's keybinding manager.
 		term.sendInput("\x1bo");
 		await term.waitForRender(() => !plainRows(term.getScrollBuffer()).some(row => row.includes(TOOL_MARKER)));
-		expect(mode.hideToolActivity).toBe(true);
+		expect(mode.toolDisplayState).toBe("hidden");
 		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(TOOL_MARKER))).toBe(false);
 		expect(plainRows(term.getViewport()).some(row => row.includes("LIVE_EDITOR_DRAFT"))).toBe(true);
 	});

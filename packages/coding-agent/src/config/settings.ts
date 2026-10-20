@@ -2537,6 +2537,17 @@ export class Settings {
 
 	/** Apply schema migrations to raw settings */
 	#migrateRawSettings(raw: RawSettings, captureLegacyChangelogVersion = true): RawSettings {
+		// Replace the old visibility flag without overriding an explicit state.
+		const display: Record<string, unknown> = isRecord(raw.display) ? raw.display : {};
+		const legacyToolVisibility = display.hideToolActivity ?? raw["display.hideToolActivity"];
+		if (typeof legacyToolVisibility === "boolean") {
+			if (display.toolState === undefined && raw["display.toolState"] === undefined) {
+				display.toolState = legacyToolVisibility ? "hidden" : "claude";
+			}
+			raw.display = display;
+		}
+		delete display.hideToolActivity;
+		delete raw["display.hideToolActivity"];
 		// queueMode -> steeringMode
 		if ("queueMode" in raw && !("steeringMode" in raw)) {
 			raw.steeringMode = raw.queueMode;

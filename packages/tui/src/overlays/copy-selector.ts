@@ -1,3 +1,5 @@
+import type { ToolDisplayState } from "../chrome/tool-activity";
+import { chatTranscriptDisplayPreferences } from "../chat/display-preferences";
 /**
  * Fullscreen `/copy` picker over the transcript itself.
  *
@@ -332,7 +334,7 @@ export class CopySelectorComponent implements Component {
 	#targets: OutlineTarget[] = [];
 	#selected = 0;
 	#visible: boolean[] | undefined;
-	#expanded = false;
+	#toolDisplayState: ToolDisplayState = chatTranscriptDisplayPreferences.toolState;
 	/** Inner blocks of the selected turn while descended, else undefined. */
 	#blocks: CopyBlock[] | undefined;
 	#blockSelected = 0;
@@ -382,7 +384,7 @@ export class CopySelectorComponent implements Component {
 			linkTargets: this.deps.linkTargets,
 			requestRender: this.deps.requestRender,
 		});
-		builder.setExpanded(this.#expanded);
+		builder.setToolDisplayState(this.#toolDisplayState);
 		this.#targets = appendOutlineEntries(builder, entries);
 		return builder;
 	}
@@ -451,8 +453,8 @@ export class CopySelectorComponent implements Component {
 			return;
 		}
 		if (matchesAppToolsExpand(data)) {
-			this.#expanded = !this.#expanded;
-			this.#builder.setExpanded(this.#expanded);
+			this.#builder.cycleToolDisplayState();
+			this.#toolDisplayState = this.#builder.toolDisplayState;
 			this.deps.requestRender();
 			return;
 		}
@@ -912,7 +914,7 @@ export class CopySelectorComponent implements Component {
 		const cancel = editorKey("tui.select.cancel");
 		const hint = this.#blocks
 			? `${this.#blockSelected + 1}/${this.#blocks.length}  ${upDown} block  ${formatKeyHint("left")}/${cancel} back  ${enter} ${action}${openHint}  click ${theme.cmd.copy}/${theme.cmd.share}`
-			: `${this.#targets.length > 0 ? `${this.#selected + 1}/${this.#targets.length}  ` : ""}${upDown} step  ${blocks.length > 0 ? `${formatKeyHint("right")} blocks  ` : ""}${enter} ${action}  ${this.#truncated ? `${formatKeyHint("a")} earlier turns  ` : ""}${expandKeyHint()} expand  ${cancel} close`;
+			: `${this.#targets.length > 0 ? `${this.#selected + 1}/${this.#targets.length}  ` : ""}${upDown} step  ${blocks.length > 0 ? `${formatKeyHint("right")} blocks  ` : ""}${enter} ${action}  ${this.#truncated ? `${formatKeyHint("a")} earlier turns  ` : ""}${expandKeyHint()} tool display  ${cancel} close`;
 		const anchorId = target
 			? this.#blocks
 				? `copy:${target.turnId}:block:${this.#blockSelected}`

@@ -34,8 +34,8 @@ app.history.search: []
 | `app.model.select`           | `Alt+M`                                                               | Open the model selector and set roles                                                                                                                                                |
 | `app.plan.toggle`            | `Alt+Shift+P`                                                         | Toggle plan mode                                                                                                                                                                     |
 | `app.history.search`         | `Ctrl+R`                                                              | Search prompt history                                                                                                                                                                |
-| `app.tools.expand`           | `Ctrl+O`                                                              | Toggle tool-output expansion                                                                                                                                                         |
-| `app.tools.toggleVisibility` | `Ctrl+Shift+O`                                                        | Show or hide tool activity                                                                                                                                                           |
+| `app.tools.expand`           | `Ctrl+O`                                                              | Cycle tool display: hidden → claude → verbose |
+| `app.tools.toggleVisibility` | `Ctrl+Shift+O`                                                        | Switch between hidden and claude tool display |
 | `app.thinking.toggle`        | `Ctrl+T`                                                              | Toggle thinking-block visibility                                                                                                                                                     |
 | `app.thinking.cycle`         | `Shift+Tab`                                                           | Cycle thinking level                                                                                                                                                                 |
 | `app.editor.external`        | `Ctrl+G`                                                              | Edit the draft in `$VISUAL` / `$EDITOR`                                                                                                                                              |
@@ -56,9 +56,23 @@ Inside a model picker, `Ctrl+P` moves to the next model and `Ctrl+Shift+P` moves
 
 The terminal must send a distinct modified-key sequence for `Ctrl+Shift+P`. If it sends the same byte as `Ctrl+P`, remap `app.model.cycleBackward` to a distinguishable chord.
 
+## Tool display state
+
+`/state hidden`, `/state claude`, and `/state verbose` select how tools appear. `/state` without an argument and `Ctrl+O` cycle **hidden → claude → verbose → hidden**.
+
+- **hidden:** no tool calls or tool-result images; model output remains visible.
+- **claude:** show only active tool activity; completed tools disappear.
+- **verbose:** show expanded tool activity, including completed tools in history.
+
+The default is `claude`. Switching states redraws retained history and preserves the editor draft. The persisted setting is `display.toolState`; older `display.hideToolActivity` settings migrate to `hidden` or `claude`. Thinking visibility and timestamps are independent of tool state.
+
+Full-screen agent transcript, copy, and rewind viewers use the same `Ctrl+O` cycle locally without changing the main chat's saved state. `Ctrl+Shift+O` in the main chat switches directly between `hidden` and `claude`.
+
 ## Thinking visibility
 
 `Ctrl+T` shows or hides thinking already received in the current transcript, including reasoning before and between tool calls and rows in terminal scrollback. Showing it in a native terminal also opens retained thinking sections; individual sections can still be folded afterward. Hiding thinking does not discard it, and toggling preserves the editor draft.
+
+`/thinking on` and `/thinking off` explicitly select visibility; `/thinking` without an argument toggles it, like `Ctrl+T`. `/time on`, `/time off`, and bare `/time` independently control transcript timestamps.
 
 This is a display toggle, separate from the model's thinking effort (`Shift+Tab` or `/effort`). It does not request new reasoning or recover content the provider never sent.
 

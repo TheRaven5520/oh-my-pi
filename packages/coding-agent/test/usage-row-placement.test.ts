@@ -156,6 +156,7 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 			cwd: process.cwd(),
 			requestRender: () => {},
 		});
+		builder.setToolDisplayState("verbose");
 		const message = {
 			role: "assistant",
 			content: [{ type: "text", text: "done" }],
@@ -187,6 +188,7 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 			cwd: process.cwd(),
 			requestRender: () => {},
 		});
+		builder.setToolDisplayState("verbose");
 		const message: AssistantMessage = {
 			role: "assistant",
 			content: [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "echo ok" } }],
@@ -219,6 +221,7 @@ describe("ChatTranscriptBuilder token-usage row timestamp", () => {
 			cwd: process.cwd(),
 			requestRender: () => {},
 		});
+		builder.setToolDisplayState("verbose");
 		const messages = [...readTurn(), ...readTurn("r2", "src/bar.ts", 2121, SECOND_USAGE_TS)];
 		builder.rebuild(
 			messages.map((message, index) => ({

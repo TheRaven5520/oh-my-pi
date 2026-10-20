@@ -625,6 +625,47 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "state",
+		icon: "settings",
+		description: "Set tool display: hidden, active-only Claude style, or verbose",
+		allowArgs: true,
+		subcommands: [
+			{ name: "hidden", description: "Hide all tool activity" },
+			{ name: "claude", description: "Show only currently active tool activity" },
+			{ name: "verbose", description: "Show expanded tool activity and history" },
+		],
+		getTuiAutocompleteDescription: runtime => `Tool display: ${runtime.ctx.toolDisplayState}`,
+		handleTui: (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			clearSubmittedText(runtime);
+			if (arg === "") runtime.ctx.cycleToolDisplayState();
+			else if (arg === "hidden" || arg === "claude" || arg === "verbose") runtime.ctx.setToolDisplayState(arg);
+			else runtime.ctx.showStatus("Usage: /state [hidden|claude|verbose]");
+		},
+	},
+	{
+		name: "thinking",
+		icon: "gauge",
+		description: "Show or hide thinking text without changing model effort",
+		allowArgs: true,
+		subcommands: [
+			{ name: "on", description: "Show thinking text" },
+			{ name: "off", description: "Hide thinking text" },
+		],
+		getTuiAutocompleteDescription: runtime => `Thinking display: ${runtime.ctx.hideThinkingBlock ? "off" : "on"}`,
+		handleTui: (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			clearSubmittedText(runtime);
+			if (arg !== "" && arg !== "on" && arg !== "off") {
+				runtime.ctx.showStatus("Usage: /thinking [on|off] — use /effort to change reasoning effort");
+				return;
+			}
+			const hide = arg === "" ? !runtime.ctx.hideThinkingBlock : arg === "off";
+			if (hide !== runtime.ctx.hideThinkingBlock) runtime.ctx.toggleThinkingBlockVisibility();
+			else runtime.ctx.showStatus(`Thinking blocks: ${hide ? "hidden" : "visible"}`);
+		},
+	},
+	{
 		name: "time",
 		icon: "history",
 		description: "Toggle right-aligned timestamps on messages, replies, and tool calls",

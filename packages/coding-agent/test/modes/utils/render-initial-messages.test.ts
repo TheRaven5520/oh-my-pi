@@ -79,7 +79,7 @@ function makeCtx(): RenderInitialMessagesTestContext {
 		pendingPythonComponents: [],
 		transcriptMessageComponents: new WeakMap<AgentMessage, Component>(),
 		pendingTools: new Map(),
-		hideToolActivity: false,
+		toolDisplayState: "verbose",
 		initialChatRendered: true,
 		session: { buildTranscriptSessionContext: transcriptSpy },
 		viewSession: {
@@ -153,7 +153,7 @@ function makeRenderCtx(
 	hideToolActivity = false,
 ): { ctx: InteractiveModeContext; chatContainer: TranscriptContainer } {
 	const chatContainer = new TranscriptContainer();
-	chatContainer.setToolActivityVisible(!hideToolActivity);
+	chatContainer.setToolDisplayState(hideToolActivity ? "hidden" : "verbose");
 	const ctx = {
 		chatContainer,
 		pendingMessagesContainer: new Container(),
@@ -180,11 +180,11 @@ function makeRenderCtx(
 		// keep it on so the image-replay contracts below stay meaningful.
 		settings: Settings.isolated({
 			"terminal.showImages": showImages,
-			"display.hideToolActivity": hideToolActivity,
+			"display.toolState": hideToolActivity ? "hidden" : "verbose",
 			"composer.recallClearedDrafts": false,
 		}),
-		toolOutputExpanded: false,
-		hideToolActivity,
+		toolOutputExpanded: !hideToolActivity,
+		toolDisplayState: hideToolActivity ? "hidden" : "verbose",
 		hideThinkingBlock: false,
 		assistantImagesVisible: showImages,
 		focusedAgentId: undefined,
@@ -698,7 +698,7 @@ describe("UiHelpers.renderInitialMessages — hidden tool activity", () => {
 		);
 
 		// A live reveal must restore the placeholder without a transcript rebuild.
-		hidden.chatContainer.setToolActivityVisible(true);
+		hidden.chatContainer.setToolDisplayState("verbose");
 		expect(Bun.stripANSI(hidden.chatContainer.render(120).join("\n"))).toContain(
 			"2 tool calls elided — no result on this branch",
 		);

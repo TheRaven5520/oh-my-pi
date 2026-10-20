@@ -1,12 +1,24 @@
 import { type Component, Container } from "../tui";
 import { col } from "../native/describe";
 import type { NativeNode } from "../native/node";
+export type ToolDisplayState = "hidden" | "claude" | "verbose";
+
 export interface ToolActivityComponent {
 	setToolActivityVisible(visible: boolean): void;
+	/** Restrict a live tool renderer to its in-flight calls. Notices have no active calls. */
+	setToolActivityActiveOnly?(activeOnly: boolean): void;
 }
 
 export function isToolActivityComponent(component: Component): component is Component & ToolActivityComponent {
 	return typeof (component as Partial<ToolActivityComponent>).setToolActivityVisible === "function";
+}
+
+export function applyToolDisplayState(component: Component, state: ToolDisplayState): void {
+	if (!isToolActivityComponent(component)) return;
+	component.setToolActivityActiveOnly?.(state === "claude");
+	component.setToolActivityVisible(
+		state !== "hidden" && (state !== "claude" || component.setToolActivityActiveOnly !== undefined),
+	);
 }
 
 export class ToolActivityContainer extends Container implements ToolActivityComponent {

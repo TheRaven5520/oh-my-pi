@@ -148,12 +148,27 @@ describe("CopySelectorComponent", () => {
 		await initTheme();
 	});
 	beforeEach(async () => {
-		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		await Settings.init({ inMemory: true, cwd: process.cwd(), overrides: { "display.toolState": "verbose" } });
 		setKeybindings(KeybindingsManager.inMemory());
 	});
 	afterEach(() => {
 		setKeybindings(KeybindingsManager.inMemory());
 		resetSettingsForTest();
+	});
+
+	it("cycles verbose, hidden, claude and verbose with Ctrl+O", () => {
+		const selector = makeSelector([]);
+		try {
+			expect(Bun.stripANSI(selector.render(100).join("\n"))).toContain("12 pass");
+			selector.handleInput("\x0f");
+			expect(Bun.stripANSI(selector.render(100).join("\n"))).not.toContain("12 pass");
+			selector.handleInput("\x0f");
+			expect(Bun.stripANSI(selector.render(100).join("\n"))).not.toContain("12 pass");
+			selector.handleInput("\x0f");
+			expect(Bun.stripANSI(selector.render(100).join("\n"))).toContain("12 pass");
+		} finally {
+			selector.dispose();
+		}
 	});
 
 	it("keeps whole-turn picks exact and ties them to the native transcript entries", () => {

@@ -1,3 +1,4 @@
+import type { ToolDisplayState } from "@oh-my-pi/pi-tui/chrome/tool-activity";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
 /**
  * Interactive mode for the coding agent.
@@ -227,7 +228,6 @@ import {
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { setTranscriptActionHandler } from "@oh-my-pi/pi-tui/chat/transcript-actions";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
-import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { AttachmentChipsBand } from "@oh-my-pi/pi-tui/prompt/attachment-chips";
 import type { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
@@ -341,7 +341,7 @@ import {
 	cfgComposerTokenRate,
 	cfgDisplayCacheMissMarker,
 	cfgDisplayCollapseCompacted,
-	cfgDisplayHideToolActivity,
+	cfgDisplayToolState,
 	cfgDisplayPinnedAgents,
 	cfgDisplayShowTokenUsage,
 	cfgDisplayShowTurnTime,
@@ -431,7 +431,7 @@ const cfgLiveUiSettings = combine({
 	"recap.idleSeconds": cfgRecapIdleSeconds,
 	"compaction.enabled": cfgCompactionEnabled,
 	"compaction.methodOrder": cfgCompactionMethodOrder,
-	"display.hideToolActivity": cfgDisplayHideToolActivity,
+	"display.toolState": cfgDisplayToolState,
 	"terminal.showImages": cfgTerminalShowImages,
 	hideThinkingBlock: cfgHideThinkingBlock,
 	proseOnlyThinking: cfgProseOnlyThinking,
@@ -1532,7 +1532,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	initialChatRendered = false;
 	isBashMode = false;
 	toolOutputExpanded = false;
-	hideToolActivity = false;
+	toolDisplayState: ToolDisplayState = "claude";
 	todoExpanded = false;
 	planModeEnabled = false;
 	planModePaused = false;
@@ -2220,8 +2220,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			aggregateVibeWorkerTokensPerSecond(this.session.getAgentId() ?? MAIN_AGENT_ID),
 		);
 
-		this.hideToolActivity = cfgDisplayHideToolActivity.get(settings);
-		this.chatContainer.setToolActivityVisible(!this.hideToolActivity);
+		this.toolDisplayState = cfgDisplayToolState.get(settings);
+		this.toolOutputExpanded = this.toolDisplayState === "verbose";
+		this.chatContainer.setToolDisplayState(this.toolDisplayState);
 		this.hideThinkingBlock = cfgHideThinkingBlock.get(settings);
 		this.proseOnlyThinking = cfgProseOnlyThinking.get(settings);
 
@@ -3798,24 +3799,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		// Field comparisons skip effects the keybinding toggles already applied.
-		const hideToolActivity = cfgDisplayHideToolActivity.get(this.settings);
-		if (any("display.hideToolActivity") && hideToolActivity !== this.hideToolActivity) {
-			this.hideToolActivity = hideToolActivity;
-			if (!hideToolActivity) this.toolOutputExpanded = false;
-			for (const child of this.chatContainer.children) {
-				if (
-					!hideToolActivity &&
-					(child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)
-				) {
-					child.setExpanded(false);
-				} else if (child instanceof AssistantMessageComponent) {
-					child.setToolResultImagesVisible(!hideToolActivity);
-				}
-			}
-			this.chatContainer.setToolActivityVisible(!hideToolActivity);
-			if (hideToolActivity) this.ui.clearInlineImages();
-			// Visibility changes must rebuild retired terminal history.
-			resetDisplay = true;
+		const toolState = cfgDisplayToolState.get(this.settings);
+		if (any("display.toolState") && toolState !== this.toolDisplayState) {
+			this.setToolDisplayState(toolState);
 		}
 		if (any("terminal.showImages")) {
 			const visible = cfgTerminalShowImages.get(this.settings);
@@ -8674,8 +8660,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#inputController.cycleRoleModel(direction);
 	}
 
-	toggleToolOutputExpansion(): void {
-		this.#inputController.toggleToolOutputExpansion();
+	cycleToolDisplayState(): void {
+		this.#inputController.cycleToolDisplayState();
+	}
+
+	setToolDisplayState(state: ToolDisplayState): void {
+		this.#inputController.setToolDisplayState(state);
 	}
 
 	setToolsExpanded(expanded: boolean): void {

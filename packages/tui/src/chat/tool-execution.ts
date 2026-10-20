@@ -452,6 +452,7 @@ export class ToolExecutionComponent extends Container {
 	#allocation = Number.POSITIVE_INFINITY;
 	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
 	#toolActivityVisible = true;
+	#activeOnly = false;
 	#showImages: boolean;
 	#isPartial = true;
 	// A background task whose call already returned; later async job frames are
@@ -920,7 +921,7 @@ export class ToolExecutionComponent extends Container {
 	 * until they settle. Hidden blocks render no rows and cannot gate history.
 	 */
 	isTranscriptBlockFinalized(): boolean {
-		if (!this.#toolActivityVisible) return true;
+		if (!this.#isActivityVisible()) return true;
 		// Retiring before PNG conversion settles freezes the image-free rows in
 		// native scrollback; an ordinary repaint cannot replace those rows.
 		if (this.#showImages && this.#kittyConversionsAwaited.size > 0) return false;
@@ -928,7 +929,7 @@ export class ToolExecutionComponent extends Container {
 		if (this.#result === undefined) return false;
 		// A parked background task's call already returned; job frames that land
 		// while it is still live keep updating it, but it must not gate history.
-		if (this.#parkedBackground) return true;
+		if (this.#parkedBackground && !this.#activeOnly) return true;
 		return !this.#isPartial;
 	}
 
@@ -1098,11 +1099,11 @@ export class ToolExecutionComponent extends Container {
 			this.#parkedBackground,
 			this.#showImages,
 			this.#displayInputVersion,
-			this.#toolActivityVisible,
+			this.#isActivityVisible(),
 			getThemeEpoch(),
 		];
 		return this.#native.get(key, () =>
-			withHidden(dataFirst ? this.#describeTool() : this.#describeCard(), !this.#toolActivityVisible),
+			withHidden(dataFirst ? this.#describeTool() : this.#describeCard(), !this.#isActivityVisible()),
 		);
 	}
 
@@ -1368,6 +1369,15 @@ export class ToolExecutionComponent extends Container {
 		super.invalidate();
 	}
 
+	setToolActivityActiveOnly(activeOnly: boolean): void {
+		this.#activeOnly = activeOnly;
+		super.invalidate();
+	}
+
+	#isActivityVisible(): boolean {
+		return this.#toolActivityVisible && (!this.#activeOnly || this.#isRunning());
+	}
+
 	setShowImages(show: boolean): void {
 		this.#showImages = show;
 		this.#updateDisplay();
@@ -1429,7 +1439,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		if (!this.#toolActivityVisible || this.#allocation === 0 || (this.#toolName === "wait" && this.#isBenignSkip())) {
+		if (!this.#isActivityVisible() || this.#allocation === 0 || (this.#toolName === "wait" && this.#isBenignSkip())) {
 			return [];
 		}
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();

@@ -10,7 +10,7 @@ import { col } from "../native/describe";
 import type { NativeNode } from "../native/node";
 import { isNativeSettled, settleNative } from "../native/settle";
 import { isUsageRowBlock } from "../overlays/usage-row";
-import { isToolActivityComponent } from "./tool-activity";
+import { applyToolDisplayState, isToolActivityComponent, type ToolDisplayState } from "./tool-activity";
 import { findLabelRow, hasLabelRoom, stampRow } from "./transcript-stamp";
 
 /** When a block's step began and, once known, ended (epoch ms), for `/time` labels. */
@@ -245,7 +245,7 @@ export class TranscriptContainer extends Container {
 	#offered: Offered | undefined;
 	#replayPending = false;
 	#replayRequested = false;
-	#toolActivityVisible = true;
+	#toolDisplayState: ToolDisplayState = "verbose";
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
 	// Start rows from the last full render(), keyed by child component (transcript deep-links).
 	#childStartRows = new Map<Component, number>();
@@ -278,7 +278,7 @@ export class TranscriptContainer extends Container {
 	#nativeBlocks: readonly Component[] = [];
 	#nativeNode: NativeNode | undefined;
 	override addChild(component: Component): void {
-		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
+		applyToolDisplayState(component, this.#toolDisplayState);
 		// Rows this block published in another container are not this one's history.
 		const time = blockTimes.get(component);
 		if (time !== undefined) time.endGuard = undefined;
@@ -318,11 +318,21 @@ export class TranscriptContainer extends Container {
 		this.#lastViewportSpans = [];
 	}
 
-	setToolActivityVisible(visible: boolean): void {
-		if (this.#toolActivityVisible === visible) return;
-		this.#toolActivityVisible = visible;
-		for (const child of this.children) {
-			if (isToolActivityComponent(child)) child.setToolActivityVisible(visible);
+	setToolDisplayState(state: ToolDisplayState): void {
+		if (this.#toolDisplayState === state) return;
+		this.#toolDisplayState = state;
+		for (const child of this.children) applyToolDisplayState(child, state);
+		this.resetStableEmission();
+		// Hidden calls and parked background snapshots may already have retired.
+		// Revealing a still-running call must bring it (and the following tail)
+		// back into the mutable viewport rather than replay it as frozen history.
+		for (let index = 0; index < this.#frontier; index++) {
+			if (isFinalized(this.#entries[index]!.component)) continue;
+			this.#frontier = index;
+			this.#offered = undefined;
+			this.#pinnedFrontier = undefined;
+			this.#settleFinalized();
+			break;
 		}
 		this.invalidate();
 	}

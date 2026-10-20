@@ -68,7 +68,7 @@ function createFixture(
 	let hasDisplayableThinkingContent = false;
 	const ctx = createInteractiveModeContext({
 		session: { getToolByName: toolByName },
-		hideToolActivity,
+		toolDisplayState: hideToolActivity ? "hidden" : "verbose",
 		noteDisplayableThinkingContent: vi.fn((message: AssistantMessage) => {
 			const hasThinking = message.content.some(
 				content => content.type === "thinking" && content.thinking.trim() !== "",
@@ -79,7 +79,7 @@ function createFixture(
 		}),
 		lastAssistantUsage: zeroUsage(),
 	});
-	ctx.chatContainer.setToolActivityVisible(!hideToolActivity);
+	ctx.chatContainer.setToolDisplayState(ctx.toolDisplayState);
 
 	return { controller: new EventController(ctx), chatContainer: ctx.chatContainer, ctx };
 }

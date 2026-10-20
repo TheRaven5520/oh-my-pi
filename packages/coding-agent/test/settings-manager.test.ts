@@ -1,3 +1,4 @@
+import { cfgDisplayToolState } from "../src/modes/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
@@ -2144,6 +2145,18 @@ describe("Settings", () => {
 		});
 	});
 	describe("migrations", () => {
+		it.each([true, false])("migrates legacy tool visibility %s", async hidden => {
+			const expected = hidden ? "hidden" : "claude";
+			expect(cfgDisplayToolState.get(Settings.isolated({ "display.hideToolActivity": hidden }))).toBe(expected);
+			await writeSettings({ display: { hideToolActivity: hidden } });
+			expect(cfgDisplayToolState.get(await Settings.init({ cwd: projectDir, agentDir }))).toBe(expected);
+		});
+
+		it("preserves an explicit tool state over the legacy visibility flag", () => {
+			const settings = Settings.isolated({ "display.hideToolActivity": true, "display.toolState": "verbose" });
+			expect(cfgDisplayToolState.get(settings)).toBe("verbose");
+		});
+
 		it("preserves current ask timeout seconds in overrides and persisted config", async () => {
 			expect(cfgAskTimeout.get(Settings.isolated({ "ask.timeout": 2000 }))).toBe(2000);
 

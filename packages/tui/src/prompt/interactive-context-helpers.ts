@@ -1,3 +1,4 @@
+import type { ToolDisplayState } from "../chrome/tool-activity";
 /** Shared assistant transcript construction and model-authored link caching. */
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getMarkdownLinkUrls } from "../index";
@@ -17,7 +18,7 @@ export interface AssistantMessageHost {
 	readonly effectiveHideThinkingBlock: boolean;
 	readonly proseOnlyThinking: boolean;
 	readonly assistantImagesVisible: boolean;
-	readonly hideToolActivity: boolean;
+	readonly toolDisplayState: ToolDisplayState;
 	readonly toolOutputExpanded: boolean;
 	readonly ui: { requestRender(): void; readonly imageBudget: ImageBudget };
 	resolveAssistantMessageLinks(texts: readonly string[]): Promise<ReadonlyMap<string, string>>;
@@ -114,7 +115,7 @@ export function createAssistantMessageComponent(
 		linkTargets,
 	);
 	component.setImagesVisible(ctx.assistantImagesVisible);
-	component.setToolResultImagesVisible(!ctx.hideToolActivity);
+	component.setToolResultImagesVisible(ctx.toolDisplayState === "verbose");
 	component.setExpanded(ctx.toolOutputExpanded);
 	// A wire the `stream-revision` axis marks `possible` can rewrite text it has
 	// already streamed; published rows are unrecoverable once they reach native

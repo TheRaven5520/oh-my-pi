@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { applyToolDisplayState, type ToolDisplayState } from "@oh-my-pi/pi-tui/chrome/tool-activity";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	type AutocompleteProvider,
@@ -21,8 +21,6 @@ import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-messa
 import { type ComposerDraftSnapshot, extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { HistorySearchComponent } from "@oh-my-pi/pi-tui/overlays/history-search";
 import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
-import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-tui/overlays/tree-selector";
 import {
 	chipLabel,
@@ -73,7 +71,7 @@ import { cfgCycleModels, cfgCycleOrder } from "../../config/model-settings";
 import {
 	cfgBareExitOnEmptySession,
 	cfgBareSlashCommands,
-	cfgDisplayHideToolActivity,
+	cfgDisplayToolState,
 	cfgDoubleEscapeAction,
 	cfgEmojiAutocomplete,
 	cfgImagesAutoResize,
@@ -171,6 +169,9 @@ const OMP_STATUS_LINE_RE = /^\s*in:\s+\d+\s+out:\s+\d+(?:\s+cache\s+\S+)?\s+t:\s
  * the removed `reset`) stays gated.
  */
 const FOCUSED_VIEW_COMMANDS: Record<string, (args: string) => boolean> = {
+	state: () => true,
+	thinking: () => true,
+	time: () => true,
 	btw: () => true,
 	export: () => true,
 	usage: args => {
@@ -628,9 +629,9 @@ export class InputController {
 		}
 		if (!this.#expandToolsListenerInstalled) {
 			this.#expandToolsListenerInstalled = true;
-			// `app.tools.expand` (Ctrl+O) toggles the transcript's tool-output
-			// preview. It must fire regardless of focus so a truncated edit stays
-			// expandable while an approval prompt / select dialog holds keyboard
+			// `app.tools.expand` (Ctrl+O) cycles transcript tool display.
+			// It must fire regardless of focus so a truncated edit stays
+			// accessible while an approval prompt / select dialog holds keyboard
 			// focus (#7837). Defers when the main transcript is not the active
 			// surface (a fullscreen/anchored overlay — agent hub, transcript
 			// viewer, log viewer, model picker) or when the focused component
@@ -647,7 +648,7 @@ export class InputController {
 				if (focused instanceof AskDialogComponent && focused.toggleQuestionExpansion()) {
 					return { consume: true };
 				}
-				this.toggleToolOutputExpansion();
+				this.cycleToolDisplayState();
 				return { consume: true };
 			});
 		}
@@ -3031,72 +3032,39 @@ export class InputController {
 		}
 	}
 
-	toggleToolOutputExpansion(): void {
-		if (this.ctx.hideToolActivity) {
-			const visibilityKey = appKey(this.ctx.keybindings, "app.tools.toggleVisibility");
-			const visibilityHint = visibilityKey ? `${visibilityKey} or /settings` : "/settings";
-			this.ctx.showStatus(`Tool activity is hidden — show it with ${visibilityHint} before expanding`);
-			return;
-		}
-		this.setToolsExpanded(!this.ctx.toolOutputExpanded);
-		this.ctx.showStatus(`Tool output expansion: ${this.ctx.toolOutputExpanded ? "enabled" : "disabled"}`);
+	cycleToolDisplayState(): void {
+		const state = this.ctx.toolDisplayState;
+		this.setToolDisplayState(state === "hidden" ? "claude" : state === "claude" ? "verbose" : "hidden");
 	}
 
 	toggleToolActivityVisibility(): void {
-		this.ctx.hideToolActivity = !this.ctx.hideToolActivity;
-		cfgDisplayHideToolActivity.set(this.ctx.settings, this.ctx.hideToolActivity);
+		this.setToolDisplayState(this.ctx.toolDisplayState === "hidden" ? "claude" : "hidden");
+	}
 
-		if (!this.ctx.hideToolActivity) {
-			this.ctx.toolOutputExpanded = false;
-		}
-
-		for (const child of this.ctx.chatContainer.children) {
-			if (
-				!this.ctx.hideToolActivity &&
-				(child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)
-			) {
-				child.setExpanded(false);
-			} else if (child instanceof AssistantMessageComponent) {
-				child.setToolResultImagesVisible(!this.ctx.hideToolActivity);
+	setToolDisplayState(state: ToolDisplayState): void {
+		this.ctx.toolDisplayState = state;
+		this.ctx.toolOutputExpanded = state === "verbose";
+		cfgDisplayToolState.set(this.ctx.settings, state);
+		for (const root of [this.ctx.chatContainer, this.ctx.pendingMessagesContainer]) {
+			for (const child of root.children) {
+				applyToolDisplayState(child, state);
+				if (isExpandable(child)) child.setExpanded(state === "verbose");
+				if (child instanceof AssistantMessageComponent) child.setToolResultImagesVisible(state === "verbose");
 			}
 		}
-		this.ctx.chatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
-
-		if (this.ctx.hideToolActivity) this.ctx.ui.clearInlineImages();
-		// A viewport-only repaint leaves tool rows already retired to terminal history unchanged.
+		this.ctx.chatContainer.setToolDisplayState(state);
+		if (state !== "verbose") this.ctx.ui.clearInlineImages();
+		// Rebuild retired history, retaining the editor, focus and mounted components.
+		this.ctx.chatContainer.resetStableEmission();
 		this.ctx.ui.resetDisplay();
-		this.ctx.showStatus(`Tool activity: ${this.ctx.hideToolActivity ? "hidden" : "visible"}`);
+		this.ctx.showStatus(`Tool display: ${state}`);
 	}
 
 	setToolsExpanded(expanded: boolean): void {
-		this.ctx.toolOutputExpanded = expanded;
-		const chat = this.ctx.chatContainer;
-		let retired = false;
-		for (const root of [chat, this.ctx.pendingMessagesContainer]) {
-			for (const child of root.children) {
-				// A live expanded card can retire its non-expandable prefix too.
-				// Replay that history on collapse so it refills the freed rows.
-				if (!retired && root === chat && !chat.canRemoveBlock(child)) retired = true;
-				if (!isExpandable(child)) continue;
-				child.setExpanded(expanded);
-			}
-		}
-		if (retired) this.ctx.ui.resetDisplay();
-		else this.ctx.ui.requestRender(true);
+		this.setToolDisplayState(expanded ? "verbose" : "claude");
 	}
 
 	toggleThinkingBlockVisibility(): void {
-		// When thinking is "off" and the session has not produced reasoning
-		// content, thinking blocks stay auto-hidden; the toggle would only corrupt
-		// the persisted preference. OpenAI-compatible servers can stream reasoning
-		// without advertising model support, so observed thinking content unlocks
-		// the display toggle.
-		const thinkingOff =
-			((this.ctx.viewSession ?? this.ctx.session)?.thinkingLevel ?? ThinkingLevel.Off) === ThinkingLevel.Off;
-		if (thinkingOff && !this.ctx.hasDisplayableThinkingContent) {
-			this.ctx.showStatus("Thinking is off — enable thinking to show blocks");
-			return;
-		}
 		this.ctx.hideThinkingBlock = !this.ctx.hideThinkingBlock;
 		cfgHideThinkingBlock.set(this.ctx.settings, this.ctx.hideThinkingBlock);
 

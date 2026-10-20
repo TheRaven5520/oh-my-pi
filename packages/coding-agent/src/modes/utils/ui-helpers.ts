@@ -697,7 +697,7 @@ export class UiHelpers {
 				const strippedToolCalls = (message as AgentMessage & StrippedToolCallsMarker).strippedToolCalls ?? 0;
 				if (strippedToolCalls > 0) {
 					this.ctx.chatContainer.addChild(
-						new StrippedToolCallsPlaceholder(strippedToolCalls, !this.ctx.hideToolActivity),
+						new StrippedToolCallsPlaceholder(strippedToolCalls, this.ctx.toolDisplayState === "verbose"),
 					);
 				}
 				pendingUsage =
@@ -992,7 +992,7 @@ export class UiHelpers {
 		// until the replacement is ready to swap in.
 		const visibleChatContainer = this.ctx.chatContainer;
 		const stagedChatContainer = new TranscriptContainer();
-		stagedChatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
+		stagedChatContainer.setToolDisplayState(this.ctx.toolDisplayState);
 		const preservedChatChildren = options.preserveExistingChat ? [...visibleChatContainer.children] : undefined;
 		const previousTranscriptMessageComponents = this.ctx.transcriptMessageComponents;
 		const previousPendingTools = this.ctx.pendingTools;

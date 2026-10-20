@@ -1,3 +1,4 @@
+import type { ToolDisplayState } from "@oh-my-pi/pi-tui/chrome/tool-activity";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Model, Usage, UsageReport } from "@oh-my-pi/pi-ai";
@@ -200,7 +201,7 @@ export interface InteractiveModeContext {
 	initialChatRendered: boolean;
 	isBashMode: boolean;
 	toolOutputExpanded: boolean;
-	hideToolActivity: boolean;
+	toolDisplayState: ToolDisplayState;
 	todoExpanded: boolean;
 	planModeEnabled: boolean;
 	vibeModeEnabled: boolean;
@@ -593,7 +594,8 @@ export interface InteractiveModeContext {
 	pinComposerToBottom(): void;
 	cycleThinkingLevel(): void;
 	cycleRoleModel(direction?: "forward" | "backward"): Promise<void>;
-	toggleToolOutputExpansion(): void;
+	cycleToolDisplayState(): void;
+	setToolDisplayState(state: ToolDisplayState): void;
 	setToolsExpanded(expanded: boolean): void;
 	toggleThinkingBlockVisibility(): void;
 	handlePlanModeCommand(
