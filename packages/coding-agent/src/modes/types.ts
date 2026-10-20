@@ -292,6 +292,10 @@ export interface InteractiveModeContext {
 	/** Request graceful shutdown at the next fully settled boundary, including background turns. */
 	requestShutdown(): void;
 	checkShutdownRequested(): Promise<void>;
+	/** A turn fully settled; restarts into a newly installed build once the chat is idle. */
+	onTurnSettled(): void;
+	/** True while a foreground submission is accepted but not yet handed to the session. */
+	hasPendingSubmission(): boolean;
 
 	// Extension UI integration
 	setToolUIContext(uiContext: ExtensionUIContext, hasUI: boolean): void;

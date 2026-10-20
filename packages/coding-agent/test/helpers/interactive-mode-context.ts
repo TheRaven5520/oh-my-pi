@@ -298,6 +298,7 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		reconcileOptimisticSkillMessage: vi.fn(),
 		flushCompactionQueue: vi.fn(async () => {}),
 		flushPendingModelSwitch: vi.fn(async () => {}),
+		onTurnSettled: vi.fn(),
 		reloadTodos: vi.fn(async () => {}),
 		setTodos: vi.fn(),
 	} satisfies ContextOverrides;

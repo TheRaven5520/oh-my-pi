@@ -2325,6 +2325,7 @@ export class EventController {
 		// This settle may belong to an extension-started turn while the main
 		// input loop remains asleep. Do not await session-idle from its own event.
 		if (this.ctx.shutdownRequested) this.ctx.requestShutdown();
+		else this.ctx.onTurnSettled();
 	}
 
 	/**
@@ -2352,6 +2353,7 @@ export class EventController {
 				setTerminalTitleState("idle");
 				await this.#finishAgentEnd(event);
 				if (this.ctx.shutdownRequested) this.ctx.requestShutdown();
+				else this.ctx.onTurnSettled();
 			});
 		} catch (error) {
 			logger.warn("Async-wait settle teardown failed", { error: String(error) });

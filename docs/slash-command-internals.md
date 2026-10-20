@@ -34,6 +34,12 @@ This document describes how slash commands are discovered, deduplicated, surface
 
 These are independent local display preferences, also available when viewing a focused agent or participating as a collaboration guest.
 
+## Automatic refresh after an install
+
+A compiled OMP records the identity (device, inode, size, mtime) of its executable at startup. When a turn fully settles, `UpdateRefreshController` (`src/modes/controllers/update-refresh-controller.ts`) checks whether a different file now sits at that path, as left by an atomic install. If so, and the identity is unchanged on a second check five seconds later, it runs the same `refresh()` as `/refresh` once the chat is idle.
+
+Idle means: not streaming; no queued messages, pending background wakes, running async jobs, running subagents or open forks; not viewing a focused agent; not in a collab session, unpaused loop or goal mode; no open dialog, `/btw`/`/omfg`/`/cleanse` request, live voice session, or unsent draft (text or images); and a saved session file. While blocked it rechecks every five seconds without starting work. Source/SDK launches have no installed binary and never auto-refresh.
+
 ## 1) Discovery model
 
 Slash commands are a capability (`id: "slash-commands"`) keyed by command name (`key: cmd => cmd.name`).

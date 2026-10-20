@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- A chat now runs `/refresh` by itself when a new OMP build has been installed over the binary it is running from. It waits until a turn has fully ended and the chat is idle: no streaming, queued messages, pending background wakes or jobs, running subagents, open forks, focused subagent view, collab session, active loop or goal mode, open dialog, side request, live voice session, or unsent draft. The new file must also be unchanged across two checks, so a half-written install is never launched. Source and SDK launches are unaffected.
 - Added `/state hidden|claude|verbose` and a three-way Ctrl+O cycle: no tool activity, active tools only, or expanded tool history. `/thinking on|off` controls received thinking text independently of `/effort`; bare `/state`, `/thinking`, and `/time` cycle or toggle their display preference.
 - Fixed sparse custom thinking metadata erasing resolved capabilities after discovery. SpriliCred adaptive Claude models now retain thinking-display support and request summaries instead of silently receiving empty thinking blocks; explicit capability opt-outs remain respected.
 - Answering a chat's question, or sending it a message, from OMP Central now clears that chat's red tmux reply-alert tab: a local tmux chat runs `~/.config/tmux/reply-alert.py ack` for its own pane, and an SSH-hosted chat emits an `omp_reply_ack` frame for the outer pane's observer. Local answers and other chats' tabs are unaffected.

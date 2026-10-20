@@ -97,6 +97,11 @@ export class ForkCommandController {
 		return this.#forks.has(id);
 	}
 
+	/** Live forks, including idle ones waiting in the agents panel for follow-ups. */
+	get size(): number {
+		return this.#forks.size;
+	}
+
 	async start(request: string): Promise<void> {
 		const session = this.ctx.session;
 		const model = session.model;

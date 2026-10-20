@@ -274,6 +274,7 @@ import { SelectorController } from "./controllers/selector-controller";
 import { SessionFocusController } from "./controllers/session-focus-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { ForkCommandController } from "./controllers/fork-command-controller";
+import { runningExecutablePath, UpdateRefreshController } from "./controllers/update-refresh-controller";
 import { isForkAgentId } from "../registry/fork-agent-id";
 import { TanCommandController } from "./controllers/tan-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
@@ -1867,6 +1868,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #commandController: CommandController;
 	readonly #todoCommandController: TodoCommandController;
 	readonly #liveCommandController: LiveCommandController;
+	readonly #updateRefreshController: UpdateRefreshController;
 	readonly #eventController: EventController;
 	get eventController(): EventController {
 		return this.#eventController;
@@ -2240,6 +2242,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController = new CommandController(this);
 		this.#todoCommandController = new TodoCommandController(this);
 		this.#liveCommandController = new LiveCommandController(this);
+		this.#updateRefreshController = new UpdateRefreshController(this, {
+			executablePath: runningExecutablePath(),
+			extraBlocker: () =>
+				this.#forkCommandController.size > 0
+					? "forks open"
+					: this.#liveCommandController.active
+						? "live voice session"
+						: undefined,
+		});
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
@@ -7446,6 +7457,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// pending input callback against a session that is already disposing.
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
+		this.#updateRefreshController.dispose();
 
 		// Surface progress before any asynchronous cleanup, including live commands
 		// and BTW history writes, so the user sees a reason for the pause.
@@ -7517,6 +7529,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** True while a foreground submission is accepted but not yet handed to the session. */
 	hasPendingSubmission(): boolean {
 		return this.#pendingSubmittedInput !== undefined;
+	}
+
+	onTurnSettled(): void {
+		this.#updateRefreshController.onTurnSettled();
 	}
 
 	async checkShutdownRequested(): Promise<void> {
