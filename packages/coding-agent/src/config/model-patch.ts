@@ -320,11 +320,6 @@ export function applyModelPatch(base: Model<Api>, patch: ModelPatch, transport: 
 		}
 	}
 	const built = buildModel({ ...toModelSpec(result), compat } as ModelSpec<Api>);
-	if (patch.thinking !== undefined && built.thinking !== undefined) {
-		// Config-authored capability metadata owns the explicit surface; build
-		// first so non-reasoning and wire-disabled models still suppress it.
-		built.thinking = patch.thinking;
-	}
 	// Capacity already includes registry policy and runtime metadata; rebuilding
 	// compat must not replace it with the catalog's baseline limits.
 	built.contextWindow = result.contextWindow;

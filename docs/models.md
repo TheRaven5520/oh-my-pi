@@ -818,6 +818,8 @@ Custom models and overrides may define `thinking` with required `mode` and `effo
 configured backend has been verified to accept an explicit reasoning-off
 request. This keeps the `:off` selector from being clamped to the lowest effort.
 
+Sparse `thinking` overrides preserve explicit fields while retaining catalog-derived defaults for omitted capabilities. In particular, adaptive Claude models that support thinking display keep `supportsDisplay: true` after custom-model and discovery merges, so OMP requests `display: "summarized"`. Set `supportsDisplay: false` explicitly only for a gateway that rejects that field. This affects future responses; thinking text omitted by earlier requests cannot be recovered by the display toggle.
+
 For a custom model with the default `thinkingFormat: openai`, `--thinking off`
 has no explicit off payload on `openai-completions`: when `reasoning_effort` is
 sent, it requests the first effort listed in `efforts`, even with

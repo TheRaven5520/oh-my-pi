@@ -1782,6 +1782,32 @@ describe("ModelRegistry", () => {
 			});
 		});
 
+		test("keeps derived Claude display support when sparse thinking metadata overlays discovery", () => {
+			const base = buildModel({
+				id: "claude-opus-5-5",
+				name: "Opus via gateway",
+				provider: "sprilicred-anthropic",
+				api: "anthropic-messages",
+				baseUrl: "https://gateway.example/anthropic",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 128_000,
+			});
+			for (const transport of ["merge", "replace"] as const) {
+				const patched = applyModelPatch(base, { thinking: customThinking }, transport);
+				expect(patched.thinking?.supportsDisplay).toBe(true);
+				expect(patched.thinking?.efforts).toEqual(customThinking.efforts);
+				const optedOut = applyModelPatch(
+					patched,
+					{ thinking: { ...customThinking, supportsDisplay: false } },
+					transport,
+				);
+				expect(optedOut.thinking?.supportsDisplay).toBe(false);
+			}
+		});
+
 		test("custom models preserve explicit thinking verbatim", () => {
 			const model = getModelsForProvider(thinkingCustom, "anthropic").find(m => m.id === "claude-custom");
 			// Adaptive effort ladders are wire-exact — explicit thinking passes
