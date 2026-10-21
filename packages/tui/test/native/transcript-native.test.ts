@@ -383,9 +383,11 @@ describe("native transcript", () => {
 		expect(live.container.render(120).join("\n")).toContain("2 notes");
 
 		const committed = new ChatTranscriptBuilder({ ui: h.tui, cwd: "/tmp", requestRender: () => {} });
+		committed.setToolDisplayState("verbose");
 		committed.append([advisorEntry("committed-1", "first note")]);
 		const first = committed.container.children[0]!;
 		const firstRows = first.render(120);
+		expect(firstRows.join("\n")).toContain("1 note");
 		const batch = committed.container.peekFlushBatch(120);
 		expect(batch).toBeDefined();
 		committed.container.acknowledgeFinalizedBatch(batch!.id);
