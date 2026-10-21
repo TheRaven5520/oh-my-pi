@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { TodoReminderComponent } from "@oh-my-pi/pi-tui/chat/todo-reminder";
+import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import type { TUI } from "@oh-my-pi/pi-tui";
@@ -68,80 +69,38 @@ describe("tool activity visibility", () => {
 		wrapper.setExpanded(false);
 		expect(states).toEqual([true, false]);
 	});
-	it.each([false, true])("removes settled tools in claude, including failures (%s)", isError => {
+	it.each([false, true])("keeps finished tools visible in claude, including failures (%s)", isError => {
 		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
 		const tool = new ToolExecutionComponent("test-tool", { value: "active" }, {}, undefined, ui);
 		const transcript = new TranscriptContainer();
 		transcript.setToolDisplayState("claude");
 		transcript.addChild(tool);
 		try {
-			expect(transcript.render(100).length).toBeGreaterThan(0);
-			expect(tool.describe().p?.hidden).not.toBe(true);
 			tool.updateResult({ content: [{ type: "text", text: "settled result" }], isError }, false);
-			expect(transcript.render(100)).toEqual([]);
-			expect(tool.describe().p?.hidden).toBe(true);
-			transcript.setToolDisplayState("verbose");
 			expect(transcript.render(100).length).toBeGreaterThan(0);
 			expect(tool.describe().p?.hidden).not.toBe(true);
 			transcript.setToolDisplayState("hidden");
 			expect(transcript.render(100)).toEqual([]);
-		} finally {
-			tool.stopAnimation();
-		}
-	});
-
-	it("keeps parked partial background work mutable until it settles", () => {
-		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
-		const tool = new ToolExecutionComponent("test-tool", {}, {}, undefined, ui);
-		const transcript = new TranscriptContainer();
-		transcript.setToolDisplayState("claude");
-		transcript.addChild(tool);
-		try {
-			tool.updateResult({ content: [{ type: "text", text: "working" }] }, true);
-			tool.parkAsBackground();
-			expect(tool.isTranscriptBlockFinalized()).toBe(false);
+			expect(tool.describe().p?.hidden).toBe(true);
+			transcript.setToolDisplayState("claude");
 			expect(transcript.render(100).length).toBeGreaterThan(0);
-			tool.updateResult({ content: [{ type: "text", text: "done" }] }, false);
-			expect(transcript.render(100)).toEqual([]);
-			expect(tool.isTranscriptBlockFinalized()).toBe(true);
 		} finally {
 			tool.stopAnimation();
 		}
 	});
 
-	it("filters settled members of read groups and hides sealed pending reads", () => {
+	it("keeps settled read groups listed in claude", () => {
 		const group = new ReadToolGroupComponent();
 		const transcript = new TranscriptContainer();
 		transcript.setToolDisplayState("claude");
 		group.updateArgs({ path: "/tmp/settled.ts" }, "done");
-		group.updateArgs({ path: "/tmp/pending.ts" }, "pending");
 		transcript.addChild(group);
-		group.updateResult({ content: [{ type: "text", text: "failed" }], isError: true }, false, "done");
-		const visible = stripVTControlCharacters(transcript.render(100).join("\n"));
-		expect(visible).toContain("pending.ts");
-		expect(visible).not.toContain("settled.ts");
+		group.updateResult({ content: [{ type: "text", text: "ok" }] }, false, "done");
 		group.seal();
-		expect(transcript.render(100)).toEqual([]);
-		expect(group.describe().p?.hidden).toBe(true);
-		transcript.setToolDisplayState("verbose");
 		expect(stripVTControlCharacters(transcript.render(100).join("\n"))).toContain("settled.ts");
 	});
 
-	it("shows new pending reads after an active-only group has settled", () => {
-		const group = new ReadToolGroupComponent();
-		const transcript = new TranscriptContainer();
-		transcript.setToolDisplayState("claude");
-		group.updateArgs({ path: "/tmp/first.ts" }, "first");
-		transcript.addChild(group);
-		group.updateResult({ content: [{ type: "text", text: "first result" }] }, false, "first");
-		expect(transcript.render(100)).toEqual([]);
-		group.updateArgs({ path: "/tmp/second.ts" }, "second");
-		const visible = stripVTControlCharacters(transcript.render(100).join("\n"));
-		expect(visible).toContain("second.ts");
-		expect(visible).not.toContain("first.ts");
-	});
-
-	it("reactivates a running tool retired while hidden, then removes its settled rows", () => {
+	it("reactivates a running tool retired while hidden and keeps it after it finishes", () => {
 		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
 		const tool = new ToolExecutionComponent("test-tool", {}, {}, undefined, ui);
 		const transcript = new TranscriptContainer();
@@ -157,19 +116,51 @@ describe("tool activity visibility", () => {
 			expect(transcript.blockStates()).toEqual(["active"]);
 			expect(transcript.liveRowCount(100)).toBeGreaterThan(0);
 			tool.updateResult({ content: [{ type: "text", text: "finished after reveal" }] }, false);
-			expect(transcript.liveRowCount(100)).toBe(0);
-			expect(transcript.render(100)).toEqual([]);
-			transcript.setToolDisplayState("verbose");
-			expect(stripVTControlCharacters(transcript.render(100).join("\n"))).toContain("finished after reveal");
+			expect(transcript.liveRowCount(100)).toBeGreaterThan(0);
 		} finally {
 			tool.stopAnimation();
 		}
 	});
 
-	it("does not show settled notices in claude", () => {
+	it("shows notices in claude and hides them in hidden", () => {
 		const transcript = new TranscriptContainer();
 		transcript.setToolDisplayState("claude");
 		transcript.addChild(new ToolActivityContainer(new Text("completed job", 0, 0)));
+		expect(stripVTControlCharacters(transcript.render(100).join("\n"))).toContain("completed job");
+		transcript.setToolDisplayState("hidden");
 		expect(transcript.render(100)).toEqual([]);
+	});
+
+	it("shows non-blocker advisor notes only in verbose, and blockers in every state", () => {
+		const transcript = new TranscriptContainer();
+		const concern = createAdvisorMessageCard(
+			{ notes: [{ note: "CONCERN_ONLY_NOTE", severity: "concern" }] },
+			() => false,
+			darkTheme!,
+		);
+		const mixed = createAdvisorMessageCard(
+			{
+				notes: [
+					{ note: "BLOCKER_NOTE", severity: "blocker" },
+					{ note: "NIT_BESIDE_BLOCKER", severity: "nit" },
+				],
+			},
+			() => true,
+			darkTheme!,
+		);
+		transcript.addChild(concern);
+		transcript.addChild(mixed);
+		const rendered = () => stripVTControlCharacters(transcript.render(120).join("\n"));
+		for (const state of ["hidden", "claude"] as const) {
+			transcript.setToolDisplayState(state);
+			expect(rendered()).not.toContain("CONCERN_ONLY_NOTE");
+			expect(rendered()).not.toContain("NIT_BESIDE_BLOCKER");
+			expect(rendered()).toContain("BLOCKER_NOTE");
+			expect(concern.describe!().p?.hidden).toBe(true);
+		}
+		transcript.setToolDisplayState("verbose");
+		expect(rendered()).toContain("CONCERN_ONLY_NOTE");
+		expect(rendered()).toContain("NIT_BESIDE_BLOCKER");
+		expect(rendered()).toContain("BLOCKER_NOTE");
 	});
 });

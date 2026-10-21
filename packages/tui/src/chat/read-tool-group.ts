@@ -360,7 +360,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#expanded = false;
 	#individuallyExpanded = false;
 	#toolActivityVisible = true;
-	#activeOnly = false;
 	#showContentPreview: boolean;
 	// A read group accretes entries across multiple assistant completions for as
 	// long as the run of reads is uninterrupted. It remains active while its
@@ -390,12 +389,12 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	override render(width: number): readonly string[] {
-		if (!this.#isActivityVisible()) return [];
+		if (!this.#toolActivityVisible) return [];
 		if (this.#expanded) {
 			const lines = super.render(width);
 			return this.#individuallyExpanded ? expandedToolRows(theme, lines, width) : lines;
 		}
-		const entries = this.#displayEntries();
+		const entries = [...this.#entries.values()];
 		const rows = this.#buildSummaryRows(this.#displayTargetsForEntries(entries));
 		const usageByRow = this.#usageRowsBySummaryRow(rows);
 		const title = theme.fg("toolTitle", theme.bold("Read"));
@@ -465,8 +464,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	updateArgs(args: ReadRenderArgs, toolCallId?: string): void {
 		if (!toolCallId) return;
-		// Active-only groups can have retired while every previous read was settled.
-		this.#blockVersion++;
 		const rawPath =
 			typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : "";
 		const entry: ReadEntry = this.#entries.get(toolCallId) ?? {
@@ -614,21 +611,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		super.invalidate();
 	}
 
-	setToolActivityActiveOnly(activeOnly: boolean): void {
-		if (this.#activeOnly === activeOnly) return;
-		this.#activeOnly = activeOnly;
-		this.#updateDisplay();
-	}
-
-	#isActivityVisible(): boolean {
-		return this.#toolActivityVisible && (!this.#activeOnly || (!this.#sealed && this.#hasPendingEntries()));
-	}
-
-	#displayEntries(): ReadEntry[] {
-		const entries = [...this.#entries.values()];
-		return this.#activeOnly ? entries.filter(entry => entry.status === "pending") : entries;
-	}
-
 	getComponent(): Component {
 		return this;
 	}
@@ -660,9 +642,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	 */
 	override describe(cx?: DescribeContext): NativeNode {
 		const dataFirst = cx?.supports("tool") === true;
-		const key = [dataFirst, this.#displayVersion, this.#isActivityVisible(), this.#sealed];
+		const key = [dataFirst, this.#displayVersion, this.#toolActivityVisible, this.#sealed];
 		return this.#native.get(key, () =>
-			withHidden(dataFirst ? this.#describeTool() : this.#describeGroup(), !this.#isActivityVisible()),
+			withHidden(dataFirst ? this.#describeTool() : this.#describeGroup(), !this.#toolActivityVisible),
 		);
 	}
 
@@ -674,7 +656,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	 * `code` (a section per file in a group), trimmed while collapsed.
 	 */
 	#describeTool(): NativeNode {
-		const entries = this.#displayEntries();
+		const entries = [...this.#entries.values()];
 		const rows = this.#buildSummaryRows(this.#displayTargetsForEntries(entries));
 		const status = this.#groupStatus(entries);
 		const previews = entries.filter(entry => entry.status !== "error" && this.#shouldRenderPreview(entry));
@@ -814,7 +796,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	#describeGroup(): NativeNode {
-		const entries = this.#displayEntries();
+		const entries = [...this.#entries.values()];
 		const rows = this.#buildSummaryRows(this.#displayTargetsForEntries(entries));
 		const usageByRow = this.#usageRowsBySummaryRow(rows);
 		const previews = entries.filter(entry => this.#shouldRenderPreview(entry));
@@ -937,7 +919,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	#updateDisplay(): void {
 		this.#displayVersion++;
-		const entries = this.#displayEntries();
+		const entries = [...this.#entries.values()];
 		const displayTargets = this.#displayTargetsForEntries(entries);
 		const displayRows = this.#buildSummaryRows(displayTargets);
 

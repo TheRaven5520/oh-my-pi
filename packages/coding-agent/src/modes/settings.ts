@@ -620,7 +620,7 @@ export const cfgDisplayToolState = register({
 		tab: "appearance",
 		group: "Display",
 		label: "Tool Display State",
-		description: "Hide tool activity, show only active tools, or show expanded tool history",
+		description: "Hide tool calls, show them collapsed, or show them expanded",
 	},
 });
 

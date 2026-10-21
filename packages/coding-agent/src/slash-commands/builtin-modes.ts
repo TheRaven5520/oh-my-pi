@@ -627,12 +627,12 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "state",
 		icon: "settings",
-		description: "Set tool display: hidden, active-only Claude style, or verbose",
+		description: "Set tool display: hidden, collapsed (claude), or expanded (verbose)",
 		allowArgs: true,
 		subcommands: [
 			{ name: "hidden", description: "Hide all tool activity" },
-			{ name: "claude", description: "Show only currently active tool activity" },
-			{ name: "verbose", description: "Show expanded tool activity and history" },
+			{ name: "claude", description: "Show tool calls collapsed; only blocker advisor notes" },
+			{ name: "verbose", description: "Show tool calls expanded and all advisor notes" },
 		],
 		getTuiAutocompleteDescription: runtime => `Tool display: ${runtime.ctx.toolDisplayState}`,
 		handleTui: (command, runtime) => {

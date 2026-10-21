@@ -158,14 +158,20 @@ describe("CopySelectorComponent", () => {
 
 	it("cycles verbose, hidden, claude and verbose with Ctrl+O", () => {
 		const selector = makeSelector([]);
+		const view = () => Bun.stripANSI(selector.render(100).join("\n"));
 		try {
-			expect(Bun.stripANSI(selector.render(100).join("\n"))).toContain("12 pass");
+			const verbose = view();
+			expect(verbose).toContain("12 pass");
 			selector.handleInput("\x0f");
-			expect(Bun.stripANSI(selector.render(100).join("\n"))).not.toContain("12 pass");
+			const hidden = view();
+			expect(hidden).not.toContain("12 pass");
 			selector.handleInput("\x0f");
-			expect(Bun.stripANSI(selector.render(100).join("\n"))).not.toContain("12 pass");
+			// claude shows the tool call again, collapsed: more than hidden, less than verbose.
+			const claude = view();
+			expect(claude).not.toEqual(hidden);
+			expect(claude).not.toEqual(verbose);
 			selector.handleInput("\x0f");
-			expect(Bun.stripANSI(selector.render(100).join("\n"))).toContain("12 pass");
+			expect(view()).toContain("12 pass");
 		} finally {
 			selector.dispose();
 		}

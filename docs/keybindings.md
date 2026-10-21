@@ -61,8 +61,10 @@ The terminal must send a distinct modified-key sequence for `Ctrl+Shift+P`. If i
 `/state hidden`, `/state claude`, and `/state verbose` select how tools appear. `/state` without an argument and `Ctrl+O` cycle **hidden → claude → verbose → hidden**.
 
 - **hidden:** no tool calls or tool-result images; model output remains visible.
-- **claude:** show only active tool activity; completed tools disappear.
-- **verbose:** show expanded tool activity, including completed tools in history.
+- **claude:** every tool call shown, collapsed.
+- **verbose:** every tool call expanded.
+
+`hidden` and `claude` also hide non-blocker advisor notes; blocker notes show in every state. `verbose` shows all advisor notes.
 
 The default is `claude`. Switching states redraws retained history and preserves the editor draft. The persisted setting is `display.toolState`; older `display.hideToolActivity` settings migrate to `hidden` or `claude`. Thinking visibility and timestamps are independent of tool state.
 

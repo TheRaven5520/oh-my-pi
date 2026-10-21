@@ -5,20 +5,25 @@ export type ToolDisplayState = "hidden" | "claude" | "verbose";
 
 export interface ToolActivityComponent {
 	setToolActivityVisible(visible: boolean): void;
-	/** Restrict a live tool renderer to its in-flight calls. Notices have no active calls. */
-	setToolActivityActiveOnly?(activeOnly: boolean): void;
+}
+
+/** A transcript block whose content depends on the display state itself (e.g. advisor notes). */
+export interface ToolDisplayStateComponent {
+	setToolDisplayState(state: ToolDisplayState): void;
 }
 
 export function isToolActivityComponent(component: Component): component is Component & ToolActivityComponent {
 	return typeof (component as Partial<ToolActivityComponent>).setToolActivityVisible === "function";
 }
 
+/**
+ * `hidden` hides tool activity; `claude` shows every tool call collapsed;
+ * `verbose` shows them expanded (expansion is applied by the caller).
+ */
 export function applyToolDisplayState(component: Component, state: ToolDisplayState): void {
-	if (!isToolActivityComponent(component)) return;
-	component.setToolActivityActiveOnly?.(state === "claude");
-	component.setToolActivityVisible(
-		state !== "hidden" && (state !== "claude" || component.setToolActivityActiveOnly !== undefined),
-	);
+	const stateful = component as Partial<ToolDisplayStateComponent>;
+	if (typeof stateful.setToolDisplayState === "function") stateful.setToolDisplayState(state);
+	if (isToolActivityComponent(component)) component.setToolActivityVisible(state !== "hidden");
 }
 
 export class ToolActivityContainer extends Container implements ToolActivityComponent {

@@ -6,7 +6,8 @@ import { formatBadge, replaceTabs, type ToolUIColor, wrapTextWithAnsi } from "..
 import { Ellipsis, truncateToWidth } from "../render";
 import { getThemeEpoch, type Theme } from "../theme";
 import type { TspSpan } from "@oh-my-pi/pi-wire";
-import { card, span, text } from "../native/describe";
+import { card, EMPTY_NODE, span, text } from "../native/describe";
+import type { ToolDisplayState } from "../chrome/tool-activity";
 import { type NativeNode, type NativeUiEvent, rootToggleExpanded } from "../native/node";
 import { plainText } from "../native/spans";
 import { Memo } from "../native/memo";
@@ -201,6 +202,8 @@ function advisorCardSummary(notes: readonly AdvisorNote[]): {
 export interface AdvisorMessageCard extends Component {
 	/** Transcript-wide expansion (`Ctrl+O`); clears a toggle made in the terminal. */
 	setExpanded(expanded: boolean): void;
+	/** `hidden` and `claude` show only blocker notes; `verbose` shows every note. */
+	setToolDisplayState(state: ToolDisplayState): void;
 	/** Merge a later non-blocking tail batch into this card. */
 	appendNotes(notes: readonly AdvisorNote[]): boolean;
 	getClickToolId(): string;
@@ -230,7 +233,10 @@ export function createAdvisorMessageCard(
 	uiTheme: Theme,
 ): AdvisorMessageCard {
 	const notes = [...(details?.notes ?? [])];
-	let { blockers, compactNote, meta } = advisorCardSummary(notes);
+	let blockersOnly = false;
+	// What the card shows: every note in verbose, only blockers otherwise.
+	let visible: AdvisorNote[] = notes;
+	let { blockers, compactNote, meta } = advisorCardSummary(visible);
 	const clickId = `advisor:${++advisorCardCounter}`;
 	let override: boolean | undefined;
 	let lastGlobal = getExpanded();
@@ -255,8 +261,8 @@ export function createAdvisorMessageCard(
 				...advisorNoteSpans({ ...compactNote, note: compactNote.note.replace(/[\r\n]+/g, " ") }),
 			);
 		}
-		const collapsible = !!compactNote || notes.length > COLLAPSED_NOTES;
-		const body = notes.map((entry, index) =>
+		const collapsible = !!compactNote || visible.length > COLLAPSED_NOTES;
+		const body = visible.map((entry, index) =>
 			text(advisorNoteSpans(entry), { wrap: "word", role: "omp.advisor.note", key: `n${index}` }),
 		);
 		return card(
@@ -266,7 +272,7 @@ export function createAdvisorMessageCard(
 				head,
 				collapsible,
 				collapsed: collapsible ? !isExpanded : undefined,
-				preview: compactNote ? undefined : notes.length > COLLAPSED_NOTES ? "auto" : undefined,
+				preview: compactNote ? undefined : visible.length > COLLAPSED_NOTES ? "auto" : undefined,
 			},
 			body,
 		);
@@ -279,46 +285,62 @@ export function createAdvisorMessageCard(
 		summary,
 		collapsedBody: () => {
 			if (!collapsedBody) {
-				const shown = notes.slice(0, COLLAPSED_NOTES);
+				const shown = visible.slice(0, COLLAPSED_NOTES);
 				collapsedBody = new AdvisorNotes(
 					compactNote ? [] : shown,
-					compactNote ? 0 : notes.length - shown.length,
+					compactNote ? 0 : visible.length - shown.length,
 					uiTheme,
 				);
 			}
 			return collapsedBody;
 		},
 		body: () => {
-			body ??= new AdvisorNotes(notes, 0, uiTheme);
+			body ??= new AdvisorNotes(visible, 0, uiTheme);
 			return body;
 		},
 		expanded: getExpanded(),
 		paddingX: 1,
 	});
+	const refresh = (): void => {
+		visible = blockersOnly ? notes.filter(note => note.severity === "blocker") : notes;
+		({ blockers, compactNote, meta } = advisorCardSummary(visible));
+		summary.setContent(meta, compactNote);
+		if (collapsedBody) {
+			const shown = visible.slice(0, COLLAPSED_NOTES);
+			collapsedBody.setEntries(compactNote ? [] : shown, compactNote ? 0 : visible.length - shown.length);
+		}
+		body?.setEntries(visible, 0);
+		disclosure.invalidate();
+		nativeMemo.clear();
+	};
 	// The tool-output toggle owns expansion state; synchronize the controlled disclosure from the callback on every render.
 	return {
 		appendNotes(additions: readonly AdvisorNote[]): boolean {
-			if (additions.length === 0 || blockers > 0 || additions.some(note => note.severity === "blocker"))
+			if (
+				additions.length === 0 ||
+				notes.some(note => note.severity === "blocker") ||
+				additions.some(note => note.severity === "blocker")
+			)
 				return false;
 			notes.push(...additions);
-			({ blockers, compactNote, meta } = advisorCardSummary(notes));
-			summary.setContent(meta, compactNote);
-			if (collapsedBody) {
-				const shown = notes.slice(0, COLLAPSED_NOTES);
-				collapsedBody.setEntries(compactNote ? [] : shown, compactNote ? 0 : notes.length - shown.length);
-			}
-			body?.setEntries(notes, 0);
-			disclosure.invalidate();
-			nativeMemo.clear();
+			refresh();
 			return true;
 		},
+		setToolDisplayState(state: ToolDisplayState): void {
+			const next = state !== "verbose";
+			if (next === blockersOnly) return;
+			blockersOnly = next;
+			refresh();
+		},
 		render(width: number): readonly string[] {
+			if (visible.length === 0) return [];
 			const isExpanded = expanded();
 			summary.setExpanded(isExpanded);
 			disclosure.setExpanded(isExpanded);
 			return disclosure.render(width);
 		},
 		describe(): NativeNode {
+			if (visible.length === 0) return EMPTY_NODE;
 			const isExpanded = expanded();
 			return nativeMemo.get([isExpanded, getThemeEpoch()], () => describeCard(isExpanded));
 		},

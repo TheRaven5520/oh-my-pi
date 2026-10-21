@@ -375,6 +375,8 @@ describe("native transcript", () => {
 
 		const h = await startWith(() => {});
 		const live = new ChatTranscriptBuilder({ ui: h.tui, cwd: "/tmp", requestRender: () => {} });
+		// Non-blocker notes only show in verbose.
+		live.setToolDisplayState("verbose");
 		live.append([advisorEntry("live-1", "first note")]);
 		live.append([advisorEntry("live-2", "second note")]);
 		expect(live.container.children).toHaveLength(1);
