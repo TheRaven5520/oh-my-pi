@@ -55,7 +55,7 @@ interface PaneState {
 
 const execute = promisify(execFile);
 const STATE_FORMAT =
-	"#{pane_in_mode}\t#{@scrollback}\t#{@omp-history-generation}\t#{@omp-history-snapshot}\t#{pane_width}\t#{pane_height}\t#{scroll_position}\t#{history_limit}\t#{@omp-history-socket}\t#{history_size}\t#{@omp-history-press}\t#{@omp-history-size}\t#{pane_mode}";
+	"#{pane_in_mode}\t#{@scrollback}\t#{@omp-history-generation}\t#{@omp-history-snapshot}\t#{pane_width}\t#{pane_height}\t#{scroll_position}\t#{history_limit}\t#{@omp-history-socket}\t#{history_size}\t#{@omp-history-press}\t#{@omp-history-size}\t#{pane_mode}\t#{@omp-history-dragging}";
 
 /** Native tmux history owns scrolling/selection; only immutable row identities cross this socket. */
 export class TmuxHistoryBridge {
@@ -196,7 +196,8 @@ export class TmuxHistoryBridge {
 			socket: values[8] ?? "",
 			historySize: Number(values[9]),
 			frozenHistorySize: values[11] ? Number(values[11]) : undefined,
-			press: values[10] ?? "",
+			// A held click or an in-progress drag both own the view until release.
+			press: values[10] || values[13] || "",
 			modeName: values[12] ?? "",
 		};
 	}
@@ -382,6 +383,7 @@ export class TmuxHistoryBridge {
 				`#{==:#{scroll_position},${state.scroll}}`,
 				"#{==:#{pane_mode},copy-mode}",
 				"#{==:#{@omp-history-press},}",
+				"#{==:#{@omp-history-dragging},}",
 			].reduce((a, b) => `#{&&:${a},${b}}`);
 			// The user wants incoming output to clear residual selections, exactly as
 			// native refresh-from-pane does. Never cancel mode or force tail-follow.

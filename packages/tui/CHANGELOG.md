@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
+- Mouse selections in tmux survive while OMP is streaming. The live copy-mode refresh used `refresh-from-pane`, which cleared any selection being dragged, so a drag from the live bottom only moved the cursor. The refresh now waits while the pane's `@omp-history-dragging` flag is set (by the matching `natural-scroll.py`) and catches up after the copy.
 - Restore the personal Ravens watermark when OMP runs over SSH from a tmux pane. The matching tmux helper attributes a two-second ownership heartbeat to its source pane and expires it after seven seconds without renewal; direct and local-tmux ownership are unchanged.
 - Central uses the normal OMP composer and source-session status chrome, accepts click-to-focus while a question is open, and preserves drafts with an actionable error when an older source cannot receive messages.
 - Cached Kitty image rows re-register their virtual placement before painting, retaining clipped image geometry during redraws without retransmitting pixel data.

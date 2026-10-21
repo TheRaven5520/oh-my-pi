@@ -48,7 +48,10 @@ async function rig(viewportScroll = false) {
 	const helperArgs = join(directory, "helper-args.json");
 	if (viewportScroll) {
 		const helper = join(directory, "configured helper.py");
-		await writeFile(helper, `import json, os, sys\npath = ${JSON.stringify(helperArgs)}\nwith open(path + ".tmp", "w") as f: json.dump(sys.argv[1:], f)\nos.replace(path + ".tmp", path)\n`);
+		await writeFile(
+			helper,
+			`import json, os, sys\npath = ${JSON.stringify(helperArgs)}\nwith open(path + ".tmp", "w") as f: json.dump(sys.argv[1:], f)\nos.replace(path + ".tmp", path)\n`,
+		);
 		await tmux("set", "-g", "@omp-natural-scroll-helper", helper);
 	}
 	await tmux("set", "-p", "-t", pane, "@omp-history-generation", "0");
@@ -185,7 +188,12 @@ describe.skipIf(!Bun.which("tmux"))("tmux history request lifetime", () => {
 		const r = await rig(true);
 		const argsPath = join(r.directory, "helper-args.json");
 		await until(() => Bun.file(argsPath).exists());
-		expect(await Bun.file(argsPath).json()).toEqual(["--viewport-owner", r.pane, r.socketPath, join(r.directory, "tmux")]);
+		expect(await Bun.file(argsPath).json()).toEqual([
+			"--viewport-owner",
+			r.pane,
+			r.socketPath,
+			join(r.directory, "tmux"),
+		]);
 	});
 
 	it("releases successful captures without cancelling native copy mode", async () => {
@@ -493,6 +501,24 @@ describe.skipIf(!Bun.which("tmux"))("tmux history request lifetime", () => {
 		expect(await (await r.click()).response).toContain('"ok":true');
 		expect(r.captures[1]?.owner).toBe(r.owner);
 		await r.tmux("set", "-pu", "-t", r.pane, "@omp-history-press");
+	});
+
+	it("holds output refresh while a mouse selection is being dragged", async () => {
+		const r = await rig();
+		await r.enter();
+		await r.tmux("send", "-t", r.pane, "-X", "begin-selection");
+		await r.tmux("send", "-t", r.pane, "-X", "cursor-right");
+		await r.tmux("set", "-p", "-t", r.pane, "@omp-history-dragging", "1");
+		const before = await r.state();
+		r.bridge.notifyOutput();
+		// Real timer ticks: refresh-from-pane would clear the selection mid-drag.
+		await delay(700);
+		expect((await r.state()).token).toBe(before.token);
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{selection_present}")).toBe("1");
+		// The next press clears the flag; the deferred refresh then runs without new output.
+		await r.tmux("set", "-pu", "-t", r.pane, "@omp-history-dragging");
+		await until(async () => (await r.state()).token !== before.token);
+		expect(await r.tmux("display", "-p", "-t", r.pane, "#{selection_present}")).toBe("0");
 	});
 
 	it("clears residual selection on output without moving the visible anchor", async () => {
