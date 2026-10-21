@@ -66,6 +66,8 @@ export interface UpdateRefreshOptions {
 	delayMs?: number;
 	/** Recheck interval while the chat is busy or the install is still settling. */
 	recheckMs?: number;
+	/** How often an idle chat checks for a new build without waiting for a turn to end. */
+	idleCheckMs?: number;
 	extraBlocker?: ExtraRefreshBlocker;
 }
 
@@ -77,11 +79,12 @@ export function runningExecutablePath(): string | undefined {
 }
 
 /**
- * After a turn settles, restart into the newly installed OMP build once the
- * chat is idle, the same way `/refresh` does. The running binary's identity is
- * captured at startup; a different file at the same path means an install
- * replaced it. A change must be seen unchanged on two consecutive checks so a
- * file still being written is never launched.
+ * Restart into the newly installed OMP build once the chat is idle, the same
+ * way `/refresh` does. Checks run after every turn settles and hourly while
+ * idle. The running binary's identity is captured at startup; a different file
+ * at the same path means an install replaced it. A change must be seen
+ * unchanged on two consecutive checks so a file still being written is never
+ * launched.
  */
 export class UpdateRefreshController {
 	readonly #ctx: InteractiveModeContext;
@@ -91,6 +94,7 @@ export class UpdateRefreshController {
 	readonly #recheckMs: number;
 	readonly #extraBlocker: ExtraRefreshBlocker | undefined;
 	#timer: NodeJS.Timeout | undefined;
+	#idleTimer: NodeJS.Timeout | undefined;
 	#candidate: BinaryIdentity | undefined;
 	#refreshing = false;
 
@@ -101,6 +105,13 @@ export class UpdateRefreshController {
 		this.#delayMs = options.delayMs ?? 2_000;
 		this.#recheckMs = options.recheckMs ?? 5_000;
 		this.#extraBlocker = options.extraBlocker;
+		if (this.#startup) {
+			this.#idleTimer = setInterval(() => {
+				// A pending check already owns the next decision.
+				if (!this.#refreshing && !this.#timer) this.#check();
+			}, options.idleCheckMs ?? 3_600_000);
+			this.#idleTimer.unref?.();
+		}
 	}
 
 	/** Whether the installed file at the running path differs from the one this process started from. */
@@ -117,12 +128,18 @@ export class UpdateRefreshController {
 	}
 
 	dispose(): void {
+		this.#clearTimer();
+		if (this.#idleTimer) clearInterval(this.#idleTimer);
+		this.#idleTimer = undefined;
+	}
+
+	#clearTimer(): void {
 		if (this.#timer) clearTimeout(this.#timer);
 		this.#timer = undefined;
 	}
 
 	#schedule(delayMs: number): void {
-		this.dispose();
+		this.#clearTimer();
 		this.#timer = setTimeout(() => {
 			this.#timer = undefined;
 			this.#check();

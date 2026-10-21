@@ -40,6 +40,7 @@ function setup(overrides: Parameters<typeof createInteractiveModeContext>[0] = {
 		executablePath: binary,
 		delayMs: 10,
 		recheckMs: 10,
+		idleCheckMs: 1_000,
 		extraBlocker: () => blocker,
 	});
 	const install = (contents: string) => {
@@ -84,6 +85,21 @@ describe("UpdateRefreshController", () => {
 		vi.advanceTimersByTime(10);
 		expect(refresh).not.toHaveBeenCalled();
 		vi.advanceTimersByTime(10);
+		expect(refresh).toHaveBeenCalledTimes(1);
+	});
+
+	it("refreshes an idle chat on the hourly check without a turn ending", () => {
+		vi.useFakeTimers();
+		const { refresh, install, ctx } = setup();
+		install("new build");
+		Object.defineProperty(ctx.session, "isStreaming", { value: true, configurable: true });
+		vi.advanceTimersByTime(1_000 + 10);
+		// A streaming chat is left to its own turn end.
+		expect(refresh).not.toHaveBeenCalled();
+		Object.defineProperty(ctx.session, "isStreaming", { value: false, configurable: true });
+		vi.advanceTimersByTime(999);
+		expect(refresh).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1 + 10);
 		expect(refresh).toHaveBeenCalledTimes(1);
 	});
 

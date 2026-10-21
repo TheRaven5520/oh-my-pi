@@ -156,7 +156,7 @@ describe("tool activity visibility", () => {
 			expect(rendered()).not.toContain("CONCERN_ONLY_NOTE");
 			expect(rendered()).not.toContain("NIT_BESIDE_BLOCKER");
 			expect(rendered()).toContain("BLOCKER_NOTE");
-			expect(concern.describe!().p?.hidden).toBe(true);
+			expect(concern.describe!({ cols: 120 } as never)?.p?.hidden).toBe(true);
 		}
 		transcript.setToolDisplayState("verbose");
 		expect(rendered()).toContain("CONCERN_ONLY_NOTE");
