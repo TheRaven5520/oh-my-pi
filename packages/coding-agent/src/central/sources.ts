@@ -48,8 +48,12 @@ type BridgeRequest =
 	| { op: "prompt"; chatId: string; sessionId: string; requestId: string; text: string }
 	| { op: "answer"; chatId: string; requestId: string; answer: CentralAnswer };
 
-/** No network listener: SSH supplies authenticated stdin/stdout. */
-export async function serveCentralStdio(): Promise<void> {
+/**
+ * No network listener: SSH supplies authenticated stdin/stdout. `restartReady`
+ * reports a newer installed build; list replies carry it so the client can
+ * reconnect onto that build at a moment when no other request is in flight.
+ */
+export async function serveCentralStdio(restartReady: () => boolean = () => false): Promise<void> {
 	for await (const line of centralLines(Bun.stdin.stream())) {
 		let id: unknown;
 		try {
@@ -57,7 +61,8 @@ export async function serveCentralStdio(): Promise<void> {
 			if (!isRecord(request) || !Number.isSafeInteger(request.id)) throw new Error("Invalid Central request");
 			id = request.id;
 			if (request.op === "list") {
-				process.stdout.write(`${JSON.stringify({ id, chats: await listCentralChats() })}\n`);
+				const chats = await listCentralChats();
+				process.stdout.write(`${JSON.stringify({ id, chats, ...(restartReady() ? { restart: true } : {}) })}\n`);
 			} else if (request.op === "transcript" && typeof request.chatId === "string") {
 				process.stdout.write(
 					`${JSON.stringify({ id, transcript: await getCentralChatTranscript(request.chatId) })}\n`,
@@ -160,6 +165,12 @@ class SshCentralSource {
 					reply.confirmedNoAdmission === true ? new CentralPromptRejectedError(message) : new Error(message),
 				);
 			} else pending.resolve(reply);
+			// The bridge has a newer build installed: drop this connection while
+			// nothing else is in flight so the next request starts the new one.
+			if (reply.restart === true && this.#pending.size === 0) {
+				this.#disconnect(child);
+				return;
+			}
 		}
 		this.#disconnect(child);
 	}

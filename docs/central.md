@@ -84,5 +84,14 @@ bounded JSONL bridge; question text and answers are not logged. A remote source
 that cannot connect stays visible as an error instead of looking like an empty
 queue.
 
+## Updates
+
+When a new OMP build is installed over the binary Central is running from,
+Central restarts itself onto it in the same terminal. It waits until nothing
+would be lost: no typed message draft, no started or sending answer, no
+unconfirmed delivery, and no keypress for a minute. A remote host's bridge
+reports its own new build in its chat-list reply; Central then drops that SSH
+connection between requests, and the next poll starts the new bridge.
+
 Slider selectors remain in the original chat because their answer is not a single
 string. Disabled options are preserved and cannot be selected from Central.

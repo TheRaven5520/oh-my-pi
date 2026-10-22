@@ -1326,3 +1326,113 @@ describe("Central selected-chat workspace", () => {
 		}
 	});
 });
+
+describe("Central restart onto a new build", () => {
+	const question: CentralChat = {
+		id: "local/q",
+		sessionId: "q",
+		pid: 1,
+		name: "Asking",
+		cwd: "/q",
+		busy: false,
+		requests: [{ id: "question", createdAt: 1, kind: "editor", title: "Answer me" }],
+	};
+	const plain: CentralChat = { ...question, id: "local/p", sessionId: "p", name: "Plain", requests: [] };
+	const flush = async () => {
+		for (let index = 0; index < 8; index++) await Promise.resolve();
+	};
+
+	async function setup(chats: CentralChat[]) {
+		vi.useFakeTimers();
+		let now = 0;
+		let ready = false;
+		const ui = new TUI(new VirtualTerminal(110, 30), false, { renderScheduler: new VirtualRenderScheduler() });
+		const component = new CentralComponent(
+			ui,
+			{
+				refresh: async () => ({ chats, errors: [] }),
+				transcript: async () => [],
+				answer: async () => {},
+				open: async () => {},
+				workspace: async () => ({ statusLines: [], usageLines: [], canPrompt: true }),
+				prompt: async () => {},
+			},
+			{ restartReady: () => ready, quietMs: 60_000, now: () => now },
+		);
+		component.focused = true;
+		let exit: string | undefined;
+		void component.run().then(value => (exit = value));
+		await flush();
+		component.render(110);
+		await flush();
+		/** Advance one poll (1 s) at a time; returns the exit once Central has stopped. */
+		const poll = async (ms: number) => {
+			for (let elapsed = 0; elapsed < ms && exit === undefined; elapsed += 1_000) {
+				now += 1_000;
+				vi.advanceTimersByTime(1_000);
+				await flush();
+			}
+			return exit;
+		};
+		return {
+			component,
+			poll,
+			install: () => (ready = true),
+			input: async (data: string) => {
+				component.render(110);
+				component.handleInput(data);
+				await flush();
+			},
+		};
+	}
+
+	it("restarts once a build is ready and input has been quiet, never before", async () => {
+		const rig = await setup([plain]);
+		try {
+			expect(await rig.poll(120_000)).toBeUndefined();
+			rig.install();
+			await rig.input("x");
+			await rig.input("\x7f");
+			// Typing restarts the quiet period.
+			expect(await rig.poll(55_000)).toBeUndefined();
+			expect(await rig.poll(10_000)).toBe("restart");
+		} finally {
+			rig.component.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("waits while a message draft or a started answer would be lost", async () => {
+		const rig = await setup([question]);
+		try {
+			rig.install();
+			await rig.input("half an answer");
+			expect(await rig.poll(180_000)).toBeUndefined();
+		} finally {
+			rig.component.dispose();
+			vi.useRealTimers();
+		}
+		const drafted = await setup([plain]);
+		try {
+			drafted.install();
+			await drafted.input("unsent message");
+			expect(await drafted.poll(180_000)).toBeUndefined();
+			for (let index = 0; index < "unsent message".length; index++) await drafted.input("\x7f");
+			expect(await drafted.poll(65_000)).toBe("restart");
+		} finally {
+			drafted.component.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("closes normally on Ctrl+C", async () => {
+		const rig = await setup([plain]);
+		try {
+			await rig.input("\x03");
+			expect(await rig.poll(1_000)).toBe("closed");
+		} finally {
+			rig.component.dispose();
+			vi.useRealTimers();
+		}
+	});
+});

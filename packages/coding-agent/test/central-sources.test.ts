@@ -217,6 +217,37 @@ describe("Central source workspace and prompt routing", () => {
 	}
 });
 
+describe("Central bridge restart onto a new build", () => {
+	it("reconnects to a fresh bridge after one reports a newer build, without failing the poll", async () => {
+		const bridges: number[] = [];
+		const list = spyOn(bridge, "listCentralChats").mockResolvedValue([]);
+		const spawn = spyOn(Bun, "spawn").mockImplementation((() => {
+			const generation = bridges.length;
+			bridges.push(0);
+			return sshProcess(request => {
+				bridges[generation]!++;
+				if (request.op !== "list") throw new Error("Unexpected request");
+				// The first bridge was started before the install; later ones are current.
+				return generation === 0 ? { chats: [chat], restart: true } : { chats: [chat] };
+			});
+		}) as typeof Bun.spawn);
+		const sources = new CentralSources(["remote-host"]);
+		try {
+			for (let poll = 0; poll < 3; poll++) {
+				const snapshot = await sources.refresh();
+				expect(snapshot.errors).toEqual([]);
+				expect(snapshot.chats.map(entry => entry.id)).toEqual(["remote-host/chat"]);
+			}
+			// One poll on the old bridge, then every later poll on a single new one.
+			expect(bridges).toEqual([1, 2]);
+		} finally {
+			sources.close();
+			spawn.mockRestore();
+			list.mockRestore();
+		}
+	});
+});
+
 describe("Central source terminal opening", () => {
 	const location = { socket: "/tmp/central-test-socket", pane: "%42" };
 	for (const scenario of [

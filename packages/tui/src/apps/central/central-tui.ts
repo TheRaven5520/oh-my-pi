@@ -52,11 +52,24 @@ function workspaceLines(lines: readonly string[], width: number): string[] {
 		.map(line => `${truncateToWidth(sanitizeDisplaySgrLine(line.slice(0, 16384)), width)}\x1b[0m`);
 }
 
+export interface CentralRestartOptions {
+	/** True once a newer build is installed and ready to run. */
+	restartReady(): boolean;
+	/** How long input must be quiet before restarting; default one minute. */
+	quietMs?: number;
+	now?: () => number;
+}
+
+/** `restart`: closed by itself, idle, so a newer installed build can take over. */
+export type CentralExit = "closed" | "restart";
+
 /** One quiet inbox; all answer state stays attached to its original request. */
 export class CentralComponent implements Component {
 	readonly #queue = new CentralQueue<CentralForm>();
 	readonly #emptyView = new ScrollView([], { height: 1 });
 	readonly #finished = Promise.withResolvers<void>();
+	#exit: CentralExit = "closed";
+	#lastInputAt: number;
 	#snapshot: CentralSnapshot = { chats: [], errors: [] };
 	#timer: NodeJS.Timeout | undefined;
 	#stopped = false;
@@ -97,11 +110,35 @@ export class CentralComponent implements Component {
 	constructor(
 		readonly ui: TUI,
 		readonly host: CentralTuiHost,
-	) {}
+		readonly restart?: CentralRestartOptions,
+	) {
+		this.#lastInputAt = this.#now();
+	}
 
-	async run(): Promise<void> {
+	#now(): number {
+		return (this.restart?.now ?? Date.now)();
+	}
+
+	async run(): Promise<CentralExit> {
 		void this.#refresh();
 		await this.#finished.promise;
+		return this.#exit;
+	}
+
+	/** Nothing typed, chosen or in flight would be lost, and the user is not mid-interaction. */
+	#canRestart(): boolean {
+		if (!this.restart || this.#opening) return false;
+		if (this.#now() - this.#lastInputAt < (this.restart.quietMs ?? 60_000)) return false;
+		if (this.#retired?.draft) return false;
+		for (const entry of this.#queue.entries) {
+			const form = entry.draft;
+			if (form && (form.touched || form.sending || form.answer !== undefined || form.prompt)) return false;
+		}
+		for (const draft of this.#drafts.values()) {
+			if (draft.sending || draft.pending) return false;
+			if (draft.input.hasDraftContent()) return false;
+		}
+		return this.restart.restartReady();
 	}
 
 	async #refresh(): Promise<void> {
@@ -134,7 +171,12 @@ export class CentralComponent implements Component {
 				errors: [`Cannot refresh chats: ${sanitizeDisplayLine(String(error))}. Retrying automatically.`],
 			};
 		} finally {
-			if (!this.#stopped) {
+			if (this.#stopped) {
+				// Closed while this poll was in flight.
+			} else if (this.#canRestart()) {
+				this.#exit = "restart";
+				this.#finished.resolve();
+			} else {
 				void this.#loadWorkspace(true);
 				this.ui.requestRender();
 				// Schedule after completion: slow sources never overlap another poll.
@@ -486,6 +528,7 @@ export class CentralComponent implements Component {
 	}
 
 	handleInput(data: string): void {
+		this.#lastInputAt = this.#now();
 		if (
 			data.startsWith("\x1b[<") &&
 			routeSgrMouseInput(data, event => {
@@ -869,9 +912,9 @@ export class CentralComponent implements Component {
 }
 
 /** Close only this fullscreen inbox; no cancellation is sent to a chat. */
-export async function runCentralTui(host: CentralTuiHost): Promise<void> {
+export async function runCentralTui(host: CentralTuiHost, restart?: CentralRestartOptions): Promise<CentralExit> {
 	const ui = new TUI(new ProcessTerminal());
-	const component = new CentralComponent(ui, host);
+	const component = new CentralComponent(ui, host, restart);
 	const overlay = ui.showOverlay(component, {
 		anchor: "top-left",
 		width: "100%",
@@ -882,7 +925,7 @@ export async function runCentralTui(host: CentralTuiHost): Promise<void> {
 	ui.setFocus(component);
 	try {
 		ui.start();
-		await component.run();
+		return await component.run();
 	} finally {
 		component.dispose();
 		overlay.hide();

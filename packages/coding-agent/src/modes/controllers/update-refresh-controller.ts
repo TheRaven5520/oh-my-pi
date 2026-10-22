@@ -1,29 +1,7 @@
-import * as fs from "node:fs";
-import { isCompiledBinary, logger } from "@oh-my-pi/pi-utils";
+import { logger } from "@oh-my-pi/pi-utils";
+import { type BinaryIdentity, readBinaryIdentity, sameIdentity } from "../../installed-build";
 import { AgentRegistry } from "../../registry/agent-registry";
 import type { InteractiveModeContext } from "../types";
-
-/** File identity of an installed executable; an atomic install swaps in a new inode. */
-export interface BinaryIdentity {
-	readonly dev: number;
-	readonly ino: number;
-	readonly size: number;
-	readonly mtimeMs: number;
-}
-
-export function readBinaryIdentity(executablePath: string): BinaryIdentity | undefined {
-	try {
-		const stat = fs.statSync(executablePath);
-		if (!stat.isFile() || stat.size === 0 || (stat.mode & 0o111) === 0) return undefined;
-		return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
-	} catch {
-		return undefined;
-	}
-}
-
-function sameIdentity(a: BinaryIdentity, b: BinaryIdentity): boolean {
-	return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs;
-}
 
 /** Work owned by this process that a restart would cut off, beyond what `ctx` exposes. */
 export type ExtraRefreshBlocker = () => string | undefined;
@@ -69,13 +47,6 @@ export interface UpdateRefreshOptions {
 	/** How often an idle chat checks for a new build without waiting for a turn to end. */
 	idleCheckMs?: number;
 	extraBlocker?: ExtraRefreshBlocker;
-}
-
-/** The running compiled executable; undefined for source/SDK launches, which have no installed binary. */
-export function runningExecutablePath(): string | undefined {
-	if (!isCompiledBinary()) return undefined;
-	// Linux reports a replaced executable as "<path> (deleted)".
-	return process.execPath.replace(/ \(deleted\)$/, "");
 }
 
 /**
