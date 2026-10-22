@@ -4,33 +4,49 @@ import { isBunTestRuntime } from "@oh-my-pi/pi-utils/env";
 import { classifyTerminalMultiplexer } from "./terminal-multiplexer";
 import { isInsideTmux } from "./tmux";
 
-/** tmux expands `#{window_id}` against the target pane before running the helper. */
-const ACK = "python3 ~/.config/tmux/reply-alert.py ack #{window_id}";
-const REMOTE_KEY = "omp_reply_ack";
+export interface ReplyAlert {
+	set(): void;
+	ack(): void;
+}
 
 /**
- * Clears the tmux reply alert (the red tab rung by this chat's bell) after the
- * user replied from somewhere other than this terminal, e.g. OMP Central.
- * Returns undefined when no tmux owns this terminal. Never throws.
+ * Signals whether this pane has an open interactive question. Never throws.
+ * Commands complete in order, including the final acknowledgment during exit.
+ * Returns undefined when no tmux owns this terminal.
  */
-export function resolveReplyAlertAck(
+export function resolveReplyAlert(
 	emit: (bytes: string) => void,
 	env: NodeJS.ProcessEnv = Bun.env,
 	run?: (args: string[]) => void,
-): (() => void) | undefined {
+): ReplyAlert | undefined {
 	if (classifyTerminalMultiplexer(env) !== "tmux" || !isInsideTmux(env)) return undefined;
 	const pane = env.TMUX_PANE ?? "";
 	const hasPane = /^%\d+$/.test(pane);
 	// Over SSH the outer tmux pipe observer attributes this frame to its pane.
 	// Never query a coincidental tmux server on the remote host.
 	if (!env.TMUX && !hasPane) {
-		return () => {
-			const nonce = Buffer.from(`${process.pid}-${randomUUID()}`).toString("base64");
+		const nonce = Buffer.from(`${process.pid}-${randomUUID()}`).toString("base64");
+		let heartbeat: NodeJS.Timeout | undefined;
+		const send = (key: string): void => {
 			try {
-				emit(`\x1b]1337;SetUserVar=${REMOTE_KEY}=${nonce}\x07`);
+				emit(`\x1b]1337;SetUserVar=${key}=${nonce}\x07`);
 			} catch {
-				/* A closed terminal has no tab left to clear. */
+				/* The terminal may already be closed. */
 			}
+		};
+		return {
+			set: () => {
+				send("omp_reply_alert");
+				// Separate from terminal/watermark ownership: questions survive an
+				// external editor or suspension of their on-screen presentation.
+				heartbeat ??= setInterval(() => send("omp_reply_alert"), 2_000);
+				heartbeat.unref();
+			},
+			ack: () => {
+				clearInterval(heartbeat);
+				heartbeat = undefined;
+				send("omp_reply_ack");
+			},
 		};
 	}
 	if (!env.TMUX || !hasPane) return undefined;
@@ -39,14 +55,22 @@ export function resolveReplyAlertAck(
 		const tmux = $which("tmux", { PATH: env.PATH });
 		if (!tmux) return undefined;
 		run = args => {
-			try {
-				Bun.spawn([tmux, ...args], { env, stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
-			} catch {
-				/* Best effort: the tab clears on its own once visited. */
-			}
+			Bun.spawnSync([tmux, ...args], { env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
 		};
 	}
 	const execute = run;
-	const command = ["run-shell", "-b", "-t", pane, ACK];
-	return () => execute(command);
+	const send = (action: "set" | "ack"): void => {
+		try {
+			// No -b: a late set must never overtake the last question's ack.
+			execute([
+				"run-shell",
+				"-t",
+				pane,
+				`python3 ~/.config/tmux/reply-alert.py ${action} #{pane_id}${action === "set" ? ` ${process.pid}` : ""}`,
+			]);
+		} catch {
+			/* Best effort when the helper or tmux server is unavailable. */
+		}
+	};
+	return { set: () => send("set"), ack: () => send("ack") };
 }

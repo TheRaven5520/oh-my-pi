@@ -4,7 +4,7 @@ import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire
 import type { CollabHost } from "../../collab/host";
 import type { CentralAnswer, CentralRequestDraft } from "@oh-my-pi/pi-tui/apps/central/types";
 import { type CentralHost, startCentralHost } from "../../central/bridge";
-import { resolveReplyAlertAck } from "@oh-my-pi/pi-tui/tmux-reply-alert";
+import { type ReplyAlert, resolveReplyAlert } from "@oh-my-pi/pi-tui/tmux-reply-alert";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { formatKeyHint, formatKeyHints, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
@@ -160,6 +160,29 @@ export class ExtensionUiController {
 	#centralStopped = false;
 	#centralSessionAbort = new AbortController();
 	#centralSessionUnsubscribe: (() => void) | undefined;
+	#replyAlert: ReplyAlert | undefined;
+	#openQuestions = 0;
+	#clearReplyAlertOnExit = (): void => {
+		if (this.#openQuestions === 0) return;
+		this.#openQuestions = 0;
+		this.#replyAlert?.ack();
+		this.#replyAlert = undefined;
+		process.removeListener("exit", this.#clearReplyAlertOnExit);
+	};
+
+	#openQuestion(): void {
+		if (this.#openQuestions++ !== 0) return;
+		this.#replyAlert = resolveReplyAlert(bytes => this.ctx.ui.terminal.write(bytes));
+		process.once("exit", this.#clearReplyAlertOnExit);
+		this.#replyAlert?.set();
+	}
+
+	#closeQuestion(): void {
+		if (this.#openQuestions === 0 || --this.#openQuestions !== 0) return;
+		this.#replyAlert?.ack();
+		this.#replyAlert = undefined;
+		process.removeListener("exit", this.#clearReplyAlertOnExit);
+	}
 	constructor(private ctx: InteractiveModeContext) {}
 
 	#syncExtensionComposerShapes(): void {
@@ -175,7 +198,7 @@ export class ExtensionUiController {
 		for (const dispose of this.#composerShapeDisposers.splice(0)) dispose();
 	}
 
-	/** Withdraw structured questions without stopping the session or its tools. */
+	/** Withdraw structured questions, including local-only dialogs, without stopping tools. */
 	disposeCentral(): void {
 		this.#centralStopped = true;
 		this.#centralSessionUnsubscribe?.();
@@ -189,8 +212,6 @@ export class ExtensionUiController {
 		if (this.ctx.collabGuest || this.#centralStopped) return;
 		this.#centralStart ??= (async () => {
 			let host: CentralHost | undefined;
-			// Replying from Central clears this chat's tmux reply alert (red tab).
-			const acknowledgeReply = resolveReplyAlertAck(bytes => this.ctx.ui.terminal.write(bytes));
 			try {
 				host = await startCentralHost(
 					() => ({
@@ -263,7 +284,6 @@ export class ExtensionUiController {
 								);
 							return admission.promise;
 						},
-						onResponded: acknowledgeReply,
 						onClosed: () => {
 							if (this.#centralHost === host) this.#centralHost = undefined;
 						},
@@ -1566,11 +1586,18 @@ export class ExtensionUiController {
 		present: (settle: (value: T | undefined) => void) => (() => void) | DialogPresentation,
 		options: { yieldSignal?: AbortSignal } = {},
 	): Promise<T | undefined> {
+		// The same lifetime covers local-only prompts, Central answers and teardown.
+		signal = signal
+			? AbortSignal.any([signal, this.#centralSessionAbort.signal])
+			: this.#centralSessionAbort.signal;
 		const { promise, resolve, reject } = Promise.withResolvers<T | undefined>();
 		const { yieldSignal } = options;
 		const shown: ShownDialog = { yieldSignal };
 		let settled = false;
 		let started = false;
+		let presenting = false;
+		let settleAfterPresentation = false;
+		let pendingValue: T | undefined;
 
 		function onAbort(): void {
 			settle(undefined);
@@ -1589,40 +1616,60 @@ export class ExtensionUiController {
 
 		const settle = (value: T | undefined): void => {
 			if (settled) return;
+			// onPresented may synchronously abort; install hide before settling.
+			if (presenting) {
+				if (!settleAfterPresentation) pendingValue = value;
+				settleAfterPresentation = true;
+				return;
+			}
 			settled = true;
 			detach();
 			if (started) {
-				const suspendedIndex = this.#suspendedDialogs.indexOf(shown);
-				if (suspendedIndex >= 0) {
-					// Settled while stepped aside: another dialog owns the surface.
-					this.#suspendedDialogs.splice(suspendedIndex, 1);
-					shown.presentation?.hide();
-				} else if (this.#activeDialog === shown) {
-					shown.presentation?.hide();
-					this.#activeDialog = undefined;
-					this.#advanceDialogQueue();
+				try {
+					const suspendedIndex = this.#suspendedDialogs.indexOf(shown);
+					if (suspendedIndex >= 0) {
+						// Settled while stepped aside: another dialog owns the surface.
+						this.#suspendedDialogs.splice(suspendedIndex, 1);
+						shown.presentation?.hide();
+					} else if (this.#activeDialog === shown) {
+						shown.presentation?.hide();
+						this.#activeDialog = undefined;
+						this.#advanceDialogQueue();
+					}
+				} finally {
+					// Advance first so a queued or suspended question retains the alert.
+					this.#closeQuestion();
 				}
 			}
 			resolve(value);
 		};
 
 		const startPresentation = (): void => {
-			if (settled) {
+			if (settled || signal.aborted) {
+				settle(undefined);
 				// Aborted before its turn arrived — never present, hand off the surface.
 				this.#advanceDialogQueue();
 				return;
 			}
 			started = true;
 			this.#activeDialog = shown;
+			this.#openQuestion();
 			try {
+				presenting = true;
 				const presentation = present(settle);
 				shown.presentation = typeof presentation === "function" ? { hide: presentation } : presentation;
+				presenting = false;
+				if (settleAfterPresentation) settle(pendingValue);
 			} catch (error) {
-				settled = true;
-				detach();
-				this.#activeDialog = undefined;
-				reject(error);
-				this.#advanceDialogQueue();
+				presenting = false;
+				if (!settled) {
+					settled = true;
+					detach();
+					this.#activeDialog = undefined;
+					reject(error);
+					this.#advanceDialogQueue();
+					this.#closeQuestion();
+				}
 			}
 		};
 

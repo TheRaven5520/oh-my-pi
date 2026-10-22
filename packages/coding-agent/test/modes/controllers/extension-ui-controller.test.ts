@@ -19,6 +19,7 @@ import { ExtensionUiController } from "../../../src/modes/controllers/extension-
 import { InputController } from "../../../src/modes/controllers/input-controller";
 import { getEditorTheme, getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../../../src/modes/types";
+import * as replyAlert from "@oh-my-pi/pi-tui/tmux-reply-alert";
 
 afterEach(() => {
 	setKeybindings(KeybindingsManager.inMemory());
@@ -106,6 +107,189 @@ function makeHarness() {
 		},
 	};
 }
+
+describe("ExtensionUiController question reply alerts", () => {
+	const controllers: ExtensionUiController[] = [];
+	const resolveAlert = replyAlert.resolveReplyAlert;
+	const questions: ExtensionAskDialogQuestion[] = [
+		{ id: "answer", question: "Choose?", options: [{ label: "Yes" }] },
+	];
+
+	afterEach(() => {
+		for (const controller of controllers.splice(0)) controller.disposeCentral();
+		vi.restoreAllMocks();
+		vi.useRealTimers();
+	});
+
+	function setup() {
+		const frames: string[] = [];
+		vi.spyOn(replyAlert, "resolveReplyAlert").mockImplementation(() =>
+			resolveAlert(bytes => frames.push(bytes), { TERM: "tmux-256color" }),
+		);
+		const harness = makeHarness();
+		controllers.push(harness.controller);
+		const events = () => frames.map(frame => frame.includes("omp_reply_ack=") ? "ack" : "set");
+		return { ...harness, frames, events };
+	}
+
+	it("keeps the alert through typing and clears on local submit or cancel", async () => {
+		const harness = setup();
+		const input = harness.controller.showHookInput("Answer?");
+		expect(harness.events()).toEqual(["set"]);
+		harness.handleInput("yes");
+		expect(harness.events()).toEqual(["set"]);
+		harness.handleInput("\r");
+		expect(await input).toBe("yes");
+		expect(harness.events()).toEqual(["set", "ack"]);
+		const cancelled = harness.controller.showHookSelector("Choose?", ["Yes"]);
+		harness.handleInput("\x1b");
+		expect(await cancelled).toBeUndefined();
+		expect(harness.events()).toEqual(["set", "ack", "set", "ack"]);
+	});
+
+	it("does not clear while queued or suspended questions still need answers", async () => {
+		const harness = setup();
+		const yielded = new AbortController();
+		const aborted = new AbortController();
+		const ask = harness.controller.showAskDialog(questions, {
+			yieldSignal: yielded.signal,
+			signal: aborted.signal,
+		});
+		const queued = harness.controller.showHookSelector("Permission?", ["Allow"]);
+		expect(harness.events()).toEqual(["set"]);
+		yielded.abort();
+		aborted.abort();
+		expect(await ask).toBeUndefined();
+		expect(harness.events()).toEqual(["set"]);
+		harness.handleInput("\r");
+		expect(await queued).toBe("Allow");
+		expect(harness.events()).toEqual(["set", "ack"]);
+	});
+
+	it("hands a queued question the alert without an intermediate acknowledgment", async () => {
+		const harness = setup();
+		const first = harness.controller.showHookInput("First?");
+		const second = harness.controller.showHookInput("Second?");
+		harness.handleInput("\r");
+		await first;
+		expect(harness.events()).toEqual(["set"]);
+		harness.handleInput("\r");
+		await second;
+		expect(harness.events()).toEqual(["set", "ack"]);
+	});
+
+	it("renews pending questions off-screen and clears timeout without waiting for another key", async () => {
+		vi.useFakeTimers();
+		const harness = setup();
+		const yielded = new AbortController();
+		const ask = harness.controller.showAskDialog(questions, { yieldSignal: yielded.signal });
+		yielded.abort();
+		const timeout = harness.controller.showHookInput("Temporary?", undefined, { timeout: 5_000 });
+		vi.advanceTimersByTime(4_000);
+		expect(harness.events()).toEqual(["set", "set", "set"]);
+		vi.advanceTimersByTime(1_000);
+		expect(await timeout).toBeUndefined();
+		expect(harness.events()).toEqual(["set", "set", "set"]);
+		vi.advanceTimersByTime(3_000);
+		expect(harness.events()).toEqual(["set", "set", "set", "set", "set"]);
+		harness.handleInput("\r");
+		await ask;
+		expect(harness.events().at(-1)).toBe("ack");
+		const closed = harness.frames.length;
+		vi.advanceTimersByTime(10_000);
+		expect(harness.frames).toHaveLength(closed);
+		const finalTimeout = harness.controller.showHookInput("Expires?", undefined, { timeout: 1_000 });
+		vi.advanceTimersByTime(1_000);
+		await finalTimeout;
+		expect(harness.events().slice(-2)).toEqual(["set", "ack"]);
+	});
+
+	it("does not open pre-aborted questions and clears every local-only dialog during teardown", async () => {
+		const harness = setup();
+		await harness.controller.showHookInput("Never shown", undefined, { signal: AbortSignal.abort() });
+		expect(harness.events()).toEqual([]);
+		const active = harness.controller.showHookInput("Active?");
+		const queued = harness.controller.showHookInput("Queued?");
+		harness.controller.disposeCentral();
+		expect(await active).toBeUndefined();
+		expect(await queued).toBeUndefined();
+		expect(harness.events()).toEqual(["set", "ack"]);
+	});
+
+	it("closes a question aborted by its onPresented hook without leaving a red tab or dialog", async () => {
+		const harness = setup();
+		const abort = new AbortController();
+		const result = harness.controller.showAskDialog(questions, {
+			signal: abort.signal,
+			onPresented: () => abort.abort(),
+		});
+		expect(await result).toBeUndefined();
+		expect(harness.events()).toEqual(["set", "ack"]);
+		expect(harness.getFocused()).toBe(harness.editor);
+	});
+
+	it("clears the alert synchronously on process exit and unregisters its cleanup", async () => {
+		vi.useFakeTimers();
+		const before = new Set(process.listeners("exit"));
+		const harness = setup();
+		const pending = harness.controller.showHookInput("Answer?");
+		const cleanup = process.listeners("exit").find(listener => !before.has(listener));
+		expect(cleanup).toBeDefined();
+		// Call only this controller's hook, never the test process's other exit handlers.
+		cleanup!.call(process, 0);
+		expect(harness.events()).toEqual(["set", "ack"]);
+		vi.advanceTimersByTime(10_000);
+		expect(harness.events()).toEqual(["set", "ack"]);
+		expect(process.listeners("exit")).not.toContain(cleanup);
+		harness.controller.disposeCentral();
+		await pending;
+		expect(harness.events()).toEqual(["set", "ack"]);
+	});
+
+	it("clears failed presentations rather than leaving a question alert behind", async () => {
+		const harness = setup();
+		vi.spyOn(harness.ctx.ui, "setFocus").mockImplementationOnce(() => { throw new Error("presentation failed"); });
+		await expect(harness.controller.showHookInput("Broken?")).rejects.toThrow("presentation failed");
+		expect(harness.events()).toEqual(["set", "ack"]);
+	});
+
+	it("Central messages retain pending alerts and Central answers close the owning dialog only", async () => {
+		using temp = TempDir.createSync("omp-question-alert-");
+		const dir = temp.join("hosts");
+		const harness = setup();
+		delete harness.ctx.collabGuest;
+		Object.assign(harness.ctx.session, {
+			registerSessionChangeCallback: () => () => {},
+			addDisposer: vi.fn(),
+		});
+		const startHost = centralBridge.startCentralHost;
+		let host: centralBridge.CentralHost | undefined;
+		vi.spyOn(centralBridge, "startCentralHost").mockImplementation(async (_getState, options) => {
+			host = await startHost(
+				() => ({ sessionId: "alert-session", name: "Alert chat", cwd: temp.path(), busy: false }),
+				{ ...options, dir, prompt: async () => {} },
+			);
+			return host;
+		});
+		try {
+			await harness.init();
+			const answer = harness.controller.showCollabAwareSelector("Choose?", ["Yes"]);
+			const second = harness.controller.showCollabAwareSelector("Another?", ["No"]);
+			const [chat] = await centralBridge.listCentralChats({ dir });
+			await centralBridge.promptCentralChat(chat!.id, "alert-session", "message-1", "hello", { dir });
+			expect(harness.events()).toEqual(["set"]);
+			await centralBridge.answerCentralQuestion(chat!.id, chat!.requests[0]!.id, "Yes", { dir });
+			expect(await answer).toBe("Yes");
+			expect(harness.events()).toEqual(["set"]);
+			await centralBridge.answerCentralQuestion(chat!.id, chat!.requests[1]!.id, "No", { dir });
+			expect(await second).toBe("No");
+			expect(harness.events()).toEqual(["set", "ack"]);
+			expect(harness.getFocused()).toBe(harness.editor);
+		} finally {
+			await host?.close();
+		}
+	});
+});
 
 describe("ExtensionUiController Central transcript", () => {
 	it("renders real usage from the bridge while stripping payloads without changing the source chat", async () => {

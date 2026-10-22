@@ -56,6 +56,25 @@ structured question payload. Answers are authenticated, validated against the
 pending question, and removed when either side answers. Continued questions stay
 pending while the agent works.
 
+With the matching tmux companion, a red tab means an interactive question is
+still open, including a question temporarily stepped aside for another dialog.
+Answering locally, through a collaboration guest, or from Central clears that
+question; cancellation, timeout, session teardown and exit do the same. The tab
+stays red while another question remains open in the window. Typing, focusing a
+tab, sending a Central message and turn-completion bells do not acknowledge a
+question. Existing completion notifications are independent and unchanged.
+
+Local OMP targets its own `TMUX_PANE` using `tmux run-shell -t <pane>` and
+`python3 ~/.config/tmux/reply-alert.py set #{pane_id} <pid>` / `ack #{pane_id}`.
+The optional owner PID lets the companion retire an abruptly killed process.
+SSH-hosted OMP instead emits OSC 1337 `SetUserVar=omp_reply_alert=<base64>` and
+`omp_reply_ack=<base64>` frames. The payload is one stable PID-UUID owner per
+open-question lifetime. Open frames renew every two seconds, independently of
+watermark/focus state or external editors; the companion expires a missing
+remote owner after seven seconds. The matching owner acknowledgment stops the
+heartbeat immediately. This lease also clears abrupt remote exits when the
+surrounding SSH shell stays open.
+
 `Ctrl+O` can focus an existing local chat only when it shares Central's tmux
 server and exactly one non-control tmux client is displaying Central's pane.
 It targets that client explicitly rather than choosing another attached client.

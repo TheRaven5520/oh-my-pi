@@ -232,50 +232,6 @@ describe("private Central host IPC", () => {
 		);
 	});
 
-	it("signals a reply only for Central answers and newly admitted Central prompts", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-responded-"));
-		dirs.push(dir);
-		let responded = 0;
-		let reject = false;
-		const host = await startCentralHost(
-			() => ({ sessionId: "source", name: "Source", cwd: "/workspace", busy: false }),
-			{
-				dir,
-				prompt: async () => {
-					if (reject) throw new Error("not admitted");
-				},
-				onResponded: () => {
-					responded++;
-				},
-			},
-		);
-		hosts.add(host);
-		const local = controlledLocal();
-		const localResult = host.race(ask, undefined, () => local.promise);
-		local.resolve(submitted(["Green"]));
-		await localResult;
-		expect(responded).toBe(0);
-
-		const remote = host.race(ask, undefined, pendingLocal);
-		const [chat] = await listCentralChats({ dir });
-		await answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir });
-		await remote;
-		expect(responded).toBe(1);
-		await expect(answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir })).rejects.toThrow(
-			"stale_request",
-		);
-		expect(responded).toBe(1);
-
-		await promptCentralChat(chat!.id, "source", "request-one", "hello", { dir });
-		await promptCentralChat(chat!.id, "source", "request-one", "hello", { dir });
-		expect(responded).toBe(2);
-		reject = true;
-		await expect(promptCentralChat(chat!.id, "source", "request-two", "hello", { dir })).rejects.toBeInstanceOf(
-			CentralPromptRejectedError,
-		);
-		expect(responded).toBe(2);
-	});
-
 	it("withdraws a local answer and never replaces it with a late remote answer", async () => {
 		const { dir, host } = await fixture();
 		const local = Promise.withResolvers<CentralAnswer | undefined>();
