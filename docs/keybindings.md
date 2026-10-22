@@ -64,7 +64,7 @@ The terminal must send a distinct modified-key sequence for `Ctrl+Shift+P`. If i
 - **claude:** every tool call shown, collapsed.
 - **verbose:** every tool call expanded.
 
-`hidden` and `claude` also hide non-blocker advisor notes; blocker notes show in every state. `verbose` shows all advisor notes.
+`hidden` and `claude` also hide non-blocker advisor notes; blocker notes show in every state. `verbose` shows all advisor notes. Questions the agent asked you, and your answers, show in full in every state; clicking one folds it.
 
 The default is `claude`. Switching states redraws retained history and preserves the editor draft. The persisted setting is `display.toolState`; older `display.hideToolActivity` settings migrate to `hidden` or `claude`. Thinking visibility and timestamps are independent of tool state.
 

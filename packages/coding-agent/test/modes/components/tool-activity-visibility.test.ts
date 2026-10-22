@@ -163,4 +163,49 @@ describe("tool activity visibility", () => {
 		expect(rendered()).toContain("NIT_BESIDE_BLOCKER");
 		expect(rendered()).toContain("BLOCKER_NOTE");
 	});
+
+	it("shows answered questions in full in every state, while other tools follow the state", () => {
+		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
+		const ask = new ToolExecutionComponent(
+			"ask",
+			{ question: "PICK_A_DATABASE", options: [{ label: "SQLite" }, { label: "Postgres" }] },
+			{},
+			undefined,
+			ui,
+		);
+		const bash = new ToolExecutionComponent("bash", { command: "echo BASH_CMD" }, {}, undefined, ui);
+		ask.updateResult(
+			{
+				content: [{ type: "text", text: "answered" }],
+				details: {
+					question: "PICK_A_DATABASE",
+					options: ["SQLite", "Postgres"],
+					multi: false,
+					selectedOptions: [],
+					customInput: "MY_CUSTOM_ANSWER",
+				},
+			},
+			false,
+		);
+		bash.updateResult({ content: [{ type: "text", text: "BASH_OUT" }] }, false);
+		const transcript = new TranscriptContainer();
+		transcript.addChild(bash);
+		transcript.addChild(ask);
+		const rendered = () => stripVTControlCharacters(transcript.render(100).join("\n"));
+		try {
+			for (const state of ["hidden", "claude", "verbose"] as const) {
+				transcript.setToolDisplayState(state);
+				// Transcript-wide collapse, as claude applies, must not fold the answer away.
+				ask.setExpanded(state === "verbose");
+				expect(rendered()).toContain("PICK_A_DATABASE");
+				expect(rendered()).toContain("MY_CUSTOM_ANSWER");
+				expect(ask.describe().p?.hidden).not.toBe(true);
+				if (state === "hidden") expect(rendered()).not.toContain("BASH_CMD");
+				else expect(rendered()).toContain("BASH_CMD");
+			}
+		} finally {
+			ask.stopAnimation();
+			bash.stopAnimation();
+		}
+	});
 });

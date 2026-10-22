@@ -585,6 +585,7 @@ export class ToolExecutionComponent extends Container {
 		this.#tool = tool;
 		this.#ui = ui;
 		this.#args = args;
+		this.#expanded = this.#isConversation();
 		this.#editMode = resolveEditModeForTool(toolName, tool);
 		if (this.#editMode) this.#previewReady = Promise.withResolvers<void>();
 
@@ -1023,6 +1024,9 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setExpanded(expanded: boolean, individual = false): void {
+		// Questions and answers are conversation: transcript-wide collapse leaves
+		// them open; only the user's own click folds one.
+		if (this.#isConversation() && !individual) expanded = true;
 		const individuallyExpanded = expanded && individual;
 		if (this.#expanded !== expanded || this.#individuallyExpanded !== individuallyExpanded) this.#blockVersion++;
 		this.#expanded = expanded;
@@ -1364,8 +1368,13 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setToolActivityVisible(visible: boolean): void {
-		this.#toolActivityVisible = visible;
+		this.#toolActivityVisible = visible || this.#isConversation();
 		super.invalidate();
+	}
+
+	/** `ask` shows the user's questions and answers, which every display state keeps. */
+	#isConversation(): boolean {
+		return this.#toolName === "ask";
 	}
 
 	setShowImages(show: boolean): void {
