@@ -208,4 +208,31 @@ describe("tool activity visibility", () => {
 			bash.stopAnimation();
 		}
 	});
+
+	it("treats a rejected ask like any other tool: hidden in hidden, collapsed in claude", () => {
+		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
+		const ask = new ToolExecutionComponent("ask", { questions: [{ id: "q" }] }, {}, undefined, ui);
+		const transcript = new TranscriptContainer();
+		transcript.addChild(ask);
+		const rendered = () => stripVTControlCharacters(transcript.render(100).join("\n"));
+		try {
+			transcript.setToolDisplayState("hidden");
+			ask.setExpanded(false);
+			ask.updateResult(
+				{ content: [{ type: "text", text: "VALIDATION_FAILED questions/0/question missing" }], isError: true },
+				false,
+			);
+			expect(rendered()).toEqual("");
+			expect(ask.describe().p?.hidden).toBe(true);
+			transcript.setToolDisplayState("claude");
+			ask.setExpanded(false);
+			const collapsed = rendered();
+			expect(collapsed).not.toEqual("");
+			transcript.setToolDisplayState("verbose");
+			ask.setExpanded(true);
+			expect(rendered().length).toBeGreaterThan(collapsed.length);
+		} finally {
+			ask.stopAnimation();
+		}
+	});
 });

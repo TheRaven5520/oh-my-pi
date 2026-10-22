@@ -448,6 +448,9 @@ export class ToolExecutionComponent extends Container {
 	#args: unknown;
 	#expanded = false;
 	#individuallyExpanded = false;
+	/** Transcript-wide expansion and visibility as requested, before the ask exception. */
+	#transcriptExpanded = false;
+	#activityRequested = true;
 	#hadExpandableContent = false;
 	#allocation = Number.POSITIVE_INFINITY;
 	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
@@ -728,7 +731,14 @@ export class ToolExecutionComponent extends Container {
 		const partialResultPainted = this.#partialResultShapePainted;
 		this.#firstResultViewportRepaintShapePainted = false;
 		this.#partialResultShapePainted = false;
+		const wasConversation = this.#isConversation();
 		this.#result = result;
+		// A rejected ask (e.g. malformed arguments) never reached the user: it
+		// falls back to the transcript's normal tool display.
+		if (wasConversation && !this.#isConversation()) {
+			this.#toolActivityVisible = this.#activityRequested;
+			if (!this.#individuallyExpanded) this.#expanded = this.#transcriptExpanded;
+		}
 		this.#resultVersion++;
 		this.#blockVersion++;
 		this.#isPartial = isPartial;
@@ -1024,6 +1034,7 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setExpanded(expanded: boolean, individual = false): void {
+		if (!individual) this.#transcriptExpanded = expanded;
 		// Questions and answers are conversation: transcript-wide collapse leaves
 		// them open; only the user's own click folds one.
 		if (this.#isConversation() && !individual) expanded = true;
@@ -1368,13 +1379,14 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	setToolActivityVisible(visible: boolean): void {
+		this.#activityRequested = visible;
 		this.#toolActivityVisible = visible || this.#isConversation();
 		super.invalidate();
 	}
 
-	/** `ask` shows the user's questions and answers, which every display state keeps. */
+	/** An `ask` that reached the user: its questions and answers stay visible in every display state. */
 	#isConversation(): boolean {
-		return this.#toolName === "ask";
+		return this.#toolName === "ask" && this.#result?.isError !== true;
 	}
 
 	setShowImages(show: boolean): void {
