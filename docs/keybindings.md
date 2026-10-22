@@ -60,7 +60,7 @@ The terminal must send a distinct modified-key sequence for `Ctrl+Shift+P`. If i
 
 `/state hidden`, `/state claude`, and `/state verbose` select how tools appear. `/state` without an argument and `Ctrl+O` cycle **hidden → claude → verbose → hidden**.
 
-- **hidden:** no tool calls or tool-result images; model output remains visible.
+- **hidden:** no tool calls or tool-result images, except questions and your answers; model output remains visible.
 - **claude:** every tool call shown, collapsed.
 - **verbose:** every tool call expanded.
 

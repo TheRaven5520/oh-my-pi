@@ -28,7 +28,7 @@ This document describes how slash commands are discovered, deduplicated, surface
 
 ## Transcript display controls
 
-- `/state [hidden|claude|verbose]` chooses no tool calls, collapsed tool calls, or expanded tool calls. `hidden` and `claude` show only blocker advisor notes. No argument cycles the states, as does `Ctrl+O`.
+- `/state [hidden|claude|verbose]` chooses no tool calls, collapsed tool calls, or expanded tool calls. Questions the agent asked and your answers show in every state. `hidden` and `claude` show only blocker advisor notes. No argument cycles the states, as does `Ctrl+O`.
 - `/thinking [on|off]` controls received thinking text. No argument toggles visibility, as does `Ctrl+T`. Model reasoning effort remains `/effort`.
 - `/time [on|off]` controls transcript timestamps. No argument toggles them.
 

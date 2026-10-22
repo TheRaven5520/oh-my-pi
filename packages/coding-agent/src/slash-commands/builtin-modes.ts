@@ -630,7 +630,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		description: "Set tool display: hidden, collapsed (claude), or expanded (verbose)",
 		allowArgs: true,
 		subcommands: [
-			{ name: "hidden", description: "Hide all tool activity" },
+			{ name: "hidden", description: "Hide tool calls except questions and your answers" },
 			{ name: "claude", description: "Show tool calls collapsed; only blocker advisor notes" },
 			{ name: "verbose", description: "Show tool calls expanded and all advisor notes" },
 		],
