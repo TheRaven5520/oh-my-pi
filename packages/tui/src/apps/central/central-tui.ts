@@ -138,6 +138,9 @@ export class CentralComponent implements Component {
 		readonly focus?: CentralFocusOptions,
 	) {
 		this.#lastInputAt = this.#now();
+		// Focus is a typing surface: a question that appears mid-message must not
+		// capture keystrokes meant for the composer. F2 or a click selects it.
+		this.#inputFocus = focus !== undefined;
 	}
 
 	#now(): number {
@@ -268,7 +271,8 @@ export class CentralComponent implements Component {
 
 	#followQueueCurrent(): void {
 		if (this.focus) {
-			// The view is pinned to the focused chat.
+			// The view is pinned to the focused chat; typing goes back to the composer.
+			this.#inputFocus = true;
 			this.ui.requestRender();
 			return;
 		}

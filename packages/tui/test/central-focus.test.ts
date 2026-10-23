@@ -257,8 +257,6 @@ describe("Central focus composer", () => {
 		};
 		const rig = await setup({ snapshot: () => snapshot, prompt, commands });
 		try {
-			// The question is focused first; F2 moves to the composer.
-			await rig.input("\x1bOQ");
 			await rig.input("/help");
 			await rig.input("\r");
 			expect(rig.text()).toContain("/send <chat> <msg>");
@@ -423,9 +421,9 @@ describe("Central focus target", () => {
 });
 
 describe("Central focus questions", () => {
-	it("answers only the focused chat's question in place, and Esc returns to the composer without skipping", async () => {
+	it("never lets a question capture composer typing, and answers only the focused chat's question after F2", async () => {
 		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
-		const prompt = vi.fn(async () => {});
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
 		const rig = await setup({
 			snapshot: () => ({
 				chats: [
@@ -444,15 +442,23 @@ describe("Central focus questions", () => {
 		try {
 			expect(rig.text()).toContain("FOCUS TEST");
 			expect(rig.text()).not.toContain("OTHER QUESTION");
-			await rig.input("\x1b");
+			// Composer has focus: text and Enter typed while a question is open never answer it.
 			await rig.input("composer text");
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+			expect(prompt.mock.calls).toEqual([
+				["local/hq", "session-local/hq", expect.any(String), `${PREFIX}composer text`],
+			]);
 			expect(rig.text()).toContain("FOCUS TEST");
 			await rig.input("\x1bOQ");
 			await rig.input("Two");
 			// Editor questions submit with Ctrl+Q, exactly as in Central.
 			await rig.input("\x11");
 			expect(answer.mock.calls).toEqual([["local/hq", "q1", "Two"]]);
-			expect(prompt).not.toHaveBeenCalled();
+			// After the answer, typing goes back to the composer.
+			await rig.input("after");
+			expect(answer).toHaveBeenCalledTimes(1);
+			expect(rig.text()).toContain("after");
 		} finally {
 			rig.close();
 		}

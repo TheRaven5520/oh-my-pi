@@ -92,8 +92,10 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   results, user, custom and system messages are not shown. Status rows and quotas
   are omitted. No model is called.
 - **Questions:** its open ask, select and editor questions use Central's own
-  forms and are answered in place. `F2` moves between the question and the
-  composer; `Esc` on a question returns to the composer without skipping it.
+  forms and are answered in place. The composer keeps keyboard focus when a
+  question appears, so text typed for the chat never answers it; `F2` (or a
+  click) selects the question, and `Esc` on it returns to the composer without
+  skipping it. After an answer, typing goes back to the composer.
 - **Composer:** text is sent through Central's normal prompt path, prefixed with
   `[FOCUS: Shreyan says] `. A busy chat, including one with an ask open, receives
   it as a queued steer; the message never answers or cancels that ask. Uncertain
