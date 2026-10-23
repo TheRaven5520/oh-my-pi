@@ -22,9 +22,11 @@ import {
 	CENTRAL_FOCUS_HELP,
 	type CentralFocusCommand,
 	type CentralFocusMemory,
+	type CentralFocusTurn,
 	focusChatLines,
-	focusTranscriptEntries,
+	focusTurns,
 	parseFocusCommand,
+	renderFocusTurns,
 	resolveFocusTarget,
 } from "./focus";
 import { CentralQueue, type CentralQueueEntry } from "./queue";
@@ -129,6 +131,8 @@ export class CentralComponent implements Component {
 	/** Why the focused chat's view is stale; the last view and draft stay. */
 	#focusNotice: string | undefined;
 	#focusOutput: { title: string; lines: string[] } | undefined;
+	/** Focus mode renders turns itself: dated replies and the user's own sent lines. */
+	#focusTurns: CentralFocusTurn[] | undefined;
 	#focusCommandRunning = false;
 
 	constructor(
@@ -331,10 +335,18 @@ export class CentralComponent implements Component {
 		try {
 			const entries = await this.host.transcript(chatId);
 			if (this.#stopped || generation !== this.#transcriptLoadGeneration || this.#selectedChatId !== chatId) return;
-			const builder = new ChatTranscriptBuilder({ ui: this.ui, cwd, requestRender: () => this.ui.requestRender() });
-			builder.rebuild(this.focus ? focusTranscriptEntries(entries) : entries);
-			this.#transcriptBuilder?.dispose();
-			this.#transcriptBuilder = builder;
+			if (this.focus) {
+				this.#focusTurns = focusTurns(entries, this.focus.prefix);
+			} else {
+				const builder = new ChatTranscriptBuilder({
+					ui: this.ui,
+					cwd,
+					requestRender: () => this.ui.requestRender(),
+				});
+				builder.rebuild(entries);
+				this.#transcriptBuilder?.dispose();
+				this.#transcriptBuilder = builder;
+			}
 			this.#transcriptChatId = chatId;
 			this.#transcriptRevision = revision;
 		} catch (error) {
@@ -986,11 +998,13 @@ export class CentralComponent implements Component {
 		}
 		if (!form && this.#retired) body.push(theme.fg("muted", "Question ended elsewhere; draft not sent"));
 		const questionBody = body;
-		const transcriptRows = [
-			...(this.#transcriptLoading && !this.#transcriptBuilder
+		const transcriptRows = focus
+			? this.#focusTurns
+				? renderFocusTurns(this.#focusTurns, Math.max(1, mainWidth - 2), selectedChat?.busy === true)
+				: [theme.fg("muted", "Loading chat transcript…")]
+			: this.#transcriptLoading && !this.#transcriptBuilder
 				? [theme.fg("muted", "Loading chat transcript…")]
-				: (this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? [])),
-		];
+				: (this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? []);
 		// Local command output sits right above the composer, below any open
 		// question, so a question card never hides it; it is never sent.
 		const focusOutput =

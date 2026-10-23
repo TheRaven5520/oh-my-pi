@@ -214,6 +214,43 @@ describe("Central focus transcript", () => {
 			rig.close();
 		}
 	});
+
+	it("separates turns: a time divider above each reply and a dimmed 'you:' line for focus messages only", async () => {
+		const at = Date.UTC(2026, 9, 23, 2, 38);
+		const user = (id: string, text: string): TranscriptEntryLike => ({
+			type: "message",
+			id,
+			parentId: null,
+			timestamp: new Date(at).toISOString(),
+			message: { role: "user", content: text, timestamp: at },
+		});
+		const transcript = [
+			user("u1", `${PREFIX}SENT-FROM-FOCUS`),
+			user("u2", "PLAIN-USER-SECRET"),
+			{ ...assistant("a1", [{ type: "text", text: "FIRST-REPLY" }]), timestamp: new Date(at).toISOString() },
+			assistant("a2", [{ type: "text", text: "SECOND-REPLY" }]),
+		];
+		for (const entry of transcript)
+			if (entry.type === "message" && entry.message.role === "assistant")
+				(entry.message as { timestamp: number }).timestamp = at;
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", busy: true })], errors: [] }),
+			transcript: async () => transcript,
+		});
+		try {
+			const text = rig.text();
+			expect(text).toContain("you: SENT-FROM-FOCUS");
+			expect(text).not.toContain(PREFIX.trim());
+			expect(text).not.toContain("PLAIN-USER-SECRET");
+			const dividers = text.split("\n").filter(line => /─ .*\d{1,2}:\d{2} [AP]M ─/.test(line));
+			expect(dividers).toHaveLength(2);
+			expect(text.indexOf("you: SENT-FROM-FOCUS")).toBeLessThan(text.indexOf("FIRST-REPLY"));
+			expect(text.indexOf("FIRST-REPLY")).toBeLessThan(text.indexOf("SECOND-REPLY"));
+			expect(text).toContain("…working");
+		} finally {
+			rig.close();
+		}
+	});
 });
 
 describe("Central focus composer", () => {

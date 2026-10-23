@@ -1,6 +1,11 @@
 import type { AssistantMessage, TextContent } from "@oh-my-pi/pi-ai";
 import type { TranscriptEntryLike } from "../../chat/transcript-entry";
+import { Markdown } from "../../components/markdown";
 import { sanitizeDisplayLine } from "../../overlays/extensions/display-text";
+import { clockDateTimeFormat } from "../../render/clock";
+import { wrapTextWithAnsi } from "../../render/render-utils";
+import { getMarkdownTheme, theme } from "../../theme/theme";
+import { truncateToWidth } from "../../utils";
 import type { CentralChat, CentralSnapshot } from "./types";
 
 const ZERO_USAGE: AssistantMessage["usage"] = {
@@ -42,6 +47,83 @@ export function focusTranscriptEntries(entries: readonly TranscriptEntryLike[]):
 		});
 	}
 	return replies;
+}
+
+/** One turn of the focused conversation: a reply, or a message sent from the focus composer. */
+export type CentralFocusTurn =
+	| { kind: "reply"; id: string; at: number | undefined; text: string }
+	| { kind: "sent"; id: string; at: number | undefined; text: string };
+
+function entryTime(entry: TranscriptEntryLike): number | undefined {
+	const raw = entry.type === "message" ? entry.message.timestamp : undefined;
+	const fromMessage = typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : undefined;
+	const fromEntry = Date.parse(entry.timestamp);
+	return fromMessage ?? (Number.isFinite(fromEntry) && fromEntry > 0 ? fromEntry : undefined);
+}
+
+function userText(content: unknown): string | undefined {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return undefined;
+	const parts = content.filter(
+		(block): block is TextContent => block?.type === "text" && typeof block.text === "string",
+	);
+	return parts.length > 0 ? parts.map(part => part.text).join("\n") : undefined;
+}
+
+/**
+ * The conversation as turns: each assistant reply's text (no thinking or tool
+ * calls), and each user message that begins with the focus `prefix` (shown
+ * without it). Other user messages, tool results and custom messages are omitted.
+ */
+export function focusTurns(entries: readonly TranscriptEntryLike[], prefix: string): CentralFocusTurn[] {
+	const turns: CentralFocusTurn[] = [];
+	const replies = new Map(focusTranscriptEntries(entries).map(entry => [entry.id, entry]));
+	for (const entry of entries) {
+		const reply = replies.get(entry.id);
+		if (reply?.type === "message" && reply.message.role === "assistant") {
+			const text = (reply.message.content as TextContent[]).map(block => block.text).join("\n\n");
+			turns.push({ kind: "reply", id: entry.id, at: entryTime(entry), text });
+			continue;
+		}
+		if (entry.type !== "message" || entry.message.role !== "user" || !prefix) continue;
+		const text = userText(entry.message.content);
+		if (text?.startsWith(prefix))
+			turns.push({ kind: "sent", id: entry.id, at: entryTime(entry), text: text.slice(prefix.length) });
+	}
+	return turns;
+}
+
+/** `10:38 PM` in the configured display time zone. */
+export function focusTurnTime(at: number | undefined): string {
+	if (at === undefined) return "time unknown";
+	return clockDateTimeFormat({ hour: "numeric", minute: "2-digit", hour12: true }).format(at);
+}
+
+/**
+ * Each reply under a `── 10:38 PM ──` divider, rendered as Markdown; each sent
+ * message as a dimmed `you:` line. A `…working` line follows while the chat is busy.
+ */
+export function renderFocusTurns(turns: readonly CentralFocusTurn[], width: number, busy: boolean): string[] {
+	const rows: string[] = [];
+	const mdTheme = getMarkdownTheme();
+	for (const turn of turns) {
+		if (turn.kind === "sent") {
+			const lines = wrapTextWithAnsi(
+				`you: ${sanitizeDisplayLine(turn.text.replace(/\s*\n\s*/g, " "))}`,
+				Math.max(1, width - 2),
+			);
+			if (rows.length > 0) rows.push("");
+			rows.push(...lines.map(line => theme.fg("dim", `  ${line}`)));
+			continue;
+		}
+		const label = ` ${focusTurnTime(turn.at)} `;
+		const side = Math.max(2, Math.floor((width - label.length) / 2));
+		if (rows.length > 0) rows.push("");
+		rows.push(truncateToWidth(theme.fg("dim", `${"─".repeat(side)}${label}${"─".repeat(side)}`), width));
+		rows.push(...new Markdown(turn.text, 1, 0, mdTheme).render(Math.max(1, width)));
+	}
+	if (busy) rows.push("", theme.fg("dim", "  …working"));
+	return rows;
 }
 
 /** What identifies the focused chat across restarts: its session first, then its name. */

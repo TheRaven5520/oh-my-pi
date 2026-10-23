@@ -87,10 +87,13 @@ it does not open a duplicate chat or create a new terminal.
 `omp central --focus <chat>` (or `omp --central --focus <chat>`) shows a single
 chat, named by its Central name, sessionId or chatId on any configured host.
 
-- **View:** only the chat's assistant reply text, rendered as Markdown, newest at
-  the bottom and scrollable (`Shift+Up/Down`, wheel). Tool calls, thinking, tool
-  results, user, custom and system messages are not shown. Status rows and quotas
-  are omitted. No model is called.
+- **View:** the conversation as turns, newest at the bottom and scrollable
+  (`Shift+Up/Down`, wheel). Each assistant reply's text is rendered as Markdown
+  under a divider with its time in `display.timeZone` (e.g. `── 10:38 PM ──`);
+  each message sent from a focus composer shows as a dimmed `you:` line without
+  its prefix. `…working` follows while the chat is busy. Tool calls, thinking,
+  tool results, other user messages, and custom and system messages are not
+  shown. Status rows and quotas are omitted. No model is called.
 - **Questions:** its open ask, select and editor questions use Central's own
   forms and are answered in place. The composer keeps keyboard focus when a
   question appears, so text typed for the chat never answers it. With the
