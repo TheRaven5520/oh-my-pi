@@ -169,13 +169,8 @@ function sanitizeAskResultDetails(details: AskToolDetails): AskToolDetails {
 	};
 }
 
-/**
- * Coerce untrusted `questions` call args into a renderable array. Models
- * occasionally double-encode the array as a JSON string — a bare string passes
- * a truthy `.length` check but has no `.map`, which used to crash the TUI
- * render loop. Partially streamed args can also be missing fields.
- */
-function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["questions"]> | undefined {
+/** Parse untrusted `questions` args, tolerating a double-encoded JSON string. */
+function rawRenderQuestions(raw: unknown): unknown[] | undefined {
 	if (typeof raw === "string") {
 		try {
 			raw = JSON.parse(raw);
@@ -183,9 +178,44 @@ function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["ques
 			return undefined;
 		}
 	}
-	if (!Array.isArray(raw)) return undefined;
+	return Array.isArray(raw) ? raw : undefined;
+}
+
+/**
+ * Whether an ask call could have been shown to the user: every question has text.
+ * A cancelled ask still qualifies; malformed arguments that fail before any
+ * dialog opens do not.
+ */
+export function askReachedUser(args: unknown): boolean {
+	if (!args || typeof args !== "object") return false;
+	if (!("questions" in args) || args.questions === undefined)
+		return "question" in args && typeof args.question === "string" && args.question.length > 0;
+	const entries = rawRenderQuestions(args.questions);
+	return (
+		entries !== undefined &&
+		entries.length > 0 &&
+		entries.every(
+			entry =>
+				!!entry &&
+				typeof entry === "object" &&
+				"question" in entry &&
+				typeof entry.question === "string" &&
+				entry.question.length > 0,
+		)
+	);
+}
+
+/**
+ * Coerce untrusted `questions` call args into a renderable array. Models
+ * occasionally double-encode the array as a JSON string — a bare string passes
+ * a truthy `.length` check but has no `.map`, which used to crash the TUI
+ * render loop. Partially streamed args can also be missing fields.
+ */
+function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["questions"]> | undefined {
+	const entries = rawRenderQuestions(raw);
+	if (!entries) return undefined;
 	const out: NonNullable<AskRenderArgs["questions"]> = [];
-	for (const entry of raw) {
+	for (const entry of entries) {
 		if (!entry || typeof entry !== "object") continue;
 		const q = entry as Partial<NonNullable<AskRenderArgs["questions"]>[number]>;
 		out.push({

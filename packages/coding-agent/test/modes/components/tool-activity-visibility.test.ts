@@ -209,7 +209,7 @@ describe("tool activity visibility", () => {
 		}
 	});
 
-	it("treats a rejected ask like any other tool: hidden in hidden, collapsed in claude", () => {
+	it("treats a malformed ask like any other tool: hidden in hidden, collapsed in claude", () => {
 		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
 		const ask = new ToolExecutionComponent("ask", { questions: [{ id: "q" }] }, {}, undefined, ui);
 		const transcript = new TranscriptContainer();
@@ -235,4 +235,29 @@ describe("tool activity visibility", () => {
 			ask.stopAnimation();
 		}
 	});
+
+	for (const args of [
+		{ questions: [{ id: "deploy", question: "Which deployment?", options: [{ label: "Blue" }, { label: "Green" }] }] },
+		{ question: "Which deployment?", options: [{ label: "Blue" }, { label: "Green" }] },
+	]) {
+		it(`keeps a cancelled ${"questions" in args ? "multi-question" : "single-question"} ask visible in hidden: the user saw it`, () => {
+			const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
+			const ask = new ToolExecutionComponent("ask", args, {}, undefined, ui);
+			const transcript = new TranscriptContainer();
+			transcript.addChild(ask);
+			const rendered = () => stripVTControlCharacters(transcript.render(100).join("\n"));
+			try {
+				transcript.setToolDisplayState("hidden");
+				ask.setExpanded(false);
+				ask.updateResult(
+					{ content: [{ type: "text", text: "Ask tool was cancelled by the user" }], isError: true },
+					false,
+				);
+				expect(rendered()).toContain("Ask tool was cancelled by the user");
+				expect(ask.describe().p?.hidden).not.toBe(true);
+			} finally {
+				ask.stopAnimation();
+			}
+		});
+	}
 });

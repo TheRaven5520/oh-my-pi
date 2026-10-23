@@ -39,6 +39,7 @@ import { diagnosticsSection, displayPath, toolHead } from "../tools/native-view"
 import type { FileDiagnosticsResult } from "../tools/lsp";
 import { NativeImageCache } from "../native/blobs";
 import { Memo } from "../native/memo";
+import { askReachedUser } from "../tools/ask";
 import { type EditMode, type PerFileDiffPreview, renderStreamingFallback } from "../tools/edit";
 import { taskCardAgentIds } from "../tools/task";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../tools/todo";
@@ -1384,9 +1385,13 @@ export class ToolExecutionComponent extends Container {
 		super.invalidate();
 	}
 
-	/** An `ask` that reached the user: its questions and answers stay visible in every display state. */
+	/**
+	 * An `ask` that reached the user: its questions and answers stay visible in every display
+	 * state, including a user cancellation. Only an error for malformed questions that no
+	 * dialog could show falls back to the transcript's normal tool display.
+	 */
 	#isConversation(): boolean {
-		return this.#toolName === "ask" && this.#result?.isError !== true;
+		return this.#toolName === "ask" && (this.#result?.isError !== true || askReachedUser(this.#args));
 	}
 
 	setShowImages(show: boolean): void {
