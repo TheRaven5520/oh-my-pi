@@ -228,6 +228,34 @@ function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["ques
 	return out;
 }
 
+/**
+ * A cancelled ask returns an error result with no details. Rebuild details
+ * from the call so the card still shows the questions the user saw, each
+ * marked cancelled; undefined when the call never reached the user.
+ */
+function cancelledAskDetails(args: unknown): AskToolDetails | undefined {
+	if (!askReachedUser(args)) return undefined;
+	const call = args as AskRenderArgs;
+	const questions = normalizeRenderQuestions(call.questions);
+	if (questions && questions.length > 0) {
+		return {
+			results: questions.map(q => ({
+				id: q.id,
+				question: q.question,
+				options: q.options.map(option => option.label),
+				multi: q.multi === true,
+				selectedOptions: [],
+			})),
+		};
+	}
+	return {
+		question: sanitizeCarriageReturns(call.question ?? ""),
+		options: (normalizeRenderOptions(call.options) ?? []).map(option => option.label),
+		multi: call.multi === true,
+		selectedOptions: [],
+	};
+}
+
 /** Render a custom free-text answer as a status line plus indented continuation rows. */
 function renderCustomInputLines(uiTheme: Theme, customInput: string): string[] {
 	const lines = customInput.split("\n");
@@ -327,12 +355,9 @@ function renderAnswerOptionLines(
 	// details omit the options array.
 	const list = options && options.length > 0 ? options : (selectedOptions ?? []);
 
-	// Nothing was chosen (and no custom answer) → a lone cancelled marker.
-	if (selected.size === 0 && customInput === undefined && note === undefined) {
-		return [` ${uiTheme.styledSymbol("status.warning", "warning")} ${uiTheme.fg("warning", "Cancelled")}`];
-	}
-
 	const out: string[] = [];
+	// Nothing was chosen (and no custom answer): the offered options, none marked, then Cancelled.
+	const cancelled = selected.size === 0 && customInput === undefined && note === undefined;
 	for (const [index, label] of list.entries()) {
 		const isSelected = selectedIndices !== undefined ? selectedIndices.has(index) : selected.has(label);
 		const marker = optionMarker(uiTheme, multi, isSelected);
@@ -344,6 +369,8 @@ function renderAnswerOptionLines(
 	}
 	if (customInput !== undefined) out.push(...renderCustomInputLines(uiTheme, customInput));
 	if (note !== undefined) out.push(...renderNoteLines(uiTheme, note, width));
+	if (cancelled)
+		out.push(` ${uiTheme.styledSymbol("status.warning", "warning")} ${uiTheme.fg("warning", "Cancelled")}`);
 	return out;
 }
 
@@ -366,7 +393,7 @@ function askActivity(
 		questions?.[0]?.question ??
 		args?.question;
 	let meta: string | undefined;
-	if (context.result?.isError) meta = "failed";
+	if (context.result?.isError) meta = askReachedUser(args) ? "cancelled" : "failed";
 	else if (details?.continued) meta = `no answer after ${formatDuration(details.continued.afterMs)} · continuing`;
 	else if (details?.chatRedirect) meta = "chat redirect";
 	else if (details?.results?.length || details?.question) {
@@ -419,7 +446,8 @@ function answerRow(key: string, label: TspSpan[], chosen: boolean): NativeNode {
 
 /**
  * Answered option list: every offered option marked chosen or not, plus any
- * quoted custom answer and a muted note. A lone "Cancelled" line when nothing was chosen.
+ * quoted custom answer and a muted note. When nothing was chosen, the offered
+ * options stay listed (none marked) above a "Cancelled" line.
  */
 function describeAnswers(
 	options: string[] | undefined,
@@ -429,9 +457,7 @@ function describeAnswers(
 	selectedIndices: ReadonlySet<number> | undefined,
 ): NativeChild[] {
 	const selected = new Set(selectedOptions ?? []);
-	if (selected.size === 0 && customInput === undefined && note === undefined) {
-		return [text([span("Cancelled", "warning")], { tone: "warning" })];
-	}
+	const cancelled = selected.size === 0 && customInput === undefined && note === undefined;
 	const labels = options && options.length > 0 ? options : (selectedOptions ?? []);
 	const rows = labels.map((label, index) => {
 		const isSelected = selectedIndices !== undefined ? selectedIndices.has(index) : selected.has(label);
@@ -445,6 +471,7 @@ function describeAnswers(
 		note !== undefined
 			? text([span(plainText(note), "muted")], { wrap: "word", role: "omp.tool.context" })
 			: undefined,
+		cancelled ? text([span("Cancelled", "warning")], { tone: "warning" }) : undefined,
 	]);
 }
 
@@ -461,7 +488,7 @@ function describeAskCall(args: AskRenderArgs): NativeToolView {
 }
 
 function describeAskResult(result: ToolRenderResult<AskToolDetails>, args: AskRenderArgs | undefined): NativeToolView {
-	const rawDetails = result.details;
+	const rawDetails = result.details ?? (result.isError ? cancelledAskDetails(args) : undefined);
 	const fallback = plainText(sanitizeCarriageReturns(resultText(result)));
 	const argQuestion =
 		normalizeRenderQuestions(args?.questions)?.[0]?.question ??
@@ -642,11 +669,12 @@ export const askToolRenderer = {
 	},
 
 	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: AskToolDetails },
+		result: { content: Array<{ type: string; text?: string }>; details?: AskToolDetails; isError?: boolean },
 		_options: RenderResultOptions,
 		uiTheme: Theme,
+		args?: AskRenderArgs,
 	): Component {
-		const rawDetails = result.details;
+		const rawDetails = result.details ?? (result.isError ? cancelledAskDetails(args) : undefined);
 		const mdTheme = getMarkdownTheme();
 		const accentStyle = { color: (t: string) => uiTheme.fg("accent", t) };
 		const md = (text: string, width: number) =>
@@ -717,7 +745,7 @@ export const askToolRenderer = {
 				{
 					icon: hasAnySelection ? "success" : "warning",
 					title: "Ask",
-					meta: [askActivity(undefined, { result, isPartial: false }).meta ?? `${results.length} questions`],
+					meta: [askActivity(args, { result, isPartial: false }).meta ?? `${results.length} questions`],
 				},
 				uiTheme,
 			);

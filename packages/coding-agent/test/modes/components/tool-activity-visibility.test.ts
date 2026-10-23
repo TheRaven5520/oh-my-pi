@@ -5,6 +5,7 @@ import { TodoReminderComponent } from "@oh-my-pi/pi-tui/chat/todo-reminder";
 import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { askToolRenderer } from "@oh-my-pi/pi-tui/tools/ask";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { ToolActivityContainer } from "@oh-my-pi/pi-tui/chrome/tool-activity";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
@@ -237,7 +238,9 @@ describe("tool activity visibility", () => {
 	});
 
 	for (const args of [
-		{ questions: [{ id: "deploy", question: "Which deployment?", options: [{ label: "Blue" }, { label: "Green" }] }] },
+		{
+			questions: [{ id: "deploy", question: "Which deployment?", options: [{ label: "Blue" }, { label: "Green" }] }],
+		},
 		{ question: "Which deployment?", options: [{ label: "Blue" }, { label: "Green" }] },
 	]) {
 		it(`keeps a cancelled ${"questions" in args ? "multi-question" : "single-question"} ask visible in hidden: the user saw it`, () => {
@@ -253,7 +256,18 @@ describe("tool activity visibility", () => {
 					{ content: [{ type: "text", text: "Ask tool was cancelled by the user" }], isError: true },
 					false,
 				);
-				expect(rendered()).toContain("Ask tool was cancelled by the user");
+				// The card shows what the user was asked, not the raw cancellation error.
+				expect(rendered()).toContain("Which deployment?");
+				expect(rendered()).toContain("Blue");
+				expect(rendered()).toContain("Green");
+				expect(rendered()).toContain("Cancelled");
+				expect(rendered()).not.toContain("Ask tool was cancelled by the user");
+				expect(
+					askToolRenderer.activitySummary(args as never, {
+						result: { content: [], isError: true } as never,
+						isPartial: false,
+					}).meta,
+				).toBe("cancelled");
 				expect(ask.describe().p?.hidden).not.toBe(true);
 			} finally {
 				ask.stopAnimation();
