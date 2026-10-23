@@ -489,17 +489,33 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 	return host;
 }
 
-/** Dead endpoints are pruned; an unresponsive live endpoint fails visibly, never masquerades as an empty queue. */
-export async function listCentralChats(options?: Options): Promise<CentralChat[]> {
+/** A live endpoint that did not answer this poll; its absence from `chats` proves nothing. */
+export interface CentralUnresponsiveChat {
+	id: string;
+	/** IPC error code, e.g. `host_timeout`. */
+	error: string;
+}
+
+export interface CentralChatList {
+	chats: CentralChat[];
+	unresponsive: CentralUnresponsiveChat[];
+}
+
+/**
+ * Dead endpoints are pruned. A live endpoint that times out or errors is reported in `unresponsive`
+ * without failing its siblings, so it never masquerades as withdrawn; unreadable metadata fails the list.
+ */
+export async function listCentralChats(options?: Options): Promise<CentralChatList> {
 	const dir = path.resolve(options?.dir ?? path.join(getBaseConfigRoot(), "run", "central-hosts"));
 	try {
 		await privateDirectory(dir);
 	} catch (error) {
-		if (isEnoent(error)) return [];
+		if (isEnoent(error)) return { chats: [], unresponsive: [] };
 		throw error;
 	}
 	const names = (await fs.promises.readdir(dir)).filter(name => name.endsWith(".json")).sort();
 	const chats: CentralChat[] = [];
+	const unresponsive: CentralUnresponsiveChat[] = [];
 	let next = 0;
 	const worker = async (): Promise<void> => {
 		while (next < names.length) {
@@ -512,13 +528,17 @@ export async function listCentralChats(options?: Options): Promise<CentralChat[]
 				if (!chat || chat.id !== meta.id || chat.pid !== meta.pid) throw new IpcError("invalid_response");
 				chats.push(chat);
 			} catch (error) {
-				if (!(error instanceof IpcError) || !error.dead) throw error;
-				await fs.promises.rm(path.join(dir, name), { force: true });
+				if (!(error instanceof IpcError)) throw error;
+				if (error.dead) await fs.promises.rm(path.join(dir, name), { force: true });
+				else unresponsive.push({ id: meta.id, error: error.code });
 			}
 		}
 	};
 	await Promise.all(Array.from({ length: Math.min(8, names.length) }, worker));
-	return chats.sort((a, b) => a.id.localeCompare(b.id));
+	return {
+		chats: chats.sort((a, b) => a.id.localeCompare(b.id)),
+		unresponsive: unresponsive.sort((a, b) => a.id.localeCompare(b.id)),
+	};
 }
 
 export async function getCentralChatTranscript(chatId: string, options?: Options): Promise<TranscriptEntryLike[]> {

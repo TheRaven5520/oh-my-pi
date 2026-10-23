@@ -104,7 +104,7 @@ describe("private Central host IPC", () => {
 			},
 		);
 		hosts.add(host);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		const workspace = await getCentralChatWorkspace(chat!.id, 5, 3, { dir });
 		expect(dimensions).toEqual([[5, 3]]);
 		expect(workspace.canPrompt).toBe(false);
@@ -125,7 +125,7 @@ describe("private Central host IPC", () => {
 			{ dir, getWorkspace: () => ({ statusLines: ["Model"], usageLines, canPrompt: true }), prompt: async () => {} },
 		);
 		hosts.add(host);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		const workspace = await getCentralChatWorkspace(chat!.id, 80, 40, { dir });
 		expect(workspace.usageLines.map(line => Bun.stripANSI(line))).toEqual(usageLines);
 		expect(workspace.canPrompt).toBe(true);
@@ -133,7 +133,7 @@ describe("private Central host IPC", () => {
 
 	it("makes unsupported workspace and prompting explicit for old hosts", async () => {
 		const { dir } = await fixture();
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		await expect(getCentralChatWorkspace(chat!.id, 80, 20, { dir })).rejects.toThrow("unsupported_operation");
 		await expect(promptCentralChat(chat!.id, chat!.sessionId, "request-one", "hello", { dir })).rejects.toThrow(
 			"unsupported_operation",
@@ -156,7 +156,7 @@ describe("private Central host IPC", () => {
 			},
 		});
 		hosts.add(host);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		let acknowledged = false;
 		const first = promptCentralChat(chat!.id, "original", "request-one", "plain /new text", { dir }).then(() => {
 			acknowledged = true;
@@ -199,7 +199,7 @@ describe("private Central host IPC", () => {
 			},
 		);
 		hosts.add(host);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		for (let retry = 0; retry < 2; retry++) {
 			await expect(promptCentralChat(chat!.id, "source", "request-one", "hello", { dir })).rejects.toBeInstanceOf(
 				CentralPromptRejectedError,
@@ -217,7 +217,7 @@ describe("private Central host IPC", () => {
 			localSignal = signal;
 			return pendingLocal(signal);
 		});
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		expect(chat!.requests).toHaveLength(1);
 		expect(chat!.requests[0]).toMatchObject(ask);
 		const answer = submitted();
@@ -226,7 +226,7 @@ describe("private Central host IPC", () => {
 		await answerCentralQuestion(chat!.id, chat!.requests[0]!.id, answer, { dir });
 		expect(await result).toEqual(answer);
 		expect(localSignal!.aborted).toBe(true);
-		expect((await listCentralChats({ dir }))[0]!.requests).toEqual([]);
+		expect(((await listCentralChats({ dir })).chats)[0]!.requests).toEqual([]);
 		await expect(answerCentralQuestion(chat!.id, chat!.requests[0]!.id, answer, { dir })).rejects.toThrow(
 			"stale_request",
 		);
@@ -236,10 +236,10 @@ describe("private Central host IPC", () => {
 		const { dir, host } = await fixture();
 		const local = Promise.withResolvers<CentralAnswer | undefined>();
 		const result = host.race(ask, undefined, () => local.promise);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		local.resolve(submitted(["Green"]));
 		expect(await result).toEqual(submitted(["Green"]));
-		expect((await listCentralChats({ dir }))[0]!.requests).toEqual([]);
+		expect(((await listCentralChats({ dir })).chats)[0]!.requests).toEqual([]);
 		await expect(answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir })).rejects.toThrow(
 			"stale_request",
 		);
@@ -256,13 +256,13 @@ describe("private Central host IPC", () => {
 		expect(called).toBe(false);
 		const failure = new Error("local renderer failed");
 		await expect(host.race(ask, undefined, () => Promise.reject(failure))).rejects.toBe(failure);
-		expect((await listCentralChats({ dir }))[0]!.requests).toEqual([]);
+		expect(((await listCentralChats({ dir })).chats)[0]!.requests).toEqual([]);
 	});
 
 	it("rejects wrong options, ids, multi flags, and forged answer metadata without settling", async () => {
 		const { dir, host } = await fixture();
 		const result = host.race(ask, undefined, pendingLocal);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		const invalid: ExtensionAskDialogSubmitResult[] = [submitted(["Magenta"]), submitted(["Blue", "Green"])];
 		for (const patch of [
 			{ id: "some-other-question" },
@@ -282,7 +282,7 @@ describe("private Central host IPC", () => {
 				"invalid_answer",
 			);
 		}
-		expect((await listCentralChats({ dir }))[0]!.requests).toHaveLength(1);
+		expect(((await listCentralChats({ dir })).chats)[0]!.requests).toHaveLength(1);
 		await answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir });
 		expect(await result).toEqual(submitted());
 	});
@@ -293,7 +293,7 @@ describe("private Central host IPC", () => {
 		if (multi.kind !== "ask") throw new Error("invalid fixture");
 		multi.questions[0]!.multi = true;
 		const result = host.race(multi, undefined, pendingLocal);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		const answer = submitted(["Blue", "Green"]);
 		Object.assign(answer.results[0]!, {
 			multi: true,
@@ -308,11 +308,11 @@ describe("private Central host IPC", () => {
 		const { dir, host } = await fixture();
 		const first = host.race(ask, undefined, pendingLocal);
 		const second = host.race(ask, undefined, pendingLocal);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		expect(chat!.requests).toHaveLength(2);
 		await answerCentralQuestion(chat!.id, chat!.requests[1]!.id, { kind: "chat" }, { dir });
 		expect(await second).toEqual({ kind: "chat" });
-		expect((await listCentralChats({ dir }))[0]!.requests.map(request => request.id)).toEqual([
+		expect(((await listCentralChats({ dir })).chats)[0]!.requests.map(request => request.id)).toEqual([
 			chat!.requests[0]!.id,
 		]);
 		await answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir });
@@ -341,10 +341,10 @@ describe("private Central host IPC", () => {
 		const secondLocal = controlledLocal();
 		const first = host.race(ask, abort.signal, pendingLocal);
 		const second = host.race(ask, undefined, () => secondLocal.promise);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		abort.abort();
 		expect(await first).toBeUndefined();
-		expect((await listCentralChats({ dir }))[0]!.requests.map(request => request.id)).toEqual([
+		expect(((await listCentralChats({ dir })).chats)[0]!.requests.map(request => request.id)).toEqual([
 			chat!.requests[1]!.id,
 		]);
 		await expect(answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir })).rejects.toThrow(
@@ -358,7 +358,7 @@ describe("private Central host IPC", () => {
 	it("cancels old-session requests before returning the new session and rejects stale ids", async () => {
 		const { dir, host, state } = await fixture();
 		const oldResult = host.race(ask, undefined, pendingLocal);
-		const [oldChat] = await listCentralChats({ dir });
+		const [oldChat] = (await listCentralChats({ dir })).chats;
 		state.sessionId = "session-two";
 		state.name = "Second chat";
 		state.cwd = "/next-workspace";
@@ -369,7 +369,7 @@ describe("private Central host IPC", () => {
 		expect(await oldResult).toBeUndefined();
 		const nextLocal = controlledLocal();
 		const nextResult = host.race(ask, undefined, () => nextLocal.promise);
-		const [nextChat] = await listCentralChats({ dir });
+		const [nextChat] = (await listCentralChats({ dir })).chats;
 		expect(nextChat).toMatchObject(state);
 		expect(nextChat!.id).toBe(oldChat!.id);
 		expect(nextChat!.requests).toHaveLength(1);
@@ -391,7 +391,7 @@ describe("private Central host IPC", () => {
 			undefined,
 			pendingLocal,
 		);
-		let [chat] = await listCentralChats({ dir });
+		let [chat] = (await listCentralChats({ dir })).chats;
 		await expect(answerCentralQuestion(chat!.id, chat!.requests[0]!.id, "Maybe", { dir })).rejects.toThrow(
 			"invalid_answer",
 		);
@@ -402,7 +402,7 @@ describe("private Central host IPC", () => {
 		await answerCentralQuestion(chat!.id, chat!.requests[0]!.id, "No", { dir });
 		expect(await selection).toBe("No");
 		const editing = host.race({ kind: "editor", title: "Details", prefill: "draft" }, undefined, pendingLocal);
-		[chat] = await listCentralChats({ dir });
+		[chat] = (await listCentralChats({ dir })).chats;
 		await answerCentralQuestion(chat!.id, chat!.requests[0]!.id, "", { dir });
 		expect(await editing).toBe("");
 	});
@@ -424,7 +424,7 @@ describe("private Central host IPC", () => {
 			expect((await fs.stat(path.join(dir, files[0]!))).mode & 0o777).toBe(0o600);
 			expect((await fs.stat(meta.endpoint)).mode & 0o777).toBe(0o600);
 		}
-		expect(JSON.stringify(await listCentralChats({ dir }))).not.toContain(meta.token);
+		expect(JSON.stringify((await listCentralChats({ dir })).chats)).not.toContain(meta.token);
 		const waitingLocal = controlledLocal();
 		const waiting = host.race(ask, undefined, () => waitingLocal.promise);
 		await host.close();
@@ -432,7 +432,7 @@ describe("private Central host IPC", () => {
 		waitingLocal.resolve(submitted());
 		expect(await waiting).toEqual(submitted());
 		expect(await fs.readdir(dir)).toEqual([]);
-		expect(await listCentralChats({ dir })).toEqual([]);
+		expect((await listCentralChats({ dir })).chats).toEqual([]);
 	});
 
 	it.skipIf(process.platform === "win32")(
@@ -444,7 +444,7 @@ describe("private Central host IPC", () => {
 			expect(Buffer.byteLength(meta.endpoint)).toBeLessThan(104);
 			expect(meta.endpoint.startsWith(dir)).toBe(false);
 			expect((await fs.stat(path.dirname(meta.endpoint))).mode & 0o777).toBe(0o700);
-			expect(await listCentralChats({ dir })).toHaveLength(1);
+			expect((await listCentralChats({ dir })).chats).toHaveLength(1);
 			await host.close();
 			await expect(fs.stat(path.dirname(meta.endpoint))).rejects.toMatchObject({ code: "ENOENT" });
 		},
@@ -454,7 +454,7 @@ describe("private Central host IPC", () => {
 		const { dir, host } = await fixture();
 		const waitingLocal = controlledLocal();
 		const waiting = host.race(ask, undefined, () => waitingLocal.promise);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		expect(parseCentralChat(chat)).toEqual(chat);
 		const malformed = structuredClone(chat!);
 		Object.assign(malformed.requests[0]!, { questions: [{ id: "choose", question: "q", options: [{ label: 3 }] }] });
@@ -488,7 +488,7 @@ describe("private Central host IPC", () => {
 			expect(response).not.toContain(meta.token);
 			expect(response).not.toContain("First chat");
 		}
-		expect(await listCentralChats({ dir })).toHaveLength(1);
+		expect((await listCentralChats({ dir })).chats).toHaveLength(1);
 	});
 
 	it("returns a bounded tail for transcripts larger than the frame budget", async () => {
@@ -507,7 +507,7 @@ describe("private Central host IPC", () => {
 			{ dir, getTranscript: () => transcript },
 		);
 		hosts.add(host);
-		const [chat] = await listCentralChats({ dir });
+		const [chat] = (await listCentralChats({ dir })).chats;
 		const tail = await getCentralChatTranscript(chat!.id, { dir });
 		expect(Buffer.byteLength(JSON.stringify(tail))).toBeLessThanOrEqual(CENTRAL_MAX_TRANSCRIPT_BYTES);
 		expect(tail.length).toBeLessThan(transcript.length);
@@ -535,6 +535,31 @@ describe("private Central host IPC", () => {
 		expect(await new Response(child.stdout).text()).toContain("published");
 		expect(await fs.readdir(dir)).toEqual([]);
 		children.delete(child);
+	});
+
+	it("lists responsive chats when another live chat never answers, and reports the silent one", async () => {
+		const { dir } = await fixture();
+		const stuckId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+		const endpoint = path.join(path.dirname(dir), "stuck.sock");
+		// Accepts the connection and never replies, like a chat whose event loop is starved.
+		const server = net.createServer(socket => sockets.add(socket));
+		await new Promise<void>(resolve => server.listen(endpoint, resolve));
+		try {
+			await fs.writeFile(
+				path.join(dir, `${stuckId}.json`),
+				JSON.stringify({ v: 1, id: stuckId, pid: process.pid, endpoint, token: "a".repeat(64) }),
+				{ mode: 0o600 },
+			);
+			const started = performance.now();
+			const listed = await listCentralChats({ dir });
+			expect(performance.now() - started).toBeLessThan(3_000);
+			expect(listed.chats.map(chat => chat.name)).toEqual(["First chat"]);
+			expect(listed.unresponsive).toEqual([{ id: stuckId, error: "host_timeout" }]);
+			// Unresponsive is not dead: its registration stays for the next poll.
+			expect(await fs.readdir(dir)).toContain(`${stuckId}.json`);
+		} finally {
+			server.close();
+		}
 	});
 
 	it("surfaces malformed discovery metadata instead of reporting no active chats", async () => {

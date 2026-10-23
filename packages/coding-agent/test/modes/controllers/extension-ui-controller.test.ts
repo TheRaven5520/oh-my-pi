@@ -275,7 +275,7 @@ describe("ExtensionUiController question reply alerts", () => {
 			await harness.init();
 			const answer = harness.controller.showCollabAwareSelector("Choose?", ["Yes"]);
 			const second = harness.controller.showCollabAwareSelector("Another?", ["No"]);
-			const [chat] = await centralBridge.listCentralChats({ dir });
+			const [chat] = (await centralBridge.listCentralChats({ dir })).chats;
 			await centralBridge.promptCentralChat(chat!.id, "alert-session", "message-1", "hello", { dir });
 			expect(harness.events()).toEqual(["set"]);
 			await centralBridge.answerCentralQuestion(chat!.id, chat!.requests[0]!.id, "Yes", { dir });
@@ -362,7 +362,7 @@ describe("ExtensionUiController Central transcript", () => {
 		try {
 			setChatTranscriptDisplayPreferences({ showTokenUsage: true });
 			await harness.init();
-			const chats = await centralBridge.listCentralChats({ dir });
+			const { chats } = await centralBridge.listCentralChats({ dir });
 			expect(chats).toHaveLength(1);
 			const entries = await centralBridge.getCentralChatTranscript(chats[0]!.id, { dir });
 			expect(entries).toHaveLength(2);

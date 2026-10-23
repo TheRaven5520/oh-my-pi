@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
@@ -339,7 +340,7 @@ it("carries workspace and idempotent prompts through the real stdio-to-private-I
 				},
 			},
 		);
-		console.log(JSON.stringify({ chatId: (await listCentralChats())[0].id }));
+		console.log(JSON.stringify({ chatId: (await listCentralChats()).chats[0].id }));
 		await serveCentralStdio();
 		await host.close();
 		`,
@@ -386,3 +387,63 @@ it("carries workspace and idempotent prompts through the real stdio-to-private-I
 		await fs.rm(root, { recursive: true, force: true });
 	}
 });
+
+it("reports an unresponsive chat over the stdio bridge only to clients that request partial lists", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-stdio-partial-"));
+	const bridgePath = path.resolve(import.meta.dir, "../src/central/bridge.ts");
+	const sourcesPath = path.resolve(import.meta.dir, "../src/central/sources.ts");
+	const env: Record<string, string | undefined> = { ...process.env, HOME: root };
+	delete env.PI_CONFIG_DIR;
+	const child = Bun.spawn(
+		[
+			process.execPath,
+			"--eval",
+			`
+		import { startCentralHost } from ${JSON.stringify(bridgePath)};
+		import { serveCentralStdio } from ${JSON.stringify(sourcesPath)};
+		const host = await startCentralHost(() => ({ sessionId: "healthy", name: "Healthy", cwd: "/workspace", busy: false }));
+		console.log("ready");
+		await serveCentralStdio();
+		await host.close();
+		`,
+		],
+		{ stdin: "pipe", stdout: "pipe", stderr: "pipe", env },
+	);
+	// Accepts and never replies, like a chat whose event loop is starved.
+	const held = new Set<net.Socket>();
+	const server = net.createServer(socket => held.add(socket));
+	try {
+		const replies = centralLines(child.stdout);
+		await utils.withTimeout(replies.next(), 10_000, "Stdio bridge did not start");
+		const dir = path.join(root, ".omp", "run", "central-hosts");
+		const stuckId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+		const endpoint = path.join(root, "stuck.sock");
+		await new Promise<void>(resolve => server.listen(endpoint, resolve));
+		await fs.writeFile(
+			path.join(dir, `${stuckId}.json`),
+			JSON.stringify({ v: 1, id: stuckId, pid: process.pid, endpoint, token: "a".repeat(64) }),
+			{ mode: 0o600 },
+		);
+		const request = async (value: object): Promise<Record<string, unknown>> => {
+			child.stdin.write(`${JSON.stringify(value)}\n`);
+			await child.stdin.flush();
+			const reply = await utils.withTimeout(replies.next(), 5_000, "Stdio bridge did not reply");
+			return JSON.parse(reply.value!) as Record<string, unknown>;
+		};
+		// An older client would read the missing chat as withdrawn, so it still gets a host-wide error.
+		const legacy = await request({ id: 1, op: "list" });
+		expect(legacy.error).toBeString();
+		expect(legacy.chats).toBeUndefined();
+		const partial = await request({ id: 2, op: "list", partial: true });
+		expect((partial.chats as { name: string }[]).map(chat => chat.name)).toEqual(["Healthy"]);
+		expect(partial.unresponsive).toEqual([{ id: stuckId, error: "host_timeout" }]);
+		child.stdin.end();
+		expect(await utils.withTimeout(child.exited, 5_000, "Stdio bridge did not exit")).toBe(0);
+	} finally {
+		for (const socket of held) socket.destroy();
+		server.close();
+		child.kill();
+		await child.exited;
+		await fs.rm(root, { recursive: true, force: true });
+	}
+}, 20_000);

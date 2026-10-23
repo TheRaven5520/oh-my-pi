@@ -42,7 +42,7 @@ export async function* centralLines(stream: ReadableStream<Uint8Array>): AsyncGe
 }
 
 type BridgeRequest =
-	| { op: "list" }
+	| { op: "list"; partial: true }
 	| { op: "transcript"; chatId: string }
 	| { op: "workspace"; chatId: string; statusWidth: number; usageWidth: number }
 	| { op: "prompt"; chatId: string; sessionId: string; requestId: string; text: string }
@@ -52,6 +52,8 @@ type BridgeRequest =
  * No network listener: SSH supplies authenticated stdin/stdout. `restartReady`
  * reports a newer installed build; list replies carry it so the client can
  * reconnect onto that build at a moment when no other request is in flight.
+ * List replies name unresponsive chats only to clients that request `partial`:
+ * an older client would read a missing chat as withdrawn and retire its question.
  */
 export async function serveCentralStdio(restartReady: () => boolean = () => false): Promise<void> {
 	for await (const line of centralLines(Bun.stdin.stream())) {
@@ -61,8 +63,11 @@ export async function serveCentralStdio(restartReady: () => boolean = () => fals
 			if (!isRecord(request) || !Number.isSafeInteger(request.id)) throw new Error("Invalid Central request");
 			id = request.id;
 			if (request.op === "list") {
-				const chats = await listCentralChats();
-				process.stdout.write(`${JSON.stringify({ id, chats, ...(restartReady() ? { restart: true } : {}) })}\n`);
+				const { chats, unresponsive } = await listCentralChats();
+				if (unresponsive.length > 0 && request.partial !== true) throw new Error("Central chat unresponsive");
+				process.stdout.write(
+					`${JSON.stringify({ id, chats, ...(unresponsive.length > 0 ? { unresponsive } : {}), ...(restartReady() ? { restart: true } : {}) })}\n`,
+				);
 			} else if (request.op === "transcript" && typeof request.chatId === "string") {
 				process.stdout.write(
 					`${JSON.stringify({ id, transcript: await getCentralChatTranscript(request.chatId) })}\n`,
@@ -215,21 +220,50 @@ interface Source {
 	remote?: SshCentralSource;
 	chats: CentralChat[];
 	available: boolean;
+	/** Chat ID → IPC error code for live chats that did not answer the last successful source poll. */
+	unresponsive: Map<string, string>;
+}
+
+interface Route {
+	source: Source;
+	local: CentralChat;
+	/** Set while the chat's last-known entry stands in for a chat that is not answering. */
+	unresponsive?: string;
+}
+
+/** Older bridges omit the field; anything else malformed makes the whole reply incompatible. */
+function parseUnresponsive(value: unknown): Map<string, string> | null {
+	if (value === undefined) return new Map();
+	if (!Array.isArray(value)) return null;
+	const parsed = new Map<string, string>();
+	for (const entry of value) {
+		if (
+			!isRecord(entry) ||
+			typeof entry.id !== "string" ||
+			!/^[\w-]{1,128}$/.test(entry.id) ||
+			typeof entry.error !== "string" ||
+			!/^[a-z_]{1,64}$/.test(entry.error)
+		)
+			return null;
+		parsed.set(entry.id, entry.error);
+	}
+	return parsed;
 }
 
 /** Aggregates local and SSH-hosted registries without ever copying a chat transcript. */
 export class CentralSources implements CentralTuiHost {
 	#sources: Source[];
-	#routes = new Map<string, { source: Source; local: CentralChat }>();
+	#routes = new Map<string, Route>();
 	#closed = false;
 	constructor(hosts: readonly string[] = [], identity?: string) {
 		this.#sources = [
-			{ name: "local", chats: [], available: true },
+			{ name: "local", chats: [], available: true, unresponsive: new Map() },
 			...[...new Set(hosts)].map(name => ({
 				name,
 				remote: new SshCentralSource(name, identity),
 				chats: [],
 				available: false,
+				unresponsive: new Map(),
 			})),
 		];
 	}
@@ -264,13 +298,25 @@ export class CentralSources implements CentralTuiHost {
 		await Promise.all(
 			this.#sources.map(async source => {
 				try {
-					const data = source.remote
-						? (await source.remote.request({ op: "list" })).chats
+					const reply = source.remote
+						? await source.remote.request({ op: "list", partial: true })
 						: await listCentralChats();
-					if (!Array.isArray(data)) throw new Error("Incompatible Central response");
-					const chats = data.map(parseCentralChat);
+					const unresponsive = parseUnresponsive(reply.unresponsive);
+					if (!Array.isArray(reply.chats) || !unresponsive) throw new Error("Incompatible Central response");
+					const chats = reply.chats.map(parseCentralChat);
 					if (chats.some(chat => !chat)) throw new Error("Incompatible Central response");
-					source.chats = chats as CentralChat[];
+					const listed = chats as CentralChat[];
+					// An unresponsive chat cannot prove its question was withdrawn: keep its
+					// last-known entry (and so its draft) until it answers a poll again.
+					for (const [id, code] of unresponsive) {
+						const last = source.chats.find(chat => chat.id === id);
+						if (last && !listed.some(chat => chat.id === id)) listed.push(last);
+						const label = last ? last.name || "Untitled chat" : `chat ${id.slice(0, 8)}`;
+						const where = source.remote ? ` on ${source.name}` : "";
+						errors.push(`${label}${where}: not responding (${code}); retrying`);
+					}
+					source.chats = listed.sort((a, b) => a.id.localeCompare(b.id));
+					source.unresponsive = unresponsive;
 					source.available = true;
 				} catch (error) {
 					source.available = false;
@@ -286,17 +332,23 @@ export class CentralSources implements CentralTuiHost {
 		for (const source of this.#sources) {
 			for (const local of source.chats) {
 				const id = `${source.name}/${local.id}`;
-				this.#routes.set(id, { source, local });
+				this.#routes.set(id, { source, local, unresponsive: source.unresponsive.get(local.id) });
 				chats.push({ ...local, id, source: source.name });
 			}
 		}
 		return { chats, errors };
 	}
 
-	async transcript(chatId: string) {
+	/** Opening a terminal needs no IPC, so only `open` skips this guard. */
+	#route(chatId: string, hint: string): Route {
 		const route = this.#routes.get(chatId);
-		if (!route || !route.source.available || this.#closed)
-			throw new Error("Chat is disconnected; wait for it to reconnect");
+		if (!route || !route.source.available || this.#closed) throw new Error(`Chat is disconnected; ${hint}`);
+		if (route.unresponsive) throw new Error(`Chat is not responding (${route.unresponsive}); ${hint}`);
+		return route;
+	}
+
+	async transcript(chatId: string) {
+		const route = this.#route(chatId, "wait for it to reconnect");
 		if (route.source.remote) {
 			const reply = await route.source.remote.request({ op: "transcript", chatId: route.local.id });
 			if (!Array.isArray(reply.transcript)) throw new Error("Invalid Central transcript");
@@ -306,9 +358,7 @@ export class CentralSources implements CentralTuiHost {
 	}
 
 	async workspace(chatId: string, statusWidth: number, usageWidth: number): Promise<CentralWorkspace> {
-		const route = this.#routes.get(chatId);
-		if (!route || !route.source.available || this.#closed)
-			throw new Error("Chat is disconnected; wait for it to reconnect");
+		const route = this.#route(chatId, "wait for it to reconnect");
 		if (!isCentralWorkspaceWidth(statusWidth) || !isCentralWorkspaceWidth(usageWidth))
 			throw new Error("Invalid Central workspace dimensions");
 		if (!route.source.remote) return getCentralChatWorkspace(route.local.id, statusWidth, usageWidth);
@@ -324,9 +374,7 @@ export class CentralSources implements CentralTuiHost {
 	}
 
 	async prompt(chatId: string, sessionId: string, requestId: string, text: string): Promise<void> {
-		const route = this.#routes.get(chatId);
-		if (!route || !route.source.available || this.#closed)
-			throw new Error("Chat is disconnected; delivery may be unknown, retry only with the same request ID");
+		const route = this.#route(chatId, "delivery may be unknown, retry only with the same request ID");
 		if (!isCentralPrompt(sessionId, requestId, text))
 			throw new CentralPromptRejectedError("Invalid Central prompt or prompt exceeds 64 KiB");
 		if (route.source.remote) {
@@ -342,9 +390,7 @@ export class CentralSources implements CentralTuiHost {
 	}
 
 	async answer(chatId: string, requestId: string, answer: CentralAnswer): Promise<void> {
-		const route = this.#routes.get(chatId);
-		if (!route || !route.source.available || this.#closed)
-			throw new Error("Chat is disconnected; wait for it to reconnect");
+		const route = this.#route(chatId, "wait for it to reconnect");
 		if (!route.local.requests.some(request => request.id === requestId))
 			throw new Error("Question was already answered or withdrawn");
 		if (route.source.remote) {

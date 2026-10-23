@@ -103,6 +103,19 @@ bounded JSONL bridge; question text and answers are not logged. A remote source
 that cannot connect stays visible as an error instead of looking like an empty
 queue.
 
+Each chat on a host is polled separately with a 2-second limit, so one slow
+chat (for example one whose process is starved for CPU) does not hide the
+others. A chat that is still registered but does not answer keeps its
+last-known entry, including its pending question and your unsent draft, and
+Central shows `<chat name>: not responding (host_timeout); retrying` (with
+`on <host>` for SSH sources). Its answer, message, transcript and status
+requests are refused until it answers a poll again; `Ctrl+O` still opens its
+terminal. A chat that never answered since Central started shows only that
+error. Remote bridges report such chats only to Central clients that ask for
+partial lists; an older client still sees the whole host fail, so it never
+mistakes a silent chat for a withdrawn question. Unreadable registration
+metadata still fails the host's whole list.
+
 ## Updates
 
 When a new OMP build is installed over the binary Central is running from,

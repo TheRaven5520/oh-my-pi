@@ -59,9 +59,9 @@ describe("Central source poll retention", () => {
 			let failure: Error | undefined;
 			const remoteRequests: Record<string, unknown>[] = [];
 			const list = spyOn(bridge, "listCentralChats").mockImplementation(async () => {
-				if (source !== "local") return [];
+				if (source !== "local") return { chats: [], unresponsive: [] };
 				if (failure) throw failure;
-				return chats;
+				return { chats, unresponsive: [] };
 			});
 			const transcript = spyOn(bridge, "getCentralChatTranscript").mockResolvedValue([]);
 			const answer = spyOn(bridge, "answerCentralQuestion").mockResolvedValue(undefined);
@@ -155,13 +155,116 @@ describe("Central source poll retention", () => {
 	}
 });
 
+describe("Central source with one unresponsive chat", () => {
+	const healthy: CentralChat = { ...chat, id: "healthy", sessionId: "healthy-session", name: "Healthy chat", requests: [] };
+	for (const source of ["local", "remote-host"] as const) {
+		it(`keeps the ${source} slow chat's question and draft, blocks its actions, and serves the others`, async () => {
+			let listed: CentralChat[] = [chat, healthy];
+			let unresponsive: { id: string; error: string }[] = [];
+			const remoteRequests: Record<string, unknown>[] = [];
+			const list = spyOn(bridge, "listCentralChats").mockImplementation(async () =>
+				source === "local" ? { chats: listed, unresponsive } : { chats: [], unresponsive: [] },
+			);
+			const transcript = spyOn(bridge, "getCentralChatTranscript").mockResolvedValue([]);
+			const answer = spyOn(bridge, "answerCentralQuestion").mockResolvedValue(undefined);
+			const prompt = spyOn(bridge, "promptCentralChat").mockResolvedValue(undefined);
+			const spawn = spyOn(Bun, "spawn").mockImplementation((() =>
+				sshProcess(request => {
+					remoteRequests.push(request);
+					if (request.op === "list")
+						return { chats: listed, ...(unresponsive.length > 0 ? { unresponsive } : {}) };
+					if (request.op === "transcript") return { transcript: [] };
+					if (request.op === "prompt" || request.op === "answer") return { ok: true };
+					throw new Error("Unexpected Central request");
+				})) as typeof Bun.spawn);
+			const sources = new CentralSources(source === "local" ? [] : [source]);
+			const queue = new CentralQueue<{ text: string }>();
+			const slowId = `${source}/chat`;
+			const healthyId = `${source}/healthy`;
+			const where = source === "local" ? "" : ` on ${source}`;
+			try {
+				const initial = await sources.refresh();
+				expect(initial.errors).toEqual([]);
+				queue.update(initial.chats);
+				const entry = queue.current!;
+				expect(entry.chat.id).toBe(slowId);
+				const draft = { text: "Do not discard this unsent answer" };
+				entry.draft = draft;
+
+				// The slow chat's endpoint times out; the healthy one still answers.
+				listed = [{ ...healthy, busy: true }];
+				unresponsive = [
+					{ id: "chat", error: "host_timeout" },
+					{ id: "never-seen", error: "host_timeout" },
+				];
+				const partial = await sources.refresh();
+				expect(partial.errors).toEqual([
+					`${chat.name}${where}: not responding (host_timeout); retrying`,
+					`chat never-se${where}: not responding (host_timeout); retrying`,
+				]);
+				expect(partial.chats.map(entry => entry.id)).toEqual([slowId, healthyId]);
+				expect(partial.chats[0]).toEqual(initial.chats[0]!);
+				expect(partial.chats[1]!.busy).toBe(true);
+				expect(queue.update(partial.chats)).toEqual([]);
+				expect(queue.current).toBe(entry);
+				expect(queue.current?.draft).toBe(draft);
+				const requestCount = remoteRequests.length;
+				await expect(sources.answer(slowId, "question", "answer")).rejects.toThrow(
+					"Chat is not responding (host_timeout)",
+				);
+				await expect(sources.prompt(slowId, chat.sessionId, "request-one", "hello")).rejects.toThrow(
+					"Chat is not responding (host_timeout)",
+				);
+				await expect(sources.transcript(slowId)).rejects.toThrow("Chat is not responding (host_timeout)");
+				await expect(sources.workspace(slowId, 80, 20)).rejects.toThrow("Chat is not responding (host_timeout)");
+				expect(answer).not.toHaveBeenCalled();
+				expect(remoteRequests).toHaveLength(requestCount);
+				await expect(sources.transcript(healthyId)).resolves.toEqual([]);
+				await sources.prompt(healthyId, healthy.sessionId, "request-two", "hello");
+				if (source === "local") expect(prompt).toHaveBeenCalledWith("healthy", "healthy-session", "request-two", "hello");
+				else {
+					expect(remoteRequests.filter(request => request.op === "list").every(request => request.partial === true)).toBe(
+						true,
+					);
+					expect(remoteRequests.slice(-1)).toMatchObject([{ op: "prompt", chatId: "healthy" }]);
+				}
+
+				// Recovered: it answers again and its question is still the one being drafted.
+				listed = [chat, healthy];
+				unresponsive = [];
+				const recovered = await sources.refresh();
+				expect(recovered.errors).toEqual([]);
+				expect(queue.update(recovered.chats)).toEqual([]);
+				expect(queue.current?.draft).toBe(draft);
+				await sources.answer(slowId, "question", "answer");
+
+				// Only a successful poll that omits it retires the question.
+				listed = [healthy];
+				const removed = await sources.refresh();
+				expect(removed.chats.map(entry => entry.id)).toEqual([healthyId]);
+				expect(queue.update(removed.chats)).toEqual([entry]);
+			} finally {
+				sources.close();
+				spawn.mockRestore();
+				prompt.mockRestore();
+				answer.mockRestore();
+				transcript.mockRestore();
+				list.mockRestore();
+			}
+		});
+	}
+});
+
 describe("Central source workspace and prompt routing", () => {
 	for (const source of ["local", "remote-host"] as const) {
 		it(`routes ${source} workspace and immutable prompt IDs without retrying sends`, async () => {
 			const workspace = { statusLines: ["\x1b[38;2;10;20;30mModel\x1b[0m"], usageLines: ["42%"], canPrompt: true };
 			const requests: Record<string, unknown>[] = [];
 			let rejectPrompt = false;
-			const list = spyOn(bridge, "listCentralChats").mockResolvedValue(source === "local" ? [chat] : []);
+			const list = spyOn(bridge, "listCentralChats").mockResolvedValue({
+				chats: source === "local" ? [chat] : [],
+				unresponsive: [],
+			});
 			const render = spyOn(bridge, "getCentralChatWorkspace").mockResolvedValue(workspace);
 			const prompt = spyOn(bridge, "promptCentralChat").mockImplementation(async (_chatId, sessionId) => {
 				if (sessionId === "stale") throw new CentralPromptRejectedError("stale_session");
@@ -220,7 +323,7 @@ describe("Central source workspace and prompt routing", () => {
 describe("Central bridge restart onto a new build", () => {
 	it("reconnects to a fresh bridge after one reports a newer build, without failing the poll", async () => {
 		const bridges: number[] = [];
-		const list = spyOn(bridge, "listCentralChats").mockResolvedValue([]);
+		const list = spyOn(bridge, "listCentralChats").mockResolvedValue({ chats: [], unresponsive: [] });
 		const spawn = spyOn(Bun, "spawn").mockImplementation((() => {
 			const generation = bridges.length;
 			bridges.push(0);
@@ -283,7 +386,10 @@ describe("Central source terminal opening", () => {
 			await chmod(executable, 0o755);
 			await Bun.write(`${executable}.clients`, scenario.clients);
 			const which = spyOn(utils, "$which").mockReturnValue(executable);
-			const list = spyOn(bridge, "listCentralChats").mockResolvedValue([{ ...chat, location, requests: [] }]);
+			const list = spyOn(bridge, "listCentralChats").mockResolvedValue({
+				chats: [{ ...chat, location, requests: [] }],
+				unresponsive: [],
+			});
 			const previousTmux = process.env.TMUX;
 			const previousPane = process.env.TMUX_PANE;
 			process.env.TMUX = `${location.socket},123,0`;
@@ -336,7 +442,10 @@ describe("Central source terminal opening", () => {
 		},
 	]) {
 		it(`keeps the manual-open constraint for ${scenario.name}`, async () => {
-			const list = spyOn(bridge, "listCentralChats").mockResolvedValue([{ ...chat, location: scenario.location }]);
+			const list = spyOn(bridge, "listCentralChats").mockResolvedValue({
+				chats: [{ ...chat, location: scenario.location }],
+				unresponsive: [],
+			});
 			const which = spyOn(utils, "$which").mockReturnValue(null);
 			const previousTmux = process.env.TMUX;
 			const previousPane = process.env.TMUX_PANE;
@@ -362,7 +471,7 @@ describe("Central source terminal opening", () => {
 	}
 
 	it("never sends an open command through a remote source", async () => {
-		const list = spyOn(bridge, "listCentralChats").mockResolvedValue([]);
+		const list = spyOn(bridge, "listCentralChats").mockResolvedValue({ chats: [], unresponsive: [] });
 		const requests: Record<string, unknown>[] = [];
 		const spawn = spyOn(Bun, "spawn").mockImplementation((() =>
 			sshProcess(request => {
