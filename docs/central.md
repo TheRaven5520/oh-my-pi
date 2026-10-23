@@ -82,6 +82,53 @@ If the caller is ambiguous or detached, or the chat belongs to a different tmux
 server, an SSH source, or a direct terminal, Central gives manual-open guidance;
 it does not open a duplicate chat or create a new terminal.
 
+## Focus one chat
+
+`omp central --focus <chat>` (or `omp --central --focus <chat>`) shows a single
+chat, named by its Central name, sessionId or chatId on any configured host.
+
+- **View:** only the chat's assistant reply text, rendered as Markdown, newest at
+  the bottom and scrollable (`Shift+Up/Down`, wheel). Tool calls, thinking, tool
+  results, user, custom and system messages are not shown. Status rows and quotas
+  are omitted. No model is called.
+- **Questions:** its open ask, select and editor questions use Central's own
+  forms and are answered in place. `F2` moves between the question and the
+  composer; `Esc` on a question returns to the composer without skipping it.
+- **Composer:** text is sent through Central's normal prompt path, prefixed with
+  `[FOCUS: Shreyan says] `. A busy chat, including one with an ask open, receives
+  it as a queued steer; the message never answers or cancels that ask. Uncertain
+  deliveries keep their request ID for `Ctrl+R`, and drafts survive failures.
+  The prefix is a text convention, not authentication: anything that can send a
+  Central prompt, or type it, can produce the same text.
+- **Local commands:** every line starting with `/` runs in the focus window and
+  is never sent to the chat. Unknown commands are refused with a pointer to
+  `/help`. Because of this, OMP slash commands are not forwarded; Central's
+  prompt path also delivers a `/command` to a chat as plain text, never runs it.
+
+| Command | Effect |
+| --- | --- |
+| `/chats` | every chat on every host, busy/idle, open questions, and chats that are not responding |
+| `/send <chat> <msg>` | `hqmsg --from FOCUS --kind relay --to <chat> <msg>`: a relay request to the coordinator, not a direct message. Quote names with spaces |
+| `/dag` | the task board URL |
+| `/inbox [N]` | `hqmsg --tail N` (default 10) |
+| `/pause`, `/resume` | create or remove the inbox-steer pause file and show the result |
+| `/help` | the list above |
+
+The coordinator commands read three settings, empty by default; an empty one
+reports "not configured":
+
+```sh
+omp config set central.focus.hqmsg ~/scratch/hq/bin/hqmsg
+omp config set central.focus.pauseFile ~/scratch/hq/inbox-steer.paused
+omp config set central.focus.boardUrl https://example/board/
+```
+
+The target is re-resolved on every poll: first by its last session, then by
+its name, so a restarted or resumed chat is followed. An ambiguous name lists the
+matches. While the chat does not answer, is unlisted or is restarting, the last
+view and draft stay and the header shows `not responding; retrying`. The
+automatic restart onto a new build keeps `--focus`.
+
 ## Other hosts
 
 Central uses only explicitly configured SSH destinations; it never scans the

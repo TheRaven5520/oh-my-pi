@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- Central focus mode (`CentralFocusOptions`): a single-chat view that renders only assistant reply text through the normal transcript builder, keeps Central's question forms, and adds a prefixed composer with local slash commands. It keeps the last view and draft and shows `not responding; retrying` while the chat does not answer, is unlisted, or is restarting.
+
 ### Fixed
 - Question alerts now target the owning tmux pane with ordered set/ack signals; SSH questions use an independent owner heartbeat so abruptly exited chats cannot leave stale red tabs.
 - Mouse selections in tmux survive while OMP is streaming. The live copy-mode refresh used `refresh-from-pane`, which cleared any selection being dragged, so a drag from the live bottom only moved the cursor. The refresh now waits while the pane's `@omp-history-dragging` flag is set (by the matching `natural-scroll.py`) and catches up after the copy.

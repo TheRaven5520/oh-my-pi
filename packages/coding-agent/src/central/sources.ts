@@ -332,8 +332,9 @@ export class CentralSources implements CentralTuiHost {
 		for (const source of this.#sources) {
 			for (const local of source.chats) {
 				const id = `${source.name}/${local.id}`;
-				this.#routes.set(id, { source, local, unresponsive: source.unresponsive.get(local.id) });
-				chats.push({ ...local, id, source: source.name });
+				const unresponsive = source.unresponsive.get(local.id);
+				this.#routes.set(id, { source, local, unresponsive });
+				chats.push({ ...local, id, source: source.name, ...(unresponsive ? { unresponsive } : {}) });
 			}
 		}
 		return { chats, errors };

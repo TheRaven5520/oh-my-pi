@@ -3,11 +3,15 @@ import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Type } from "@oh-my-pi/omptype/typebox";
+import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import type { CentralRequestDraft } from "@oh-my-pi/pi-tui/apps/central/types";
 import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types";
+import type { ExtensionAskDialogSubmitResult } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import * as utils from "@oh-my-pi/pi-utils";
+import { startCentralHost } from "../src/central/bridge";
 import { CentralSources, centralLines } from "../src/central/sources";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
@@ -24,7 +28,11 @@ describe("Central workspace producer through private IPC", () => {
 		for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 	});
 
-	async function fixture(responses: Array<() => MockResponse | Promise<MockResponse>>, providerSessionId?: string) {
+	async function fixture(
+		responses: Array<() => MockResponse | Promise<MockResponse>>,
+		providerSessionId?: string,
+		tools: AgentTool[] = [],
+	) {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-producer-"));
 		cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
 		const configRoot = spyOn(utils, "getBaseConfigRoot").mockReturnValue(root);
@@ -36,7 +44,7 @@ describe("Central workspace producer through private IPC", () => {
 		if (!model) throw new Error("Expected test model");
 		const agent = new Agent({
 			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			initialState: { model, systemPrompt: ["Test"], tools },
 			streamFn: createMockModel({ responses }).stream,
 		});
 		const session = new AgentSession({
@@ -184,6 +192,72 @@ describe("Central workspace producer through private IPC", () => {
 			await first;
 			await f.session.waitForIdle();
 		}
+	});
+
+	it("queues a Central prompt sent while an ask is open as a steer that the ask never consumes", async () => {
+		const question: CentralRequestDraft = {
+			kind: "ask",
+			questions: [{ id: "pick", question: "FOCUS TEST", options: [{ label: "One" }, { label: "Two" }] }],
+		};
+		const picked: ExtensionAskDialogSubmitResult = {
+			kind: "submit",
+			results: [
+				{ id: "pick", question: "FOCUS TEST", options: ["One", "Two"], multi: false, selectedOptions: ["Two"] },
+			],
+		};
+		const asking = Promise.withResolvers<void>();
+		const answers: unknown[] = [];
+		// The same race the controller's ask dialog uses: a local dialog that stays open until answered.
+		const ask: AgentTool = {
+			name: "ask",
+			label: "ask",
+			description: "Ask the user",
+			parameters: Type.Object({}),
+			execute: async (_id, _params, signal) => {
+				const host = await startCentralHost(() => {
+					throw new Error("The controller already published this process");
+				});
+				const answer = host.race(question, signal, local => {
+					const open = Promise.withResolvers<undefined>();
+					local.addEventListener("abort", () => open.resolve(undefined), { once: true });
+					return open.promise;
+				});
+				asking.resolve();
+				const result = await answer;
+				answers.push(result);
+				return { content: [{ type: "text", text: `answered ${JSON.stringify(result)}` }], details: {} };
+			},
+		};
+		const f = await fixture(
+			[() => ({ content: [{ type: "toolCall", name: "ask", arguments: {} }] }), () => ({ content: ["Done"] })],
+			undefined,
+			[ask],
+		);
+		const run = f.session.prompt("Start");
+		try {
+			await utils.withTimeout(asking.promise, 2_000, "Ask did not open");
+			const open = (await f.sources.refresh()).chats[0]!;
+			expect(open.requests).toHaveLength(1);
+			const steer = "[FOCUS: Shreyan says] steer while the ask is open";
+			await f.sources.prompt(open.id, open.sessionId, "steer-during-ask", steer);
+			expect(f.session.getQueuedMessages().steering).toEqual([steer]);
+			// The ask is still open and unanswered: the steer did not feed or cancel it.
+			const still = (await f.sources.refresh()).chats[0]!;
+			expect(still.requests.map(request => request.id)).toEqual(open.requests.map(request => request.id));
+			expect(answers).toEqual([]);
+			await f.sources.answer(open.id, open.requests[0]!.id, picked);
+		} finally {
+			await run;
+			await f.session.waitForIdle();
+		}
+		expect(answers).toEqual([picked]);
+		const toolResult = f.session.messages.findIndex(message => message.role === "toolResult");
+		const delivered = f.session.messages.findIndex(
+			message => message.role === "user" && JSON.stringify(message.content).includes("steer while the ask is open"),
+		);
+		expect(JSON.stringify(f.session.messages[toolResult])).toContain("Two");
+		expect(JSON.stringify(f.session.messages[toolResult])).not.toContain("steer while the ask is open");
+		expect(delivered).toBeGreaterThan(toolResult);
 	});
 
 	it("rejects missing credentials before accepting or persisting a Central prompt", async () => {

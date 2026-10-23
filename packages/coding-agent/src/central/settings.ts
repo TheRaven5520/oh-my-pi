@@ -13,3 +13,23 @@ export const cfgCentralIdentity = register({
 	default: "",
 });
 
+/** `omp central --focus`: coordinator mailbox executable behind `/send` and `/inbox`. Empty: not configured. */
+export const cfgCentralFocusHqmsg = register({
+	id: "central.focus.hqmsg",
+	type: "string",
+	default: "",
+});
+
+/** `omp central --focus`: file whose presence pauses coordinator inbox steering (`/pause`, `/resume`). */
+export const cfgCentralFocusPauseFile = register({
+	id: "central.focus.pauseFile",
+	type: "string",
+	default: "",
+});
+
+/** `omp central --focus`: task board URL printed by `/dag`. */
+export const cfgCentralFocusBoardUrl = register({
+	id: "central.focus.boardUrl",
+	type: "string",
+	default: "",
+});

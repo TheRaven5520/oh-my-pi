@@ -25,7 +25,8 @@ export const browserRelayHelp = {
 } satisfies CommandMetadata;
 
 export const centralHelp = {
-	description: "Answer pending questions across active OMP chats in one terminal",
+	description:
+		"Answer pending questions across active OMP chats in one terminal; --focus <chat> shows one chat's replies, questions and a prefixed composer",
 } satisfies CommandMetadata;
 
 export const cleanseHelp = {

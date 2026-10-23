@@ -203,7 +203,9 @@ describe("Central source with one unresponsive chat", () => {
 					`chat never-se${where}: not responding (host_timeout); retrying`,
 				]);
 				expect(partial.chats.map(entry => entry.id)).toEqual([slowId, healthyId]);
-				expect(partial.chats[0]).toEqual(initial.chats[0]!);
+				// The stand-in is the last-known entry, marked so `/chats` can show it is not responding.
+				expect(partial.chats[0]).toEqual({ ...initial.chats[0]!, unresponsive: "host_timeout" });
+				expect(partial.chats[1]!.unresponsive).toBeUndefined();
 				expect(partial.chats[1]!.busy).toBe(true);
 				expect(queue.update(partial.chats)).toEqual([]);
 				expect(queue.current).toBe(entry);
@@ -234,6 +236,7 @@ describe("Central source with one unresponsive chat", () => {
 				unresponsive = [];
 				const recovered = await sources.refresh();
 				expect(recovered.errors).toEqual([]);
+				expect(recovered.chats[0]!.unresponsive).toBeUndefined();
 				expect(queue.update(recovered.chats)).toEqual([]);
 				expect(queue.current?.draft).toBe(draft);
 				await sources.answer(slowId, "question", "answer");

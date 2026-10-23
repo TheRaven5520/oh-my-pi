@@ -434,6 +434,12 @@ export function resolveCliArgv(argv: string[]): ResolvedCliArgv {
 	// `--central` is the documented launch spelling for the Central inbox. Keep
 	// it out of launch's flag parser so it cannot become a prompt or unknown flag.
 	if (argv.length === 1 && first === "--central") return { argv: ["central"] };
+	// `omp --central --focus <target>` (or `--focus=<target>`) opens the focus view.
+	if (
+		first === "--central" &&
+		((argv.length === 3 && argv[1] === "--focus") || (argv.length === 2 && argv[1]!.startsWith("--focus=")))
+	)
+		return { argv: ["central", ...argv.slice(1)] };
 	const reservedMessage = reservedTopLevelWordMessage(argv);
 	if (reservedMessage) return { error: reservedMessage };
 	if (first === "--help" || first === "-h" || first === "--version" || first === "-v" || first === "help") {

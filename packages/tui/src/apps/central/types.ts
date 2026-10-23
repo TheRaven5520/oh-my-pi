@@ -33,6 +33,8 @@ export interface CentralChat {
 	source?: string;
 	location?: { socket: string; pane: string };
 	transcriptRevision?: string;
+	/** IPC error code while a still-registered chat stands in with its last-known entry. */
+	unresponsive?: string;
 	requests: CentralRequest[];
 }
 
@@ -70,4 +72,25 @@ export interface CentralTuiHost {
 	prompt?(chatId: string, sessionId: string, requestId: string, text: string): Promise<void>;
 	answer(chatId: string, requestId: string, answer: CentralAnswer): Promise<void>;
 	open(chatId: string): Promise<void>;
+}
+
+/** Local focus-composer commands, run on the Central host; never sent to the focused chat. */
+export interface CentralFocusCommands {
+	/** Ask the coordinator to relay `message` to `chat`; resolves with the tool's output. */
+	relay(chat: string, message: string): Promise<string>;
+	/** The last `count` coordinator inbox messages. */
+	inbox(count: number): Promise<string>;
+	/** Create or remove the coordinator's inbox-steer pause file; resolves with the resulting state. */
+	setPaused(paused: boolean): Promise<string>;
+	/** Task board URL; throws when it is not configured. */
+	boardUrl(): string;
+}
+
+/** One chat, its assistant replies only, its open questions, and a prefixed composer. */
+export interface CentralFocusOptions {
+	/** Central chat name, sessionId or chatId; re-resolved on every poll. */
+	target: string;
+	/** Prepended to every composed message as part of its immutable payload; a convention, not authentication. */
+	prefix: string;
+	commands: CentralFocusCommands;
 }

@@ -18,9 +18,28 @@ import { routeSgrMouseInput } from "../../mouse";
 import { ProcessTerminal } from "../../terminal";
 import { getEditorTheme, theme } from "../../theme/theme";
 import { truncateToWidth, visibleWidth } from "../../utils";
+import {
+	CENTRAL_FOCUS_HELP,
+	type CentralFocusCommand,
+	type CentralFocusMemory,
+	focusChatLines,
+	focusTranscriptEntries,
+	parseFocusCommand,
+	resolveFocusTarget,
+} from "./focus";
 import { CentralQueue, type CentralQueueEntry } from "./queue";
-import type { CentralAnswer, CentralChat, CentralSnapshot, CentralTuiHost, CentralWorkspace } from "./types";
+import type {
+	CentralAnswer,
+	CentralChat,
+	CentralFocusOptions,
+	CentralSnapshot,
+	CentralTuiHost,
+	CentralWorkspace,
+} from "./types";
 import { CentralPromptRejectedError } from "./types";
+
+/** Focus mode keeps one draft for the target, whichever process currently serves it. */
+const FOCUS_DRAFT_KEY = "\0focus";
 
 interface CentralForm {
 	component: Component;
@@ -106,11 +125,17 @@ export class CentralComponent implements Component {
 	#workspaceError: string | undefined;
 	#usageOffset = 0;
 	#usageMaxOffset = 0;
+	#focusMemory: CentralFocusMemory = {};
+	/** Why the focused chat's view is stale; the last view and draft stay. */
+	#focusNotice: string | undefined;
+	#focusOutput: { title: string; lines: string[] } | undefined;
+	#focusCommandRunning = false;
 
 	constructor(
 		readonly ui: TUI,
 		readonly host: CentralTuiHost,
 		readonly restart?: CentralRestartOptions,
+		readonly focus?: CentralFocusOptions,
 	) {
 		this.#lastInputAt = this.#now();
 	}
@@ -146,23 +171,22 @@ export class CentralComponent implements Component {
 			const snapshot = await this.host.refresh();
 			if (this.#stopped) return;
 			this.#snapshot = snapshot;
-			for (const entry of this.#queue.update(snapshot.chats)) {
-				if (entry.draft?.touched && entry.draft.answer === undefined) {
-					if (this.#retired?.draft) this.#disposeForm(this.#retired.draft);
-					this.#retired = entry;
-					this.#showRetired = false;
-				} else if (entry.draft) this.#disposeForm(entry.draft);
-			}
-			const selected =
-				(this.#manualSelection ? this.#snapshot.chats.find(chat => chat.id === this.#selectedChatId) : undefined) ??
-				this.#snapshot.chats.find(chat => chat.id === this.#queue.current?.chat.id) ??
-				this.#snapshot.chats[0];
-			if (!selected) {
-				this.#selectedChatId = undefined;
-			} else {
-				this.#selectedChatId = selected.id;
-				if (selected.id !== this.#transcriptChatId || selected.transcriptRevision !== this.#transcriptRevision)
-					void this.#loadTranscript(selected.id, selected.cwd, selected.transcriptRevision);
+			if (this.focus) this.#refreshFocus(snapshot);
+			else {
+				this.#retire(this.#queue.update(snapshot.chats));
+				const selected =
+					(this.#manualSelection
+						? this.#snapshot.chats.find(chat => chat.id === this.#selectedChatId)
+						: undefined) ??
+					this.#snapshot.chats.find(chat => chat.id === this.#queue.current?.chat.id) ??
+					this.#snapshot.chats[0];
+				if (!selected) {
+					this.#selectedChatId = undefined;
+				} else {
+					this.#selectedChatId = selected.id;
+					if (selected.id !== this.#transcriptChatId || selected.transcriptRevision !== this.#transcriptRevision)
+						void this.#loadTranscript(selected.id, selected.cwd, selected.transcriptRevision);
+				}
 			}
 		} catch (error) {
 			if (this.#stopped) return;
@@ -170,6 +194,8 @@ export class CentralComponent implements Component {
 				...this.#snapshot,
 				errors: [`Cannot refresh chats: ${sanitizeDisplayLine(String(error))}. Retrying automatically.`],
 			};
+			if (this.focus)
+				this.#focusNotice = `${this.#focusLabel()}: not responding; retrying (${sanitizeDisplayLine(String(error))})`;
 		} finally {
 			if (this.#stopped) {
 				// Closed while this poll was in flight.
@@ -185,11 +211,67 @@ export class CentralComponent implements Component {
 		}
 	}
 
+	#retire(entries: CentralQueueEntry<CentralForm>[]): void {
+		for (const entry of entries) {
+			if (entry.draft?.touched && entry.draft.answer === undefined) {
+				if (this.#retired?.draft) this.#disposeForm(this.#retired.draft);
+				this.#retired = entry;
+				this.#showRetired = false;
+			} else if (entry.draft) this.#disposeForm(entry.draft);
+		}
+	}
+
+	#focusLabel(): string {
+		return sanitizeDisplayLine(this.#focusMemory.name ?? this.focus?.target ?? "") || "Untitled chat";
+	}
+
+	/**
+	 * Follow the target across restarts: its session, then its name. Until it
+	 * answers again, the last view, questions and draft stay where they are.
+	 */
+	#refreshFocus(snapshot: CentralSnapshot): void {
+		const resolution = resolveFocusTarget(snapshot.chats, this.focus!.target, this.#focusMemory);
+		if (resolution.kind === "ambiguous") {
+			this.#focusNotice = resolution.message;
+			return;
+		}
+		if (resolution.kind === "missing") {
+			// No process serves the target, so its questions are gone with it.
+			this.#retire(this.#queue.update([]));
+			this.#focusNotice =
+				this.#focusMemory.sessionId === undefined
+					? resolution.message
+					: `${this.#focusLabel()}: not responding; retrying (not listed by any host)`;
+			return;
+		}
+		const chat = resolution.chat;
+		this.#focusMemory = { sessionId: chat.sessionId, name: chat.name };
+		this.#retire(this.#queue.update([chat]));
+		const sourceError = snapshot.errors.find(error => error.startsWith(`${chat.source ?? "local"}: `));
+		this.#focusNotice = chat.unresponsive
+			? `${this.#focusLabel()}: not responding (${chat.unresponsive}); retrying`
+			: sourceError
+				? `${this.#focusLabel()}: not responding; retrying (${sanitizeDisplayLine(sourceError)})`
+				: undefined;
+		this.#selectedChatId = chat.id;
+		if (
+			chat.id !== this.#transcriptChatId ||
+			chat.transcriptRevision !== this.#transcriptRevision ||
+			(this.#transcriptError !== undefined && !chat.unresponsive)
+		)
+			void this.#loadTranscript(chat.id, chat.cwd, chat.transcriptRevision);
+	}
+
 	#entryForSelectedChat(): CentralQueueEntry<CentralForm> | undefined {
 		return this.#selectedChatId ? this.#queue.entryForChat(this.#selectedChatId) : this.#queue.current;
 	}
 
 	#followQueueCurrent(): void {
+		if (this.focus) {
+			// The view is pinned to the focused chat.
+			this.ui.requestRender();
+			return;
+		}
 		this.#manualSelection = false;
 		const next = this.#queue.current;
 		const selected = next?.chat ?? this.#snapshot.chats[0];
@@ -199,6 +281,12 @@ export class CentralComponent implements Component {
 		this.ui.requestRender();
 	}
 	#skipChat(chatId: string): void {
+		if (this.focus) {
+			// One chat: leaving its question returns to the composer, never cancels it.
+			this.#inputFocus = true;
+			this.ui.requestRender();
+			return;
+		}
 		this.#queue.skip(chatId);
 		this.#followQueueCurrent();
 	}
@@ -225,7 +313,8 @@ export class CentralComponent implements Component {
 		this.#transcriptLoadingChatId = chatId;
 		this.#transcriptLoadingRevision = revision;
 		this.#transcriptError = undefined;
-		if (switchingChat) {
+		// Focus keeps the last view of a restarting target until its new process answers.
+		if (switchingChat && !this.focus) {
 			this.#transcriptBuilder?.dispose();
 			this.#transcriptBuilder = undefined;
 			this.#transcriptChatId = undefined;
@@ -239,7 +328,7 @@ export class CentralComponent implements Component {
 			const entries = await this.host.transcript(chatId);
 			if (this.#stopped || generation !== this.#transcriptLoadGeneration || this.#selectedChatId !== chatId) return;
 			const builder = new ChatTranscriptBuilder({ ui: this.ui, cwd, requestRender: () => this.ui.requestRender() });
-			builder.rebuild(entries);
+			builder.rebuild(this.focus ? focusTranscriptEntries(entries) : entries);
 			this.#transcriptBuilder?.dispose();
 			this.#transcriptBuilder = builder;
 			this.#transcriptChatId = chatId;
@@ -327,8 +416,10 @@ export class CentralComponent implements Component {
 			return;
 		}
 		if (!draft.pending) {
-			const text = draft.input.getExpandedText();
-			if (!text.trim()) return;
+			const typed = draft.input.getExpandedText();
+			if (!typed.trim()) return;
+			// The prefix is part of the immutable payload, so a retry resends identical text.
+			const text = this.focus ? `${this.focus.prefix}${typed}` : typed;
 			if (new TextEncoder().encode(text).byteLength > 65536) {
 				draft.error = "Message exceeds 64 KiB; shorten it before sending.";
 				return;
@@ -358,6 +449,58 @@ export class CentralComponent implements Component {
 			}
 		} finally {
 			draft.sending = false;
+			if (!this.#stopped) this.ui.requestRender();
+		}
+	}
+
+	/** Every `/…` input runs here; none of it reaches the focused chat. */
+	async #runFocusCommand(command: CentralFocusCommand, draft: CentralDraft): Promise<void> {
+		if (command.name === "error") {
+			draft.error = command.message;
+			return;
+		}
+		if (this.#focusCommandRunning) {
+			draft.error = "A local command is still running; wait for it to finish.";
+			return;
+		}
+		const commands = this.focus!.commands;
+		const version = draft.version;
+		const show = (title: string, text: string | string[]): void => {
+			const lines = typeof text === "string" ? text.replace(/\s+$/, "").split("\n") : text;
+			this.#focusOutput = { title, lines: lines.some(Boolean) ? lines : ["(no output)"] };
+			this.#transcriptView.setFollowTail(true);
+			this.#transcriptView.scrollToBottom();
+		};
+		this.#focusCommandRunning = true;
+		draft.error = undefined;
+		this.ui.requestRender();
+		try {
+			switch (command.name) {
+				case "help":
+					show("/help", CENTRAL_FOCUS_HELP);
+					break;
+				case "chats":
+					show("/chats", focusChatLines(this.#snapshot, this.#selectedChatId));
+					break;
+				case "dag":
+					show("/dag", commands.boardUrl());
+					break;
+				case "inbox":
+					show(`/inbox ${command.count}`, await commands.inbox(command.count));
+					break;
+				case "pause":
+				case "resume":
+					show(`/${command.name}`, await commands.setPaused(command.name === "pause"));
+					break;
+				case "send":
+					show(`/send ${command.chat}`, await commands.relay(command.chat, command.message));
+					break;
+			}
+			if (draft.version === version) draft.input.setText("");
+		} catch (error) {
+			draft.error = `${sanitizeDisplayLine(error instanceof Error ? error.message : String(error))} · nothing was sent to the focused chat`;
+		} finally {
+			this.#focusCommandRunning = false;
 			if (!this.#stopped) this.ui.requestRender();
 		}
 	}
@@ -555,7 +698,8 @@ export class CentralComponent implements Component {
 			return;
 		}
 		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
-			this.#selectAdjacent(matchesKey(data, "shift+tab") ? -1 : 1);
+			// Focus shows one chat; there is nothing to cycle to.
+			if (!this.focus) this.#selectAdjacent(matchesKey(data, "shift+tab") ? -1 : 1);
 			return;
 		}
 		if (matchesKey(data, "alt+up") || matchesKey(data, "alt+down")) {
@@ -578,13 +722,26 @@ export class CentralComponent implements Component {
 			return;
 		}
 		const inputFocused = this.#inputFocus || !form;
-		if (inputFocused && this.#selectedChatId && !matchesKey(data, "shift+up") && !matchesKey(data, "shift+down")) {
+		if (
+			inputFocused &&
+			(this.#selectedChatId || this.focus) &&
+			!matchesKey(data, "shift+up") &&
+			!matchesKey(data, "shift+down")
+		) {
 			const chat = this.#snapshot.chats.find(candidate => candidate.id === this.#selectedChatId);
-			if (chat) {
-				const draft = this.#draft(chat.id);
-				if (matchesKey(data, "enter") && data !== "\n") void this.#sendPrompt(chat, draft);
-				else if (matchesKey(data, "ctrl+r") && draft.pending) void this.#sendPrompt(chat, draft, true);
-				else {
+			const draftKey = this.focus ? FOCUS_DRAFT_KEY : chat?.id;
+			if (draftKey) {
+				const draft = this.#draft(draftKey);
+				const missing = `${this.#focusLabel()} is not available; draft kept, retrying.`;
+				if (matchesKey(data, "enter") && data !== "\n") {
+					const command = this.focus ? parseFocusCommand(draft.input.getExpandedText()) : undefined;
+					if (command) void this.#runFocusCommand(command, draft);
+					else if (chat) void this.#sendPrompt(chat, draft);
+					else draft.error = missing;
+				} else if (matchesKey(data, "ctrl+r") && draft.pending) {
+					if (chat) void this.#sendPrompt(chat, draft, true);
+					else draft.error = missing;
+				} else {
 					const before = draft.input.getText();
 					const pasteEnd = data.indexOf("\x1b[201~");
 					const split = pasteEnd < 0 ? data.length : pasteEnd + "\x1b[201~".length;
@@ -687,21 +844,25 @@ export class CentralComponent implements Component {
 
 	render(width: number): readonly string[] {
 		const height = Math.max(1, this.ui.terminal.rows);
-		const sidebarWidth = width >= 80 ? Math.min(32, Math.max(26, Math.floor(width * 0.28))) : 0;
+		const focus = this.focus;
+		const sidebarWidth = !focus && width >= 80 ? Math.min(32, Math.max(26, Math.floor(width * 0.28))) : 0;
 		const mainWidth = Math.max(1, width - (sidebarWidth > 0 ? sidebarWidth + 3 : 0));
 		const entry = this.#showRetired ? this.#retired : this.#entryForSelectedChat();
 		const form = entry ? this.#form(entry) : undefined;
-		const compactQuestion = !!form && (height < 20 || sidebarWidth === 0);
-		const compactRosterRows = sidebarWidth === 0 && height >= 12 && !compactQuestion ? 1 : 0;
+		const compactQuestion = !!form && (height < 20 || width < 80);
+		const compactRosterRows = !focus && sidebarWidth === 0 && height >= 12 && !compactQuestion ? 1 : 0;
 		this.#statusWidth = Math.min(512, mainWidth);
 		this.#usageWidth = Math.max(1, Math.min(512, sidebarWidth || width));
 		void this.#loadWorkspace();
-		const usageRows = workspaceLines(
-			this.#workspace?.usageLines.length
-				? this.#workspace.usageLines
-				: [this.#workspaceError ? "Usage unavailable · source chat needs current OMP" : "Usage unavailable"],
-			this.#usageWidth,
-		);
+		// Focus shows the chat's replies and questions only; quotas stay in Central.
+		const usageRows = focus
+			? []
+			: workspaceLines(
+					this.#workspace?.usageLines.length
+						? this.#workspace.usageLines
+						: [this.#workspaceError ? "Usage unavailable · source chat needs current OMP" : "Usage unavailable"],
+					this.#usageWidth,
+				);
 		const usageHeight = Math.min(usageRows.length, compactQuestion ? 1 : height >= 5 ? Math.max(1, height - 10) : 0);
 		this.#usageMaxOffset = Math.max(0, usageRows.length - usageHeight);
 		this.#usageOffset = Math.min(this.#usageOffset, this.#usageMaxOffset);
@@ -710,19 +871,33 @@ export class CentralComponent implements Component {
 		const contentHeight = Math.max(1, height - compactRosterRows - compactUsageRows);
 		this.#questionBudget = Math.max(1, contentHeight - (compactQuestion ? 5 : 14));
 		const busyCount = this.#snapshot.chats.filter(chat => chat.busy).length;
-		const heading = `OMP Central  ·  ${this.#snapshot.chats.length} active  ·  ${this.#queue.chatCount} waiting  ·  ${busyCount} busy`;
 		const selectedChat = this.#snapshot.chats.find(chat => chat.id === this.#selectedChatId);
+		const heading = focus
+			? `OMP Focus  ·  ${this.#focusLabel()}  ·  ${selectedChat ? `${sanitizeDisplayLine(selectedChat.source ?? "local")}  ·  ${selectedChat.busy ? "busy" : "idle"}  ·  ${selectedChat.requests.length} open question${selectedChat.requests.length === 1 ? "" : "s"}` : "not connected"}`
+			: `OMP Central  ·  ${this.#snapshot.chats.length} active  ·  ${this.#queue.chatCount} waiting  ·  ${busyCount} busy`;
 		const identity = selectedChat
 			? `${sanitizeDisplayLine(selectedChat.name) || "Untitled chat"}  ·  ${sanitizeDisplayLine(selectedChat.source ?? "local")}  ·  ${sanitizeDisplayLine(selectedChat.cwd)}`
-			: `${this.#snapshot.chats.length} active chats`;
+			: focus
+				? `Following "${sanitizeDisplayLine(focus.target)}"`
+				: `${this.#snapshot.chats.length} active chats`;
 		const body: string[] = [];
-		for (const error of this.#snapshot.errors) {
-			body.push(...wrapTextWithAnsi(theme.fg("error", sanitizeDisplayText(error)), Math.max(1, mainWidth - 2)));
+		const wrapError = (text: string): void => {
+			body.push(...wrapTextWithAnsi(theme.fg("error", sanitizeDisplayText(text)), Math.max(1, mainWidth - 2)));
+		};
+		if (focus) {
+			// One notice about the target replaces every other host's errors.
+			const notice =
+				this.#focusNotice ??
+				(this.#transcriptError
+					? `${this.#focusLabel()}: not responding; retrying (${this.#transcriptError})`
+					: undefined);
+			if (notice) wrapError(notice);
+			if (this.#openError) wrapError(this.#openError);
+		} else {
+			for (const error of this.#snapshot.errors) wrapError(error);
+			if (this.#openError) wrapError(this.#openError);
+			if (this.#transcriptError) wrapError(this.#transcriptError);
 		}
-		if (this.#openError)
-			body.push(...wrapTextWithAnsi(theme.fg("error", this.#openError), Math.max(1, mainWidth - 2)));
-		if (this.#transcriptError)
-			body.push(...wrapTextWithAnsi(theme.fg("error", this.#transcriptError), Math.max(1, mainWidth - 2)));
 		let formStart = Number.POSITIVE_INFINITY;
 		if (form) {
 			if (form.error) body.push(...wrapTextWithAnsi(theme.fg("error", form.error), Math.max(1, mainWidth - 2)));
@@ -781,17 +956,30 @@ export class CentralComponent implements Component {
 		}
 		if (!form && this.#retired) body.push(theme.fg("muted", "Question ended elsewhere; draft not sent"));
 		const questionBody = body;
-		const transcriptRows =
-			this.#transcriptLoading && !this.#transcriptBuilder
+		const transcriptRows = [
+			...(this.#transcriptLoading && !this.#transcriptBuilder
 				? [theme.fg("muted", "Loading chat transcript…")]
-				: (this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? []);
-		const status = workspaceLines(this.#workspace?.statusLines ?? [], mainWidth).slice(
-			0,
-			compactQuestion ? 1 : Math.max(1, Math.min(3, contentHeight - 8)),
-		);
-		if (status.length === 0 && !this.#workspace?.composer)
+				: (this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? [])),
+			// Local command output follows the replies, newest at the bottom; it is never sent.
+			...(focus && this.#focusOutput
+				? [
+						"",
+						truncateToWidth(theme.fg("dim", `── ${this.#focusOutput.title} · local, not sent ──`), mainWidth),
+						...this.#focusOutput.lines.flatMap(line =>
+							wrapTextWithAnsi(sanitizeDisplayLine(line), Math.max(1, mainWidth - 2)),
+						),
+					]
+				: []),
+		];
+		const status = focus
+			? []
+			: workspaceLines(this.#workspace?.statusLines ?? [], mainWidth).slice(
+					0,
+					compactQuestion ? 1 : Math.max(1, Math.min(3, contentHeight - 8)),
+				);
+		if (!focus && status.length === 0 && !this.#workspace?.composer)
 			status.push(truncateToWidth(theme.fg("dim", this.#workspaceError ?? "Status unavailable"), mainWidth));
-		const draft = selectedChat ? this.#draft(selectedChat.id) : undefined;
+		const draft = focus ? this.#draft(FOCUS_DRAFT_KEY) : selectedChat ? this.#draft(selectedChat.id) : undefined;
 		const inputFocused = this.#inputFocus || !form;
 		const inputHeight = compactQuestion
 			? 1
@@ -804,18 +992,19 @@ export class CentralComponent implements Component {
 			draft.input.setTopBorder(this.#workspace?.composer?.topBorder);
 		}
 		const input = draft?.input.render(mainWidth) ?? [theme.fg("dim", "No chat selected")];
-		const sendState = draft?.sending ? "Sending…" : (draft?.error ?? this.#promptUnavailable());
+		const sendState = draft?.sending
+			? "Sending…"
+			: this.#focusCommandRunning
+				? "Running local command…"
+				: (draft?.error ?? this.#promptUnavailable());
+		const canSend = this.#workspace?.canPrompt && this.host.prompt;
+		const hint = focus
+			? `${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions · Esc input"} · /help commands · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
+			: `${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}Ctrl+O open · Tab/Shift+Tab chats · ${inputFocused ? (canSend ? "Enter send · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · Shift+↑/↓ scroll · Ctrl+C close`;
 		const footer = [
 			...input,
 			...status,
-			truncateToWidth(
-				theme.fg(
-					sendState ? "muted" : "dim",
-					sendState ??
-						`${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}Ctrl+O open · Tab/Shift+Tab chats · ${inputFocused ? (this.#workspace?.canPrompt && this.host.prompt ? "Enter send · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · Shift+↑/↓ scroll · Ctrl+C close`,
-				),
-				mainWidth,
-			),
+			truncateToWidth(theme.fg(sendState ? "muted" : "dim", sendState ?? hint), mainWidth),
 			...(this.#usageMaxOffset ? [truncateToWidth(theme.fg("dim", "Alt+↑/↓ usage"), mainWidth)] : []),
 		];
 		const headerRows = !compactQuestion && contentHeight >= footer.length + (form ? 7 : 5) ? 2 : 0;
@@ -912,9 +1101,13 @@ export class CentralComponent implements Component {
 }
 
 /** Close only this fullscreen inbox; no cancellation is sent to a chat. */
-export async function runCentralTui(host: CentralTuiHost, restart?: CentralRestartOptions): Promise<CentralExit> {
+export async function runCentralTui(
+	host: CentralTuiHost,
+	restart?: CentralRestartOptions,
+	focus?: CentralFocusOptions,
+): Promise<CentralExit> {
 	const ui = new TUI(new ProcessTerminal());
-	const component = new CentralComponent(ui, host, restart);
+	const component = new CentralComponent(ui, host, restart, focus);
 	const overlay = ui.showOverlay(component, {
 		anchor: "top-left",
 		width: "100%",
