@@ -134,10 +134,13 @@ export class CentralComponent implements Component {
 	/** Focus mode renders turns itself: dated replies and the user's own sent lines. */
 	#focusTurns: CentralFocusTurn[] | undefined;
 	/**
-	 * Messages the chat accepted but has not yet put in its transcript, with how
-	 * many identical sent turns the transcript already held when each was sent.
+	 * Messages the chat accepted but has not yet put in its transcript, with the
+	 * ids of identical sent turns that cannot be its copy: those already in the
+	 * transcript when it was sent and those an earlier queued copy claimed.
+	 * Ids, not counts: Central serves a capped transcript tail, so an older copy
+	 * can drop off the front in the same reload that adds the new one.
 	 */
-	#focusQueued: Array<{ text: string; at: number; seen: number }> = [];
+	#focusQueued: Array<{ text: string; at: number; seen: Set<string> }> = [];
 	#focusRows: { key: string; rows: string[] } | undefined;
 	#focusCommandRunning = false;
 
@@ -236,14 +239,6 @@ export class CentralComponent implements Component {
 
 	#focusLabel(): string {
 		return sanitizeDisplayLine(this.#focusMemory.name ?? this.focus?.target ?? "") || "Untitled chat";
-	}
-
-	/** How many times each text appears as a sent turn in the loaded transcript. */
-	#focusSentCounts(): Map<string, number> {
-		const counts = new Map<string, number>();
-		for (const turn of this.#focusTurns ?? [])
-			if (turn.kind === "sent") counts.set(turn.text, (counts.get(turn.text) ?? 0) + 1);
-		return counts;
 	}
 
 	/**
@@ -370,16 +365,22 @@ export class CentralComponent implements Component {
 			if (this.#stopped || generation !== this.#transcriptLoadGeneration || this.#selectedChatId !== chatId) return;
 			if (this.focus) {
 				this.#focusTurns = focusTurns(entries, this.focus.prefix);
-				// Drop a queued echo once the transcript holds more copies of that
-				// text than it did when it was sent; an older "ok" never clears a new one.
-				const counts = this.#focusSentCounts();
-				const claimed = new Map<string, number>();
+				// Drop a queued echo once a sent turn with its text and an id it has not
+				// seen arrives; an older "ok" never clears a new one.
+				const claimed = new Set<string>();
 				this.#focusQueued = this.#focusQueued.filter(queued => {
-					const used = claimed.get(queued.text) ?? 0;
-					if ((counts.get(queued.text) ?? 0) - used <= queued.seen) return true;
-					claimed.set(queued.text, used + 1);
+					const own = this.#focusTurns!.find(
+						turn =>
+							turn.kind === "sent" &&
+							turn.text === queued.text &&
+							!queued.seen.has(turn.id) &&
+							!claimed.has(turn.id),
+					);
+					if (!own) return true;
+					claimed.add(own.id);
 					return false;
 				});
+				for (const queued of this.#focusQueued) for (const id of claimed) queued.seen.add(id);
 				this.#focusRows = undefined;
 			} else {
 				const builder = new ChatTranscriptBuilder({
@@ -504,8 +505,10 @@ export class CentralComponent implements Component {
 			// it; show it at once, marked queued, until the transcript has it.
 			if (this.focus) {
 				const text = pending.text.slice(this.focus.prefix.length);
-				const waiting = this.#focusQueued.filter(queued => queued.text === text).length;
-				this.#focusQueued.push({ text, at: Date.now(), seen: (this.#focusSentCounts().get(text) ?? 0) + waiting });
+				const seen = new Set<string>();
+				for (const turn of this.#focusTurns ?? [])
+					if (turn.kind === "sent" && turn.text === text) seen.add(turn.id);
+				this.#focusQueued.push({ text, at: Date.now(), seen });
 			}
 		} catch (error) {
 			if (error instanceof CentralPromptRejectedError) {

@@ -56,7 +56,7 @@ All tokens below are required in `colors` except `thinkingMax`, `toolExpandedBg`
 
 `mdHeading`, `mdLink`, `mdLinkUrl`, optional `mdTableHeader`, optional `mdBold`, `mdCode`, `mdCodeBlock`, `mdCodeBlockBorder`, `mdQuote`, `mdQuoteBorder`, `mdHr`, `mdListBullet`
 
-`mdTableHeader` colors both column headers and the labels used by narrow, stacked tables; body cells keep their normal styling. `mdBold` colors `**bold**` text, which stays bold either way. The `dark-claude` theme uses light lavender (`#b1b9f9`) for links, link URLs, inline code, table headers and bold text. Other built-in themes retain their existing colors.
+`mdTableHeader` colors both column headers and the labels used by narrow, stacked tables; body cells keep their normal styling. `mdBold` colors inline `**bold**` text, which stays bold either way; headings keep `mdHeading` and table headers keep `mdTableHeader`. HTML exports color `<strong>` with it too. The `dark-claude` theme uses light lavender (`#b1b9f9`) for links, link URLs, inline code, table headers and bold text. Other built-in themes retain their existing colors.
 
 ### Tool diff + syntax highlighting (12)
 

@@ -1482,7 +1482,10 @@ export interface MarkdownTheme {
 	quoteBorder: (text: string) => string;
 	hr: (text: string) => string;
 	listBullet: (text: string) => string;
+	/** Bold emphasis for headings, table headers and bold default text styles. */
 	bold: (text: string) => string;
+	/** Optional styling for inline `**strong**` text only; falls back to `bold`. */
+	strong?: (text: string) => string;
 	italic: (text: string) => string;
 	strikethrough: (text: string) => string;
 	underline: (text: string) => string;
@@ -3729,7 +3732,7 @@ export class Markdown implements Component {
 				case "strong": {
 					markHtmlItemWhenContent(plainInlineTokens(token.tokens || []));
 					const boldContent = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext);
-					result += this.#theme.bold(boldContent) + stylePrefix;
+					result += (this.#theme.strong ?? this.#theme.bold)(boldContent) + stylePrefix;
 					break;
 				}
 
@@ -4245,7 +4248,9 @@ function renderInlineTokens(tokens: Token[], mdTheme: MarkdownTheme, applyText: 
 				}
 				break;
 			case "strong":
-				result += mdTheme.bold(renderInlineTokens(token.tokens || [], mdTheme, applyText)) + styleReset;
+				result +=
+					(mdTheme.strong ?? mdTheme.bold)(renderInlineTokens(token.tokens || [], mdTheme, applyText)) +
+					styleReset;
 				break;
 			case "em":
 				result += mdTheme.italic(renderInlineTokens(token.tokens || [], mdTheme, applyText)) + styleReset;

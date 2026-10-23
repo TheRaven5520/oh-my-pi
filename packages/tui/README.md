@@ -291,7 +291,8 @@ interface MarkdownTheme {
 	quoteBorder: (text: string) => string;
 	hr: (text: string) => string;
 	listBullet: (text: string) => string;
-	bold: (text: string) => string;
+	bold: (text: string) => string; // Headings, table headers, bold default text style
+	strong?: (text: string) => string; // Inline **strong** only; falls back to bold
 	italic: (text: string) => string;
 	strikethrough: (text: string) => string;
 	underline: (text: string) => string;

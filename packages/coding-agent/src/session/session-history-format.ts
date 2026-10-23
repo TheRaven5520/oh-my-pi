@@ -413,11 +413,11 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
 	const str = (key: string): string => (typeof details[key] === "string" ? (details[key] as string) : "");
 	switch (msg.customType) {
 		case "irc:incoming":
-			return `[irc] ${str("from") || "?"} → me: ${oneLine(str("message"))}`;
+			return `[irc] ${str("from") || "unknown sender"} → me: ${oneLine(str("message"))}`;
 		case "irc:relay":
-			return `[irc] ${str("from") || "?"} → ${str("to") || "?"}: ${oneLine(str("body"))}`;
+			return `[irc] ${str("from") || "unknown sender"} → ${str("to") || "unknown recipient"}: ${oneLine(str("body"))}`;
 		case "irc:workpool":
-			return `[pool] ${str("pool")} → ${str("to") || "?"}: ${oneLine(str("body"))}`;
+			return `[pool] ${str("pool") || "unknown pool"} → ${str("to") || "unknown recipient"}: ${oneLine(str("body"))}`;
 		case "async-result": {
 			const jobs = Array.isArray(details.jobs) && details.jobs.length > 0 ? details.jobs : [details];
 			const labels = jobs

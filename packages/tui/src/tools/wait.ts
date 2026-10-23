@@ -555,17 +555,19 @@ export function createIrcMessageCard(
 	getExpanded: () => boolean,
 	uiTheme: Theme,
 ): Component {
-	const from = card.from?.trim() || "?";
+	// Records without details (e.g. from a Central host that dropped them) name no sender.
+	const from = card.from?.trim() || "unknown sender";
+	const to = card.to?.trim() || "unknown recipient";
 	const title =
 		card.kind === "incoming" && card.forkReport
 			? `Fork ${card.forkReport.done ? "report" : "update"} ${uiTheme.nav.back} ${from}`
 			: card.kind === "incoming"
 				? `IRC ${uiTheme.nav.back} ${from}`
 				: card.kind === "autoreply"
-					? `IRC ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
+					? `IRC ${uiTheme.nav.selected} ${to}`
 					: card.kind === "workpool"
-						? `Pool ${card.pool?.trim() || "?"} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
-						: `IRC ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
+						? `Pool ${card.pool?.trim() || "unknown pool"} ${uiTheme.nav.selected} ${to}`
+						: `IRC ${from} ${uiTheme.nav.selected} ${to}`;
 	const body = card.body ?? "";
 	const meta: string[] = [];
 	if (card.kind === "autoreply") meta.push("auto");

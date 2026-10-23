@@ -52,9 +52,47 @@ const CENTRAL_TRANSCRIPT_LIMIT = 600;
 const CENTRAL_TRANSCRIPT_BYTES = 512 * 1024;
 const CENTRAL_BLOCK_TEXT_LIMIT = 12_000;
 
+/** Custom messages whose transcript card reads its sender, recipient and body from `details`. */
+const CENTRAL_IRC_CUSTOM_TYPES = ["irc:incoming", "irc:autoreply", "irc:relay", "irc:workpool"];
+
+/**
+ * The few `details` fields Central's transcript renderers read, each string
+ * capped: `buildIrcMessageCard` for IRC records and the wait tool's result
+ * (`details.waited`, `details.interrupted`). All other details are dropped:
+ * they can be large, and the transcript is capped. IRC details hold only agent
+ * ids and message text, never credentials.
+ */
+function centralDetails(message: Record<string, unknown>): Record<string, unknown> | undefined {
+	const details = message.details;
+	if (!details || typeof details !== "object") return undefined;
+	const pick = (source: object, keys: readonly string[]): Record<string, unknown> => {
+		const kept: Record<string, unknown> = {};
+		for (const key of keys) {
+			const field = Reflect.get(source, key);
+			if (typeof field === "string") kept[key] = field.slice(0, CENTRAL_BLOCK_TEXT_LIMIT);
+			else if (typeof field === "number") kept[key] = field;
+		}
+		const report = Reflect.get(source, "forkReport");
+		if (report && typeof report === "object") kept.forkReport = { done: Reflect.get(report, "done") === true };
+		return kept;
+	};
+	if (message.role === "custom" && CENTRAL_IRC_CUSTOM_TYPES.includes(message.customType as string))
+		return pick(details, ["from", "to", "message", "body", "replyTo", "pool", "mode"]);
+	if (message.role === "toolResult" && message.toolName === "wait") {
+		const kept: Record<string, unknown> = {};
+		const waited = Reflect.get(details, "waited");
+		if (waited && typeof waited === "object") kept.waited = pick(waited, ["from", "body", "ts", "replyTo"]);
+		if (Reflect.get(details, "interrupted") === true) kept.interrupted = true;
+		return kept;
+	}
+	return undefined;
+}
+
 function centralTranscriptMessage(message: AgentMessage): AgentMessage {
 	const value = structuredClone(message) as unknown as Record<string, unknown>;
+	const details = centralDetails(value);
 	for (const key of ["providerPayload", "thinkingSignature", "responseId", "details"]) delete value[key];
+	if (details) value.details = details;
 	if (typeof value.content === "string") value.content = value.content.slice(0, CENTRAL_BLOCK_TEXT_LIMIT);
 	else if (Array.isArray(value.content)) {
 		value.content = value.content.map(block => {
@@ -74,7 +112,8 @@ function centralTranscriptMessage(message: AgentMessage): AgentMessage {
 	return value as unknown as AgentMessage;
 }
 
-function centralTranscript(messages: readonly AgentMessage[]): TranscriptEntryLike[] {
+/** Central's view of a chat: the newest messages, each stripped to what its transcript card renders. */
+export function centralTranscript(messages: readonly AgentMessage[]): TranscriptEntryLike[] {
 	const start = Math.max(0, messages.length - CENTRAL_TRANSCRIPT_LIMIT);
 	const entries: TranscriptEntryLike[] = [];
 	let bytes = 2;
@@ -1587,9 +1626,7 @@ export class ExtensionUiController {
 		options: { yieldSignal?: AbortSignal } = {},
 	): Promise<T | undefined> {
 		// The same lifetime covers local-only prompts, Central answers and teardown.
-		signal = signal
-			? AbortSignal.any([signal, this.#centralSessionAbort.signal])
-			: this.#centralSessionAbort.signal;
+		signal = signal ? AbortSignal.any([signal, this.#centralSessionAbort.signal]) : this.#centralSessionAbort.signal;
 		const { promise, resolve, reject } = Promise.withResolvers<T | undefined>();
 		const { yieldSignal } = options;
 		const shown: ShownDialog = { yieldSignal };

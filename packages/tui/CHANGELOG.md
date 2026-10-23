@@ -3,11 +3,14 @@
 ## [Unreleased]
 
 ### Added
-- Optional theme color `mdBold` colors Markdown `**bold**` text; `dark-claude` sets it to its light lavender. Themes without it keep bold in the surrounding text color.
+- Optional theme color `mdBold` colors inline Markdown `**bold**` text; `dark-claude` sets it to its light lavender. Themes without it keep bold in the surrounding text color. `MarkdownTheme` gains an optional `strong` hook for inline strong text, falling back to `bold`.
 - `omp central --focus` keeps a repeated message (e.g. a second "ok") marked queued until its own copy reaches the chat, instead of clearing it on an older identical message.
 - Central focus mode (`CentralFocusOptions`): a single-chat view that renders only assistant reply text through the normal transcript builder, keeps Central's question forms, and adds a prefixed composer with local slash commands. It keeps the last view and draft and shows `not responding; retrying` while the chat does not answer, is unlisted, or is restarting.
 
 ### Fixed
+- Headings, table headers and other non-inline bold keep their own color under `mdBold`; `dark-claude` headings had turned lavender instead of `mdHeading`.
+- `omp central --focus` no longer leaves a repeated message marked `(queued)` forever when an older identical message drops off the front of Central's capped transcript in the same reload that adds the new copy. Queued messages now match the transcript's message ids, not counts.
+- IRC cards whose record names no sender, recipient or pool show `unknown sender` / `unknown recipient` / `unknown pool` instead of `?`.
 - Question alerts now target the owning tmux pane with ordered set/ack signals; SSH questions use an independent owner heartbeat so abruptly exited chats cannot leave stale red tabs.
 - Mouse selections in tmux survive while OMP is streaming. The live copy-mode refresh used `refresh-from-pane`, which cleared any selection being dragged, so a drag from the live bottom only moved the cursor. The refresh now waits while the pane's `@omp-history-dragging` flag is set (by the matching `natural-scroll.py`) and catches up after the copy.
 - Restore the personal Ravens watermark when OMP runs over SSH from a tmux pane. The matching tmux helper attributes a two-second ownership heartbeat to its source pane and expires it after seven seconds without renewal; direct and local-tmux ownership are unchanged.

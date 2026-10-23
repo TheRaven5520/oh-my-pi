@@ -138,6 +138,9 @@ export async function generateThemeVars(
 
 	const colors = await getResolvedThemeColors(themeName);
 	const lines = Object.entries(colors).map(([key, value]) => `--${key}: ${value};`);
+	// Optional mdBold must be declared in every variant: the dark rule also matches
+	// `:root` under data-theme="light", so a light theme without it would inherit dark's.
+	if (!colors.mdBold) lines.push("--mdBold: currentColor;");
 	const themeExport = await getThemeExportColors(themeName);
 	const derived = deriveExportColors(colors.userMessageBg || "#343541");
 

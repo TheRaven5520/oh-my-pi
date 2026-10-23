@@ -293,15 +293,16 @@ describe("Central focus transcript", () => {
 		}
 	});
 
+	const sentOk = (id: string): TranscriptEntryLike => ({
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: new Date().toISOString(),
+		message: { role: "user", content: `${PREFIX}ok`, timestamp: Date.now() },
+	});
+
 	it("keeps a repeated short message queued until its own copy arrives, not an older identical one", async () => {
-		const sent = (id: string): TranscriptEntryLike => ({
-			type: "message",
-			id,
-			parentId: null,
-			timestamp: new Date().toISOString(),
-			message: { role: "user", content: `${PREFIX}ok`, timestamp: Date.now() },
-		});
-		let transcript: TranscriptEntryLike[] = [sent("old-ok"), assistant("a1", [{ type: "text", text: "REPLY" }])];
+		let transcript: TranscriptEntryLike[] = [sentOk("old-ok"), assistant("a1", [{ type: "text", text: "REPLY" }])];
 		let revision = "1";
 		const rig = await setup({
 			snapshot: () => ({ chats: [chat({ id: "local/hq", busy: true, transcriptRevision: revision })], errors: [] }),
@@ -317,8 +318,46 @@ describe("Central focus transcript", () => {
 			await rig.poll();
 			await rig.poll();
 			expect(rig.text()).toContain("you: ok  (queued)");
-			transcript = [...transcript, sent("new-ok")];
+			transcript = [...transcript, sentOk("new-ok")];
 			revision = "3";
+			await rig.poll();
+			await rig.poll();
+			expect(rig.text()).not.toContain("(queued)");
+			expect(rig.text().split("you: ok")).toHaveLength(3);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("clears a queued copy when an older identical one drops off the capped transcript in the same reload", async () => {
+		const reply = assistant("a1", [{ type: "text", text: "REPLY" }]);
+		let transcript: TranscriptEntryLike[] = [sentOk("old-ok"), reply];
+		let revision = "1";
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", busy: true, transcriptRevision: revision })], errors: [] }),
+			transcript: async () => transcript,
+		});
+		try {
+			await rig.input("ok");
+			await rig.input("\r");
+			await rig.input("ok");
+			await rig.input("\r");
+			expect(rig.text().split("(queued)")).toHaveLength(3);
+			// Central serves only the transcript tail: the old "ok" falls off the front
+			// as the first new copy lands, so the count of "ok" turns stays at one.
+			transcript = [reply, sentOk("new-ok-1")];
+			revision = "2";
+			await rig.poll();
+			await rig.poll();
+			expect(rig.text().split("(queued)")).toHaveLength(2);
+			// The copy the first send claimed never clears the second one.
+			transcript = [reply, sentOk("new-ok-1"), assistant("a2", [{ type: "text", text: "MORE" }])];
+			revision = "3";
+			await rig.poll();
+			await rig.poll();
+			expect(rig.text().split("(queued)")).toHaveLength(2);
+			transcript = [...transcript, sentOk("new-ok-2")];
+			revision = "4";
 			await rig.poll();
 			await rig.poll();
 			expect(rig.text()).not.toContain("(queued)");
