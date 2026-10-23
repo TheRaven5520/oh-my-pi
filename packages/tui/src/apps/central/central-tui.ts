@@ -725,6 +725,32 @@ export class CentralComponent implements Component {
 			this.ui.requestRender();
 			return;
 		}
+		// Focus: an arrow key on an empty composer moves keyboard focus into the
+		// open question (and moves its selection); Enter then answers it. Enter,
+		// Esc, Space, digits and typing on the composer never touch a question,
+		// since the chat treats any answer as Shreyan's decision.
+		if (
+			this.focus &&
+			this.#inputFocus &&
+			form &&
+			!form.prompt &&
+			form.answer === undefined &&
+			!form.sending &&
+			!this.#draft(FOCUS_DRAFT_KEY).input.hasDraftContent() &&
+			(matchesKey(data, "up") || matchesKey(data, "down") || matchesKey(data, "left") || matchesKey(data, "right"))
+		) {
+			this.#inputFocus = false;
+			form.touched = true;
+			form.component.handleInput?.(data);
+			this.ui.requestRender();
+			return;
+		}
+		// Esc in a focused question returns to the composer instead of cancelling it.
+		if (this.focus && !this.#inputFocus && form && !form.prompt && matchesKey(data, "escape")) {
+			this.#inputFocus = true;
+			this.ui.requestRender();
+			return;
+		}
 		const inputFocused = this.#inputFocus || !form;
 		if (
 			inputFocused &&
@@ -964,17 +990,18 @@ export class CentralComponent implements Component {
 			...(this.#transcriptLoading && !this.#transcriptBuilder
 				? [theme.fg("muted", "Loading chat transcript…")]
 				: (this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? [])),
-			// Local command output follows the replies, newest at the bottom; it is never sent.
-			...(focus && this.#focusOutput
-				? [
-						"",
-						truncateToWidth(theme.fg("dim", `── ${this.#focusOutput.title} · local, not sent ──`), mainWidth),
-						...this.#focusOutput.lines.flatMap(line =>
-							wrapTextWithAnsi(sanitizeDisplayLine(line), Math.max(1, mainWidth - 2)),
-						),
-					]
-				: []),
 		];
+		// Local command output sits right above the composer, below any open
+		// question, so a question card never hides it; it is never sent.
+		const focusOutput =
+			focus && this.#focusOutput
+				? [
+						truncateToWidth(theme.fg("dim", `── ${this.#focusOutput.title} · local, not sent ──`), mainWidth),
+						...this.#focusOutput.lines
+							.flatMap(line => wrapTextWithAnsi(sanitizeDisplayLine(line), Math.max(1, mainWidth - 2)))
+							.slice(0, Math.max(1, Math.floor(contentHeight / 3))),
+					]
+				: [];
 		const status = focus
 			? []
 			: workspaceLines(this.#workspace?.statusLines ?? [], mainWidth).slice(
@@ -1003,9 +1030,10 @@ export class CentralComponent implements Component {
 				: (draft?.error ?? this.#promptUnavailable());
 		const canSend = this.#workspace?.canPrompt && this.host.prompt;
 		const hint = focus
-			? `${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions · Esc input"} · /help commands · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
+			? `${form ? (inputFocused ? (draft?.input.hasDraftContent() ? "F2 question · " : "↑/↓ question · ") : "Enter answer · Esc back to input · ") : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · /help commands · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
 			: `${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}Ctrl+O open · Tab/Shift+Tab chats · ${inputFocused ? (canSend ? "Enter send · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · Shift+↑/↓ scroll · Ctrl+C close`;
 		const footer = [
+			...focusOutput,
 			...input,
 			...status,
 			truncateToWidth(theme.fg(sendState ? "muted" : "dim", sendState ?? hint), mainWidth),

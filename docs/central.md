@@ -93,9 +93,12 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   are omitted. No model is called.
 - **Questions:** its open ask, select and editor questions use Central's own
   forms and are answered in place. The composer keeps keyboard focus when a
-  question appears, so text typed for the chat never answers it; `F2` (or a
-  click) selects the question, and `Esc` on it returns to the composer without
-  skipping it. After an answer, typing goes back to the composer.
+  question appears, so text typed for the chat never answers it. With the
+  composer empty, an arrow key moves into a choice question (and moves its
+  selection); `Enter` then answers. `F2` or a click also selects it, and `Esc`
+  returns to the composer without cancelling. `Enter`, `Esc`, `Space`, digits
+  and typing on the composer never touch a question. After an answer, typing
+  goes back to the composer.
 - **Composer:** text is sent through Central's normal prompt path, prefixed with
   `[FOCUS: Shreyan says] `. A busy chat, including one with an ask open, receives
   it as a queued steer; the message never answers or cancels that ask. Uncertain
@@ -106,6 +109,7 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   is never sent to the chat. Unknown commands are refused with a pointer to
   `/help`. Because of this, OMP slash commands are not forwarded; Central's
   prompt path also delivers a `/command` to a chat as plain text, never runs it.
+  Command output appears directly above the composer, below any open question.
 
 | Command | Effect |
 | --- | --- |

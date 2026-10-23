@@ -463,4 +463,101 @@ describe("Central focus questions", () => {
 			rig.close();
 		}
 	});
+
+	const askChat = () =>
+		chat({
+			id: "local/hq",
+			requests: [
+				{
+					id: "ask1",
+					createdAt: 1,
+					kind: "ask",
+					questions: [{ id: "eval", question: "WHICH EVAL?", options: [{ label: "One" }, { label: "Two" }] }],
+				},
+			],
+		});
+
+	it("answers an open choice question with arrows and Enter while the composer is empty, no F2", async () => {
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const prompt = vi.fn(async () => {});
+		const rig = await setup({ snapshot: () => ({ chats: [askChat()], errors: [] }), answer, prompt });
+		try {
+			expect(rig.text()).toContain("WHICH EVAL?");
+			await rig.input("\x1b[B");
+			await rig.input("\r");
+			expect(prompt).not.toHaveBeenCalled();
+			expect(answer.mock.calls).toHaveLength(1);
+			expect(answer.mock.calls[0]!.slice(0, 2)).toEqual(["local/hq", "ask1"]);
+			expect(answer.mock.calls[0]![2]).toMatchObject({
+				kind: "submit",
+				results: [expect.objectContaining({ selectedOptions: ["Two"] })],
+			});
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("never answers or cancels a question from an empty composer with Enter, Esc, Space or a digit", async () => {
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const prompt = vi.fn(async () => {});
+		const rig = await setup({ snapshot: () => ({ chats: [askChat()], errors: [] }), answer, prompt });
+		try {
+			for (const key of ["\r", "\x1b", " ", "2", "1"]) {
+				await rig.input(key);
+				// Typed characters land in the composer; clear them before the next key.
+				for (let index = 0; index < 3; index++) await rig.input("\x7f");
+			}
+			expect(answer).not.toHaveBeenCalled();
+			expect(rig.text()).toContain("WHICH EVAL?");
+			// Typing "2 evals" goes to the composer, never picks option 2.
+			await rig.input("2 evals");
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+			expect(prompt.mock.calls.map(call => (call as unknown[])[3])).toEqual([`${PREFIX}2 evals`]);
+			// Esc after moving into the question returns to the composer; it does not cancel.
+			await rig.input("\x1b[B");
+			await rig.input("\x1b");
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("keeps Enter for the composer once it holds a draft, even with a question open", async () => {
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
+		const rig = await setup({ snapshot: () => ({ chats: [askChat()], errors: [] }), answer, prompt });
+		try {
+			await rig.input("hello");
+			await rig.input("\x1b[B");
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+			expect(prompt.mock.calls.map(call => call[3])).toEqual([`${PREFIX}hello`]);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("shows slash-command output on screen while a question card is open, even with a long history", async () => {
+		const prompt = vi.fn(async () => {});
+		const longHistory = Array.from({ length: 60 }, (_, index) =>
+			assistant(`r${index}`, [{ type: "text", text: `HISTORY LINE ${index}` }]),
+		);
+		const rig = await setup({
+			snapshot: () => ({ chats: [askChat()], errors: [] }),
+			transcript: async () => longHistory,
+			prompt,
+			height: 30,
+		});
+		try {
+			await rig.input("/inbox 3");
+			await rig.input("\r");
+			expect(rig.text()).toContain("INBOX-TAIL 3");
+			expect(rig.text()).toContain("WHICH EVAL?");
+			expect(prompt).not.toHaveBeenCalled();
+		} finally {
+			rig.close();
+		}
+	});
 });
