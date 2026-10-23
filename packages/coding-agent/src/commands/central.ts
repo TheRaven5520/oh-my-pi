@@ -34,7 +34,7 @@ export default class Central extends Command {
 	static examples = [
 		"omp --central",
 		"omp central",
-		'omp central --focus "TMUX ORCHESTRATION"',
+		'omp central --focus "My chat"',
 		"omp config set central.hosts '[\"user@mini\"]'",
 	];
 
