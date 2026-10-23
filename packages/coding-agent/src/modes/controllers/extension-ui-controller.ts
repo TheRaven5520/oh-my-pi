@@ -201,6 +201,8 @@ export class ExtensionUiController {
 	#centralSessionUnsubscribe: (() => void) | undefined;
 	#replyAlert: ReplyAlert | undefined;
 	#openQuestions = 0;
+	/** Questions published to Central (answerable from the focus view) that have not settled. */
+	#centralQuestions = 0;
 	#clearReplyAlertOnExit = (): void => {
 		if (this.#openQuestions === 0) return;
 		this.#openQuestions = 0;
@@ -274,6 +276,9 @@ export class ExtensionUiController {
 							),
 							canPrompt:
 								!this.#centralStopped && !this.ctx.collabGuest && !this.ctx.session.isSessionTransitioning,
+							canCommand:
+								!this.#centralStopped && !this.ctx.collabGuest && !this.ctx.session.isSessionTransitioning,
+							commands: this.ctx.centralCommands(),
 							promptUnavailableReason: this.#centralStopped
 								? "Chat is stopping; resume it before sending."
 								: this.ctx.collabGuest
@@ -282,6 +287,16 @@ export class ExtensionUiController {
 										? "Chat is switching sessions; wait and retry."
 										: undefined,
 						}),
+						command: async (sessionId, text) => {
+							if (this.#centralStopped || this.ctx.session.sessionManager.getSessionId() !== sessionId)
+								throw new Error("Central command target is unavailable");
+							// A refusal is the command's answer, shown in the focus view like any other result.
+							try {
+								return await this.ctx.runCentralCommand(text, () => this.#centralQuestions > 0);
+							} catch (error) {
+								return `Not run: ${error instanceof Error ? error.message : String(error)}`;
+							}
+						},
 						prompt: (sessionId, text) => {
 							if (
 								this.#centralStopped ||
@@ -355,9 +370,9 @@ export class ExtensionUiController {
 		const scopedSignal = signal
 			? AbortSignal.any([signal, this.#centralSessionAbort.signal])
 			: this.#centralSessionAbort.signal;
-		return this.#centralHost && !this.#centralHost.closed && !this.ctx.collabGuest
-			? this.#centralHost.race(request, scopedSignal, local)
-			: local(scopedSignal);
+		if (!this.#centralHost || this.#centralHost.closed || this.ctx.collabGuest) return local(scopedSignal);
+		this.#centralQuestions++;
+		return this.#centralHost.race(request, scopedSignal, local).finally(() => this.#centralQuestions--);
 	}
 
 	/**

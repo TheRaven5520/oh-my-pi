@@ -17,13 +17,20 @@ import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types"
 import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import {
 	answerCentralQuestion,
+	commandCentralChat,
 	getCentralChatTranscript,
 	getCentralChatWorkspace,
 	listCentralChats,
 	parseCentralChat,
 	promptCentralChat,
 } from "./bridge";
-import { isCentralPrompt, isCentralWorkspaceWidth, parseCentralWorkspace } from "./validation";
+import {
+	isCentralCommand,
+	isCentralPrompt,
+	isCentralWorkspaceWidth,
+	parseCentralCommandResult,
+	parseCentralWorkspace,
+} from "./validation";
 
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 const DEADLINE_MS = 15_000;
@@ -46,6 +53,7 @@ type BridgeRequest =
 	| { op: "transcript"; chatId: string }
 	| { op: "workspace"; chatId: string; statusWidth: number; usageWidth: number }
 	| { op: "prompt"; chatId: string; sessionId: string; requestId: string; text: string }
+	| { op: "command"; chatId: string; sessionId: string; requestId: string; text: string }
 	| { op: "answer"; chatId: string; requestId: string; answer: CentralAnswer };
 
 /**
@@ -89,6 +97,15 @@ export async function serveCentralStdio(restartReady: () => boolean = () => fals
 			) {
 				await promptCentralChat(request.chatId, request.sessionId, request.requestId, request.text);
 				process.stdout.write(`${JSON.stringify({ id, ok: true })}\n`);
+			} else if (
+				request.op === "command" &&
+				typeof request.chatId === "string" &&
+				typeof request.sessionId === "string" &&
+				typeof request.requestId === "string" &&
+				typeof request.text === "string"
+			) {
+				const result = await commandCentralChat(request.chatId, request.sessionId, request.requestId, request.text);
+				process.stdout.write(`${JSON.stringify({ id, ok: true, result })}\n`);
 			} else if (
 				request.op === "answer" &&
 				typeof request.chatId === "string" &&
@@ -388,6 +405,23 @@ export class CentralSources implements CentralTuiHost {
 			});
 			if (reply.ok !== true) throw new Error("Prompt delivery unknown; retry only with the same request ID");
 		} else await promptCentralChat(route.local.id, sessionId, requestId, text);
+	}
+
+	async command(chatId: string, sessionId: string, requestId: string, text: string): Promise<string> {
+		const route = this.#route(chatId, "the command may have run, retry only with the same request ID");
+		if (!isCentralCommand(sessionId, requestId, text))
+			throw new CentralPromptRejectedError("Invalid Central command or command exceeds 64 KiB");
+		if (!route.source.remote) return commandCentralChat(route.local.id, sessionId, requestId, text);
+		const reply = await route.source.remote.request({
+			op: "command",
+			chatId: route.local.id,
+			sessionId,
+			requestId,
+			text,
+		});
+		const result = reply.ok === true ? parseCentralCommandResult(reply.result) : null;
+		if (result === null) throw new Error("Command result unknown; retry only with the same request ID");
+		return result;
 	}
 
 	async answer(chatId: string, requestId: string, answer: CentralAnswer): Promise<void> {

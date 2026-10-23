@@ -43,11 +43,23 @@ export interface CentralSnapshot {
 	errors: string[];
 }
 
+/** A slash command the selected chat runs, as listed by its own composer. */
+export interface CentralCommandInfo {
+	name: string;
+	aliases?: string[];
+	description?: string;
+	argumentHint?: string;
+}
+
 /** Read-only presentation rendered by the selected chat at Central's available widths. */
 export interface CentralWorkspace {
 	statusLines: string[];
 	usageLines: string[];
 	canPrompt: boolean;
+	/** The chat runs `/command` text through its own composer's submit path (Central `command` op). */
+	canCommand?: boolean;
+	/** The chat's own slash commands, for completion; capped by the chat. */
+	commands?: CentralCommandInfo[];
 	/** Source-session chrome, rendered with its own settings and account context. */
 	composer?: { shape: string; topBorder: EditorTopBorder };
 	promptUnavailableReason?: string;
@@ -70,6 +82,11 @@ export interface CentralTuiHost {
 	workspace?(chatId: string, statusWidth: number, usageWidth: number): Promise<CentralWorkspace>;
 	/** Submit to the existing session; reuse requestId when delivery is uncertain. */
 	prompt?(chatId: string, sessionId: string, requestId: string, text: string): Promise<void>;
+	/**
+	 * Run `/command` text in the existing session as if typed in its composer; resolves
+	 * with what the command showed. Same request-ID and stale-session rules as `prompt`.
+	 */
+	command?(chatId: string, sessionId: string, requestId: string, text: string): Promise<string>;
 	answer(chatId: string, requestId: string, answer: CentralAnswer): Promise<void>;
 	open(chatId: string): Promise<void>;
 }

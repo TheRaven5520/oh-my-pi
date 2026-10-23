@@ -114,6 +114,8 @@ async function setup(options: {
 	snapshot: () => CentralSnapshot;
 	transcript?: CentralTuiHost["transcript"];
 	prompt?: CentralTuiHost["prompt"];
+	command?: CentralTuiHost["command"];
+	workspace?: Awaited<ReturnType<NonNullable<CentralTuiHost["workspace"]>>>;
 	answer?: CentralTuiHost["answer"];
 	commands?: CentralFocusCommands;
 	target?: string;
@@ -138,8 +140,10 @@ async function setup(options: {
 		transcript: options.transcript ?? (async () => mixedTranscript),
 		answer: options.answer ?? (async () => {}),
 		open: async () => {},
-		workspace: async () => ({ statusLines: ["STATUS-ROW"], usageLines: ["USAGE-ROW"], canPrompt: true }),
+		workspace: async () =>
+			options.workspace ?? { statusLines: ["STATUS-ROW"], usageLines: ["USAGE-ROW"], canPrompt: true },
 		prompt: options.prompt ?? (async () => {}),
+		command: options.command,
 	};
 	const commands = options.commands ?? commandMocks();
 	const component = new CentralComponent(ui, host, undefined, {
@@ -293,16 +297,21 @@ describe("Central focus transcript", () => {
 		}
 	});
 
-	const sentOk = (id: string): TranscriptEntryLike => ({
+	/** A focus "ok" the chat stamped at `at`; Central's ids are positions in its capped tail. */
+	const sentOk = (id: string, at: number): TranscriptEntryLike => ({
 		type: "message",
 		id,
 		parentId: null,
-		timestamp: new Date().toISOString(),
-		message: { role: "user", content: `${PREFIX}ok`, timestamp: Date.now() },
+		timestamp: new Date(at).toISOString(),
+		message: { role: "user", content: `${PREFIX}ok`, timestamp: at },
 	});
+	const minuteAgo = () => Date.now() - 60_000;
 
-	it("keeps a repeated short message queued until its own copy arrives, not an older identical one", async () => {
-		let transcript: TranscriptEntryLike[] = [sentOk("old-ok"), assistant("a1", [{ type: "text", text: "REPLY" }])];
+	it("keeps a repeated short message queued until a copy stamped at or after its send arrives", async () => {
+		let transcript: TranscriptEntryLike[] = [
+			sentOk("central-0", minuteAgo()),
+			assistant("central-1", [{ type: "text", text: "REPLY" }]),
+		];
 		let revision = "1";
 		const rig = await setup({
 			snapshot: () => ({ chats: [chat({ id: "local/hq", busy: true, transcriptRevision: revision })], errors: [] }),
@@ -313,12 +322,12 @@ describe("Central focus transcript", () => {
 			await rig.input("\r");
 			expect(rig.text()).toContain("you: ok  (queued)");
 			// A reload that still holds only the earlier "ok" must not clear the new one.
-			transcript = [...transcript, assistant("a2", [{ type: "text", text: "MORE" }])];
+			transcript = [...transcript, assistant("central-2", [{ type: "text", text: "MORE" }])];
 			revision = "2";
 			await rig.poll();
 			await rig.poll();
 			expect(rig.text()).toContain("you: ok  (queued)");
-			transcript = [...transcript, sentOk("new-ok")];
+			transcript = [...transcript, sentOk("central-3", Date.now())];
 			revision = "3";
 			await rig.poll();
 			await rig.poll();
@@ -329,9 +338,9 @@ describe("Central focus transcript", () => {
 		}
 	});
 
-	it("clears a queued copy when an older identical one drops off the capped transcript in the same reload", async () => {
-		const reply = assistant("a1", [{ type: "text", text: "REPLY" }]);
-		let transcript: TranscriptEntryLike[] = [sentOk("old-ok"), reply];
+	it("matches each sent copy once when an old identical one drops off the front of the capped tail", async () => {
+		const reply = assistant("central-1", [{ type: "text", text: "REPLY" }]);
+		let transcript: TranscriptEntryLike[] = [sentOk("central-0", minuteAgo()), reply];
 		let revision = "1";
 		const rig = await setup({
 			snapshot: () => ({ chats: [chat({ id: "local/hq", busy: true, transcriptRevision: revision })], errors: [] }),
@@ -343,25 +352,59 @@ describe("Central focus transcript", () => {
 			await rig.input("ok");
 			await rig.input("\r");
 			expect(rig.text().split("(queued)")).toHaveLength(3);
-			// Central serves only the transcript tail: the old "ok" falls off the front
-			// as the first new copy lands, so the count of "ok" turns stays at one.
-			transcript = [reply, sentOk("new-ok-1")];
+			// The old "ok" falls off the front as the first new copy lands.
+			const first = Date.now();
+			transcript = [{ ...reply, id: "central-0" }, sentOk("central-1", first)];
 			revision = "2";
 			await rig.poll();
 			await rig.poll();
 			expect(rig.text().split("(queued)")).toHaveLength(2);
-			// The copy the first send claimed never clears the second one.
-			transcript = [reply, sentOk("new-ok-1"), assistant("a2", [{ type: "text", text: "MORE" }])];
+			// The copy the first send claimed never clears the second one, even as ids shift.
+			transcript = [sentOk("central-0", first), assistant("central-1", [{ type: "text", text: "MORE" }])];
 			revision = "3";
 			await rig.poll();
 			await rig.poll();
 			expect(rig.text().split("(queued)")).toHaveLength(2);
-			transcript = [...transcript, sentOk("new-ok-2")];
+			transcript = [...transcript, sentOk("central-2", first + 1)];
 			revision = "4";
 			await rig.poll();
 			await rig.poll();
 			expect(rig.text()).not.toContain("(queued)");
 			expect(rig.text().split("you: ok")).toHaveLength(3);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("never takes an old copy whose position index shifted for the new send's copy", async () => {
+		let transcript: TranscriptEntryLike[] = [
+			assistant("central-0", [{ type: "text", text: "FIRST" }]),
+			sentOk("central-1", minuteAgo()),
+		];
+		let revision = "1";
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", busy: true, transcriptRevision: revision })], errors: [] }),
+			transcript: async () => transcript,
+		});
+		try {
+			await rig.input("ok");
+			await rig.input("\r");
+			// The front entry drops off: the old "ok" now sits at the index "central-0".
+			transcript = [transcript[1]!, assistant("central-1", [{ type: "text", text: "LATER" }])].map(
+				(entry, index) => ({
+					...entry,
+					id: `central-${index}`,
+				}),
+			);
+			revision = "2";
+			await rig.poll();
+			await rig.poll();
+			expect(rig.text()).toContain("you: ok  (queued)");
+			transcript = [...transcript, sentOk("central-2", Date.now())];
+			revision = "3";
+			await rig.poll();
+			await rig.poll();
+			expect(rig.text()).not.toContain("(queued)");
 		} finally {
 			rig.close();
 		}
@@ -395,7 +438,7 @@ describe("Central focus composer", () => {
 		}
 	});
 
-	it("runs every slash command locally and never sends one to the focused chat", async () => {
+	it("runs the local commands locally and refuses chat commands when the chat cannot run them", async () => {
 		const prompt = vi.fn(async () => {});
 		const commands = commandMocks();
 		const snapshot: CentralSnapshot = {
@@ -409,7 +452,8 @@ describe("Central focus composer", () => {
 			],
 			errors: ["other-host: SSH disconnected"],
 		};
-		const rig = await setup({ snapshot: () => snapshot, prompt, commands });
+		const command = vi.fn(async () => "must not run");
+		const rig = await setup({ snapshot: () => snapshot, prompt, command, commands });
 		try {
 			await rig.input("/help");
 			await rig.input("\r");
@@ -443,11 +487,13 @@ describe("Central focus composer", () => {
 			await rig.input("/send SPRILISTACK go");
 			await rig.input("\r");
 			expect(commands.relay).toHaveBeenLastCalledWith("SPRILISTACK", "go");
+			// An older chat host advertises no canCommand: nothing is sent, as prompt or command.
 			await rig.input("/bogus thing");
 			await rig.input("\r");
-			expect(rig.text()).toContain("Unknown command /bogus; nothing was sent");
+			expect(rig.text()).toContain("update OMP on the chat's host. Nothing was sent.");
 			expect(rig.text()).toContain("/bogus thing");
 			expect(prompt).not.toHaveBeenCalled();
+			expect(command).not.toHaveBeenCalled();
 		} finally {
 			rig.close();
 		}
@@ -474,13 +520,128 @@ describe("Central focus composer", () => {
 		}
 	});
 
-	it("parses command arguments strictly", () => {
+	it("parses command arguments strictly; any other /name is for the focused chat", () => {
 		expect(parseFocusCommand("plain text")).toBeUndefined();
 		expect(parseFocusCommand("/inbox 0")).toMatchObject({ name: "error" });
 		expect(parseFocusCommand("/inbox x")).toMatchObject({ name: "error" });
 		expect(parseFocusCommand("/send onlychat")).toMatchObject({ name: "error" });
 		expect(parseFocusCommand("/chats extra")).toMatchObject({ name: "error" });
 		expect(parseFocusCommand("/send A multi\nline")).toEqual({ name: "send", chat: "A", message: "multi\nline" });
+		expect(parseFocusCommand("  /state verbose ")).toEqual({ name: "remote", text: "/state verbose" });
+		expect(parseFocusCommand("/")).toMatchObject({ name: "error" });
+	});
+
+	const commandWorkspace = {
+		statusLines: ["STATUS-ROW"],
+		usageLines: ["USAGE-ROW"],
+		canPrompt: true,
+		canCommand: true,
+		commands: [
+			{ name: "refresh", description: "Restart OMP" },
+			{ name: "compact", description: "Compact context" },
+		],
+	};
+
+	it("runs any other /command in the focused chat with the command op, never as a prefixed prompt", async () => {
+		const prompt = vi.fn(async () => {});
+		const command = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["command"]>>) => "Restarting…");
+		const commands = commandMocks();
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq" })], errors: [] }),
+			prompt,
+			command,
+			commands,
+			workspace: commandWorkspace,
+		});
+		try {
+			await rig.input("/refresh");
+			await rig.input("\r");
+			expect(command.mock.calls).toEqual([["local/hq", "session-local/hq", expect.any(String), "/refresh"]]);
+			expect(prompt).not.toHaveBeenCalled();
+			expect(rig.text()).toContain("── /refresh · ran in the chat ──");
+			expect(rig.text()).toContain("Restarting…");
+			expect(rig.text()).not.toContain("(queued)");
+			await rig.input("/inbox 5");
+			await rig.input("\r");
+			expect(commands.inbox).toHaveBeenCalledWith(5);
+			expect(command).toHaveBeenCalledTimes(1);
+			await rig.input("/help");
+			await rig.input("\r");
+			expect(rig.text()).toContain("/send <chat> <msg>");
+			expect(rig.text()).toContain("/refresh  /compact");
+			expect(command).toHaveBeenCalledTimes(1);
+			expect(prompt).not.toHaveBeenCalled();
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("retries an unconfirmed command with the same request ID and the command op", async () => {
+		const prompt = vi.fn(async () => {});
+		const command = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["command"]>>) => {
+			if (command.mock.calls.length === 1) throw new Error("Disconnected");
+			return "ran";
+		});
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq" })], errors: [] }),
+			prompt,
+			command,
+			workspace: commandWorkspace,
+		});
+		try {
+			await rig.input("/compact");
+			await rig.input("\r");
+			expect(rig.text()).toContain("Result unknown");
+			await rig.input("\x12");
+			expect(command.mock.calls[1]).toEqual(command.mock.calls[0]);
+			expect(prompt).not.toHaveBeenCalled();
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("pops up local and chat commands on '/' and Enter completes the selection without sending", async () => {
+		const prompt = vi.fn(async () => {});
+		const command = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["command"]>>) => "ran");
+		const rig = await setup({
+			snapshot: () => ({
+				chats: [
+					chat({
+						id: "local/hq",
+						requests: [{ id: "q", createdAt: 1, kind: "select", title: "Pick", options: ["A", "B"] }],
+					}),
+				],
+				errors: [],
+			}),
+			prompt,
+			command,
+			workspace: commandWorkspace,
+		});
+		try {
+			await rig.input("/");
+			const shown = rig.text();
+			for (const name of ["refresh", "compact", "chats", "inbox", "help"]) expect(shown).toContain(name);
+			expect(shown).toContain("local · task board URL");
+			await rig.input("ref");
+			// The editor narrows the list after its 100 ms debounce, as in the main chat.
+			await Bun.sleep(150);
+			await rig.input("");
+			expect(rig.text()).not.toContain("local · task board URL");
+			expect(rig.text()).toContain("Restart OMP");
+			// Down moves the popup selection; it never hands focus to the open question.
+			await rig.input("\x1b[B");
+			await rig.input("\x1b[A");
+			expect(rig.text()).toContain("── question ──");
+			await rig.input("\r");
+			expect(command).not.toHaveBeenCalled();
+			expect(prompt).not.toHaveBeenCalled();
+			expect(rig.text()).toMatch(/\/refresh\s/);
+			await rig.input("\r");
+			expect(command.mock.calls[0]?.[3]).toBe("/refresh");
+			expect(prompt).not.toHaveBeenCalled();
+		} finally {
+			rig.close();
+		}
 	});
 });
 

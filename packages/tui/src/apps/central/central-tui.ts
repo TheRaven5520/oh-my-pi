@@ -19,11 +19,12 @@ import { ProcessTerminal } from "../../terminal";
 import { getEditorTheme, getThemeEpoch, theme } from "../../theme/theme";
 import { truncateToWidth, visibleWidth } from "../../utils";
 import {
-	CENTRAL_FOCUS_HELP,
+	CentralFocusAutocompleteProvider,
 	type CentralFocusCommand,
 	type CentralFocusMemory,
 	type CentralFocusTurn,
 	focusChatLines,
+	focusHelpLines,
 	focusTurns,
 	parseFocusCommand,
 	renderFocusTurns,
@@ -42,6 +43,8 @@ import { CentralPromptRejectedError } from "./types";
 
 /** Focus mode keeps one draft for the target, whichever process currently serves it. */
 const FOCUS_DRAFT_KEY = "\0focus";
+/** How far before its send time a queued echo's transcript copy may be stamped (host clock skew). */
+const FOCUS_QUEUED_SKEW_MS = 15_000;
 
 interface CentralForm {
 	component: Component;
@@ -63,7 +66,15 @@ interface CentralDraft {
 	version: number;
 	sending: boolean;
 	error?: string;
-	pending?: { chatId: string; sessionId: string; requestId: string; text: string; version: number };
+	pending?: {
+		chatId: string;
+		sessionId: string;
+		requestId: string;
+		text: string;
+		version: number;
+		/** Sent with the `command` op; a retry must use the same op. */
+		command?: boolean;
+	};
 }
 
 /** Remote status rows may retain colors, but never terminal actions or extra rows. */
@@ -130,19 +141,24 @@ export class CentralComponent implements Component {
 	#focusMemory: CentralFocusMemory = {};
 	/** Why the focused chat's view is stale; the last view and draft stay. */
 	#focusNotice: string | undefined;
-	#focusOutput: { title: string; lines: string[] } | undefined;
+	#focusOutput: { title: string; lines: string[]; remote?: boolean } | undefined;
 	/** Focus mode renders turns itself: dated replies and the user's own sent lines. */
 	#focusTurns: CentralFocusTurn[] | undefined;
 	/**
-	 * Messages the chat accepted but has not yet put in its transcript, with the
-	 * ids of identical sent turns that cannot be its copy: those already in the
-	 * transcript when it was sent and those an earlier queued copy claimed.
-	 * Ids, not counts: Central serves a capped transcript tail, so an older copy
-	 * can drop off the front in the same reload that adds the new one.
+	 * Messages the chat accepted but has not yet put in its transcript, each with the
+	 * time it was sent. The chat stamps its copy when it accepts it, so that copy is
+	 * the first unclaimed sent turn with the same text stamped no earlier than
+	 * {@link FOCUS_QUEUED_SKEW_MS} before `at` (the allowance covers clock skew
+	 * between hosts). Timestamps, not entry ids: Central's transcript tail is capped
+	 * and its ids are positions, so they shift as older entries drop off the front.
 	 */
-	#focusQueued: Array<{ text: string; at: number; seen: Set<string> }> = [];
+	#focusQueued: Array<{ text: string; at: number }> = [];
+	/** `${timestamp}\0${text}` of sent turns a queued echo already claimed; each turn matches once. */
+	#focusClaimed = new Set<string>();
 	#focusRows: { key: string; rows: string[] } | undefined;
 	#focusCommandRunning = false;
+	/** JSON of the command list the focus composer's completion was built from. */
+	#focusCompletionKey: string | undefined;
 
 	constructor(
 		readonly ui: TUI,
@@ -364,23 +380,26 @@ export class CentralComponent implements Component {
 			const entries = await this.host.transcript(chatId);
 			if (this.#stopped || generation !== this.#transcriptLoadGeneration || this.#selectedChatId !== chatId) return;
 			if (this.focus) {
-				this.#focusTurns = focusTurns(entries, this.focus.prefix);
-				// Drop a queued echo once a sent turn with its text and an id it has not
-				// seen arrives; an older "ok" never clears a new one.
-				const claimed = new Set<string>();
+				const turns = focusTurns(entries, this.focus.prefix);
+				this.#focusTurns = turns;
+				const sent = turns.flatMap(turn =>
+					turn.kind === "sent" && turn.at !== undefined
+						? [{ key: `${turn.at}\0${turn.text}`, at: turn.at, text: turn.text }]
+						: [],
+				);
+				// A claim outlives reloads; it is forgotten only once its turn left the tail.
+				const present = new Set(sent.map(turn => turn.key));
+				for (const key of this.#focusClaimed) if (!present.has(key)) this.#focusClaimed.delete(key);
 				this.#focusQueued = this.#focusQueued.filter(queued => {
-					const own = this.#focusTurns!.find(
+					const own = sent.find(
 						turn =>
-							turn.kind === "sent" &&
 							turn.text === queued.text &&
-							!queued.seen.has(turn.id) &&
-							!claimed.has(turn.id),
+							turn.at >= queued.at - FOCUS_QUEUED_SKEW_MS &&
+							!this.#focusClaimed.has(turn.key),
 					);
-					if (!own) return true;
-					claimed.add(own.id);
-					return false;
+					if (own) this.#focusClaimed.add(own.key);
+					return !own;
 				});
-				for (const queued of this.#focusQueued) for (const id of claimed) queued.seen.add(id);
 				this.#focusRows = undefined;
 			} else {
 				const builder = new ChatTranscriptBuilder({
@@ -431,7 +450,10 @@ export class CentralComponent implements Component {
 		} finally {
 			if (generation === this.#workspaceGeneration) {
 				this.#workspaceLoadingKey = undefined;
-				if (!this.#stopped) this.ui.requestRender();
+				if (!this.#stopped) {
+					this.#syncFocusCompletion();
+					this.ui.requestRender();
+				}
 			}
 		}
 	}
@@ -446,8 +468,25 @@ export class CentralComponent implements Component {
 			input.setScrollbarVisible(true);
 			draft = { input, version: 0, sending: false };
 			this.#drafts.set(chatId, draft);
+			if (this.focus) {
+				// The popup appears asynchronously; repaint when it opens or narrows.
+				input.onAutocompleteUpdate = () => this.ui.requestRender();
+				this.#focusCompletionKey = undefined;
+				this.#syncFocusCompletion();
+			}
 		}
 		return draft;
+	}
+
+	/** Focus composer completion: local commands plus the focused chat's list, rebuilt when that list changes. */
+	#syncFocusCompletion(): void {
+		const draft = this.focus ? this.#drafts.get(FOCUS_DRAFT_KEY) : undefined;
+		if (!draft) return;
+		const remote = this.#workspace?.canCommand && this.host.command ? (this.#workspace.commands ?? []) : [];
+		const key = JSON.stringify(remote);
+		if (key === this.#focusCompletionKey) return;
+		this.#focusCompletionKey = key;
+		draft.input.setAutocompleteProvider(new CentralFocusAutocompleteProvider(remote));
 	}
 
 	#promptUnavailable(): string | undefined {
@@ -498,18 +537,14 @@ export class CentralComponent implements Component {
 		draft.error = undefined;
 		this.ui.requestRender();
 		try {
+			// The chat stamps its copy when it accepts it, at or after this moment.
+			const sentAt = Date.now();
 			await this.host.prompt!(pending.chatId, pending.sessionId, pending.requestId, pending.text);
 			if (draft.version === pending.version) draft.input.setText("");
 			draft.pending = undefined;
 			// A steer to a busy chat enters its transcript only when the chat takes
 			// it; show it at once, marked queued, until the transcript has it.
-			if (this.focus) {
-				const text = pending.text.slice(this.focus.prefix.length);
-				const seen = new Set<string>();
-				for (const turn of this.#focusTurns ?? [])
-					if (turn.kind === "sent" && turn.text === text) seen.add(turn.id);
-				this.#focusQueued.push({ text, at: Date.now(), seen });
-			}
+			if (this.focus) this.#focusQueued.push({ text: pending.text.slice(this.focus.prefix.length), at: sentAt });
 		} catch (error) {
 			if (error instanceof CentralPromptRejectedError) {
 				draft.pending = undefined;
@@ -523,8 +558,75 @@ export class CentralComponent implements Component {
 		}
 	}
 
-	/** Every `/…` input runs here; none of it reaches the focused chat. */
-	async #runFocusCommand(command: CentralFocusCommand, draft: CentralDraft): Promise<void> {
+	/**
+	 * A `/command` for the focused chat: run there through its own composer, never
+	 * sent as a prefixed prompt. Same request-ID retry rules as a message.
+	 */
+	async #sendCommand(chat: CentralChat, draft: CentralDraft, retry = false): Promise<void> {
+		if (draft.sending) return;
+		if (draft.pending && !retry) {
+			draft.error = "Delivery unconfirmed · Ctrl+R retries the saved message; your edited draft is kept.";
+			return;
+		}
+		const unavailable = this.#promptUnavailable();
+		if (unavailable) {
+			draft.error = unavailable;
+			return;
+		}
+		if (!this.host.command || !this.#workspace?.canCommand) {
+			draft.error = "This chat cannot run /commands from Central; update OMP on the chat's host. Nothing was sent.";
+			return;
+		}
+		if (!draft.pending) {
+			const text = draft.input.getExpandedText().trim();
+			if (new TextEncoder().encode(text).byteLength > 65536) {
+				draft.error = "Command exceeds 64 KiB; shorten it before sending.";
+				return;
+			}
+			draft.pending = {
+				chatId: chat.id,
+				sessionId: chat.sessionId,
+				requestId: crypto.randomUUID(),
+				text,
+				version: draft.version,
+				command: true,
+			};
+		}
+		const pending = draft.pending;
+		draft.sending = true;
+		draft.error = undefined;
+		this.ui.requestRender();
+		try {
+			const result = await this.host.command(pending.chatId, pending.sessionId, pending.requestId, pending.text);
+			if (draft.version === pending.version) draft.input.setText("");
+			draft.pending = undefined;
+			this.#showFocusOutput(pending.text.split(/\s/, 1)[0]!, result, true);
+			void this.#loadWorkspace(true);
+		} catch (error) {
+			if (error instanceof CentralPromptRejectedError) {
+				draft.pending = undefined;
+				draft.error = `Not run · edit or Enter to send again · ${sanitizeDisplayLine(error.message)}`;
+			} else {
+				draft.error = `Result unknown · Ctrl+R retries the saved command · ${sanitizeDisplayLine(String(error))}`;
+			}
+		} finally {
+			draft.sending = false;
+			if (!this.#stopped) this.ui.requestRender();
+		}
+	}
+
+	#showFocusOutput(title: string, text: string | string[], remote = false): void {
+		const lines = typeof text === "string" ? text.replace(/\s+$/, "").split("\n") : text;
+		this.#focusOutput = { title, lines: lines.some(Boolean) ? lines : ["(no output)"], remote };
+		this.#transcriptView.setFollowTail(true);
+		this.#transcriptView.scrollToBottom();
+	}
+
+	/** Local Central commands; they never reach the focused chat. */
+	async #runFocusCommand(
+		command: Exclude<CentralFocusCommand, { name: "remote" }>,
+		draft: CentralDraft,
+	): Promise<void> {
 		if (command.name === "error") {
 			draft.error = command.message;
 			return;
@@ -535,35 +637,32 @@ export class CentralComponent implements Component {
 		}
 		const commands = this.focus!.commands;
 		const version = draft.version;
-		const show = (title: string, text: string | string[]): void => {
-			const lines = typeof text === "string" ? text.replace(/\s+$/, "").split("\n") : text;
-			this.#focusOutput = { title, lines: lines.some(Boolean) ? lines : ["(no output)"] };
-			this.#transcriptView.setFollowTail(true);
-			this.#transcriptView.scrollToBottom();
-		};
 		this.#focusCommandRunning = true;
 		draft.error = undefined;
 		this.ui.requestRender();
 		try {
 			switch (command.name) {
 				case "help":
-					show("/help", CENTRAL_FOCUS_HELP);
+					this.#showFocusOutput(
+						"/help",
+						focusHelpLines(this.#workspace?.commands, !!(this.#workspace?.canCommand && this.host.command)),
+					);
 					break;
 				case "chats":
-					show("/chats", focusChatLines(this.#snapshot, this.#selectedChatId));
+					this.#showFocusOutput("/chats", focusChatLines(this.#snapshot, this.#selectedChatId));
 					break;
 				case "dag":
-					show("/dag", commands.boardUrl());
+					this.#showFocusOutput("/dag", commands.boardUrl());
 					break;
 				case "inbox":
-					show(`/inbox ${command.count}`, await commands.inbox(command.count));
+					this.#showFocusOutput(`/inbox ${command.count}`, await commands.inbox(command.count));
 					break;
 				case "pause":
 				case "resume":
-					show(`/${command.name}`, await commands.setPaused(command.name === "pause"));
+					this.#showFocusOutput(`/${command.name}`, await commands.setPaused(command.name === "pause"));
 					break;
 				case "send":
-					show(`/send ${command.chat}`, await commands.relay(command.chat, command.message));
+					this.#showFocusOutput(`/send ${command.chat}`, await commands.relay(command.chat, command.message));
 					break;
 			}
 			if (draft.version === version) draft.input.setText("");
@@ -767,11 +866,6 @@ export class CentralComponent implements Component {
 			this.#finished.resolve();
 			return;
 		}
-		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
-			// Focus shows one chat; there is nothing to cycle to.
-			if (!this.focus) this.#selectAdjacent(matchesKey(data, "shift+tab") ? -1 : 1);
-			return;
-		}
 		if (matchesKey(data, "alt+up") || matchesKey(data, "alt+down")) {
 			this.#usageOffset = Math.max(
 				0,
@@ -789,6 +883,33 @@ export class CentralComponent implements Component {
 		if (matchesKey(data, "f2") && form) {
 			this.#inputFocus = !this.#inputFocus;
 			this.ui.requestRender();
+			return;
+		}
+		// Focus composer completion popup: its navigation and accept keys belong to the
+		// editor, so Enter completes a partly typed name instead of sending, and arrows
+		// move the selection instead of handing focus to a question. Tab completes too.
+		// Enter on a name already typed in full only adds a space, so it sends as usual.
+		if (this.focus && (this.#inputFocus || !form)) {
+			const draft = this.#draft(FOCUS_DRAFT_KEY);
+			const popupKey =
+				matchesKey(data, "enter") ||
+				matchesKey(data, "up") ||
+				matchesKey(data, "down") ||
+				matchesKey(data, "pageUp") ||
+				matchesKey(data, "pageDown") ||
+				matchesKey(data, "escape");
+			if (matchesKey(data, "tab") || (popupKey && draft.input.isShowingAutocomplete())) {
+				const before = draft.input.getText();
+				draft.input.handleDraftEdit(data);
+				const after = draft.input.getText();
+				if (after !== before) draft.version++;
+				this.ui.requestRender();
+				if (!matchesKey(data, "enter") || after.trimEnd() !== before.trimEnd()) return;
+			}
+		}
+		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
+			// Focus shows one chat; there is nothing to cycle to.
+			if (!this.focus) this.#selectAdjacent(matchesKey(data, "shift+tab") ? -1 : 1);
 			return;
 		}
 		// Focus: an arrow key on an empty composer moves keyboard focus into the
@@ -831,12 +952,16 @@ export class CentralComponent implements Component {
 				const missing = `${this.#focusLabel()} is not available; draft kept, retrying.`;
 				if (matchesKey(data, "enter") && data !== "\n") {
 					const command = this.focus ? parseFocusCommand(draft.input.getExpandedText()) : undefined;
-					if (command) void this.#runFocusCommand(command, draft);
+					if (command?.name === "remote") {
+						if (chat) void this.#sendCommand(chat, draft);
+						else draft.error = missing;
+					} else if (command) void this.#runFocusCommand(command, draft);
 					else if (chat) void this.#sendPrompt(chat, draft);
 					else draft.error = missing;
 				} else if (matchesKey(data, "ctrl+r") && draft.pending) {
-					if (chat) void this.#sendPrompt(chat, draft, true);
-					else draft.error = missing;
+					if (!chat) draft.error = missing;
+					else if (draft.pending.command) void this.#sendCommand(chat, draft, true);
+					else void this.#sendPrompt(chat, draft, true);
 				} else {
 					const before = draft.input.getText();
 					const pasteEnd = data.indexOf("\x1b[201~");
@@ -1059,12 +1184,19 @@ export class CentralComponent implements Component {
 			: this.#transcriptLoading && !this.#transcriptBuilder
 				? [theme.fg("muted", "Loading chat transcript…")]
 				: (this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? []);
-		// Local command output sits right above the composer, below any open
-		// question, so a question card never hides it; it is never sent.
+		// Command output sits right above the composer, below any open question, so
+		// a question card never hides it. Local output never reached the chat; a chat
+		// command's output is what that chat showed while running it.
 		const focusOutput =
 			focus && this.#focusOutput
 				? [
-						truncateToWidth(theme.fg("dim", `── ${this.#focusOutput.title} · local, not sent ──`), mainWidth),
+						truncateToWidth(
+							theme.fg(
+								"dim",
+								`── ${this.#focusOutput.title} · ${this.#focusOutput.remote ? "ran in the chat" : "local, not sent"} ──`,
+							),
+							mainWidth,
+						),
 						...this.#focusOutput.lines
 							.flatMap(line => wrapTextWithAnsi(sanitizeDisplayLine(line), Math.max(1, mainWidth - 2)))
 							.slice(0, Math.max(1, Math.floor(contentHeight / 3))),
@@ -1092,13 +1224,15 @@ export class CentralComponent implements Component {
 		}
 		const input = draft?.input.render(mainWidth) ?? [theme.fg("dim", "No chat selected")];
 		const sendState = draft?.sending
-			? "Sending…"
+			? draft.pending?.command
+				? "Running in the chat…"
+				: "Sending…"
 			: this.#focusCommandRunning
 				? "Running local command…"
 				: (draft?.error ?? this.#promptUnavailable());
 		const canSend = this.#workspace?.canPrompt && this.host.prompt;
 		const hint = focus
-			? `${form ? (inputFocused ? (draft?.input.hasDraftContent() ? "F2 question · " : "↑/↓ question · ") : "Enter answer · Esc back to input · ") : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · /help commands · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
+			? `${form ? (inputFocused ? (draft?.input.hasDraftContent() ? "F2 question · " : "↑/↓ question · ") : "Enter answer · Esc back to input · ") : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · / commands · /help · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
 			: `${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}Ctrl+O open · Tab/Shift+Tab chats · ${inputFocused ? (canSend ? "Enter send · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · Shift+↑/↓ scroll · Ctrl+C close`;
 		const footer = [
 			...focusOutput,

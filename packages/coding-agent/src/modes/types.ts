@@ -5,6 +5,7 @@ import type { AssistantMessage, ImageContent, Model, Usage, UsageReport } from "
 import type { Component, Container, EditorTheme, Loader, TUI } from "@oh-my-pi/pi-tui";
 import type { TspText } from "@oh-my-pi/pi-wire";
 import type { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
+import type { CentralCommandInfo } from "@oh-my-pi/pi-tui/apps/central/types";
 import type { CollabController } from "../collab/controller";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
@@ -338,6 +339,8 @@ export interface InteractiveModeContext {
 	showPinnedError(message: string): void;
 	clearPinnedError(): void;
 	showWarning(message: string, options?: { hideWithToolActivity?: boolean }): void;
+	/** Called with every status, warning and error message shown until the returned stop function runs. */
+	observeNotices(listener: (message: string) => void): () => void;
 	showNewVersionNotification(newVersion: string): void;
 	clearEditor(): void;
 	updatePendingMessagesDisplay(): void;
@@ -498,6 +501,13 @@ export interface InteractiveModeContext {
 	): Promise<CompactionOutcome>;
 	openInBrowser(urlOrPath: string): void;
 	refreshSlashCommandState(cwd?: string): Promise<void>;
+	/** The composer's slash-command list (builtin, extension, custom, skill, file, template), for Central. */
+	centralCommands(): CentralCommandInfo[];
+	/**
+	 * Run `/command` text sent from Central focus through the composer's own submit path.
+	 * `centralQuestionOpen` reports a dialog the focus view can answer, which is left open.
+	 */
+	runCentralCommand(text: string, centralQuestionOpen: () => boolean): Promise<string>;
 	/** Reload session skills and derived `/skill:<name>` commands. */
 	refreshSkillState(): Promise<void>;
 	applyCwdChange(newCwd: string): Promise<boolean>;

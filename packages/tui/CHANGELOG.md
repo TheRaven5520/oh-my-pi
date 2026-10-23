@@ -3,8 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- Central focus: `parseFocusCommand` returns `{ name: "remote", text }` for any non-local `/command`; `CentralTuiHost.command` runs it in the chat and returns what it showed; `CentralWorkspace` gains `canCommand` and `commands`; `CentralFocusAutocompleteProvider` gives the focus composer slash completion (local commands marked `local`, plus the chat's list; no file completion), and its popup keeps Enter, Tab, arrows and Esc while open.
 - Optional theme color `mdBold` colors inline Markdown `**bold**` text; `dark-claude` sets it to its light lavender. Themes without it keep bold in the surrounding text color. `MarkdownTheme` gains an optional `strong` hook for inline strong text, falling back to `bold`.
-- `omp central --focus` keeps a repeated message (e.g. a second "ok") marked queued until its own copy reaches the chat, instead of clearing it on an older identical message.
+- `omp central --focus` keeps a repeated message (e.g. a second "ok") marked queued until its own copy reaches the chat, matched by text and a timestamp no earlier than 15 s before the send, each sent turn clearing one queued echo.
 - Central focus mode (`CentralFocusOptions`): a single-chat view that renders only assistant reply text through the normal transcript builder, keeps Central's question forms, and adds a prefixed composer with local slash commands. It keeps the last view and draft and shows `not responding; retrying` while the chat does not answer, is unlisted, or is restarting.
 
 ### Fixed

@@ -1,4 +1,10 @@
 import type { AssistantMessage, TextContent } from "@oh-my-pi/pi-ai";
+import {
+	type AutocompleteItem,
+	type AutocompleteProvider,
+	CombinedAutocompleteProvider,
+	type SlashCommand,
+} from "../../autocomplete";
 import type { TranscriptEntryLike } from "../../chat/transcript-entry";
 import { Markdown } from "../../components/markdown";
 import { sanitizeDisplayLine } from "../../overlays/extensions/display-text";
@@ -6,7 +12,7 @@ import { clockDateTimeFormat } from "../../render/clock";
 import { wrapTextWithAnsi } from "../../render/render-utils";
 import { getMarkdownTheme, theme } from "../../theme/theme";
 import { truncateToWidth } from "../../utils";
-import type { CentralChat, CentralSnapshot } from "./types";
+import type { CentralChat, CentralCommandInfo, CentralSnapshot } from "./types";
 
 const ZERO_USAGE: AssistantMessage["usage"] = {
 	input: 0,
@@ -188,21 +194,93 @@ export type CentralFocusCommand =
 	| { name: "pause" }
 	| { name: "resume" }
 	| { name: "help" }
+	/** Any other `/…`: run in the focused chat as if typed in its own composer. */
+	| { name: "remote"; text: string }
 	| { name: "error"; message: string };
 
-export const CENTRAL_FOCUS_HELP = [
-	"Local commands (run here, never sent to the focused chat):",
-	"  /chats                 all chats on every host, busy and open-question state",
-	'  /send <chat> <msg>     ask the coordinator to relay <msg> to <chat> (quote a name with spaces: /send "MY CHAT" hi)',
-	"  /dag                   task board URL",
-	"  /inbox [N]             last N coordinator inbox messages (default 10)",
-	"  /pause                 pause coordinator inbox steering",
-	"  /resume                resume coordinator inbox steering",
-	"  /help                  this list",
-	"Anything else starting with / is refused. Other text is sent to the focused chat.",
-];
+/** Local Central commands, for `/help` and composer completion. */
+export const CENTRAL_FOCUS_LOCAL_COMMANDS: ReadonlyArray<{ name: string; argumentHint?: string; description: string }> =
+	[
+		{ name: "chats", description: "all chats on every host, busy and open-question state" },
+		{
+			name: "send",
+			argumentHint: "<chat> <msg>",
+			description: 'ask the coordinator to relay <msg> to <chat> (quote a name with spaces: /send "MY CHAT" hi)',
+		},
+		{ name: "dag", description: "task board URL" },
+		{ name: "inbox", argumentHint: "[N]", description: "last N coordinator inbox messages (default 10)" },
+		{ name: "pause", description: "pause coordinator inbox steering" },
+		{ name: "resume", description: "resume coordinator inbox steering" },
+		{ name: "help", description: "this list" },
+	];
 
-/** `undefined`: ordinary text for the focused chat. Every `/…` input is handled locally. */
+/**
+ * Focus composer completion: command names only, at the start of the draft. The
+ * local Central commands (marked `local`) come first and win a name clash; then
+ * the focused chat's advertised list. No `@` file or path completion: this host's
+ * filesystem is not the chat's.
+ */
+export class CentralFocusAutocompleteProvider implements AutocompleteProvider {
+	readonly #base: CombinedAutocompleteProvider;
+
+	constructor(remote: readonly CentralCommandInfo[]) {
+		const commands: SlashCommand[] = CENTRAL_FOCUS_LOCAL_COMMANDS.map(command => ({
+			name: command.name,
+			description: `local · ${command.description}`,
+			argumentHint: command.argumentHint,
+		}));
+		for (const command of remote) {
+			if (CENTRAL_FOCUS_LOCAL_COMMANDS.some(local => local.name === command.name)) continue;
+			commands.push({
+				name: command.name,
+				aliases: command.aliases,
+				description: command.description,
+				argumentHint: command.argumentHint,
+			});
+		}
+		this.#base = new CombinedAutocompleteProvider(commands, "/");
+	}
+
+	async getSuggestions(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+		const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
+		if (cursorLine !== 0 || !/^\s*\/[^\s/]*$/.test(before)) return null;
+		return this.#base.getSuggestions(lines, cursorLine, cursorCol);
+	}
+
+	applyCompletion(lines: string[], cursorLine: number, cursorCol: number, item: AutocompleteItem, prefix: string) {
+		return this.#base.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+	}
+
+	trySyncSlashCompletion(textBeforeCursor: string): { items: AutocompleteItem[]; prefix: string } | null {
+		return /^\s*\/[^\s/]*$/.test(textBeforeCursor) ? this.#base.trySyncSlashCompletion(textBeforeCursor) : null;
+	}
+}
+
+/** `/help`: the local commands, then the focused chat's own command names (it may list hundreds). */
+export function focusHelpLines(remote: readonly CentralCommandInfo[] | undefined, canCommand: boolean): string[] {
+	const lines = ["Local commands (run here, never sent to the focused chat):"];
+	for (const command of CENTRAL_FOCUS_LOCAL_COMMANDS) {
+		const usage = `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`;
+		lines.push(`  ${usage.padEnd(22)} ${command.description}`);
+	}
+	if (!canCommand) {
+		lines.push("Chat commands: unavailable; update OMP on the chat's host. Other text is sent to the focused chat.");
+		return lines;
+	}
+	lines.push("Chat commands (any other /command runs in the focused chat, as if typed there; / completes):");
+	const names = (remote ?? [])
+		.filter(command => !CENTRAL_FOCUS_LOCAL_COMMANDS.some(local => local.name === command.name))
+		.map(command => `/${command.name}`);
+	lines.push(`  ${names.join("  ") || "(the chat listed none)"}`);
+	lines.push("Other text is sent to the focused chat.");
+	return lines;
+}
+
+/** `undefined`: ordinary text for the focused chat. Local commands win; any other `/…` is `remote`. */
 export function parseFocusCommand(text: string): CentralFocusCommand | undefined {
 	const trimmed = text.trim();
 	if (!trimmed.startsWith("/")) return undefined;
@@ -233,9 +311,9 @@ export function parseFocusCommand(text: string): CentralFocusCommand | undefined
 			return { name, chat: parts[1]!, message: parts[2]! };
 		}
 		default:
-			return usage(
-				`Unknown command /${sanitizeDisplayLine(name).slice(0, 40)}; nothing was sent · /help lists commands`,
-			);
+			return name && !name.startsWith("/")
+				? { name: "remote", text: trimmed }
+				: usage("Type a command name after / · /help lists commands");
 	}
 }
 

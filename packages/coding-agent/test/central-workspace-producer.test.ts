@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -10,16 +10,27 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { CentralRequestDraft } from "@oh-my-pi/pi-tui/apps/central/types";
 import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types";
 import type { ExtensionAskDialogSubmitResult } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
+import { type Component, Container, type OverlayHandle, TUI } from "@oh-my-pi/pi-tui";
+import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme/theme";
+import { VirtualRenderScheduler } from "../../tui/test/virtual-render-scheduler";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import * as utils from "@oh-my-pi/pi-utils";
 import { startCentralHost } from "../src/central/bridge";
 import { CentralSources, centralLines } from "../src/central/sources";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
 import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
+import { InputController } from "../src/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "../src/modes/types";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
+import { cfgDisplayToolState } from "../src/modes/settings";
+
+beforeAll(async () => {
+	await initTheme();
+});
 
 describe("Central workspace producer through private IPC", () => {
 	const cleanups: Array<() => void | Promise<void>> = [];
@@ -97,6 +108,7 @@ describe("Central workspace producer through private IPC", () => {
 			setToolUIContext() {},
 			showError: (error: string) => errors.push(error),
 			showWarning: (error: string) => errors.push(error),
+			centralCommands: () => [],
 		} as unknown as InteractiveModeContext;
 		const controller = new ExtensionUiController(ctx);
 		await controller.initHooksAndCustomTools();
@@ -392,6 +404,166 @@ describe("Central workspace producer through private IPC", () => {
 	});
 });
 
+describe("Central slash commands through private IPC and the composer's submit path", () => {
+	const cleanups: Array<() => void | Promise<void>> = [];
+
+	afterEach(async () => {
+		for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+	});
+
+	/** A real session, editor, TUI and InputController submit path; only the chat chrome is stubbed. */
+	async function commandFixture() {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-command-"));
+		cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
+		const configRoot = spyOn(utils, "getBaseConfigRoot").mockReturnValue(root);
+		cleanups.push(() => configRoot.mockRestore());
+		const auth = await AuthStorage.create(":memory:");
+		auth.keys.setRuntime("anthropic", "test-key");
+		cleanups.push(() => auth.close());
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected test model");
+		const settings = Settings.isolated({ "compaction.enabled": false, "todo.enabled": false });
+		const session = new AgentSession({
+			agent: new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["Test"], tools: [] },
+				streamFn: createMockModel({ responses: [() => ({ content: ["Must not run"] })] }).stream,
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: new ModelRegistry(auth),
+		});
+		cleanups.push(() => session.dispose());
+		const ui = new TUI(new VirtualTerminal(100, 30), false, { renderScheduler: new VirtualRenderScheduler() });
+		const editor = new CustomEditor(getEditorTheme());
+		const editorContainer = new Container();
+		editorContainer.addChild(editor);
+		ui.addChild(editorContainer);
+		ui.setFocus(editor);
+		const shown: string[] = [];
+		const listeners = new Set<(message: string) => void>();
+		const notice = (message: string): void => {
+			shown.push(message);
+			for (const listener of listeners) listener(message);
+		};
+		/** Stands in for the model picker: a real overlay that Escape dismisses, as pickers do. */
+		class Picker implements Component {
+			escapes = 0;
+			handle: OverlayHandle | undefined;
+			render(): string[] {
+				return ["PICK A MODEL"];
+			}
+			handleInput(data: string): void {
+				if (data !== "\x1b") return;
+				this.escapes++;
+				this.handle?.hide();
+			}
+			invalidate(): void {}
+		}
+		const pickers: Picker[] = [];
+		const ctx = {
+			session,
+			viewSession: session,
+			sessionManager: session.sessionManager,
+			settings,
+			editor,
+			editorContainer,
+			ui,
+			toolDisplayState: "claude",
+			toolOutputExpanded: false,
+			chatContainer: Object.assign(new Container(), {
+				setToolDisplayState() {},
+				resetStableEmission() {},
+			}),
+			pendingMessagesContainer: new Container(),
+			skillCommands: new Map(),
+			fileSlashCommands: new Set<string>(),
+			locallySubmittedUserSignatures: new Set<string>(),
+			statusLine: {
+				renderCentralWorkspace: () => ({ statusLines: ["Source"], usageLines: [] }),
+			},
+			updatePendingMessagesDisplay() {},
+			syncComposerShape() {},
+			setToolUIContext() {},
+			showStatus: notice,
+			showWarning: notice,
+			showError: notice,
+			observeNotices(listener: (message: string) => void) {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			centralCommands: () => [
+				{ name: "state", description: "Set tool display" },
+				{ name: "model", aliases: ["models"], description: "Switch model" },
+			],
+			runCentralCommand: (text: string, centralQuestionOpen: () => boolean) =>
+				input.runCentralCommand(text, centralQuestionOpen),
+			setToolDisplayState: (state: "hidden" | "claude" | "verbose") => input.setToolDisplayState(state),
+			showModelSelector() {
+				const picker = new Picker();
+				picker.handle = ui.showOverlay(picker);
+				pickers.push(picker);
+			},
+		} as unknown as InteractiveModeContext;
+		const input = new InputController(ctx);
+		input.setupEditorSubmitHandler();
+		const controller = new ExtensionUiController(ctx);
+		await controller.initHooksAndCustomTools();
+		cleanups.push(() => controller.disposeCentral());
+		const sources = new CentralSources();
+		cleanups.push(() => sources.close());
+		const snapshot = await sources.refresh();
+		expect(snapshot.chats).toHaveLength(1);
+		return { ctx, session, sources, chat: snapshot.chats[0]!, editor, ui, shown, pickers };
+	}
+
+	it("runs a builtin through the submit path, never as a prompt, and advertises the command list", async () => {
+		const f = await commandFixture();
+		f.editor.setText("draft typed in the chat");
+		const workspace = await f.sources.workspace(f.chat.id, 80, 24);
+		expect(workspace.canCommand).toBe(true);
+		expect(workspace.commands?.map(command => command.name)).toEqual(["state", "model"]);
+		const result = await f.sources.command(f.chat.id, f.chat.sessionId, "state-1", "/state verbose");
+		expect(result).toBe("Tool display: verbose");
+		expect(f.ctx.toolDisplayState).toBe("verbose");
+		expect(cfgDisplayToolState.get(f.ctx.settings)).toBe("verbose");
+		// Same request ID: the first run's result, not a second run.
+		expect(await f.sources.command(f.chat.id, f.chat.sessionId, "state-1", "/state verbose")).toBe(
+			"Tool display: verbose",
+		);
+		expect(f.shown).toEqual(["Tool display: verbose"]);
+		expect(f.session.getQueuedMessages().steering).toEqual([]);
+		expect(f.session.messages).toEqual([]);
+		expect(f.editor.getText()).toBe("draft typed in the chat");
+		// The request ID belongs to the command; reusing it for a prompt is a conflict.
+		await expect(f.sources.prompt(f.chat.id, f.chat.sessionId, "state-1", "/state verbose")).rejects.toThrow(
+			"request_id_conflict",
+		);
+		await expect(f.sources.command(f.chat.id, "another-session", "stale-1", "/state hidden")).rejects.toBeInstanceOf(
+			CentralPromptRejectedError,
+		);
+		expect(f.ctx.toolDisplayState).toBe("verbose");
+		expect(await f.sources.command(f.chat.id, f.chat.sessionId, "unknown-1", "/no-such-command")).toBe(
+			"Not run: Unknown command /no-such-command in this chat; nothing was run",
+		);
+		expect(f.session.messages).toEqual([]);
+	});
+
+	it("closes a picker the command opened and leaves the chat window on its editor", async () => {
+		const f = await commandFixture();
+		const overlays = f.ui.overlayStack.length;
+		const result = await f.sources.command(f.chat.id, f.chat.sessionId, "model-1", "/model");
+		expect(result).toBe(
+			"opens a picker in the chat's own window; give an argument (e.g. /model <name>) or use the chat",
+		);
+		expect(f.pickers).toHaveLength(1);
+		expect(f.pickers[0]!.escapes).toBe(1);
+		expect(f.ui.overlayStack).toHaveLength(overlays);
+		expect(f.ui.getFocused()).toBe(f.editor);
+		expect(f.session.messages).toEqual([]);
+	});
+});
+
 it("carries workspace and idempotent prompts through the real stdio-to-private-IPC bridge", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-stdio-"));
 	const bridgePath = path.resolve(import.meta.dir, "../src/central/bridge.ts");
@@ -404,13 +576,19 @@ it("carries workspace and idempotent prompts through the real stdio-to-private-I
 		import { startCentralHost, listCentralChats } from ${JSON.stringify(bridgePath)};
 		import { serveCentralStdio } from ${JSON.stringify(sourcesPath)};
 		let sent = 0;
+		let ran = 0;
 		const host = await startCentralHost(
 			() => ({ sessionId: "original", name: "Source", cwd: "/workspace", busy: false }),
 			{
-				getWorkspace: (statusWidth, usageWidth) => ({ statusLines: ["Sent " + sent], usageLines: [statusWidth + ":" + usageWidth], canPrompt: true }),
+				getWorkspace: (statusWidth, usageWidth) => ({ statusLines: ["Sent " + sent + " Ran " + ran], usageLines: [statusWidth + ":" + usageWidth], canPrompt: true, canCommand: true, commands: [{ name: "state" }] }),
 				prompt: async (sessionId, text) => {
 					if (sessionId !== "original" || text !== "hello") throw new Error("Wrong target");
 					sent++;
+				},
+				command: async (sessionId, text) => {
+					if (sessionId !== "original" || text !== "/state verbose") throw new Error("Wrong target");
+					ran++;
+					return "Tool display: verbose";
 				},
 			},
 		);
@@ -432,15 +610,33 @@ it("carries workspace and idempotent prompts through the real stdio-to-private-I
 			return JSON.parse(reply.value!) as Record<string, unknown>;
 		};
 		const first = await request({ id: 1, op: "workspace", chatId, statusWidth: 80, usageWidth: 20 });
-		expect(first).toMatchObject({ id: 1, workspace: { canPrompt: true } });
+		expect(first).toMatchObject({
+			id: 1,
+			workspace: { canPrompt: true, canCommand: true, commands: [{ name: "state" }] },
+		});
 		for (const id of [2, 3]) {
 			expect(
 				await request({ id, op: "prompt", chatId, sessionId: "original", requestId: "same-send", text: "hello" }),
 			).toEqual({ id, ok: true });
 		}
+		for (const id of [20, 21]) {
+			expect(
+				await request({
+					id,
+					op: "command",
+					chatId,
+					sessionId: "original",
+					requestId: "cmd",
+					text: "/state verbose",
+				}),
+			).toEqual({ id, ok: true, result: "Tool display: verbose" });
+		}
 		const workspace = (await request({ id: 4, op: "workspace", chatId, statusWidth: 80, usageWidth: 20 }))
 			.workspace as { statusLines: string[]; usageLines: string[] };
-		expect(workspace.statusLines.map(line => Bun.stripANSI(line))).toEqual(["Sent 1"]);
+		expect(workspace.statusLines.map(line => Bun.stripANSI(line))).toEqual(["Sent 1 Ran 1"]);
+		expect(
+			await request({ id: 22, op: "command", chatId, sessionId: "original", requestId: "cmd2", text: "plain text" }),
+		).toMatchObject({ id: 22, confirmedNoAdmission: true });
 		expect(workspace.usageLines.map(line => Bun.stripANSI(line))).toEqual(["80:20"]);
 		const rejected = await request({
 			id: 5,

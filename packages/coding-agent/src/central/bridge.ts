@@ -13,10 +13,12 @@ import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types"
 import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { getBaseConfigRoot, isEnoent } from "@oh-my-pi/pi-utils";
 import {
+	isCentralCommand,
 	isCentralPrompt,
 	isCentralRequestDraft,
 	isCentralWorkspaceWidth,
 	parseCentralChat,
+	parseCentralCommandResult,
 	parseCentralWorkspace,
 	validateCentralAnswer,
 } from "./validation";
@@ -36,6 +38,11 @@ type Options = {
 	getWorkspace?: (statusWidth: number, usageWidth: number) => CentralWorkspace;
 	/** Resolves only when the run/queue owns the input; rejects pre-acceptance failures. */
 	prompt?: (sessionId: string, text: string) => Promise<void>;
+	/**
+	 * Runs `/command` text through the chat's composer submit path and resolves with what it
+	 * showed. Rejects only when the command was refused before it ran.
+	 */
+	command?: (sessionId: string, text: string) => Promise<string>;
 };
 export const CENTRAL_MAX_TRANSCRIPT_BYTES = 512 * 1024;
 
@@ -192,14 +199,17 @@ function query(meta: Metadata, request: object): Promise<Record<string, unknown>
 					"prompt_rejected",
 					"request_id_conflict",
 					"prompt_capacity",
+					"command_rejected",
 				].includes(String(payload.error))
 					? String(payload.error)
-					: "op" in request && (request.op === "workspace" || request.op === "prompt")
+					: "op" in request && (request.op === "workspace" || request.op === "prompt" || request.op === "command")
 						? "unsupported_operation"
 						: "request_rejected";
 				const error = new IpcError(code);
 				return finish(
-					"op" in request && request.op === "prompt" && payload.confirmedNoAdmission === true
+					"op" in request &&
+						(request.op === "prompt" || request.op === "command") &&
+						payload.confirmedNoAdmission === true
 						? new CentralPromptRejectedError(error.message)
 						: error,
 				);
@@ -251,7 +261,8 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 	const pending = new Map<string, Pending>();
 	// Never evict an ID and accidentally admit an old retry again. Once full,
 	// refuse new requests; existing IDs remain retryable until this host exits.
-	const prompts = new Map<string, { sessionId: string; digest: string; result: Promise<void> }>();
+	// Prompts and commands share the ID space: the digest covers the operation.
+	const prompts = new Map<string, { sessionId: string; digest: string; result: Promise<string | undefined> }>();
 	const sockets = new Set<net.Socket>();
 	let closed = false;
 	const state = (): ChatState => {
@@ -337,37 +348,51 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 					);
 					if (!workspace) return respond({ ok: false, error: "snapshot_unavailable" });
 					workspace.canPrompt &&= typeof options.prompt === "function";
+					workspace.canCommand &&= typeof options.command === "function";
 					return respond({ ok: true, workspace });
 				}
-				if (request.op === "prompt") {
-					if (!isCentralPrompt(request.sessionId, request.requestId, request.text))
+				if (request.op === "prompt" || request.op === "command") {
+					const isCommand = request.op === "command";
+					if (
+						!(isCommand ? isCentralCommand : isCentralPrompt)(request.sessionId, request.requestId, request.text)
+					)
 						return respond({ ok: false, error: "invalid_request", confirmedNoAdmission: true });
 					const sessionId = request.sessionId as string;
 					const requestId = request.requestId as string;
 					const text = request.text as string;
-					const digest = crypto.createHash("sha256").update(text).digest("hex");
+					const digest = crypto.createHash("sha256").update(`${request.op}\0${text}`).digest("hex");
 					let entry = prompts.get(requestId);
 					if (entry && (entry.sessionId !== sessionId || entry.digest !== digest))
 						return respond({ ok: false, error: "request_id_conflict" });
 					if (!entry) {
 						if (sessionId !== current.sessionId)
 							return respond({ ok: false, error: "stale_session", confirmedNoAdmission: true });
-						if (!options?.prompt)
-							return respond({ ok: false, error: "unsupported_operation", confirmedNoAdmission: true });
+						const run: ((sessionId: string, text: string) => Promise<string | void>) | undefined = isCommand
+							? options?.command
+							: options?.prompt;
+						if (!run) return respond({ ok: false, error: "unsupported_operation", confirmedNoAdmission: true });
 						if (prompts.size >= 4_096)
 							return respond({ ok: false, error: "prompt_capacity", confirmedNoAdmission: true });
-						const pendingPrompt = Promise.withResolvers<void>();
+						const pendingPrompt = Promise.withResolvers<string | undefined>();
 						entry = { sessionId, digest, result: pendingPrompt.promise };
 						prompts.set(requestId, entry);
 						try {
-							options.prompt(sessionId, text).then(pendingPrompt.resolve, pendingPrompt.reject);
+							run(sessionId, text).then(
+								result => pendingPrompt.resolve(result || undefined),
+								pendingPrompt.reject,
+							);
 						} catch (error) {
 							pendingPrompt.reject(error);
 						}
 					}
 					void entry.result.then(
-						() => respond({ ok: true }),
-						() => respond({ ok: false, error: "prompt_rejected", confirmedNoAdmission: true }),
+						result => respond(isCommand ? { ok: true, result: result ?? "ran" } : { ok: true }),
+						() =>
+							respond({
+								ok: false,
+								error: isCommand ? "command_rejected" : "prompt_rejected",
+								confirmedNoAdmission: true,
+							}),
 					);
 					return;
 				}
@@ -601,4 +626,25 @@ export async function promptCentralChat(
 	if (!meta) throw new IpcError("host_unavailable");
 	// No automatic retry: only the caller may retry, with this same request ID.
 	await query(meta, { op: "prompt", sessionId, requestId, text });
+}
+
+/** Run `/command` text in the chat as if typed in its composer; resolves with what it showed. */
+export async function commandCentralChat(
+	chatId: string,
+	sessionId: string,
+	requestId: string,
+	text: string,
+	options?: Options,
+): Promise<string> {
+	if (!isCentralCommand(sessionId, requestId, text))
+		throw new CentralPromptRejectedError("OMP Central: invalid_request");
+	const dir = path.resolve(options?.dir ?? path.join(getBaseConfigRoot(), "run", "central-hosts"));
+	await privateDirectory(dir);
+	const meta = await readMetadata(dir, chatId);
+	if (!meta) throw new IpcError("host_unavailable");
+	// No automatic retry: only the caller may retry, with this same request ID.
+	const response = await query(meta, { op: "command", sessionId, requestId, text });
+	const result = parseCentralCommandResult(response.result);
+	if (result === null) throw new IpcError("invalid_response");
+	return result;
 }

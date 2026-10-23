@@ -1,4 +1,5 @@
 import type { ToolDisplayState } from "@oh-my-pi/pi-tui/chrome/tool-activity";
+import type { CentralCommandInfo } from "@oh-my-pi/pi-tui/apps/central/types";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
 /**
  * Interactive mode for the coding agent.
@@ -1799,6 +1800,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Commands (not components) queued while streaming, for the deferral hint. */
 	#pendingCommandOutputCommands = 0;
 	#pendingSlashCommands: SlashCommand[] = [];
+	/** The composer's autocomplete command list as Central completion metadata. */
+	#centralCommandList: CentralCommandInfo[] = [];
+	readonly #noticeListeners = new Set<(message: string) => void>();
 	/** Symbol preset the slash-command picker icons were resolved under. */
 	#slashIconPreset: string | undefined;
 	/** Built-in editor autocomplete provider, before extension wrapping. */
@@ -2988,10 +2992,14 @@ export class InteractiveMode implements InteractiveModeContext {
 				icon: promptIcon,
 				iconName: "prompt",
 			}));
-		this.#baseAutocompleteProvider = this.#inputController.createAutocompleteProvider(
-			[...this.#pendingSlashCommands, ...fileSlashCommands, ...promptTemplateCommands],
-			basePath,
-		);
+		const commands = [...this.#pendingSlashCommands, ...fileSlashCommands, ...promptTemplateCommands];
+		this.#centralCommandList = commands.slice(0, 600).map(command => ({
+			name: command.name,
+			aliases: command.aliases?.slice(0, 8),
+			description: command.description?.slice(0, 300),
+			argumentHint: command.argumentHint?.slice(0, 80),
+		}));
+		this.#baseAutocompleteProvider = this.#inputController.createAutocompleteProvider(commands, basePath);
 		this.#applyAutocompleteProvider();
 	}
 
@@ -7786,7 +7794,21 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	showStatus(message: string, options?: { dim?: boolean }): void {
+		for (const listener of this.#noticeListeners) listener(message);
 		this.#uiHelpers.showStatus(message, options);
+	}
+
+	observeNotices(listener: (message: string) => void): () => void {
+		this.#noticeListeners.add(listener);
+		return () => this.#noticeListeners.delete(listener);
+	}
+
+	centralCommands(): CentralCommandInfo[] {
+		return this.#centralCommandList;
+	}
+
+	runCentralCommand(text: string, centralQuestionOpen: () => boolean): Promise<string> {
+		return this.#inputController.runCentralCommand(text, centralQuestionOpen);
 	}
 
 	showError(message: string): void {
@@ -7797,6 +7819,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(true);
 		}
+		for (const listener of this.#noticeListeners) listener(message);
 		this.#uiHelpers.showError(message);
 	}
 
@@ -7814,6 +7837,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	showWarning(message: string, options?: { hideWithToolActivity?: boolean }): void {
+		for (const listener of this.#noticeListeners) listener(message);
 		this.#uiHelpers.showWarning(message, options);
 	}
 

@@ -93,7 +93,9 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   first text in `display.timeZone` (e.g. `── 10:38 PM ──`), so a reply split by
   tool calls stays one turn. Each message sent from a focus composer shows as a
   dimmed `you:` line without its prefix; a message the busy chat has accepted
-  but not yet taken in shows at once, marked `(queued)`. Other user messages
+  but not yet taken in shows at once, marked `(queued)`, until the transcript
+  holds a sent turn with the same text stamped no earlier than 15 s before it
+  was sent (each sent turn clears one queued line). Other user messages
   are not shown. `…working` follows while the chat is busy. Tool calls,
   thinking, tool results, and custom and system messages are not shown. Status
   rows and quotas are omitted. No model is called.
@@ -111,20 +113,36 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   deliveries keep their request ID for `Ctrl+R`, and drafts survive failures.
   The prefix is a text convention, not authentication: anything that can send a
   Central prompt, or type it, can produce the same text.
-- **Local commands:** every line starting with `/` runs in the focus window and
-  is never sent to the chat. Unknown commands are refused with a pointer to
-  `/help`. Because of this, OMP slash commands are not forwarded; Central's
-  prompt path also delivers a `/command` to a chat as plain text, never runs it.
-  Command output appears directly above the composer, below any open question.
+- **Commands:** a line starting with `/` names a local Central command (table
+  below) or one of the chat's own commands. Local commands win a name clash,
+  run in the focus window and are never sent. Any other `/command` runs in the
+  chat through Central's `command` operation, as if typed in that chat's own
+  composer and submitted with Enter: the same built-in, extension, custom,
+  skill, file and prompt-template commands, with the same behaviour while the
+  chat is busy. No prefix is added, and it is never sent as a message. The
+  chat's local draft is set aside while it runs and put back afterwards. What
+  the command showed in the chat (status, warning or error lines), or `ran`,
+  appears directly above the composer, below any open question, headed
+  `ran in the chat`; a command still running after 1.5 s also says `still
+  running in the chat`. A command that opens a picker or other overlay there
+  (`/model` with no argument) is closed with `Esc`, so the chat window is not
+  left waiting on it, and the result reads "opens a picker in the chat's own
+  window; give an argument (e.g. /model <name>) or use the chat". A dialog the
+  chat publishes as a Central question stays open and is answered in focus.
+  Typing `/` opens the same completion list the chat composer uses, with the
+  local commands (marked `local`) and the chat's command list; `Tab`, arrows and
+  `Enter` act on the list while it is open. A chat whose OMP predates the
+  `command` operation refuses `/commands` with "update OMP on the chat's host"
+  and nothing is sent. Uncertain results keep their request ID for `Ctrl+R`.
 
-| Command | Effect |
+| Local command | Effect |
 | --- | --- |
 | `/chats` | every chat on every host, busy/idle, open questions, and chats that are not responding |
 | `/send <chat> <msg>` | `hqmsg --from FOCUS --kind relay --to <chat> <msg>`: a relay request to the coordinator, not a direct message. Quote names with spaces |
 | `/dag` | the task board URL |
 | `/inbox [N]` | `hqmsg --tail N` (default 10) |
 | `/pause`, `/resume` | create or remove the inbox-steer pause file and show the result |
-| `/help` | the list above |
+| `/help` | the list above, then the chat's own command names |
 
 The coordinator commands read three settings, empty by default; an empty one
 reports "not configured":

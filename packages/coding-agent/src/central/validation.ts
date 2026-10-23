@@ -2,17 +2,20 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type {
 	CentralAnswer,
 	CentralChat,
+	CentralCommandInfo,
 	CentralRequest,
 	CentralRequestDraft,
 	CentralWorkspace,
 } from "@oh-my-pi/pi-tui/apps/central/types";
 import type { ExtensionAskDialogResultItem } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
-import { sanitizeDisplaySgrLine } from "@oh-my-pi/pi-tui/overlays/extensions/display-text";
+import { sanitizeDisplayLine, sanitizeDisplaySgrLine } from "@oh-my-pi/pi-tui/overlays/extensions/display-text";
 import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
 import { isBuiltinComposerStyle } from "@oh-my-pi/pi-tui/components/composer/registry";
 
 export const CENTRAL_MAX_PROMPT_BYTES = 64 * 1024;
 export const CENTRAL_MAX_WORKSPACE_WIDTH = 1_000;
+export const CENTRAL_MAX_COMMANDS = 600;
+export const CENTRAL_MAX_COMMAND_RESULT_BYTES = 16 * 1024;
 
 export function isCentralWorkspaceWidth(value: unknown): value is number {
 	return (
@@ -31,6 +34,43 @@ export function isCentralPrompt(sessionId: unknown, requestId: unknown, text: un
 		text.trim().length > 0 &&
 		Buffer.byteLength(text) <= CENTRAL_MAX_PROMPT_BYTES
 	);
+}
+
+/** A `command` op carries one slash command: prompt limits, and it must start with `/`. */
+export function isCentralCommand(sessionId: unknown, requestId: unknown, text: unknown): boolean {
+	return isCentralPrompt(sessionId, requestId, text) && /^\/[^\s/]/.test(text as string);
+}
+
+/** What a chat reported for a command: plain text, capped; never terminal control data. */
+export function parseCentralCommandResult(value: unknown): string | null {
+	if (typeof value !== "string" || Buffer.byteLength(value) > CENTRAL_MAX_COMMAND_RESULT_BYTES) return null;
+	return value
+		.split("\n")
+		.map(line => sanitizeDisplayLine(line))
+		.join("\n");
+}
+
+/** Completion metadata only; malformed entries are dropped, the list is capped. */
+function parseCentralCommands(value: unknown): CentralCommandInfo[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const commands: CentralCommandInfo[] = [];
+	for (const item of value.slice(0, CENTRAL_MAX_COMMANDS)) {
+		if (!record(item) || typeof item.name !== "string" || !/^[^\s/][^\s]{0,127}$/.test(item.name)) continue;
+		if (sanitizeDisplayLine(item.name) !== item.name) continue;
+		const command: CentralCommandInfo = { name: item.name };
+		if (strings(item.aliases)) {
+			const aliases = item.aliases
+				.slice(0, 8)
+				.filter(alias => /^[^\s/][^\s]{0,127}$/.test(alias) && sanitizeDisplayLine(alias) === alias);
+			if (aliases.length > 0) command.aliases = aliases;
+		}
+		if (typeof item.description === "string" && item.description)
+			command.description = sanitizeDisplayLine(item.description.slice(0, 300));
+		if (typeof item.argumentHint === "string" && item.argumentHint)
+			command.argumentHint = sanitizeDisplayLine(item.argumentHint.slice(0, 80));
+		commands.push(command);
+	}
+	return commands;
 }
 
 /** Only SGR may survive the host boundary; all other terminal control data is inert. */
@@ -52,6 +92,9 @@ export function parseCentralWorkspace(
 	const usageLines = lines(value.usageLines, usageWidth, 64);
 	if (!statusLines || !usageLines) return null;
 	const workspace: CentralWorkspace = { statusLines, usageLines, canPrompt: value.canPrompt };
+	if (value.canCommand === true) workspace.canCommand = true;
+	const commands = parseCentralCommands(value.commands);
+	if (commands) workspace.commands = commands;
 	if (typeof value.promptUnavailableReason === "string")
 		workspace.promptUnavailableReason = sanitizeDisplaySgrLine(value.promptUnavailableReason.slice(0, 1024));
 	if (

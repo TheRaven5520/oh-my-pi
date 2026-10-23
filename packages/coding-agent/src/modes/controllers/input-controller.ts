@@ -17,6 +17,7 @@ import { resolveModelRoleValue } from "../../config/model-resolver";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { InternalUrlRouter, resolveLocalRoot } from "../../internal-urls";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
+import { BorderedLoader } from "@oh-my-pi/pi-tui/overlays/bordered-loader";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { type ComposerDraftSnapshot, extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import { HistorySearchComponent } from "@oh-my-pi/pi-tui/overlays/history-search";
@@ -155,6 +156,8 @@ function hasPasteText(value: unknown): value is PasteTarget {
 	return typeof value === "object" && value !== null && typeof (value as PasteTarget).pasteText === "function";
 }
 
+/** A Central `command` reply must arrive inside the bridge's 2 s IPC window. */
+const CENTRAL_COMMAND_REPLY_MS = 1_500;
 const SHELL_PROMPT_COMMAND_RE =
 	/^(?:\.{0,2}\/|~\/|cd(?:\s|$)|sudo(?:\s|$)|git(?:\s|$)|bun(?:\s|$)|npm(?:\s|$)|pnpm(?:\s|$)|yarn(?:\s|$)|node(?:\s|$)|python\d*(?:\s|$)|cargo(?:\s|$)|go(?:\s|$)|make(?:\s|$)|docker(?:\s|$)|kubectl(?:\s|$))/;
 const SHELL_PROMPT_OPERATOR_RE = /(?:^|\s)(?:&&|\|\||\||2>&1|[<>]{1,2})(?:\s|$)/;
@@ -466,6 +469,8 @@ export class InputController {
 	// submission disarms it; a session switch invalidates it, so a word armed in
 	// one session can never run on a single Enter in another.
 	#armedBareCommand: { text: string; sessionId: string } | undefined;
+	/** The composer's Enter path, shared with commands sent from Central focus. */
+	#submitEditorText: ((text: string) => Promise<void>) | undefined;
 	/** Main-editor destination: images become pending attachments. */
 	readonly #editorImageSink: ImagePasteSink = {
 		attach: (image, unsupportedMessage, sourcePath) =>
@@ -1636,7 +1641,7 @@ export class InputController {
 			}
 			this.ctx.editor.addToHistory(text);
 		};
-		this.ctx.editor.onSubmit = (text: string) => {
+		this.#submitEditorText = (text: string) => {
 			const trackSubmission =
 				!this.ctx.focusedAgentId &&
 				this.ctx.session.isStreaming &&
@@ -1646,6 +1651,104 @@ export class InputController {
 			this.#pendingStreamingSubmissions.add(submission);
 			return submission.finally(() => this.#pendingStreamingSubmissions.delete(submission));
 		};
+		this.ctx.editor.onSubmit = this.#submitEditorText;
+	}
+
+	/**
+	 * Run `/command` text sent from Central focus exactly as if typed in this composer
+	 * and submitted with Enter: the same submit path, so builtin, extension, custom,
+	 * skill, file and template commands, input hooks and streaming behaviour all match.
+	 *
+	 * The local draft (text and attachments) is set aside for the run, as Enter would
+	 * have emptied the editor, and put back afterwards unless something newer is there.
+	 * Resolves with the status, warning and error text shown while the command ran,
+	 * `ran` when it showed none, plus a still-running note when it outlasts
+	 * {@link CENTRAL_COMMAND_REPLY_MS} (the Central IPC reply window).
+	 *
+	 * Pickers: a command that leaves a selector, overlay or replaced editor slot open
+	 * once it returns (`/model`), or is still waiting on one at the reply deadline, has
+	 * opened UI only this window could answer. It gets Escape, as if the user dismissed
+	 * it, then any remaining overlay is hidden and the editor slot and focus restored;
+	 * the reply says it opens a picker. A dialog Central itself presents as a question
+	 * (`centralQuestionOpen`: extension `ui.select`/`confirm`/`input`, asks) is left
+	 * open, since the focus view can answer it. Rejects without running for unknown
+	 * commands, collaboration guests, session switches and a focused subagent view.
+	 */
+	async runCentralCommand(text: string, centralQuestionOpen: () => boolean): Promise<string> {
+		const submitText = this.#submitEditorText;
+		if (!submitText) throw new Error("The chat's composer is not ready");
+		if (this.ctx.collabGuest) throw new Error("Collaboration guests run commands on the host");
+		if (this.ctx.session.isSessionTransitioning) throw new Error("The chat is switching sessions");
+		if (this.ctx.focusedAgentId) throw new Error("The chat is viewing a subagent; return to the main session first");
+		const parsed = parseSlashCommand(text);
+		const builtin = parsed && lookupBuiltinSlashCommand(parsed.name);
+		if (builtin && parsed.args && !builtin.allowArgs) throw new Error(`/${builtin.name} takes no arguments`);
+		const token = text.slice(1).split(/\s/, 1)[0] ?? "";
+		if (!builtin && !this.#isKnownNonBuiltinSlashCommandToken(token))
+			throw new Error(`Unknown command /${token} in this chat; nothing was run`);
+
+		const ui = this.ctx.ui;
+		const editor = this.ctx.editor;
+		const container = this.ctx.editorContainer;
+		const children = [...container.children];
+		const overlays = ui.overlayStack.length;
+		const focus = ui.getFocused();
+		const questionWasOpen = centralQuestionOpen();
+		const draft = editor.captureDraftSnapshot();
+		editor.clearDraft();
+		const notices: string[] = [];
+		const stopNotices = this.ctx.observeNotices(message => notices.push(message));
+		const slotChanged = (): boolean =>
+			container.children.length !== children.length ||
+			container.children.some((child, index) => child !== children[index]);
+		let pickerClosed = false;
+		const closePicker = (): void => {
+			if (!questionWasOpen && centralQuestionOpen()) return;
+			if (ui.overlayStack.length <= overlays && !slotChanged() && ui.getFocused() === focus) return;
+			// A progress loader in the editor slot (`/share`) is work, not a choice; Escape would abort it.
+			if (ui.getFocused() instanceof BorderedLoader) return;
+			pickerClosed = true;
+			ui.getFocused()?.handleInput?.("\x1b");
+			while (ui.overlayStack.length > overlays) ui.hideOverlay();
+			if (slotChanged()) {
+				container.clear();
+				for (const child of children) container.addChild(child);
+			}
+			if (ui.getFocused() !== focus) ui.setFocus(focus);
+			ui.requestRender();
+		};
+		let outcome: "done" | "running";
+		let deadline: NodeJS.Timeout | undefined;
+		try {
+			outcome = await Promise.race([
+				submitText(text).then(
+					() => "done" as const,
+					(error: unknown) => {
+						notices.push(error instanceof Error ? error.message : String(error));
+						return "done" as const;
+					},
+				),
+				new Promise<"running">(resolve => {
+					deadline = setTimeout(() => resolve("running"), CENTRAL_COMMAND_REPLY_MS);
+				}),
+			]);
+			closePicker();
+		} finally {
+			clearTimeout(deadline);
+			stopNotices();
+		}
+		// Put the local draft back unless the user typed meanwhile; a command that
+		// restored its own text on failure gives way to the original draft too.
+		const leftover = editor.getText();
+		if (!editor.hasDraftContent() || leftover.trim() === text) editor.restoreDraftSnapshot(draft);
+		else if (draft.text.trim()) editor.addToHistory(draft.text);
+		ui.requestRender();
+		if (pickerClosed)
+			return "opens a picker in the chat's own window; give an argument (e.g. /model <name>) or use the chat";
+		const shown = notices.map(notice => notice.trim()).filter(Boolean);
+		if (outcome === "running") shown.push("still running in the chat");
+		const reply = shown.join("\n") || "ran";
+		return Buffer.byteLength(reply) > 16_000 ? `${Buffer.from(reply).subarray(0, 15_990).toString()}…` : reply;
 	}
 
 	/**
