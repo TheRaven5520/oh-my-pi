@@ -33,7 +33,7 @@
 		},
 		"colors": {
 			"type": "object",
-			"description": "Theme color definitions (all required except thinkingMax, toolExpandedBg and mdTableHeader)",
+			"description": "Theme color definitions (all required except thinkingMax, toolExpandedBg, mdTableHeader and mdBold)",
 			"required": [
 				"accent",
 				"border",
@@ -210,6 +210,10 @@
 				"mdTableHeader": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Markdown table headers (optional; inherits surrounding text color when omitted)"
+				},
+				"mdBold": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Markdown bold text (optional; bold keeps the surrounding text color when omitted)"
 				},
 				"mdCode": {
 					"$ref": "#/$defs/colorValue",

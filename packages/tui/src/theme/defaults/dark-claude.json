@@ -51,6 +51,7 @@
 		"mdLink": "markdownLavender",
 		"mdLinkUrl": "markdownLavender",
 		"mdTableHeader": "markdownLavender",
+		"mdBold": "markdownLavender",
 		"mdCode": "markdownLavender",
 		"mdCodeBlock": "inactive",
 		"mdCodeBlockBorder": "subtle",

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- Optional theme color `mdBold` colors Markdown `**bold**` text; `dark-claude` sets it to its light lavender. Themes without it keep bold in the surrounding text color.
+- `omp central --focus` keeps a repeated message (e.g. a second "ok") marked queued until its own copy reaches the chat, instead of clearing it on an older identical message.
 - Central focus mode (`CentralFocusOptions`): a single-chat view that renders only assistant reply text through the normal transcript builder, keeps Central's question forms, and adds a prefixed composer with local slash commands. It keeps the last view and draft and shows `not responding; retrying` while the chat does not answer, is unlisted, or is restarting.
 
 ### Fixed

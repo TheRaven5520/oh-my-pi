@@ -133,8 +133,11 @@ export class CentralComponent implements Component {
 	#focusOutput: { title: string; lines: string[] } | undefined;
 	/** Focus mode renders turns itself: dated replies and the user's own sent lines. */
 	#focusTurns: CentralFocusTurn[] | undefined;
-	/** Messages the chat accepted but has not yet put in its transcript. */
-	#focusQueued: Array<{ text: string; at: number }> = [];
+	/**
+	 * Messages the chat accepted but has not yet put in its transcript, with how
+	 * many identical sent turns the transcript already held when each was sent.
+	 */
+	#focusQueued: Array<{ text: string; at: number; seen: number }> = [];
 	#focusRows: { key: string; rows: string[] } | undefined;
 	#focusCommandRunning = false;
 
@@ -233,6 +236,14 @@ export class CentralComponent implements Component {
 
 	#focusLabel(): string {
 		return sanitizeDisplayLine(this.#focusMemory.name ?? this.focus?.target ?? "") || "Untitled chat";
+	}
+
+	/** How many times each text appears as a sent turn in the loaded transcript. */
+	#focusSentCounts(): Map<string, number> {
+		const counts = new Map<string, number>();
+		for (const turn of this.#focusTurns ?? [])
+			if (turn.kind === "sent") counts.set(turn.text, (counts.get(turn.text) ?? 0) + 1);
+		return counts;
 	}
 
 	/**
@@ -359,12 +370,14 @@ export class CentralComponent implements Component {
 			if (this.#stopped || generation !== this.#transcriptLoadGeneration || this.#selectedChatId !== chatId) return;
 			if (this.focus) {
 				this.#focusTurns = focusTurns(entries, this.focus.prefix);
-				// Drop queued echoes once the transcript carries the same message.
-				const sent = this.#focusTurns.filter(turn => turn.kind === "sent").map(turn => turn.text);
+				// Drop a queued echo once the transcript holds more copies of that
+				// text than it did when it was sent; an older "ok" never clears a new one.
+				const counts = this.#focusSentCounts();
+				const claimed = new Map<string, number>();
 				this.#focusQueued = this.#focusQueued.filter(queued => {
-					const index = sent.lastIndexOf(queued.text);
-					if (index < 0) return true;
-					sent.splice(index, 1);
+					const used = claimed.get(queued.text) ?? 0;
+					if ((counts.get(queued.text) ?? 0) - used <= queued.seen) return true;
+					claimed.set(queued.text, used + 1);
 					return false;
 				});
 				this.#focusRows = undefined;
@@ -489,7 +502,11 @@ export class CentralComponent implements Component {
 			draft.pending = undefined;
 			// A steer to a busy chat enters its transcript only when the chat takes
 			// it; show it at once, marked queued, until the transcript has it.
-			if (this.focus) this.#focusQueued.push({ text: pending.text.slice(this.focus.prefix.length), at: Date.now() });
+			if (this.focus) {
+				const text = pending.text.slice(this.focus.prefix.length);
+				const waiting = this.#focusQueued.filter(queued => queued.text === text).length;
+				this.#focusQueued.push({ text, at: Date.now(), seen: (this.#focusSentCounts().get(text) ?? 0) + waiting });
+			}
 		} catch (error) {
 			if (error instanceof CentralPromptRejectedError) {
 				draft.pending = undefined;

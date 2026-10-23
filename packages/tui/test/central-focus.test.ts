@@ -292,6 +292,41 @@ describe("Central focus transcript", () => {
 			rig.close();
 		}
 	});
+
+	it("keeps a repeated short message queued until its own copy arrives, not an older identical one", async () => {
+		const sent = (id: string): TranscriptEntryLike => ({
+			type: "message",
+			id,
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: { role: "user", content: `${PREFIX}ok`, timestamp: Date.now() },
+		});
+		let transcript: TranscriptEntryLike[] = [sent("old-ok"), assistant("a1", [{ type: "text", text: "REPLY" }])];
+		let revision = "1";
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", busy: true, transcriptRevision: revision })], errors: [] }),
+			transcript: async () => transcript,
+		});
+		try {
+			await rig.input("ok");
+			await rig.input("\r");
+			expect(rig.text()).toContain("you: ok  (queued)");
+			// A reload that still holds only the earlier "ok" must not clear the new one.
+			transcript = [...transcript, assistant("a2", [{ type: "text", text: "MORE" }])];
+			revision = "2";
+			await rig.poll();
+			await rig.poll();
+			expect(rig.text()).toContain("you: ok  (queued)");
+			transcript = [...transcript, sent("new-ok")];
+			revision = "3";
+			await rig.poll();
+			await rig.poll();
+			expect(rig.text()).not.toContain("(queued)");
+			expect(rig.text().split("you: ok")).toHaveLength(3);
+		} finally {
+			rig.close();
+		}
+	});
 });
 
 describe("Central focus composer", () => {

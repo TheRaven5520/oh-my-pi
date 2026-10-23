@@ -22,7 +22,7 @@ Custom theme files are JSON objects validated by `validateThemeJson()` in `packa
 Top-level fields:
 
 - `name` (required)
-- `colors` (required; all tokens except `thinkingMax`, `toolExpandedBg`, and `mdTableHeader` required)
+- `colors` (required; all tokens except `thinkingMax`, `toolExpandedBg`, `mdTableHeader`, and `mdBold` required)
 - `vars` (optional; reusable color variables)
 - `export` (optional; HTML export colors)
 - `symbols` (optional)
@@ -38,7 +38,7 @@ Color values accept:
 
 ## Required and optional color tokens
 
-All tokens below are required in `colors` except `thinkingMax`, `toolExpandedBg`, and `mdTableHeader`. `thinkingMax` falls back to `thinkingXhigh`; `toolExpandedBg` falls back to `userMessageBg`; omitted `mdTableHeader` inherits the surrounding text color.
+All tokens below are required in `colors` except `thinkingMax`, `toolExpandedBg`, `mdTableHeader`, and `mdBold`. `thinkingMax` falls back to `thinkingXhigh`; `toolExpandedBg` falls back to `userMessageBg`; omitted `mdTableHeader` and `mdBold` inherit the surrounding text color.
 
 ### Core text and borders (11)
 
@@ -52,11 +52,11 @@ All tokens below are required in `colors` except `thinkingMax`, `toolExpandedBg`
 
 `userMessageText`, `customMessageText`, `customMessageLabel`, `toolTitle`, `toolOutput`
 
-### Markdown (10 required, 1 optional)
+### Markdown (10 required, 2 optional)
 
-`mdHeading`, `mdLink`, `mdLinkUrl`, optional `mdTableHeader`, `mdCode`, `mdCodeBlock`, `mdCodeBlockBorder`, `mdQuote`, `mdQuoteBorder`, `mdHr`, `mdListBullet`
+`mdHeading`, `mdLink`, `mdLinkUrl`, optional `mdTableHeader`, optional `mdBold`, `mdCode`, `mdCodeBlock`, `mdCodeBlockBorder`, `mdQuote`, `mdQuoteBorder`, `mdHr`, `mdListBullet`
 
-`mdTableHeader` colors both column headers and the labels used by narrow, stacked tables; body cells keep their normal styling. The `dark-claude` theme uses light lavender (`#b1b9f9`) for links, link URLs, inline code, and table headers. Other built-in themes retain their existing colors.
+`mdTableHeader` colors both column headers and the labels used by narrow, stacked tables; body cells keep their normal styling. `mdBold` colors `**bold**` text, which stays bold either way. The `dark-claude` theme uses light lavender (`#b1b9f9`) for links, link URLs, inline code, table headers and bold text. Other built-in themes retain their existing colors.
 
 ### Tool diff + syntax highlighting (12)
 
