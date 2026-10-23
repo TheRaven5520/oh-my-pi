@@ -52,7 +52,7 @@ export function focusTranscriptEntries(entries: readonly TranscriptEntryLike[]):
 /** One turn of the focused conversation: a reply, or a message sent from the focus composer. */
 export type CentralFocusTurn =
 	| { kind: "reply"; id: string; at: number | undefined; text: string }
-	| { kind: "sent"; id: string; at: number | undefined; text: string };
+	| { kind: "sent"; id: string; at: number | undefined; text: string; queued?: boolean };
 
 function entryTime(entry: TranscriptEntryLike): number | undefined {
 	const raw = entry.type === "message" ? entry.message.timestamp : undefined;
@@ -71,32 +71,40 @@ function userText(content: unknown): string | undefined {
 }
 
 /**
- * The conversation as turns: each assistant reply's text (no thinking or tool
- * calls), and each user message that begins with the focus `prefix` (shown
- * without it). Other user messages, tool results and custom messages are omitted.
+ * The conversation as turns. One reply is the text of every assistant message
+ * between two user messages, so a reply split by hidden tool calls stays one
+ * turn, timed by its first text. A user message beginning with the focus
+ * `prefix` is a sent turn (shown without it). Other user messages end the
+ * current reply but are not shown; tool results and custom messages are omitted.
  */
 export function focusTurns(entries: readonly TranscriptEntryLike[], prefix: string): CentralFocusTurn[] {
 	const turns: CentralFocusTurn[] = [];
 	const replies = new Map(focusTranscriptEntries(entries).map(entry => [entry.id, entry]));
+	let open: Extract<CentralFocusTurn, { kind: "reply" }> | undefined;
 	for (const entry of entries) {
 		const reply = replies.get(entry.id);
 		if (reply?.type === "message" && reply.message.role === "assistant") {
 			const text = (reply.message.content as TextContent[]).map(block => block.text).join("\n\n");
-			turns.push({ kind: "reply", id: entry.id, at: entryTime(entry), text });
+			if (open) open.text += `\n\n${text}`;
+			else {
+				open = { kind: "reply", id: entry.id, at: entryTime(entry), text };
+				turns.push(open);
+			}
 			continue;
 		}
-		if (entry.type !== "message" || entry.message.role !== "user" || !prefix) continue;
-		const text = userText(entry.message.content);
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		open = undefined;
+		const text = prefix ? userText(entry.message.content) : undefined;
 		if (text?.startsWith(prefix))
 			turns.push({ kind: "sent", id: entry.id, at: entryTime(entry), text: text.slice(prefix.length) });
 	}
 	return turns;
 }
 
-/** `10:38 PM` in the configured display time zone. */
+/** `10:38 PM` in the configured display time zone, with a plain space before AM/PM. */
 export function focusTurnTime(at: number | undefined): string {
 	if (at === undefined) return "time unknown";
-	return clockDateTimeFormat({ hour: "numeric", minute: "2-digit", hour12: true }).format(at);
+	return clockDateTimeFormat({ hour: "numeric", minute: "2-digit", hour12: true }).format(at).replace(/\s/g, " ");
 }
 
 /**
@@ -109,7 +117,7 @@ export function renderFocusTurns(turns: readonly CentralFocusTurn[], width: numb
 	for (const turn of turns) {
 		if (turn.kind === "sent") {
 			const lines = wrapTextWithAnsi(
-				`you: ${sanitizeDisplayLine(turn.text.replace(/\s*\n\s*/g, " "))}`,
+				`you: ${sanitizeDisplayLine(turn.text.replace(/\s*\n\s*/g, " "))}${turn.queued ? "  (queued)" : ""}`,
 				Math.max(1, width - 2),
 			);
 			if (rows.length > 0) rows.push("");

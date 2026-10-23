@@ -16,7 +16,7 @@ import { wrapTextWithAnsi } from "../../render/render-utils";
 import { ChatTranscriptBuilder } from "../../chat/chat-transcript-builder";
 import { routeSgrMouseInput } from "../../mouse";
 import { ProcessTerminal } from "../../terminal";
-import { getEditorTheme, theme } from "../../theme/theme";
+import { getEditorTheme, getThemeEpoch, theme } from "../../theme/theme";
 import { truncateToWidth, visibleWidth } from "../../utils";
 import {
 	CENTRAL_FOCUS_HELP,
@@ -133,6 +133,9 @@ export class CentralComponent implements Component {
 	#focusOutput: { title: string; lines: string[] } | undefined;
 	/** Focus mode renders turns itself: dated replies and the user's own sent lines. */
 	#focusTurns: CentralFocusTurn[] | undefined;
+	/** Messages the chat accepted but has not yet put in its transcript. */
+	#focusQueued: Array<{ text: string; at: number }> = [];
+	#focusRows: { key: string; rows: string[] } | undefined;
 	#focusCommandRunning = false;
 
 	constructor(
@@ -230,6 +233,25 @@ export class CentralComponent implements Component {
 
 	#focusLabel(): string {
 		return sanitizeDisplayLine(this.#focusMemory.name ?? this.focus?.target ?? "") || "Untitled chat";
+	}
+
+	/**
+	 * Rendered turns, rebuilt only when the turns, queued sends, width, busy
+	 * state or theme change; Markdown for a long chat is too costly per frame.
+	 */
+	#renderFocusRows(width: number, busy: boolean): string[] {
+		const key = `${width}|${busy}|${getThemeEpoch()}|${this.#focusQueued.length}`;
+		if (this.#focusRows?.key === key) return this.#focusRows.rows;
+		const queued: CentralFocusTurn[] = this.#focusQueued.map((entry, index) => ({
+			kind: "sent",
+			id: `queued-${index}`,
+			at: entry.at,
+			text: entry.text,
+			queued: true,
+		}));
+		const rows = renderFocusTurns([...(this.#focusTurns ?? []), ...queued], width, busy);
+		this.#focusRows = { key, rows };
+		return rows;
 	}
 
 	/**
@@ -337,6 +359,15 @@ export class CentralComponent implements Component {
 			if (this.#stopped || generation !== this.#transcriptLoadGeneration || this.#selectedChatId !== chatId) return;
 			if (this.focus) {
 				this.#focusTurns = focusTurns(entries, this.focus.prefix);
+				// Drop queued echoes once the transcript carries the same message.
+				const sent = this.#focusTurns.filter(turn => turn.kind === "sent").map(turn => turn.text);
+				this.#focusQueued = this.#focusQueued.filter(queued => {
+					const index = sent.lastIndexOf(queued.text);
+					if (index < 0) return true;
+					sent.splice(index, 1);
+					return false;
+				});
+				this.#focusRows = undefined;
 			} else {
 				const builder = new ChatTranscriptBuilder({
 					ui: this.ui,
@@ -456,6 +487,9 @@ export class CentralComponent implements Component {
 			await this.host.prompt!(pending.chatId, pending.sessionId, pending.requestId, pending.text);
 			if (draft.version === pending.version) draft.input.setText("");
 			draft.pending = undefined;
+			// A steer to a busy chat enters its transcript only when the chat takes
+			// it; show it at once, marked queued, until the transcript has it.
+			if (this.focus) this.#focusQueued.push({ text: pending.text.slice(this.focus.prefix.length), at: Date.now() });
 		} catch (error) {
 			if (error instanceof CentralPromptRejectedError) {
 				draft.pending = undefined;
@@ -1000,7 +1034,7 @@ export class CentralComponent implements Component {
 		const questionBody = body;
 		const transcriptRows = focus
 			? this.#focusTurns
-				? renderFocusTurns(this.#focusTurns, Math.max(1, mainWidth - 2), selectedChat?.busy === true)
+				? this.#renderFocusRows(Math.max(1, mainWidth - 2), selectedChat?.busy === true)
 				: [theme.fg("muted", "Loading chat transcript…")]
 			: this.#transcriptLoading && !this.#transcriptBuilder
 				? [theme.fg("muted", "Loading chat transcript…")]

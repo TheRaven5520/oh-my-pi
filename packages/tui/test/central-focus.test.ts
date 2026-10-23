@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, vi } from "bun:test";
 import type { TranscriptEntryLike } from "../src/chat/transcript-entry";
 import { TUI } from "../src/tui";
 import { initTheme } from "../src/theme/theme";
+import { setClockTimeZone } from "../src/render/clock";
 import { CentralComponent } from "../src/apps/central/central-tui";
 import { focusTranscriptEntries, parseFocusCommand, resolveFocusTarget } from "../src/apps/central/focus";
 import type { CentralChat, CentralFocusCommands, CentralSnapshot, CentralTuiHost } from "../src/apps/central/types";
@@ -215,7 +216,7 @@ describe("Central focus transcript", () => {
 		}
 	});
 
-	it("separates turns: a time divider above each reply and a dimmed 'you:' line for focus messages only", async () => {
+	it("groups each reply into one turn under an Eastern time divider and shows only focus messages as 'you:'", async () => {
 		const at = Date.UTC(2026, 9, 23, 2, 38);
 		const user = (id: string, text: string): TranscriptEntryLike => ({
 			type: "message",
@@ -224,15 +225,21 @@ describe("Central focus transcript", () => {
 			timestamp: new Date(at).toISOString(),
 			message: { role: "user", content: text, timestamp: at },
 		});
+		const reply = (id: string, text: string, minute: number): TranscriptEntryLike => {
+			const entry = assistant(id, [{ type: "text", text }]);
+			(entry as { message: { timestamp: number } }).message.timestamp = at + minute * 60_000;
+			return entry;
+		};
 		const transcript = [
 			user("u1", `${PREFIX}SENT-FROM-FOCUS`),
+			// One reply split by a hidden tool call: one turn, timed by its first part.
+			reply("a1", "FIRST-PART", 0),
+			assistant("tool", [{ type: "toolCall", id: "c", name: "bash", arguments: {} }]),
+			reply("a2", "SECOND-PART", 1),
 			user("u2", "PLAIN-USER-SECRET"),
-			{ ...assistant("a1", [{ type: "text", text: "FIRST-REPLY" }]), timestamp: new Date(at).toISOString() },
-			assistant("a2", [{ type: "text", text: "SECOND-REPLY" }]),
+			reply("a3", "NEXT-REPLY", 5),
 		];
-		for (const entry of transcript)
-			if (entry.type === "message" && entry.message.role === "assistant")
-				(entry.message as { timestamp: number }).timestamp = at;
+		setClockTimeZone("America/New_York");
 		const rig = await setup({
 			snapshot: () => ({ chats: [chat({ id: "local/hq", busy: true })], errors: [] }),
 			transcript: async () => transcript,
@@ -242,11 +249,45 @@ describe("Central focus transcript", () => {
 			expect(text).toContain("you: SENT-FROM-FOCUS");
 			expect(text).not.toContain(PREFIX.trim());
 			expect(text).not.toContain("PLAIN-USER-SECRET");
-			const dividers = text.split("\n").filter(line => /─ .*\d{1,2}:\d{2} [AP]M ─/.test(line));
-			expect(dividers).toHaveLength(2);
-			expect(text.indexOf("you: SENT-FROM-FOCUS")).toBeLessThan(text.indexOf("FIRST-REPLY"));
-			expect(text.indexOf("FIRST-REPLY")).toBeLessThan(text.indexOf("SECOND-REPLY"));
+			// 02:38 UTC is 10:38 PM Eastern (EDT).
+			const dividers = text.split("\n").filter(line => /─ \d{1,2}:\d{2} [AP]M ─/.test(line));
+			expect(dividers.map(line => /\d{1,2}:\d{2} [AP]M/.exec(line)![0])).toEqual(["10:38 PM", "10:43 PM"]);
+			const order = ["you: SENT-FROM-FOCUS", "FIRST-PART", "SECOND-PART", "NEXT-REPLY"].map(s => text.indexOf(s));
+			expect(order).toEqual([...order].sort((a, b) => a - b));
 			expect(text).toContain("…working");
+		} finally {
+			rig.close();
+			setClockTimeZone(undefined);
+		}
+	});
+
+	it("shows a message sent from the composer at once, marked queued, until the chat's transcript has it", async () => {
+		let transcript: TranscriptEntryLike[] = [assistant("a1", [{ type: "text", text: "EARLIER-REPLY" }])];
+		let revision = "1";
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", busy: true, transcriptRevision: revision })], errors: [] }),
+			transcript: async () => transcript,
+		});
+		try {
+			await rig.input("status please");
+			await rig.input("\r");
+			expect(rig.text()).toContain("you: status please  (queued)");
+			transcript = [
+				...transcript,
+				{
+					type: "message",
+					id: "u1",
+					parentId: null,
+					timestamp: new Date().toISOString(),
+					message: { role: "user", content: `${PREFIX}status please`, timestamp: Date.now() },
+				},
+			];
+			revision = "2";
+			await rig.poll();
+			await rig.poll();
+			expect(rig.text()).toContain("you: status please");
+			expect(rig.text()).not.toContain("(queued)");
+			expect(rig.text().split("you: status please")).toHaveLength(2);
 		} finally {
 			rig.close();
 		}
@@ -272,7 +313,9 @@ describe("Central focus composer", () => {
 			expect(rig.text()).toContain("hello HQ");
 			await rig.input("\x12");
 			expect(prompt.mock.calls[1]).toEqual(prompt.mock.calls[0]);
-			expect(rig.text()).not.toContain("hello HQ");
+			// Delivered: the composer is empty; the message now shows only as a queued 'you:' line.
+			expect(rig.text()).not.toContain("╰─ hello HQ");
+			expect(rig.text()).toContain("you: hello HQ  (queued)");
 		} finally {
 			rig.close();
 		}

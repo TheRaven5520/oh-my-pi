@@ -88,12 +88,15 @@ it does not open a duplicate chat or create a new terminal.
 chat, named by its Central name, sessionId or chatId on any configured host.
 
 - **View:** the conversation as turns, newest at the bottom and scrollable
-  (`Shift+Up/Down`, wheel). Each assistant reply's text is rendered as Markdown
-  under a divider with its time in `display.timeZone` (e.g. `── 10:38 PM ──`);
-  each message sent from a focus composer shows as a dimmed `you:` line without
-  its prefix. `…working` follows while the chat is busy. Tool calls, thinking,
-  tool results, other user messages, and custom and system messages are not
-  shown. Status rows and quotas are omitted. No model is called.
+  (`Shift+Up/Down`, wheel). Each reply is all of the chat's text between two
+  user messages, rendered as Markdown under a divider with the time of its
+  first text in `display.timeZone` (e.g. `── 10:38 PM ──`), so a reply split by
+  tool calls stays one turn. Each message sent from a focus composer shows as a
+  dimmed `you:` line without its prefix; a message the busy chat has accepted
+  but not yet taken in shows at once, marked `(queued)`. Other user messages
+  are not shown. `…working` follows while the chat is busy. Tool calls,
+  thinking, tool results, and custom and system messages are not shown. Status
+  rows and quotas are omitted. No model is called.
 - **Questions:** its open ask, select and editor questions use Central's own
   forms and are answered in place. The composer keeps keyboard focus when a
   question appears, so text typed for the chat never answers it. With the
