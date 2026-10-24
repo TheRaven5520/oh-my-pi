@@ -337,7 +337,7 @@
     "sprilicred-deepseek/deepseek-v4.1-flash.maxTokens": {
       "present": false,
       "before": null,
-      "applied": 262144
+      "applied": 393216
     },
     "sprilicred-deepseek/deepseek-v4.1-flash.reasoning": {
       "present": false,
@@ -356,9 +356,9 @@
       "present": false,
       "before": null,
       "applied": {
-        "input": 0.3,
-        "output": 1.2,
-        "cacheRead": 0.007,
+        "input": 0.15,
+        "output": 0.6,
+        "cacheRead": 0.003,
         "cacheWrite": 0
       }
     },
@@ -377,23 +377,127 @@
     "defaultModel": {
       "present": false,
       "before": null,
-      "applied": "sprilicred-anthropic/claude-sonnet-5",
-      "chosen": false
+      "applied": "sprilicred-anthropic/claude-sonnet-5-5",
+      "chosen": true
     },
     "providerScopes": {
       "present": false,
       "before": null,
       "applied": []
+    },
+    "sprilicred-anthropic/claude-sonnet-5-5.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 1000000
+    },
+    "sprilicred-anthropic/claude-sonnet-5-5.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 128000
+    },
+    "sprilicred-anthropic/claude-sonnet-5-5.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-sonnet-5-5.thinking": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "mode": "anthropic-adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    "sprilicred-anthropic/claude-sonnet-5-5.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-anthropic/claude-sonnet-5-5.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.1,
+        "cacheWrite": 2.5
+      }
+    },
+    "sprilicred-anthropic/claude-sonnet-5-5.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-haiku-5-5.contextWindow": {
+      "present": false,
+      "before": null,
+      "applied": 1000000
+    },
+    "sprilicred-anthropic/claude-haiku-5-5.maxTokens": {
+      "present": false,
+      "before": null,
+      "applied": 128000
+    },
+    "sprilicred-anthropic/claude-haiku-5-5.reasoning": {
+      "present": false,
+      "before": null,
+      "applied": true
+    },
+    "sprilicred-anthropic/claude-haiku-5-5.thinking": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "mode": "anthropic-adaptive",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    "sprilicred-anthropic/claude-haiku-5-5.input": {
+      "present": false,
+      "before": null,
+      "applied": [
+        "text",
+        "image"
+      ]
+    },
+    "sprilicred-anthropic/claude-haiku-5-5.cost": {
+      "present": false,
+      "before": null,
+      "applied": {
+        "input": 0.1,
+        "output": 0.5,
+        "cacheRead": 0.01,
+        "cacheWrite": 0.125
+      }
+    },
+    "sprilicred-anthropic/claude-haiku-5-5.listed": {
+      "present": false,
+      "before": null,
+      "applied": true
     }
   },
   ".sprilicred/omp-roles.json": {
     "roles": {
-      "default": "sprilicred-anthropic/claude-sonnet-5",
-      "smol": "sprilicred-anthropic/claude-haiku-4-5",
-      "tiny": "sprilicred-anthropic/claude-haiku-4-5",
-      "judge": "sprilicred-anthropic/claude-haiku-4-5",
+      "default": "sprilicred-anthropic/claude-sonnet-5-5",
+      "smol": "sprilicred-anthropic/claude-haiku-5-5",
+      "tiny": "sprilicred-anthropic/claude-haiku-5-5",
+      "judge": "sprilicred-anthropic/claude-haiku-5-5",
       "slow": "sprilicred-openai/gpt-6.1-sol",
-      "web": "sprilicred-anthropic/claude-haiku-4-5"
+      "web": "sprilicred-anthropic/claude-haiku-5-5"
     }
   },
   ".sprilicred/omp-cycle.before-sprilicred.json": {

@@ -17,11 +17,11 @@
   ],
   "modelRoles": {
     "default": "sprilicred-openrouter/meta/muse-wonder:high",
-    "smol": "sprilicred-anthropic/claude-haiku-4-5",
-    "tiny": "sprilicred-anthropic/claude-haiku-4-5",
-    "judge": "sprilicred-anthropic/claude-haiku-4-5",
+    "smol": "sprilicred-anthropic/claude-haiku-5-5",
+    "tiny": "sprilicred-anthropic/claude-haiku-5-5",
+    "judge": "sprilicred-anthropic/claude-haiku-5-5",
     "slow": "sprilicred-openai/gpt-6.1-sol",
-    "web": "sprilicred-anthropic/claude-haiku-4-5",
+    "web": "sprilicred-anthropic/claude-haiku-5-5",
     "mine": "sprilicred-openrouter/meta/muse-wonder:high",
     "plan": "sprilicred-openai/gpt-6-astra:low"
   },

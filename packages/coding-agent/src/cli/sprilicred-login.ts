@@ -22,7 +22,18 @@ import { promptLine } from "./oauth-terminal";
 
 const DEFAULT_URL = "https://sprilicred.taila2d385.ts.net";
 // The installer's omp default (connect.py DEFAULT_MODELS["omp"]), used when it is listed.
-const DEFAULT_MODEL = "claude-sonnet-5";
+const DEFAULT_MODEL = "claude-sonnet-5-5";
+// A model SpriliCred replaced with a newer one of its kind (connect.py SUCCESSORS; SUPERSEDED in
+// pricing.rs: still admitted, no longer listed). A default, or a role of the person's own, on the
+// old one moves to its successor, level kept, when the listing names the successor.
+const SUCCESSORS: Record<string, string> = {
+	"gpt-6-sol": "gpt-6.1-sol",
+	"gpt-5.6-sol": "gpt-6.1-sol",
+	"gpt-5.6-terra": "gpt-6.1-sol",
+	"gpt-5.6-luna": "gpt-6-luna",
+	"claude-sonnet-5": "claude-sonnet-5-5",
+	"claude-haiku-4-5": "claude-haiku-5-5",
+};
 const MODEL_STATE = ".sprilicred/omp-models.json";
 const ROLES_STATE = ".sprilicred/omp-roles.json";
 const CYCLE_STATE = ".sprilicred/omp-cycle.before-sprilicred.json";
@@ -87,12 +98,12 @@ const NONE_EFFORT_MODELS: Record<string, true> = {
 	"gpt-6-luna": true,
 	...DEDICATED_MODELS,
 };
-// Offline copy of pricing.rs CLAUDE_EFFORTS (connect.py), used when a listing names no efforts;
-// Haiku has token budgets, not effort.
+// Offline copy of pricing.rs CLAUDE_EFFORTS (connect.py), used when a listing names no efforts.
 const CLAUDE_EFFORTS: Record<string, string[]> = {
 	"claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
 	"claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
-	"claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
+	"claude-sonnet-5-5": ["low", "medium", "high", "xhigh", "max"],
+	"claude-haiku-5-5": ["low", "medium", "high", "xhigh", "max"],
 };
 const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 const PROVIDER_GROUPS: ProviderGroup[] = [
@@ -306,6 +317,22 @@ function migrateRef(ref: string, migration: Migration, cycle = false): string | 
 	if (Object.hasOwn(DEDICATED_MODELS, id) && migration.withdrawn.has(DEEPSEEK_PROVIDER)) return undefined;
 	const target = migration.moved.get(id);
 	return target ? `${target}/${rest}` : ref;
+}
+
+/**
+ * `ref` on the model that replaced its model (connect.py successor), level kept, when `ref` names a
+ * SpriliCred model its provider no longer lists and the listing names the successor; else undefined.
+ */
+function successorRef(ref: string, byProvider: Record<string, string[]>): string | undefined {
+	const slash = ref.indexOf("/");
+	if (slash <= 0) return undefined;
+	const provider = ref.slice(0, slash);
+	const rest = ref.slice(slash + 1);
+	const id = rest.split(":")[0];
+	const listed = byProvider[provider];
+	const next = Object.hasOwn(SUCCESSORS, id) ? SUCCESSORS[id] : undefined;
+	if (!listed || !next || listed.includes(id) || !listed.includes(next)) return undefined;
+	return `${provider}/${next}${rest.slice(id.length)}`;
 }
 
 function perMillion(value: unknown): number | undefined {
@@ -621,7 +648,8 @@ async function writeModels(
 		!keptOpenRouterDefault &&
 		!written.some(model => currentDefault === model || currentDefault.startsWith(`${model}:`))
 	) {
-		existing.defaultModel = fallbackDefault;
+		// A superseded model moves to what replaced it, not to the installer's default.
+		existing.defaultModel = successorRef(currentDefault, byProvider) ?? fallbackDefault;
 		replacedDefault = previousDefault;
 	} else existing.defaultModel = currentDefault;
 	// An OpenRouter default (moved from Muse, or the person's) needs its entry.
@@ -769,7 +797,9 @@ function writeList(
 function wantedRoles(models: WrittenModels): Record<string, string> {
 	const anthropic = models.byProvider["sprilicred-anthropic"];
 	const openai = models.byProvider[OPENAI_PROVIDER];
-	const claude = anthropic.find(model => model.includes("haiku")) ?? anthropic.at(-1);
+	// connect.py omp_roles_wanted: the first listed Haiku, else the last Claude model.
+	const claudeIds = anthropic.filter(model => model.startsWith("claude-"));
+	const claude = claudeIds.find(model => model.startsWith("claude-haiku-")) ?? claudeIds.at(-1);
 	const gpt = openai.find(model => model.includes("sol")) ?? openai.at(0);
 	if (!claude || !gpt) throw new Error("SpriliCred returned no models for helper roles");
 	return {
@@ -797,12 +827,15 @@ async function prepareBroker(settings: Settings, key: string, paths: SprilicredL
 	await settings.flush();
 }
 
-/** Writes the settings the installer owns; returns the references it removed (`setting=value`). */
+/**
+ * Writes the settings the installer owns; returns the references it removed and the roles it moved
+ * to a successor (`setting=value`).
+ */
 async function writeOwnedSettings(
 	settings: Settings,
 	models: WrittenModels,
 	paths: SprilicredLoginPaths,
-): Promise<string[]> {
+): Promise<{ removed: string[]; moved: string[] }> {
 	const stateRoot = path.join(paths.home, ".sprilicred");
 	await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
 	const { migration } = models;
@@ -871,10 +904,22 @@ async function writeOwnedSettings(
 			written[role] = value;
 		}
 	}
+	// A role of the person's own on a model SpriliCred replaced moves to its successor, level kept;
+	// it stays theirs (not in `written`). Only SpriliCred's Claude and GPT providers.
+	const moved: string[] = [];
+	for (const [role, value] of Object.entries(nextRoles)) {
+		if (Object.hasOwn(written, role)) continue;
+		if (!value.startsWith("sprilicred-anthropic/") && !value.startsWith(`${OPENAI_PROVIDER}/`)) continue;
+		const next = successorRef(value, models.byProvider);
+		if (next === undefined) continue;
+		nextRoles[role] = next;
+		moved.push(`modelRoles.${role}=${value} -> ${next}`);
+		changed = true;
+	}
 	if (changed || Object.keys(written).length > 0) cfgModelRoles.set(settings, nextRoles);
 	await privateWrite(rolesStatePath, `${JSON.stringify({ roles: written })}\n`);
 	await settings.flush();
-	return removed;
+	return { removed, moved };
 }
 
 export async function runSprilicredLogin(
@@ -894,7 +939,7 @@ export async function runSprilicredLogin(
 	const paths = resolvePaths(pathOverrides);
 	await prepareBroker(settings, key, paths);
 	const models = await writeModels(catalogs, openrouter, paths);
-	const removed = await writeOwnedSettings(settings, models, paths);
+	const { removed, moved } = await writeOwnedSettings(settings, models, paths);
 	// Roles, chains or presets on Muse now name the OpenRouter model: give it its entry.
 	const { providers } = models.document;
 	if (
@@ -914,5 +959,8 @@ export async function runSprilicredLogin(
 	}
 	if (removed.length > 0) {
 		process.stdout.write(`Removed settings that named models no longer offered to you: ${removed.join(", ")}\n`);
+	}
+	if (moved.length > 0) {
+		process.stdout.write(`Moved settings to the models that replaced theirs: ${moved.join(", ")}\n`);
 	}
 }

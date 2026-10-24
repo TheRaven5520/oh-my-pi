@@ -78,10 +78,11 @@ describe("SpriliCred login", () => {
 				data: anthropic
 					? [
 							{
-								id: "claude-haiku-4-5",
-								context_window: 200000,
-								max_output_tokens: 64000,
+								id: "claude-haiku-5-5",
+								context_window: 1000000,
+								max_output_tokens: 128000,
 								supports_reasoning: true,
+								// No `reasoning_efforts`: the offline ladder (CLAUDE_EFFORTS) applies.
 								input_modalities: ["text", "image"],
 								pricing: {
 									unit: "microcredits_per_token",
@@ -93,7 +94,7 @@ describe("SpriliCred login", () => {
 								},
 							},
 							{
-								id: "claude-sonnet-5",
+								id: "claude-sonnet-5-5",
 								context_window: 1000000,
 								max_output_tokens: 128000,
 								supports_reasoning: true,
@@ -145,6 +146,11 @@ describe("SpriliCred login", () => {
 		const first = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
 		const anthropic = first.providers["sprilicred-anthropic"];
 		expect(anthropic.models[0].cost.input).toBe(1);
+		expect(anthropic.models[1].thinking).toEqual({
+			mode: "anthropic-adaptive",
+			efforts: ["low", "medium", "high", "xhigh", "max"],
+		});
+		expect(anthropic.models[0].thinking).toEqual(anthropic.models[1].thinking);
 		expect(anthropic.models[0].compat).toEqual({ supportsFastMode: true });
 		expect(anthropic.models[1].compat).toBeUndefined();
 		expect(anthropic.discovery).toEqual({ type: "openai-models-list" });
@@ -168,6 +174,7 @@ describe("SpriliCred login", () => {
 		expect(cfgModelRoles.get(settings).smol).toBe("other/keep");
 		expect((await fs.readFile(tokenPath, "utf8")).trim()).toBe("test-key");
 	});
+
 
 	test("renames names an older login wrote as ' via Sprilicred' and keeps names the person chose", async () => {
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
@@ -276,7 +283,7 @@ describe("SpriliCred login", () => {
 			"other/keep": ["sprilicred-glm/abliterated-model-large-v2"],
 		});
 		cfgRetryUsageLimitFallbackChains.set(settings, {
-			"sprilicred-anthropic/claude-sonnet-5": ["sprilicred-muse/muse-wonder"],
+			"sprilicred-anthropic/claude-sonnet-5-5": ["sprilicred-muse/muse-wonder"],
 		});
 		await settings.flush();
 		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
@@ -326,7 +333,7 @@ describe("SpriliCred login", () => {
 		expect(cfgModelRoles.get(settings).task).toBeUndefined();
 		expect(cfgRetryFallbackChains.get(settings)).toEqual({ [MUSE]: [`${MUSE}:low`, "other/keep"] });
 		expect(cfgRetryUsageLimitFallbackChains.get(settings)).toEqual({
-			"sprilicred-anthropic/claude-sonnet-5": [MUSE],
+			"sprilicred-anthropic/claude-sonnet-5-5": [MUSE],
 		});
 
 		// A later login respects a narrower list the person chose.
@@ -472,7 +479,7 @@ describe("SpriliCred login", () => {
 		dedicated.openrouter = [{ id: "openai/gpt-5" }];
 		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
 		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
-		expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5");
+		expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5-5");
 		expect(written.providers["sprilicred-openrouter"].models).toEqual([]);
 		expect(cfgModelRoles.get(settings).plan).toBeUndefined();
 	});
@@ -531,7 +538,7 @@ describe("SpriliCred login", () => {
 		dedicated.deepseek = [{ id: "deepseek-v4.1-flash" }];
 		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
 		expect(JSON.parse(await fs.readFile(modelsPath, "utf8")).defaultModel).toBe(
-			"sprilicred-anthropic/claude-sonnet-5",
+			"sprilicred-anthropic/claude-sonnet-5-5",
 		);
 	});
 
@@ -578,7 +585,7 @@ describe("SpriliCred login", () => {
 			cfgModelRoles.setEntry(settings, "task", "sprilicred-openai/deepseek-v4.1-flash");
 			cfgModelRoles.setEntry(settings, "slow", "sprilicred-deepseek/deepseek-v4.1-flash");
 			cfgRetryFallbackChains.set(settings, {
-				"sprilicred-anthropic/claude-sonnet-5": ["sprilicred-deepseek/my-deepseek", "other/keep"],
+				"sprilicred-anthropic/claude-sonnet-5-5": ["sprilicred-deepseek/my-deepseek", "other/keep"],
 				"sprilicred-openrouter/openai/gpt-5": ["other/keep"],
 				"other/keep": ["sprilicred-openrouter/meta/muse-wonder"],
 			});
@@ -596,7 +603,7 @@ describe("SpriliCred login", () => {
 
 			const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
 			expect(Object.keys(written.providers)).toEqual(["other", "sprilicred-anthropic", "sprilicred-openai"]);
-			expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5");
+			expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5-5");
 			expect(cfgCycleModels.get(settings)).toEqual(["sprilicred-anthropic/*", "sprilicred-openai/*"]);
 			expect(cfgEnabledModels.get(settings)).toEqual(["sprilicred-anthropic/*", "sprilicred-openai/*"]);
 			expect(await fs.readFile(path.join(agentDir, "config.yml"), "utf8")).not.toContain("modelProviderOrder");
@@ -608,7 +615,7 @@ describe("SpriliCred login", () => {
 			// Owned by the last login: re-pinned rather than removed.
 			expect(roles.slow).toBe("sprilicred-openai/gpt-6-astra");
 			expect(cfgRetryFallbackChains.get(settings)).toEqual({
-				"sprilicred-anthropic/claude-sonnet-5": ["other/keep"],
+				"sprilicred-anthropic/claude-sonnet-5-5": ["other/keep"],
 			});
 			const text = output.join("");
 			expect(text).toContain("Your default model sprilicred-muse/muse-wonder is no longer offered to you");
@@ -660,7 +667,7 @@ describe("SpriliCred login", () => {
 		]);
 		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
 		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
-		expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5");
+		expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5-5");
 		expect(cfgCycleModels.get(settings)).toEqual(["other/keep", "sprilicred-deepseek/deepseek-v4.1-flash:high"]);
 	});
 
@@ -702,6 +709,12 @@ describe("SpriliCred login", () => {
 		const baseFetch = globalThis.fetch;
 		globalThis.fetch = (async (input, init) => {
 			const response = await baseFetch(input, init);
+			if (/^https:\/\/sprilicred\.test\/anthropic\/v1\/models$/.test(String(input))) {
+				const { data } = (await response.json()) as { data: unknown[] };
+				return Response.json({
+					data: [...data, { id: "claude-budget-1", supports_reasoning: true, reasoning_efforts: [] }],
+				});
+			}
 			if (!/^https:\/\/sprilicred\.test\/v1\/models$/.test(String(input))) return response;
 			const { data } = (await response.json()) as { data: unknown[] };
 			return Response.json({ data: [...data, { id: "gpt-7-nova", context_window: 272000 }] });
@@ -714,12 +727,17 @@ describe("SpriliCred login", () => {
 		const claude = Object.fromEntries(
 			first.providers["sprilicred-anthropic"].models.map((model: { id: string }) => [model.id, model]),
 		);
-		// No listed efforts: the installer's built-in ladder for the id, none for a budget model.
-		expect(claude["claude-sonnet-5"].thinking).toEqual({
+		// A listed ladder wins; no listed efforts take the installer's built-in ladder for the id
+		// (Haiku 5.5), and a listed empty one is a budget model with none.
+		expect(claude["claude-sonnet-5-5"].thinking).toEqual({
 			mode: "anthropic-adaptive",
 			efforts: ["low", "medium", "high", "xhigh", "max"],
 		});
-		expect(claude["claude-haiku-4-5"].thinking).toBeUndefined();
+		expect(claude["claude-haiku-5-5"].thinking).toEqual({
+			mode: "anthropic-adaptive",
+			efforts: ["low", "medium", "high", "xhigh", "max"],
+		});
+		expect(claude["claude-budget-1"].thinking).toBeUndefined();
 		const openai = Object.fromEntries(
 			first.providers["sprilicred-openai"].models.map((model: { id: string }) => [model.id, model]),
 		);
@@ -727,7 +745,7 @@ describe("SpriliCred login", () => {
 		// Never guessed for an id the installer does not know.
 		expect(openai["gpt-7-nova"].compat).toBeUndefined();
 
-		claude["claude-sonnet-5"].thinking = { mode: "anthropic-adaptive", efforts: ["high"] };
+		claude["claude-sonnet-5-5"].thinking = { mode: "anthropic-adaptive", efforts: ["high"] };
 		openai["gpt-6-astra"].compat = { reasoningDisableMode: "omit" };
 		await fs.writeFile(modelsPath, JSON.stringify(first));
 		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
@@ -737,6 +755,90 @@ describe("SpriliCred login", () => {
 			efforts: ["high"],
 		});
 		expect(second.providers["sprilicred-openai"].models[0].compat).toEqual({ reasoningDisableMode: "omit" });
+	});
+
+	test("a fresh login defaults to Sonnet 5.5 and pins helper roles to Haiku 5.5, as the installer does", async () => {
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		// The listing names Haiku first: the default is the installer's, not the first listed model.
+		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
+		expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5-5");
+		expect(cfgModelRoles.get(settings)).toEqual({
+			default: "sprilicred-anthropic/claude-sonnet-5-5",
+			smol: "sprilicred-anthropic/claude-haiku-5-5",
+			tiny: "sprilicred-anthropic/claude-haiku-5-5",
+			judge: "sprilicred-anthropic/claude-haiku-5-5",
+			slow: "sprilicred-openai/gpt-6-astra",
+			web: "sprilicred-anthropic/claude-haiku-5-5",
+		});
+	});
+
+	test("moves a default and the person's roles on Sonnet 5 / Haiku 4.5 to their successors, level kept", async () => {
+		await fs.writeFile(
+			path.join(agentDir, "models.yml"),
+			JSON.stringify({
+				defaultModel: "sprilicred-anthropic/claude-sonnet-5:high",
+				providers: { other: { models: [{ id: "keep" }] } },
+			}),
+		);
+		await fs.mkdir(path.join(root, ".sprilicred"), { recursive: true });
+		await fs.writeFile(
+			path.join(root, ".sprilicred/omp-roles.json"),
+			JSON.stringify({
+				roles: {
+					default: "sprilicred-anthropic/claude-sonnet-5",
+					smol: "sprilicred-anthropic/claude-haiku-4-5",
+				},
+			}),
+		);
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgModelRoles.set(settings, {
+			default: "sprilicred-anthropic/claude-sonnet-5",
+			smol: "sprilicred-anthropic/claude-haiku-4-5",
+			plan: "sprilicred-anthropic/claude-haiku-4-5:low",
+			commit: "other/claude-sonnet-5",
+		});
+		// connect.py moves only the default and roles: cycles and fallback chains stay as written.
+		cfgCycleModels.set(settings, ["sprilicred-anthropic/claude-sonnet-5", "other/keep"]);
+		cfgRetryFallbackChains.set(settings, { "sprilicred-anthropic/claude-sonnet-5": ["other/keep"] });
+		await settings.flush();
+		const output: string[] = [];
+		const write = process.stdout.write;
+		process.stdout.write = ((chunk: string) => output.push(chunk) > 0) as typeof process.stdout.write;
+		try {
+			await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+		} finally {
+			process.stdout.write = write;
+		}
+
+		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
+		expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5-5:high");
+		expect(cfgModelRoles.get(settings)).toEqual({
+			default: "sprilicred-anthropic/claude-sonnet-5-5:high",
+			smol: "sprilicred-anthropic/claude-haiku-5-5",
+			plan: "sprilicred-anthropic/claude-haiku-5-5:low",
+			commit: "other/claude-sonnet-5",
+			tiny: "sprilicred-anthropic/claude-haiku-5-5",
+			judge: "sprilicred-anthropic/claude-haiku-5-5",
+			slow: "sprilicred-openai/gpt-6-astra",
+			web: "sprilicred-anthropic/claude-haiku-5-5",
+		});
+		// A moved role of the person's stays theirs.
+		const ours = JSON.parse(await fs.readFile(path.join(root, ".sprilicred/omp-roles.json"), "utf8")).roles;
+		expect(ours.plan).toBeUndefined();
+		expect(ours.smol).toBe("sprilicred-anthropic/claude-haiku-5-5");
+		expect(cfgCycleModels.get(settings)).toEqual(["sprilicred-anthropic/claude-sonnet-5", "other/keep"]);
+		expect(cfgRetryFallbackChains.get(settings)).toEqual({
+			"sprilicred-anthropic/claude-sonnet-5": ["other/keep"],
+		});
+		const text = output.join("");
+		expect(text).toContain(
+			"Your default model sprilicred-anthropic/claude-sonnet-5:high is no longer offered to you; it is now sprilicred-anthropic/claude-sonnet-5-5:high",
+		);
+		expect(text).toContain(
+			"modelRoles.plan=sprilicred-anthropic/claude-haiku-4-5:low -> sprilicred-anthropic/claude-haiku-5-5:low",
+		);
+		expect(text).not.toContain("modelRoles.smol=");
 	});
 
 	test("adds OpenRouter to lists the person set without the sprilicred-openai scope, never to a cycle", async () => {
@@ -792,7 +894,7 @@ describe("SpriliCred login", () => {
 		dedicated.deepseek = [];
 		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
 		expect(JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8")).defaultModel).toBe(
-			"sprilicred-anthropic/claude-sonnet-5",
+			"sprilicred-anthropic/claude-sonnet-5-5",
 		);
 		expect(cfgModelRoles.get(settings).task).toBeUndefined();
 		expect(cfgRetryFallbackChains.get(settings)).toEqual({});
@@ -856,11 +958,11 @@ describe("SpriliCred login", () => {
 	});
 
 	// Each case is deploy/fixtures/omp-parity/<case> from SpriliCred's installer (deploy/connect.py,
-	// naming-spriliCred 6fbdb99), written by install_omp from the same listings and the same
+	// release-111 a295882), written by install_omp from the same listings and the same
 	// before-files: catalog.json (listing bodies per route), models/config/state.before.json
 	// (migration cases), installer-{models,config,state}.json. `$HOME` is the scratch home and
 	// https://sprilicred.example the server.
-	// The `*-deepseek-withheld` cases are the same installer (connect.py at release-97 aedbc0e) with
+	// The `*-deepseek-withheld` cases are the same installer (connect.py at release-111 a295882) with
 	// `/deepseek/v1/models` served empty to a granted key, as SpriliCred serves it while DeepSeek V4.1
 	// Flash is withheld (2026-10-16). SpriliCred keeps only the listed shape in its fixtures; to
 	// refresh these, rerun its test_parity_fixtures_are_what_the_installer_writes with

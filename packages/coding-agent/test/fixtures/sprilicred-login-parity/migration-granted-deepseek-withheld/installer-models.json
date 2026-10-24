@@ -72,8 +72,8 @@
           }
         },
         {
-          "id": "claude-sonnet-5",
-          "name": "claude-sonnet-5 via SpriliCred",
+          "id": "claude-sonnet-5-5",
+          "name": "claude-sonnet-5-5 via SpriliCred",
           "contextWindow": 1000000,
           "maxTokens": 128000,
           "reasoning": true,
@@ -94,25 +94,35 @@
           "cost": {
             "input": 2,
             "output": 10,
-            "cacheRead": 0.2,
+            "cacheRead": 0.1,
             "cacheWrite": 2.5
           }
         },
         {
-          "id": "claude-haiku-4-5",
-          "name": "claude-haiku-4-5 via SpriliCred",
-          "contextWindow": 200000,
-          "maxTokens": 64000,
+          "id": "claude-haiku-5-5",
+          "name": "claude-haiku-5-5 via SpriliCred",
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
           "reasoning": true,
+          "thinking": {
+            "mode": "anthropic-adaptive",
+            "efforts": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
           "input": [
             "text",
             "image"
           ],
           "cost": {
-            "input": 1,
-            "output": 5,
-            "cacheRead": 0.1,
-            "cacheWrite": 1.25
+            "input": 0.1,
+            "output": 0.5,
+            "cacheRead": 0.01,
+            "cacheWrite": 0.125
           }
         }
       ]
