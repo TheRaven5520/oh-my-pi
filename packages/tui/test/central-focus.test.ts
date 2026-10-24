@@ -5,6 +5,8 @@ import { initTheme } from "../src/theme/theme";
 import { setClockTimeZone } from "../src/render/clock";
 import { CentralComponent } from "../src/apps/central/central-tui";
 import { focusTranscriptEntries, parseFocusCommand, resolveFocusTarget } from "../src/apps/central/focus";
+import { selectCells, selectionText } from "../src/apps/central/selection";
+import { DEFAULT_TAB_WIDTH } from "../src/utils";
 import type { CentralChat, CentralFocusCommands, CentralSnapshot, CentralTuiHost } from "../src/apps/central/types";
 import { VirtualTerminal } from "./virtual-terminal";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
@@ -146,9 +148,11 @@ async function setup(options: {
 		command: options.command,
 	};
 	const commands = options.commands ?? commandMocks();
+	const copy = vi.fn((_text: string) => {});
 	const component = new CentralComponent(ui, host, undefined, {
 		target: options.target ?? "TMUX ORCHESTRATION",
 		prefix: PREFIX,
+		copyToClipboard: copy,
 		commands,
 	});
 	component.focused = true;
@@ -164,7 +168,10 @@ async function setup(options: {
 	return {
 		component,
 		commands,
+		copy,
 		text,
+		/** Rendered frame rows with styling, for checking the selection highlight. */
+		raw: () => component.render(width).join("\n"),
 		input: async (value: string) => {
 			component.handleInput(value);
 			await flush();
@@ -874,5 +881,187 @@ describe("Central focus questions", () => {
 		} finally {
 			rig.close();
 		}
+	});
+});
+
+describe("Central focus copy", () => {
+	const press = (col: number, row: number) => `\x1b[<0;${col + 1};${row + 1}M`;
+	const drag = (col: number, row: number) => `\x1b[<32;${col + 1};${row + 1}M`;
+	const release = (col: number, row: number) => `\x1b[<0;${col + 1};${row + 1}m`;
+	const history = Array.from({ length: 60 }, (_, index) =>
+		assistant(`r${index}`, [{ type: "text", text: `HISTORY LINE ${index}` }]),
+	);
+	/** Lowest-numbered history line on screen. */
+	const topHistory = (text: string) => Math.min(...[...text.matchAll(/HISTORY LINE (\d+)/g)].map(m => Number(m[1])));
+
+	it("copies exactly the plain text of the transcript rows a drag covers, highlighted until the next key", async () => {
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq" })], errors: [] }),
+			transcript: async () => [
+				assistant("a1", [{ type: "text", text: "- ALPHA **ROW**\n- BETA ROW\n- GAMMA ROW" }]),
+			],
+		});
+		try {
+			const lines = rig.text().split("\n");
+			const alpha = lines.findIndex(line => line.includes("ALPHA ROW"));
+			const beta = lines.findIndex(line => line.includes("BETA ROW"));
+			expect(beta).toBe(alpha + 1);
+			expect(rig.raw()).not.toContain("\x1b[7m");
+			await rig.input(press(0, alpha));
+			await rig.input(drag(10, alpha));
+			await rig.input(drag(60, beta));
+			expect(rig.copy).not.toHaveBeenCalled();
+			await rig.input(release(60, beta));
+			const expected = `${lines[alpha]!.trimEnd()}\n${lines[beta]!.trimEnd()}`;
+			expect(rig.copy.mock.calls).toEqual([[expected]]);
+			expect(expected).not.toContain("GAMMA");
+			expect(expected).not.toContain("\x1b");
+			expect(rig.text()).toContain(`Copied ${expected.length} chars`);
+			expect(rig.raw()).toContain("\x1b[7m");
+			await rig.input("\x1b[D");
+			expect(rig.raw()).not.toContain("\x1b[7m");
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("drops the selection when the rows under it change instead of keeping stale text", async () => {
+		let transcript = [
+			assistant("a0", [{ type: "text", text: "FIRST REPLY" }]),
+			assistant("a1", [{ type: "text", text: "- ALPHA ROW\n- BETA ROW" }]),
+		];
+		let revision = "1";
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", transcriptRevision: revision })], errors: [] }),
+			transcript: async () => transcript,
+		});
+		try {
+			const lines = rig.text().split("\n");
+			const alpha = lines.findIndex(line => line.includes("ALPHA ROW"));
+			await rig.input(press(0, alpha));
+			await rig.input(drag(40, alpha + 1));
+			expect(rig.raw()).toContain("\x1b[7m");
+			// The capped tail drops its first entry: every row index now holds other text.
+			transcript = [transcript[1]!, assistant("a2", [{ type: "text", text: "NEWER REPLY" }])];
+			revision = "2";
+			await rig.poll();
+			await rig.poll();
+			expect(rig.text()).toContain("NEWER REPLY");
+			expect(rig.raw()).not.toContain("\x1b[7m");
+			await rig.input(release(40, alpha + 1));
+			expect(rig.copy).not.toHaveBeenCalled();
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("treats a press and release on one cell as a click: no copy, and the composer still takes focus", async () => {
+		const answer = vi.fn(async () => {});
+		const rig = await setup({
+			snapshot: () => ({
+				chats: [
+					chat({
+						id: "local/hq",
+						requests: [
+							{
+								id: "ask1",
+								createdAt: 1,
+								kind: "ask",
+								questions: [
+									{ id: "q", question: "WHICH EVAL?", options: [{ label: "One" }, { label: "Two" }] },
+								],
+							},
+						],
+					}),
+				],
+				errors: [],
+			}),
+			answer,
+		});
+		try {
+			await rig.input("\x1b[B");
+			expect(rig.text()).toContain("Enter answer");
+			const lines = rig.text().split("\n");
+			const reply = lines.findIndex(line => line.includes("REPLY-ONE"));
+			// A click on the transcript, with a motion report that stays on the pressed cell.
+			await rig.input(press(4, reply));
+			await rig.input(drag(4, reply));
+			await rig.input(release(4, reply));
+			expect(rig.copy).not.toHaveBeenCalled();
+			expect(rig.raw()).not.toContain("\x1b[7m");
+			expect(rig.text()).toContain("Enter answer");
+			// The row above the footer hint is the composer's last row.
+			const composer = lines.length - 2;
+			await rig.input(press(3, composer));
+			await rig.input(release(3, composer));
+			expect(rig.copy).not.toHaveBeenCalled();
+			expect(rig.text()).toContain("Enter send (focus)");
+			expect(answer).not.toHaveBeenCalled();
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("scrolls the transcript when a drag goes past its top edge and copies the rows it reached", async () => {
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq" })], errors: [] }),
+			transcript: async () => history,
+			height: 30,
+		});
+		try {
+			const before = topHistory(rig.text());
+			const lines = rig.text().split("\n");
+			const first = lines.findIndex(line => line.includes(`HISTORY LINE ${before}`));
+			// Pressed past the row's text, so the selection runs back to that row's end.
+			await rig.input(press(40, first));
+			for (let index = 0; index < 3; index++) await rig.input(drag(2, 0));
+			const after = topHistory(rig.text());
+			expect(after).toBeLessThan(before);
+			await rig.input(release(2, 0));
+			expect(rig.copy).toHaveBeenCalledTimes(1);
+			const copied = rig.copy.mock.calls[0]![0];
+			expect(copied).toContain(`HISTORY LINE ${after}`);
+			expect(copied).toContain(`HISTORY LINE ${before}`);
+			expect(copied).not.toContain(`HISTORY LINE ${before + 1}`);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("still scrolls the transcript with the wheel", async () => {
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq" })], errors: [] }),
+			transcript: async () => history,
+			height: 30,
+		});
+		try {
+			const before = topHistory(rig.text());
+			for (let index = 0; index < 3; index++) await rig.input("\x1b[<64;10;8M");
+			expect(topHistory(rig.text())).toBeLessThan(before);
+			expect(rig.copy).not.toHaveBeenCalled();
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("copies the latest reply's text with Ctrl+X", async () => {
+		const rig = await setup({ snapshot: () => ({ chats: [chat({ id: "local/hq" })], errors: [] }) });
+		try {
+			expect(rig.text()).toContain("drag to copy · Ctrl+X copy reply");
+			await rig.input("\x18");
+			expect(rig.copy.mock.calls).toEqual([["REPLY-ONE\n\nREPLY-TWO **bold**"]]);
+			expect(rig.text()).toContain("Copied 29 chars");
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("selects whole wide characters by cell and trims each row's trailing padding", () => {
+		expect(selectCells("ab中文cd", 3, 5)).toEqual({ from: 2, to: 6, text: "中文" });
+		expect(selectCells("ab中文cd", 6, 7)).toEqual({ from: 6, to: 7, text: "c" });
+		const rows = [" \x1b[1mone\x1b[0m   ", "\ttwo  "];
+		expect(selectionText(rows, { line: 0, col: 2 }, { line: 1, col: Number.POSITIVE_INFINITY })).toBe(
+			`ne\n${" ".repeat(DEFAULT_TAB_WIDTH)}two`,
+		);
 	});
 });

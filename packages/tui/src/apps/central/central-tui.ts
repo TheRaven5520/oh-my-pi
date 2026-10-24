@@ -14,10 +14,10 @@ import { HookEditorComponent } from "../../overlays/hook-editor";
 import { HookSelectorComponent } from "../../overlays/hook-selector";
 import { wrapTextWithAnsi } from "../../render/render-utils";
 import { ChatTranscriptBuilder } from "../../chat/chat-transcript-builder";
-import { routeSgrMouseInput } from "../../mouse";
+import { routeSgrMouseInput, type SgrMouseEvent } from "../../mouse";
 import { ProcessTerminal } from "../../terminal";
 import { getEditorTheme, getThemeEpoch, theme } from "../../theme/theme";
-import { truncateToWidth, visibleWidth } from "../../utils";
+import { isOsc66Line, truncateToWidth, visibleWidth } from "../../utils";
 import {
 	CentralFocusAutocompleteProvider,
 	type CentralFocusCommand,
@@ -40,6 +40,14 @@ import type {
 	CentralWorkspace,
 } from "./types";
 import { CentralPromptRejectedError } from "./types";
+import {
+	highlightRow,
+	orderedSelection,
+	plainRow,
+	rowSelection,
+	type SelectionPoint,
+	selectionText,
+} from "./selection";
 
 /** Focus mode keeps one draft for the target, whichever process currently serves it. */
 const FOCUS_DRAFT_KEY = "\0focus";
@@ -75,6 +83,17 @@ interface CentralDraft {
 		/** Sent with the `command` op; a retry must use the same op. */
 		command?: boolean;
 	};
+}
+
+/** A block of the focus frame whose text a drag can select. */
+interface FocusSelectRegion {
+	kind: "transcript" | "question" | "output";
+	/** Logical rows; a scrolling region shows them from its view's offset. */
+	lines: readonly string[];
+	/** Frame row of the region's first row (negative when cut off above the frame). */
+	top: number;
+	height: number;
+	view?: ScrollView;
 }
 
 /** Remote status rows may retain colors, but never terminal actions or extra rows. */
@@ -159,6 +178,23 @@ export class CentralComponent implements Component {
 	#focusCommandRunning = false;
 	/** JSON of the command list the focus composer's completion was built from. */
 	#focusCompletionKey: string | undefined;
+	/** Rows the focus view can select from, as last drawn (frame rows). */
+	#selectRegions: FocusSelectRegion[] = [];
+	/** The left press that may become a click or a drag; `region` is where a drag would select. */
+	#press: { row: number; col: number; region?: FocusSelectRegion["kind"]; point: SelectionPoint } | undefined;
+	/** Drag selection in one region; `rows` holds the plain text of rows `first…` it was made on. */
+	#selection:
+		| {
+				region: FocusSelectRegion["kind"];
+				anchor: SelectionPoint;
+				head: SelectionPoint;
+				dragging: boolean;
+				first: number;
+				rows: string[];
+		  }
+		| undefined;
+	#edgeScroll: { timer: NodeJS.Timeout; row: number; col: number } | undefined;
+	#copyStatus: { text: string; error: boolean; until: number } | undefined;
 
 	constructor(
 		readonly ui: TUI,
@@ -839,16 +875,172 @@ export class CentralComponent implements Component {
 		this.#selectChat(next, true);
 	}
 
+	/** Focus pointer: a click focuses the composer or question on release; a drag selects text and copies it. */
+	#focusPointer(event: SgrMouseEvent): void {
+		if (event.leftClick) {
+			this.#clearSelection();
+			const region = event.col < this.#mainWidth ? this.#regionAt(event.row) : undefined;
+			this.#press = {
+				row: event.row,
+				col: event.col,
+				region: region?.kind,
+				point: region ? this.#pointAt(region, event.row, event.col) : { line: 0, col: 0 },
+			};
+			this.ui.requestRender();
+		} else if (event.motion && (event.button & 3) === 0) {
+			const press = this.#press;
+			if (!press?.region) return;
+			if (!this.#selection) {
+				// A press and release on one cell is a click, never a selection.
+				if (event.row === press.row && event.col === press.col) return;
+				this.#selectRegions.find(region => region.kind === press.region)?.view?.setFollowTail(false);
+				this.#selection = {
+					region: press.region,
+					anchor: press.point,
+					head: press.point,
+					dragging: true,
+					first: press.point.line,
+					rows: [],
+				};
+			}
+			this.#dragTo(event.row, event.col);
+		} else if (event.release && (event.button & 3) === 0) {
+			const press = this.#press;
+			const selection = this.#selection;
+			this.#press = undefined;
+			this.#stopEdgeScroll();
+			if (selection?.dragging) {
+				selection.dragging = false;
+				const region = this.#selectRegions.find(candidate => candidate.kind === selection.region);
+				const regionView = region?.view;
+				if (regionView) regionView.setFollowTail(regionView.getScrollOffset() >= regionView.getMaxScrollOffset());
+				const text = region ? selectionText(region.lines, selection.anchor, selection.head) : "";
+				if (text.trim()) void this.#copy(text);
+				else this.#selection = undefined;
+			} else if (press && press.col < this.#mainWidth) {
+				if (press.row >= this.#inputTop && press.row < this.#inputBottom) this.#inputFocus = true;
+				else if (press.row >= this.#questionTop && press.row < this.#inputTop) this.#inputFocus = false;
+			}
+			this.ui.requestRender();
+		}
+	}
+
+	#regionAt(row: number): FocusSelectRegion | undefined {
+		return this.#selectRegions.find(
+			region => region.height > 0 && row >= Math.max(0, region.top) && row < region.top + region.height,
+		);
+	}
+
+	/** The region row under frame row `row`; past an edge, the first or last visible row's start or end. */
+	#pointAt(region: FocusSelectRegion, row: number, col: number): SelectionPoint {
+		const offset = region.view?.getScrollOffset() ?? 0;
+		const visibleTop = Math.max(0, region.top);
+		const point =
+			row < visibleTop
+				? { line: offset + visibleTop - region.top, col: 0 }
+				: row >= region.top + region.height
+					? { line: offset + region.height - 1, col: Number.POSITIVE_INFINITY }
+					: { line: offset + row - region.top, col };
+		point.line = Math.max(0, Math.min(point.line, region.lines.length - 1));
+		return point;
+	}
+
+	/** Move the selection head; past the region's top or bottom edge, scroll it and keep scrolling while held there. */
+	#dragTo(row: number, col: number): void {
+		const selection = this.#selection;
+		const region = this.#selectRegions.find(candidate => candidate.kind === selection?.region);
+		if (!selection?.dragging || !region) return;
+		const visibleTop = Math.max(0, region.top);
+		const bottom = region.top + region.height - 1;
+		const beyond = row < visibleTop ? row - visibleTop : row > bottom ? row - bottom : 0;
+		if (beyond !== 0) region.view?.scroll(Math.sign(beyond) * Math.min(3, Math.abs(beyond)));
+		selection.head = this.#pointAt(region, row, col);
+		const [start, end] = orderedSelection(selection.anchor, selection.head);
+		selection.first = start.line;
+		selection.rows = region.lines.slice(start.line, end.line + 1).map(plainRow);
+		if (beyond !== 0 && region.view) {
+			if (!this.#edgeScroll) {
+				const timer = setInterval(() => {
+					if (this.#edgeScroll) this.#dragTo(this.#edgeScroll.row, this.#edgeScroll.col);
+				}, 100);
+				timer.unref?.();
+				this.#edgeScroll = { timer, row, col };
+			}
+			this.#edgeScroll.row = row;
+			this.#edgeScroll.col = col;
+		} else this.#stopEdgeScroll();
+		this.ui.requestRender();
+	}
+
+	#stopEdgeScroll(): void {
+		if (this.#edgeScroll) clearInterval(this.#edgeScroll.timer);
+		this.#edgeScroll = undefined;
+	}
+
+	#clearSelection(): void {
+		this.#selection = undefined;
+		this.#press = undefined;
+		this.#stopEdgeScroll();
+	}
+
+	async #copy(text: string): Promise<void> {
+		const count = [...text].length;
+		this.#copyStatus = {
+			text: `Copied ${count} char${count === 1 ? "" : "s"}`,
+			error: false,
+			until: this.#now() + 3000,
+		};
+		this.ui.requestRender();
+		try {
+			await this.focus!.copyToClipboard(text);
+		} catch (error) {
+			this.#copyStatus = {
+				text: `Copy failed: ${sanitizeDisplayLine(error instanceof Error ? error.message : String(error))}`,
+				error: true,
+				until: this.#now() + 5000,
+			};
+			if (!this.#stopped) this.ui.requestRender();
+		}
+	}
+
+	/**
+	 * Reverse-video the selected cells in this frame's rows. The selection ends when
+	 * the rows under it no longer show the text it was made on (new turns, a reload,
+	 * a resize), so it never copies or marks other text, and once it scrolls out of view.
+	 */
+	#paintSelection(frame: string[], cut: number): void {
+		const selection = this.#selection;
+		if (!selection) return;
+		const region = this.#selectRegions.find(candidate => candidate.kind === selection.region);
+		const changed =
+			!region ||
+			selection.rows.some((text, index) => {
+				const source = region.lines[selection.first + index];
+				return source === undefined || plainRow(source) !== text;
+			});
+		const offset = region?.view?.getScrollOffset() ?? 0;
+		const [start, end] = orderedSelection(selection.anchor, selection.head);
+		const firstVisible = offset + Math.max(0, -(region?.top ?? 0));
+		const lastVisible = offset + (region?.height ?? 0) - 1;
+		if (!region || changed || (!selection.dragging && (end.line < firstVisible || start.line > lastVisible))) {
+			this.#clearSelection();
+			return;
+		}
+		for (let index = Math.max(0, -region.top); index < region.height; index++) {
+			const line = offset + index;
+			const source = region.lines[line];
+			if (source === undefined) continue;
+			const cells = rowSelection(line, start, end, plainRow(source), isOsc66Line(source));
+			const at = region.top + cut + index;
+			if (cells) frame[at] = highlightRow(frame[at]!, cells.from, cells.to, cells.text);
+		}
+	}
+
 	handleInput(data: string): void {
 		this.#lastInputAt = this.#now();
 		if (
 			data.startsWith("\x1b[<") &&
 			routeSgrMouseInput(data, event => {
-				if (event.leftClick && event.col < this.#mainWidth) {
-					if (event.row >= this.#inputTop && event.row < this.#inputBottom) this.#inputFocus = true;
-					else if (event.row >= this.#questionTop && event.row < this.#inputTop) this.#inputFocus = false;
-					this.ui.requestRender();
-				}
 				if (event.wheel !== null) {
 					const entry = this.#showRetired ? this.#retired : this.#entryForSelectedChat();
 					const form = entry ? this.#form(entry) : undefined;
@@ -857,13 +1049,30 @@ export class CentralComponent implements Component {
 					view.scroll(event.wheel * 3);
 					view.setFollowTail(view.getScrollOffset() >= view.getMaxScrollOffset());
 					this.ui.requestRender();
+				} else if (this.focus) this.#focusPointer(event);
+				else if (event.leftClick && event.col < this.#mainWidth) {
+					if (event.row >= this.#inputTop && event.row < this.#inputBottom) this.#inputFocus = true;
+					else if (event.row >= this.#questionTop && event.row < this.#inputTop) this.#inputFocus = false;
+					this.ui.requestRender();
 				}
 				return true;
 			})
 		)
 			return;
+		// Any key ends a mouse selection; the key itself is handled as usual.
+		if (this.#selection || this.#press) {
+			this.#clearSelection();
+			this.ui.requestRender();
+		}
 		if (matchesKey(data, "ctrl+c")) {
 			this.#finished.resolve();
+			return;
+		}
+		if (this.focus && matchesKey(data, "ctrl+x")) {
+			const reply = this.#focusTurns?.findLast(turn => turn.kind === "reply");
+			if (reply) void this.#copy(reply.text);
+			else this.#copyStatus = { text: "No reply to copy yet", error: true, until: this.#now() + 3000 };
+			this.ui.requestRender();
 			return;
 		}
 		if (matchesKey(data, "alt+up") || matchesKey(data, "alt+down")) {
@@ -1231,14 +1440,20 @@ export class CentralComponent implements Component {
 				? "Running local command…"
 				: (draft?.error ?? this.#promptUnavailable());
 		const canSend = this.#workspace?.canPrompt && this.host.prompt;
+		const copyStatus = this.#copyStatus && this.#copyStatus.until > this.#now() ? this.#copyStatus : undefined;
 		const hint = focus
-			? `${form ? (inputFocused ? (draft?.input.hasDraftContent() ? "F2 question · " : "↑/↓ question · ") : "Enter answer · Esc back to input · ") : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · / commands · /help · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
+			? `${form ? (inputFocused ? (draft?.input.hasDraftContent() ? "F2 question · " : "↑/↓ question · ") : "Enter answer · Esc back to input · ") : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · / commands · /help · drag to copy · Ctrl+X copy reply · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
 			: `${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}Ctrl+O open · Tab/Shift+Tab chats · ${inputFocused ? (canSend ? "Enter send · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · Shift+↑/↓ scroll · Ctrl+C close`;
 		const footer = [
 			...focusOutput,
 			...input,
 			...status,
-			truncateToWidth(theme.fg(sendState ? "muted" : "dim", sendState ?? hint), mainWidth),
+			truncateToWidth(
+				copyStatus
+					? theme.fg(copyStatus.error ? "error" : "success", copyStatus.text)
+					: theme.fg(sendState ? "muted" : "dim", sendState ?? hint),
+				mainWidth,
+			),
 			...(this.#usageMaxOffset ? [truncateToWidth(theme.fg("dim", "Alt+↑/↓ usage"), mainWidth)] : []),
 		];
 		const headerRows = !compactQuestion && contentHeight >= footer.length + (form ? 7 : 5) ? 2 : 0;
@@ -1267,22 +1482,47 @@ export class CentralComponent implements Component {
 				? entry
 				: undefined;
 		const notice = this.#retired ? " · question ended elsewhere; draft retained" : "";
-		const main = [
-			...(headerRows
-				? [truncateToWidth(theme.fg("muted", heading), mainWidth), truncateToWidth(identity, mainWidth)]
-				: []),
-			...this.#transcriptView.render(mainWidth).slice(0, transcriptHeight),
-			...(questionHeaderRows
-				? [
-						truncateToWidth(
-							theme.fg("dim", `── ${inputFocused ? "question" : "question focused"}${notice} ──`),
-							mainWidth,
-						),
-					]
-				: []),
-			...view.render(mainWidth).slice(0, questionHeight),
-			...footer,
-		].slice(-contentHeight);
+		const headerBlock = headerRows
+			? [truncateToWidth(theme.fg("muted", heading), mainWidth), truncateToWidth(identity, mainWidth)]
+			: [];
+		const transcriptBlock = this.#transcriptView.render(mainWidth).slice(0, transcriptHeight);
+		const questionHeaderBlock = questionHeaderRows
+			? [
+					truncateToWidth(
+						theme.fg("dim", `── ${inputFocused ? "question" : "question focused"}${notice} ──`),
+						mainWidth,
+					),
+				]
+			: [];
+		const questionBlock = view.render(mainWidth).slice(0, questionHeight);
+		const full = [...headerBlock, ...transcriptBlock, ...questionHeaderBlock, ...questionBlock, ...footer];
+		const cut = Math.max(0, full.length - contentHeight);
+		if (focus) {
+			const questionAt = headerBlock.length + transcriptBlock.length + questionHeaderBlock.length;
+			this.#selectRegions = [
+				{
+					kind: "transcript",
+					lines: transcriptRows,
+					top: headerBlock.length - cut,
+					height: transcriptBlock.length,
+					view: this.#transcriptView,
+				},
+				...(form
+					? [
+							{
+								kind: "question" as const,
+								lines: questionBody,
+								top: questionAt - cut,
+								height: questionBlock.length,
+								view,
+							},
+						]
+					: []),
+				{ kind: "output", lines: focusOutput, top: full.length - footer.length - cut, height: focusOutput.length },
+			];
+			this.#paintSelection(full, cut);
+		}
+		const main = full.slice(cut);
 		this.#mainWidth = mainWidth;
 		this.#inputTop = compactRosterRows + main.length - footer.length;
 		this.#inputBottom = this.#inputTop + input.length;
@@ -1329,6 +1569,7 @@ export class CentralComponent implements Component {
 		this.#emptyView.dispose();
 		this.#transcriptBuilder?.dispose();
 		this.#transcriptView.dispose();
+		this.#clearSelection();
 		for (const draft of this.#drafts.values()) draft.input.setShimmerRepaintHandler(undefined);
 		this.#finished.resolve();
 	}

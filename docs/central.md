@@ -99,6 +99,19 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   are not shown. `…working` follows while the chat is busy. Tool calls,
   thinking, tool results, and custom and system messages are not shown. Status
   rows and quotas are omitted. No model is called.
+- **Copy:** the view captures the mouse, so tmux and the terminal cannot select
+  in it; focus selects itself. Drag with the left button over the transcript,
+  an open question card or the command-output band: the cells under the drag
+  show in reverse video, and a drag past the top or bottom of a scrolling area
+  scrolls it (and keeps scrolling while held there). On release the selected
+  text is copied without colors, each row trimmed of trailing padding and rows
+  joined by newlines (wide characters count by terminal cell), and the footer
+  shows `Copied N chars`. The copy goes out as OSC 52, so it needs a terminal
+  (and tmux `set-clipboard on`) that accepts clipboard writes; native clipboard
+  tools are tried too. A click without a drag focuses the composer or question
+  as before. The next click, any key, the selection scrolling out of view, or
+  a change to the rows under it (new turns, a reload, a resize) clears it.
+  `Ctrl+X` copies the latest reply's text as the chat wrote it (Markdown source).
 - **Questions:** its open ask, select and editor questions use Central's own
   forms and are answered in place. The composer keeps keyboard focus when a
   question appears, so text typed for the chat never answers it. With the

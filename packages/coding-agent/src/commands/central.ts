@@ -18,6 +18,7 @@ import { Settings, settings } from "../config/settings";
 import { InstalledBuildWatcher, runningExecutablePath } from "../installed-build";
 import { cfgColorBlindMode, cfgSymbolPreset, cfgThemeDark, cfgThemeLight } from "../modes/settings";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
+import { copyToClipboard } from "../utils/clipboard";
 import { type CentralExit, runCentralTui } from "@oh-my-pi/pi-tui/apps/central/central-tui";
 
 export default class Central extends Command {
@@ -66,6 +67,7 @@ export default class Central extends Command {
 			? {
 					target,
 					prefix: CENTRAL_FOCUS_PREFIX,
+					copyToClipboard,
 					commands: createCentralFocusCommands({
 						hqmsg: cfgCentralFocusHqmsg.get(settings),
 						pauseFile: cfgCentralFocusPauseFile.get(settings),

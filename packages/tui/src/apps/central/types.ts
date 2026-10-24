@@ -109,5 +109,7 @@ export interface CentralFocusOptions {
 	target: string;
 	/** Prepended to every composed message as part of its immutable payload; a convention, not authentication. */
 	prefix: string;
+	/** Put text on the user's clipboard (OSC 52 through the terminal, then native tools); used by drag-select and the copy key. */
+	copyToClipboard(text: string): void | Promise<void>;
 	commands: CentralFocusCommands;
 }
