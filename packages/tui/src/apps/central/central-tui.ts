@@ -59,6 +59,11 @@ const FOCUS_QUEUED_SKEW_MS = 15_000;
 const FOCUS_NOTICE_LINES = 40;
 /** Flow entries kept for the view's lifetime; the oldest go first. */
 const FOCUS_NOTICE_LIMIT = 200;
+/**
+ * A kept draft no longer holds the idle restart once it has been viewed (F8) and
+ * closed, or after this long unviewed; the restart then drops it.
+ */
+const FOCUS_KEPT_DRAFT_MS = 30 * 60_000;
 
 interface CentralForm {
 	component: Component;
@@ -134,6 +139,13 @@ export class CentralComponent implements Component {
 	#openError: string | undefined;
 	#retired: CentralQueueEntry<CentralForm> | undefined;
 	#showRetired = false;
+	/** When {@link #retired} was kept, and whether F8 has shown it since. */
+	#retiredAt = 0;
+	#retiredViewed = false;
+	/** Focus: the question card shown, by queue key; {@link #syncFocusEntry} keeps it. */
+	#focusEntryKey: string | undefined;
+	/** Chosen with Tab/Shift+Tab: kept until it ends, even over the focused chat's own questions. */
+	#focusEntryManual = false;
 	focused = false;
 	#selectedChatId: string | undefined;
 	#manualSelection = false;
@@ -236,7 +248,7 @@ export class CentralComponent implements Component {
 	#canRestart(): boolean {
 		if (!this.restart || this.#opening) return false;
 		if (this.#now() - this.#lastInputAt < (this.restart.quietMs ?? 60_000)) return false;
-		if (this.#retired?.draft) return false;
+		if (this.#retired?.draft && this.#retiredHoldsRestart()) return false;
 		for (const entry of this.#queue.entries) {
 			const form = entry.draft;
 			if (form && (form.touched || form.sending || form.answer !== undefined || form.prompt)) return false;
@@ -293,6 +305,18 @@ export class CentralComponent implements Component {
 		}
 	}
 
+	/**
+	 * Whether the kept draft still holds the idle restart. Focus: only until it has
+	 * been viewed with F8 and closed, or {@link FOCUS_KEPT_DRAFT_MS} has passed; the
+	 * question it answered is gone, so it is a stale copy and the restart drops it.
+	 * Central keeps holding, as it has no way to view or discard a kept draft.
+	 */
+	#retiredHoldsRestart(): boolean {
+		if (!this.focus) return true;
+		if (this.#now() - this.#retiredAt >= FOCUS_KEPT_DRAFT_MS) return false;
+		return this.#showRetired || !this.#retiredViewed;
+	}
+
 	#retire(entries: CentralQueueEntry<CentralForm>[]): void {
 		for (const entry of entries) {
 			const kept = entry.draft?.touched === true && entry.draft.answer === undefined;
@@ -300,22 +324,42 @@ export class CentralComponent implements Component {
 				if (this.#retired?.draft) this.#disposeForm(this.#retired.draft);
 				this.#retired = entry;
 				this.#showRetired = false;
+				this.#retiredAt = this.#now();
+				this.#retiredViewed = false;
 			} else if (entry.draft) this.#disposeForm(entry.draft);
 			if (this.focus) this.#noteRetired(entry, kept);
 		}
 	}
 
-	/** A question that ended elsewhere, as a flow entry; a kept draft says how to view it. */
+	/** A chat's name, with its host when that is not this machine. */
+	#chatLabel(chat: CentralChat): string {
+		const name = sanitizeDisplayLine(chat.name) || "Untitled chat";
+		return chat.source && chat.source !== "local" ? `${name} (${sanitizeDisplayLine(chat.source)})` : name;
+	}
+
+	/** A question that ended elsewhere, as a flow entry naming its chat; a kept draft says how to view it. */
 	#noteRetired(entry: CentralQueueEntry<CentralForm>, kept: boolean): void {
 		const request = entry.request;
 		const asked = request.kind === "ask" ? (request.questions[0]?.question ?? "") : request.title;
 		const first = sanitizeDisplayLine(asked.split("\n").find(line => line.trim()) ?? "").trim();
-		const text = `question "${truncateToWidth(first, 60)}" ended elsewhere`;
+		const text = `${this.#chatLabel(entry.chat)} question "${truncateToWidth(first, 60)}" ended elsewhere`;
 		if (kept && this.#retiredNotice) {
 			this.#retiredNotice.notice.title = `${this.#retiredNotice.text} · draft replaced by a newer one`;
 		}
 		const notice = this.#addFocusNotice(kept ? `${text} · draft kept: F8 to view` : text, []);
 		if (kept) this.#retiredNotice = { notice, text };
+	}
+
+	/** F9 in the F8 view: the kept draft is gone for good, and its flow entry says so. */
+	#discardRetired(): void {
+		if (this.#retired?.draft) this.#disposeForm(this.#retired.draft);
+		this.#retired = undefined;
+		this.#showRetired = false;
+		if (this.#retiredNotice) {
+			this.#retiredNotice.notice.title = `${this.#retiredNotice.text} · draft discarded`;
+			this.#retiredNotice = undefined;
+			this.#focusNoticeRevision++;
+		}
 	}
 
 	/** Kept oldest first by time, for {@link mergeFocusNotices}; `at` defaults to now. */
@@ -372,6 +416,13 @@ export class CentralComponent implements Component {
 	 * answers again, the last view, questions and draft stay where they are.
 	 */
 	#refreshFocus(snapshot: CentralSnapshot): void {
+		// Every listed chat's questions, on every host; each is answered in its own chat.
+		this.#retire(this.#queue.update(snapshot.chats));
+		this.#resolveFocus(snapshot);
+		this.#syncFocusEntry();
+	}
+
+	#resolveFocus(snapshot: CentralSnapshot): void {
 		const resolution = resolveFocusTarget(snapshot.chats, this.focus!.target, this.#focusMemory);
 		if (resolution.kind === "ambiguous") {
 			this.#focusNotice = resolution.message;
@@ -379,7 +430,6 @@ export class CentralComponent implements Component {
 		}
 		if (resolution.kind === "missing") {
 			// No process serves the target, so its questions are gone with it.
-			this.#retire(this.#queue.update([]));
 			this.#focusNotice =
 				this.#focusMemory.sessionId === undefined
 					? resolution.message
@@ -388,7 +438,6 @@ export class CentralComponent implements Component {
 		}
 		const chat = resolution.chat;
 		this.#focusMemory = { sessionId: chat.sessionId, name: chat.name };
-		this.#retire(this.#queue.update([chat]));
 		const sourceError = snapshot.errors.find(error => error.startsWith(`${chat.source ?? "local"}: `));
 		this.#focusNotice = chat.unresponsive
 			? `${this.#focusLabel()}: not responding (${chat.unresponsive}); retrying`
@@ -404,7 +453,63 @@ export class CentralComponent implements Component {
 			void this.#loadTranscript(chat.id, chat.cwd, chat.transcriptRevision);
 	}
 
+	/** Focus: every open question, the focused chat's first, then the others oldest first. */
+	#focusEntries(): CentralQueueEntry<CentralForm>[] {
+		const own = this.#selectedChatId;
+		return [...this.#queue.entries].sort(
+			(a, b) =>
+				Number(b.chat.id === own) - Number(a.chat.id === own) ||
+				a.request.createdAt - b.request.createdAt ||
+				a.key.localeCompare(b.key),
+		);
+	}
+
+	#focusEntry(): CentralQueueEntry<CentralForm> | undefined {
+		const entries = this.#focusEntries();
+		return entries.find(entry => entry.key === this.#focusEntryKey) ?? entries[0];
+	}
+
+	/**
+	 * After a poll: the card stays while it is in use (keyboard in it, an answer
+	 * started, or chosen with Tab), so a poll never swaps the question under a key;
+	 * otherwise the first in order shows. When the shown card's question ends, keys
+	 * go back to the composer, never to the card that replaces it.
+	 */
+	#syncFocusEntry(): void {
+		const entries = this.#focusEntries();
+		const current = entries.find(entry => entry.key === this.#focusEntryKey);
+		if (!current) {
+			if (this.#focusEntryKey !== undefined) this.#inputFocus = true;
+			this.#focusEntryManual = false;
+			this.#focusEntryKey = entries[0]?.key;
+			return;
+		}
+		const form = current.draft;
+		const inUse =
+			this.#focusEntryManual ||
+			!this.#inputFocus ||
+			(form !== undefined && (form.touched || form.sending || form.answer !== undefined || !!form.prompt));
+		if (!inUse) this.#focusEntryKey = entries[0]?.key;
+	}
+
+	/** Tab/Shift+Tab in a focused question card: the next or previous open question, keyboard staying in the card. */
+	#cycleFocusEntry(direction: -1 | 1): void {
+		const entries = this.#focusEntries();
+		if (entries.length < 2) return;
+		const index = Math.max(0, entries.indexOf(this.#focusEntry()!));
+		this.#focusEntryKey = entries[(index + direction + entries.length) % entries.length]!.key;
+		this.#focusEntryManual = true;
+	}
+
+	/** Why a question's chat cannot take an answer now (its last-known question still shows). */
+	#focusUnresponsive(chat: CentralChat): string | undefined {
+		if (chat.unresponsive) return chat.unresponsive;
+		const prefix = `${chat.source ?? "local"}: `;
+		return this.#snapshot.errors.some(error => error.startsWith(prefix)) ? "host not reachable" : undefined;
+	}
+
 	#entryForSelectedChat(): CentralQueueEntry<CentralForm> | undefined {
+		if (this.focus) return this.#focusEntry();
 		return this.#selectedChatId ? this.#queue.entryForChat(this.#selectedChatId) : this.#queue.current;
 	}
 
@@ -906,6 +1011,13 @@ export class CentralComponent implements Component {
 	async #send(entry: CentralQueueEntry<CentralForm>): Promise<void> {
 		const form = entry.draft!;
 		if (form.sending || form.answer === undefined || !this.#queue.has(entry)) return;
+		// Its chat refuses actions until it answers a poll again; the saved answer stays.
+		const unresponsive = this.focus ? this.#focusUnresponsive(entry.chat) : undefined;
+		if (unresponsive) {
+			form.error = `${this.#chatLabel(entry.chat)} is not responding (${unresponsive}); nothing was sent. Enter retries once it responds.`;
+			this.ui.requestRender();
+			return;
+		}
 		form.sending = true;
 		form.error = undefined;
 		this.ui.requestRender();
@@ -1157,10 +1269,17 @@ export class CentralComponent implements Component {
 			return;
 		}
 		// Focus: F8 shows the kept draft of a question that ended elsewhere, read-only,
-		// in place of the question card; F8 or Esc goes back. Keys meanwhile go to the
-		// composer, so nothing typed can reach a question the card no longer shows.
+		// in place of the question card; F8 or Esc goes back, F9 discards it. Keys
+		// meanwhile go to the composer, so nothing typed can reach a question the card
+		// no longer shows. F9 is bound nowhere else, so it never takes a composer key.
 		if (this.focus && matchesKey(data, "f8") && (this.#showRetired || this.#retired?.draft)) {
 			this.#showRetired = !this.#showRetired;
+			if (this.#showRetired) this.#retiredViewed = true;
+			this.ui.requestRender();
+			return;
+		}
+		if (this.focus && this.#showRetired && matchesKey(data, "f9")) {
+			this.#discardRetired();
 			this.ui.requestRender();
 			return;
 		}
@@ -1176,8 +1295,10 @@ export class CentralComponent implements Component {
 		}
 		const entry = this.focus && this.#showRetired ? undefined : this.#entryForSelectedChat();
 		const form = entry ? this.#form(entry) : undefined;
-		if (matchesKey(data, "ctrl+o") && this.#selectedChatId) {
-			void this.#open(this.#selectedChatId);
+		// Focus: from a question card, its own chat (it may not be the focused one).
+		const openChatId = this.focus && form && !this.#inputFocus ? entry!.chat.id : this.#selectedChatId;
+		if (matchesKey(data, "ctrl+o") && openChatId) {
+			void this.#open(openChatId);
 			return;
 		}
 		if (matchesKey(data, "f2") && form) {
@@ -1208,8 +1329,13 @@ export class CentralComponent implements Component {
 			}
 		}
 		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) {
-			// Focus shows one chat; there is nothing to cycle to.
-			if (!this.focus) this.#selectAdjacent(matchesKey(data, "shift+tab") ? -1 : 1);
+			const direction = matchesKey(data, "shift+tab") ? -1 : 1;
+			if (!this.focus) this.#selectAdjacent(direction);
+			// Focus: from a question card (the composer's Tab completes), the next open question.
+			else if (form && !this.#inputFocus && !form.prompt) {
+				this.#cycleFocusEntry(direction);
+				this.ui.requestRender();
+			}
 			return;
 		}
 		// Focus: an arrow key on an empty composer moves keyboard focus into the
@@ -1224,6 +1350,7 @@ export class CentralComponent implements Component {
 			form.answer === undefined &&
 			!form.sending &&
 			!this.#draft(FOCUS_DRAFT_KEY).input.hasDraftContent() &&
+			!this.#focusUnresponsive(entry!.chat) &&
 			(matchesKey(data, "up") || matchesKey(data, "down") || matchesKey(data, "left") || matchesKey(data, "right"))
 		) {
 			this.#inputFocus = false;
@@ -1300,7 +1427,7 @@ export class CentralComponent implements Component {
 			view.setFollowTail(view.getScrollOffset() >= view.getMaxScrollOffset());
 		} else if (!form?.prompt && matchesKey(data, "escape")) {
 			if (!form?.sending && entry) this.#skipChat(entry.chat.id);
-		} else if (form && !form.sending) {
+		} else if (form && !form.sending && !(this.focus && this.#focusUnresponsive(entry!.chat))) {
 			if (form.answer !== undefined) {
 				if (matchesKey(data, "enter")) void this.#send(entry!);
 			} else {
@@ -1370,6 +1497,9 @@ export class CentralComponent implements Component {
 		const mainWidth = Math.max(1, width - (sidebarWidth > 0 ? sidebarWidth + 3 : 0));
 		const entry = this.#showRetired ? this.#retired : this.#entryForSelectedChat();
 		const form = entry ? this.#form(entry) : undefined;
+		// Focus: every chat's open questions, in order; the card's own chat may not answer now.
+		const focusEntries = focus && !this.#showRetired ? this.#focusEntries() : [];
+		const cardUnresponsive = focus && entry && !this.#showRetired ? this.#focusUnresponsive(entry.chat) : undefined;
 		const compactQuestion = !!form && (height < 20 || width < 80);
 		const compactRosterRows = !focus && sidebarWidth === 0 && height >= 12 && !compactQuestion ? 1 : 0;
 		this.#statusWidth = Math.min(512, mainWidth);
@@ -1393,8 +1523,9 @@ export class CentralComponent implements Component {
 		this.#questionBudget = Math.max(1, contentHeight - (compactQuestion ? 5 : 14));
 		const busyCount = this.#snapshot.chats.filter(chat => chat.busy).length;
 		const selectedChat = this.#snapshot.chats.find(chat => chat.id === this.#selectedChatId);
+		const otherQuestions = focusEntries.filter(other => other.chat.id !== selectedChat?.id).length;
 		const heading = focus
-			? `OMP Focus  ·  ${this.#focusLabel()}  ·  ${selectedChat ? `${sanitizeDisplayLine(selectedChat.source ?? "local")}  ·  ${selectedChat.busy ? "busy" : "idle"}  ·  ${selectedChat.requests.length} open question${selectedChat.requests.length === 1 ? "" : "s"}` : "not connected"}`
+			? `OMP Focus  ·  ${this.#focusLabel()}  ·  ${selectedChat ? `${sanitizeDisplayLine(selectedChat.source ?? "local")}  ·  ${selectedChat.busy ? "busy" : "idle"}  ·  ${selectedChat.requests.length} open question${selectedChat.requests.length === 1 ? "" : "s"}` : "not connected"}${otherQuestions ? `  ·  ${otherQuestions} from other chats` : ""}`
 			: `OMP Central  ·  ${this.#snapshot.chats.length} active  ·  ${this.#queue.chatCount} waiting  ·  ${busyCount} busy`;
 		const identity = selectedChat
 			? `${sanitizeDisplayLine(selectedChat.name) || "Untitled chat"}  ·  ${sanitizeDisplayLine(selectedChat.source ?? "local")}  ·  ${sanitizeDisplayLine(selectedChat.cwd)}`
@@ -1423,6 +1554,16 @@ export class CentralComponent implements Component {
 		if (form) {
 			if (form.error) body.push(...wrapTextWithAnsi(theme.fg("error", form.error), Math.max(1, mainWidth - 2)));
 			if (form.sending) body.push(theme.fg("muted", "Sending answer…"));
+			if (cardUnresponsive)
+				body.push(
+					...wrapTextWithAnsi(
+						theme.fg(
+							"warning",
+							`${this.#chatLabel(entry!.chat)} is not responding (${sanitizeDisplayLine(cardUnresponsive)}); its last-known question is shown and can be answered once it responds again.`,
+						),
+						Math.max(1, mainWidth - 2),
+					),
+				);
 			formStart = body.length;
 			if (form.details && entry) {
 				const request = entry.request;
@@ -1471,7 +1612,8 @@ export class CentralComponent implements Component {
 			} else {
 				const component = form.prompt?.component ?? form.component;
 				if ("focused" in component)
-					component.focused = this.focused && !this.#inputFocus && !this.#showRetired && !form.sending;
+					component.focused =
+						this.focused && !this.#inputFocus && !this.#showRetired && !form.sending && !cardUnresponsive;
 				body.push(...component.render(Math.max(1, mainWidth - 2)));
 			}
 		}
@@ -1518,8 +1660,17 @@ export class CentralComponent implements Component {
 				: (draft?.error ?? this.#promptUnavailable());
 		const canSend = this.#workspace?.canPrompt && this.host.prompt;
 		const copyStatus = this.#copyStatus && this.#copyStatus.until > this.#now() ? this.#copyStatus : undefined;
+		const focusQuestionHint = this.#showRetired
+			? "F8/Esc back · F9 discard · "
+			: !form
+				? ""
+				: inputFocused
+					? draft?.input.hasDraftContent() || cardUnresponsive
+						? "F2 question · "
+						: "↑/↓ question · "
+					: `${cardUnresponsive ? "not responding" : "Enter answer"} · Esc back to input · ${focusEntries.length > 1 ? "Tab/Shift+Tab next question · " : ""}`;
 		const hint = focus
-			? `${this.#showRetired ? "F8/Esc back · " : form ? (inputFocused ? (draft?.input.hasDraftContent() ? "F2 question · " : "↑/↓ question · ") : "Enter answer · Esc back to input · ") : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · / commands · /help · drag to copy · Ctrl+X copy reply · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
+			? `${focusQuestionHint}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · / commands · /help · drag to copy · Ctrl+X copy reply · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
 			: `${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}Ctrl+O open · Tab/Shift+Tab chats · ${inputFocused ? (canSend ? "Enter send · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · Shift+↑/↓ scroll · Ctrl+C close`;
 		const footer = [
 			...input,
@@ -1562,10 +1713,12 @@ export class CentralComponent implements Component {
 				: formStart < view.getScrollOffset() + questionHeight)
 				? entry
 				: undefined;
-		const questionLabel =
-			focus && this.#showRetired
-				? "kept draft · its question ended elsewhere · not sent · F8 back"
-				: `${inputFocused ? "question" : "question focused"}${!focus && this.#retired ? " · question ended elsewhere; draft retained" : ""}`;
+		const focusIndex = entry ? focusEntries.indexOf(entry) : -1;
+		const questionLabel = !focus
+			? `${inputFocused ? "question" : "question focused"}${this.#retired ? " · question ended elsewhere; draft retained" : ""}`
+			: this.#showRetired
+				? `kept draft · ${entry ? this.#chatLabel(entry.chat) : "its"} question ended elsewhere · not sent · F8 back · F9 discard`
+				: `question${focusEntries.length > 1 ? ` ${focusIndex + 1} of ${focusEntries.length}` : ""}${entry ? ` · ${this.#chatLabel(entry.chat)}` : ""}${cardUnresponsive ? " · not responding" : ""}${inputFocused ? "" : " · focused"}`;
 		const headerBlock = headerRows
 			? [truncateToWidth(theme.fg("muted", heading), mainWidth), truncateToWidth(identity, mainWidth)]
 			: [];

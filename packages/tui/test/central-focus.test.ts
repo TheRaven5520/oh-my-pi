@@ -3,7 +3,7 @@ import type { TranscriptEntryLike } from "../src/chat/transcript-entry";
 import { TUI } from "../src/tui";
 import { initTheme } from "../src/theme/theme";
 import { setClockTimeZone } from "../src/render/clock";
-import { CentralComponent } from "../src/apps/central/central-tui";
+import { CentralComponent, type CentralExit, type CentralRestartOptions } from "../src/apps/central/central-tui";
 import { focusTranscriptEntries, parseFocusCommand, resolveFocusTarget } from "../src/apps/central/focus";
 import { selectCells, selectionText } from "../src/apps/central/selection";
 import { DEFAULT_TAB_WIDTH } from "../src/utils";
@@ -97,6 +97,24 @@ function chat(overrides: Partial<CentralChat> & Pick<CentralChat, "id">): Centra
 	};
 }
 
+/** Another chat, on the Mini, with an open choice question older than any of the focused chat's. */
+function otherAsk(overrides: Partial<CentralChat> = {}): CentralChat {
+	return chat({
+		id: "mini/other",
+		name: "SPRILICIM",
+		source: "mini",
+		requests: [
+			{
+				id: "ask9",
+				createdAt: 0,
+				kind: "ask",
+				questions: [{ id: "q", question: "OTHER ASK?", options: [{ label: "One" }, { label: "Two" }] }],
+			},
+		],
+		...overrides,
+	});
+}
+
 function commandMocks(): CentralFocusCommands & { [K in keyof CentralFocusCommands]: ReturnType<typeof vi.fn> } {
 	return {
 		relay: vi.fn(async (target: string, message: string) => `relayed to ${target}: ${message}`),
@@ -123,6 +141,7 @@ async function setup(options: {
 	target?: string;
 	width?: number;
 	height?: number;
+	restart?: CentralRestartOptions;
 }) {
 	const width = options.width ?? 110;
 	const terminal = new VirtualTerminal(width, options.height ?? 40);
@@ -149,14 +168,17 @@ async function setup(options: {
 	};
 	const commands = options.commands ?? commandMocks();
 	const copy = vi.fn((_text: string) => {});
-	const component = new CentralComponent(ui, host, undefined, {
+	const component = new CentralComponent(ui, host, options.restart, {
 		target: options.target ?? "TMUX ORCHESTRATION",
 		prefix: PREFIX,
 		copyToClipboard: copy,
 		commands,
 	});
 	component.focused = true;
-	void component.run();
+	let exit: CentralExit | undefined;
+	void component.run().then(value => {
+		exit = value;
+	});
 	await flush();
 	component.render(width);
 	await flush();
@@ -170,6 +192,8 @@ async function setup(options: {
 		commands,
 		copy,
 		text,
+		/** How the view ended (`restart`: it restarted itself onto a new build), or undefined while running. */
+		exit: () => exit,
 		/** Rendered frame rows with styling, for checking the selection highlight. */
 		raw: () => component.render(width).join("\n"),
 		input: async (value: string) => {
@@ -638,7 +662,7 @@ describe("Central focus composer", () => {
 			// Down moves the popup selection; it never hands focus to the open question.
 			await rig.input("\x1b[B");
 			await rig.input("\x1b[A");
-			expect(rig.text()).toContain("── question ──");
+			expect(rig.text()).toContain("── question · TMUX ORCHESTRATION ──");
 			await rig.input("\r");
 			expect(command).not.toHaveBeenCalled();
 			expect(prompt).not.toHaveBeenCalled();
@@ -882,6 +906,123 @@ describe("Central focus questions", () => {
 			rig.close();
 		}
 	});
+
+	it("shows another host's open question headed by its chat and host, and answers it only in that chat", async () => {
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const prompt = vi.fn(async () => {});
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq" }), otherAsk()], errors: [] }),
+			answer,
+			prompt,
+		});
+		try {
+			const text = rig.text();
+			expect(text).toContain("── question · SPRILICIM (mini) ──");
+			expect(text).toContain("OTHER ASK?");
+			expect(text).toContain("0 open questions  ·  1 from other chats");
+			await rig.input("\x1b[B");
+			expect(rig.text()).toContain("── question · SPRILICIM (mini) · focused ──");
+			await rig.input("\r");
+			expect(prompt).not.toHaveBeenCalled();
+			expect(answer.mock.calls).toHaveLength(1);
+			expect(answer.mock.calls[0]!.slice(0, 2)).toEqual(["mini/other", "ask9"]);
+			expect(answer.mock.calls[0]![2]).toMatchObject({
+				kind: "submit",
+				results: [expect.objectContaining({ selectedOptions: ["Two"] })],
+			});
+			expect(rig.text()).not.toContain("OTHER ASK?");
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("puts the focused chat's question first and cycles every chat's questions with Tab from the card", async () => {
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const prompt = vi.fn(async () => {});
+		const own = chat({
+			id: "local/hq",
+			requests: [
+				{
+					id: "own1",
+					createdAt: 5,
+					kind: "ask",
+					questions: [{ id: "q", question: "OWN ASK?", options: [{ label: "One" }, { label: "Two" }] }],
+				},
+			],
+		});
+		// The other chat's question is older, yet the focused chat's comes first.
+		const rig = await setup({ snapshot: () => ({ chats: [otherAsk(), own], errors: [] }), answer, prompt });
+		try {
+			let text = rig.text();
+			expect(text).toContain("── question 1 of 2 · TMUX ORCHESTRATION ──");
+			expect(text).toContain("OWN ASK?");
+			expect(text).not.toContain("OTHER ASK?");
+			// Enter on the empty composer answers nothing; Tab there stays the composer's.
+			await rig.input("\r");
+			await rig.input("\t");
+			await rig.input("\x1b");
+			expect(answer).not.toHaveBeenCalled();
+			expect(rig.text()).toContain("── question 1 of 2 · TMUX ORCHESTRATION ──");
+			await rig.input("\x1bOQ");
+			expect(rig.text()).toContain("── question 1 of 2 · TMUX ORCHESTRATION · focused ──");
+			expect(rig.text()).toContain("Tab/Shift+Tab next question");
+			await rig.input("\t");
+			text = rig.text();
+			expect(text).toContain("── question 2 of 2 · SPRILICIM (mini) · focused ──");
+			expect(text).toContain("OTHER ASK?");
+			// A poll never swaps the card the keyboard is in.
+			await rig.poll();
+			expect(rig.text()).toContain("── question 2 of 2 · SPRILICIM (mini) · focused ──");
+			await rig.input("\x1b[Z");
+			expect(rig.text()).toContain("OWN ASK?");
+			await rig.input("\t");
+			await rig.input("\r");
+			expect(prompt).not.toHaveBeenCalled();
+			expect(answer.mock.calls).toHaveLength(1);
+			expect(answer.mock.calls[0]!.slice(0, 2)).toEqual(["mini/other", "ask9"]);
+			expect(answer.mock.calls[0]![2]).toMatchObject({
+				results: [expect.objectContaining({ selectedOptions: ["One"] })],
+			});
+			// Answered: its card is gone, and the keyboard is back in the composer.
+			text = rig.text();
+			expect(text).toContain("── question · TMUX ORCHESTRATION ──");
+			expect(text).not.toContain("OTHER ASK?");
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("marks a not-responding chat's last-known question and answers it only once the chat responds", async () => {
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const prompt = vi.fn(async () => {});
+		let unresponsive: string | undefined = "host_timeout";
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq" }), otherAsk({ unresponsive })], errors: [] }),
+			answer,
+			prompt,
+		});
+		try {
+			const text = rig.text();
+			expect(text).toContain("── question · SPRILICIM (mini) · not responding ──");
+			expect(text).toContain("SPRILICIM (mini) is not responding (host_timeout)");
+			expect(text).toContain("OTHER ASK?");
+			// Arrows on the empty composer do not move into it; F2 does, but no key answers it.
+			await rig.input("\x1b[B");
+			await rig.input("\r");
+			await rig.input("\x1bOQ");
+			await rig.input("\x1b[B");
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+			expect(prompt).not.toHaveBeenCalled();
+			unresponsive = undefined;
+			await rig.poll();
+			expect(rig.text()).not.toContain("not responding");
+			await rig.input("\r");
+			expect(answer.mock.calls.map(call => call.slice(0, 2))).toEqual([["mini/other", "ask9"]]);
+		} finally {
+			rig.close();
+		}
+	});
 });
 
 describe("Central focus flow entries", () => {
@@ -998,7 +1139,9 @@ describe("Central focus flow entries", () => {
 			await rig.poll();
 			let text = rig.text();
 			expect(text).toMatch(
-				new RegExp(`── ${TIME} · question "WHICH EVAL\\?" ended elsewhere · draft kept: F8 to view ──`),
+				new RegExp(
+					`── ${TIME} · TMUX ORCHESTRATION question "WHICH EVAL\\?" ended elsewhere · draft kept: F8 to view ──`,
+				),
 			);
 			expect(text).toContain("SECOND ASK");
 			expect(text).not.toContain("draft retained");
@@ -1006,7 +1149,9 @@ describe("Central focus flow entries", () => {
 			// F8 shows the kept draft, with its selection, in place of the open card.
 			await rig.input("\x1b[19~");
 			text = rig.text();
-			expect(text).toContain("kept draft · its question ended elsewhere · not sent · F8 back");
+			expect(text).toContain(
+				"kept draft · TMUX ORCHESTRATION question ended elsewhere · not sent · F8 back · F9 discard",
+			);
 			expect(text).toContain("WHICH EVAL?");
 			expect(text).toContain("❯ ○ Option 1");
 			expect(text).not.toContain("SECOND ASK");
@@ -1022,8 +1167,95 @@ describe("Central focus flow entries", () => {
 			requests = [];
 			await rig.poll();
 			text = rig.text();
-			expect(text).toMatch(new RegExp(`── ${TIME} · question "SECOND ASK" ended elsewhere ──`));
+			expect(text).toMatch(new RegExp(`── ${TIME} · TMUX ORCHESTRATION question "SECOND ASK" ended elsewhere ──`));
 			expect(text).not.toContain("draft not sent");
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("enters another chat's question that ended in its own pane, naming that chat and its host", async () => {
+		let requests = otherAsk().requests;
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq" }), otherAsk({ requests })], errors: [] }),
+		});
+		try {
+			expect(rig.text()).toContain("OTHER ASK?");
+			requests = [];
+			await rig.poll();
+			const text = rig.text();
+			expect(text).toMatch(
+				new RegExp(`── ${TIME} · SPRILICIM \\(mini\\) question "OTHER ASK\\?" ended elsewhere ──`),
+			);
+			expect(text).not.toContain("── question");
+		} finally {
+			rig.close();
+		}
+	});
+
+	/** A focus view with a kept draft: the focused chat's question was touched, then ended elsewhere. */
+	const keptDraft = async (clock: { now: number }) => {
+		let requests = [ask(2)];
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", requests })], errors: [] }),
+			restart: { restartReady: () => true, now: () => clock.now },
+		});
+		await rig.input("\x1b[B");
+		requests = [];
+		await rig.poll();
+		expect(rig.text()).toContain("draft kept: F8 to view");
+		return rig;
+	};
+
+	it("discards a kept draft from the F8 view with F9, and the idle restart then goes ahead", async () => {
+		const clock = { now: 1_000_000 };
+		const rig = await keptDraft(clock);
+		try {
+			clock.now += 120_000;
+			await rig.poll();
+			// Kept and never viewed: it holds the restart.
+			expect(rig.exit()).toBeUndefined();
+			await rig.input("\x1b[19~");
+			expect(rig.text()).toContain("F8/Esc back · F9 discard");
+			await rig.input("\x1b[20~");
+			const text = rig.text();
+			expect(text).toMatch(
+				new RegExp(`── ${TIME} · TMUX ORCHESTRATION question "WHICH EVAL\\?" ended elsewhere · draft discarded ──`),
+			);
+			expect(text).not.toContain("kept draft ·");
+			expect(text).not.toContain("Option 1");
+			clock.now += 120_000;
+			await rig.poll();
+			expect(rig.exit()).toBe("restart");
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("lets the idle restart drop a kept draft once it was viewed and closed, or after half an hour unviewed", async () => {
+		const clock = { now: 1_000_000 };
+		let rig = await keptDraft(clock);
+		try {
+			await rig.input("\x1b[19~");
+			clock.now += 120_000;
+			await rig.poll();
+			// Still on screen: no restart.
+			expect(rig.exit()).toBeUndefined();
+			await rig.input("\x1b[19~");
+			clock.now += 120_000;
+			await rig.poll();
+			expect(rig.exit()).toBe("restart");
+		} finally {
+			rig.close();
+		}
+		rig = await keptDraft(clock);
+		try {
+			clock.now += 29 * 60_000;
+			await rig.poll();
+			expect(rig.exit()).toBeUndefined();
+			clock.now += 2 * 60_000;
+			await rig.poll();
+			expect(rig.exit()).toBe("restart");
 		} finally {
 			rig.close();
 		}

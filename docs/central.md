@@ -85,7 +85,8 @@ it does not open a duplicate chat or create a new terminal.
 ## Focus one chat
 
 `omp central --focus <chat>` (or `omp --central --focus <chat>`) shows a single
-chat, named by its Central name, sessionId or chatId on any configured host.
+chat, named by its Central name, sessionId or chatId on any configured host,
+plus every open question from every chat Central lists.
 
 - **View:** the conversation as turns, newest at the bottom and scrollable
   (`Shift+Up/Down`, wheel). Each reply is all of the chat's text between two
@@ -103,7 +104,8 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   that ended elsewhere is entered into the conversation at the time it
   happened, as a dimmed `── 5:12 PM · /tan · ran in the chat ──` (or
   `· local, not sent`) header followed by its output (the first 40 lines, then
-  `… N more lines`), or one `── 5:14 PM · question "…" ended elsewhere ──` line.
+  `… N more lines`), or one `── 5:14 PM · SPRILICIM (mini) question "…" ended elsewhere ──`
+  line naming the question's chat (and its host when that is not this machine).
   Entries are merged by time with the chat's turns, so later replies render
   below them; a reply still being written when a command ran is split there
   and continues below the entry under its own time. Times come from each
@@ -127,20 +129,39 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   as before. The next click, any key, the selection scrolling out of view, or
   a change to the rows under it (new turns, a reload, a resize) clears it.
   `Ctrl+X` copies the latest reply's text as the chat wrote it (Markdown source).
-- **Questions:** its open ask, select and editor questions use Central's own
-  forms and are answered in place. The composer keeps keyboard focus when a
-  question appears, so text typed for the chat never answers it. With the
-  composer empty, an arrow key moves into a choice question (and moves its
-  selection); `Enter` then answers. `F2` or a click also selects it, and `Esc`
-  returns to the composer without cancelling. `Enter`, `Esc`, `Space`, digits
-  and typing on the composer never touch a question. After an answer, typing
-  goes back to the composer. A question answered, withdrawn or ended in the
-  chat itself leaves the flow entry above; if you had started an answer there
-  (moved its selection or typed), the entry adds `draft kept: F8 to view`. `F8`
-  shows that draft read-only in place of the question card (`F8` or `Esc` goes
-  back); it is never sent, and keys meanwhile go to the composer. Only the
-  latest kept draft stays; an older entry then says `draft replaced by a newer
-  one`. While a draft is kept, the idle restart onto a new build waits.
+- **Questions:** the open ask, select and editor questions of every chat on
+  every configured host, not just the focused one, use Central's own forms
+  and are answered in place. The focused chat's questions come first, then
+  the others oldest first. The card's header names its chat, with the host
+  when it is not this machine, and counts when there is more than one:
+  `── question 2 of 3 · SPRILICIM (mini) ──` (`· focused` while the keyboard is
+  in it); the top line adds `N from other chats`. An answer goes only to the
+  card's own chat, as an answer to that question; it is never sent to the
+  focused chat or as a message, and `Ctrl+O` from a card opens the card's chat.
+  The composer keeps keyboard focus when a question appears, so text typed for
+  the chat never answers it. With the composer empty, an arrow key moves into a
+  choice question (and moves its selection); `Enter` then answers. `F2` or a
+  click also selects it, and `Esc` returns to the composer without cancelling.
+  From a selected card, `Tab` / `Shift+Tab` show the next or previous open
+  question (in the composer, `Tab` stays completion). `Enter`, `Esc`, `Space`,
+  digits and typing on the composer never touch a question. A poll never swaps
+  the card while the keyboard is in it, an answer is started, or it was chosen
+  with `Tab`; otherwise the first in order shows. After an answer, typing goes
+  back to the composer. A chat that is not responding (or whose host is
+  unreachable) keeps its last-known question on screen, marked `not responding`
+  in the header and a line on the card; no key answers it until the chat
+  answers a poll again. A question answered, withdrawn or ended in its own chat
+  leaves the flow entry above, and if the keyboard was in its card it returns
+  to the composer; if you had started an answer there (moved its selection or
+  typed), the entry adds `draft kept: F8 to view`. `F8` shows that draft
+  read-only in place of the question card (`F8` or `Esc` goes back, `F9`
+  discards it and the entry then says `draft discarded`); it is never sent, and
+  keys meanwhile go to the composer (`F9` is bound nowhere else, unlike
+  `Delete`/`Ctrl+D`, the composer's forward delete). Only the latest kept draft
+  stays; an older entry then says `draft replaced by a newer one`. A kept draft
+  holds the idle restart onto a new build until it has been viewed with `F8`
+  and closed, or for 30 minutes; after that the restart goes ahead and drops it
+  (its question no longer exists, and flow entries do not survive a restart).
 - **Composer:** text is sent through Central's normal prompt path, prefixed with
   `[FOCUS: Shreyan says] `. A busy chat, including one with an ask open, receives
   it as a queued steer; the message never answers or cancels that ask. Uncertain
