@@ -99,10 +99,25 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   are not shown. `…working` follows while the chat is busy. Tool calls,
   thinking, tool results, and custom and system messages are not shown. Status
   rows and quotas are omitted. No model is called.
+- **Flow entries:** each `/command` run from the composer and each question
+  that ended elsewhere is entered into the conversation at the time it
+  happened, as a dimmed `── 5:12 PM · /tan · ran in the chat ──` (or
+  `· local, not sent`) header followed by its output (the first 40 lines, then
+  `… N more lines`), or one `── 5:14 PM · question "…" ended elsewhere ──` line.
+  Entries are merged by time with the chat's turns, so later replies render
+  below them; a reply still being written when a command ran is split there
+  and continues below the entry under its own time. Times come from each
+  host's own clock, so skew between hosts can reorder events seconds apart.
+  Entries are never sent and are not in the chat's transcript: they survive
+  live reloads but not a restart of the focus view (including the automatic
+  restart onto a new build). Running a command is your own action, so the view
+  jumps to the bottom even if you had scrolled up; while the entry is the
+  newest thing in the flow, an open question card leaves it up to a third of
+  the screen.
 - **Copy:** the view captures the mouse, so tmux and the terminal cannot select
-  in it; focus selects itself. Drag with the left button over the transcript,
-  an open question card or the command-output band: the cells under the drag
-  show in reverse video, and a drag past the top or bottom of a scrolling area
+  in it; focus selects itself. Drag with the left button over the transcript
+  or an open question card: the cells under the drag show in reverse video,
+  and a drag past the top or bottom of a scrolling area
   scrolls it (and keeps scrolling while held there). On release the selected
   text is copied without colors, each row trimmed of trailing padding and rows
   joined by newlines (wide characters count by terminal cell), and the footer
@@ -119,7 +134,13 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   selection); `Enter` then answers. `F2` or a click also selects it, and `Esc`
   returns to the composer without cancelling. `Enter`, `Esc`, `Space`, digits
   and typing on the composer never touch a question. After an answer, typing
-  goes back to the composer.
+  goes back to the composer. A question answered, withdrawn or ended in the
+  chat itself leaves the flow entry above; if you had started an answer there
+  (moved its selection or typed), the entry adds `draft kept: F8 to view`. `F8`
+  shows that draft read-only in place of the question card (`F8` or `Esc` goes
+  back); it is never sent, and keys meanwhile go to the composer. Only the
+  latest kept draft stays; an older entry then says `draft replaced by a newer
+  one`. While a draft is kept, the idle restart onto a new build waits.
 - **Composer:** text is sent through Central's normal prompt path, prefixed with
   `[FOCUS: Shreyan says] `. A busy chat, including one with an ask open, receives
   it as a queued steer; the message never answers or cancels that ask. Uncertain
@@ -135,9 +156,9 @@ chat, named by its Central name, sessionId or chatId on any configured host.
   chat is busy. No prefix is added, and it is never sent as a message. The
   chat's local draft is set aside while it runs and put back afterwards. What
   the command showed in the chat (status, warning or error lines), or `ran`,
-  appears directly above the composer, below any open question, headed
-  `ran in the chat`; a command still running after 1.5 s also says `still
-  running in the chat`. A command that opens a picker or other overlay there
+  becomes its flow entry, headed `ran in the chat`; a command still running
+  after 1.5 s also says `still running in the chat`. A command that opens a
+  picker or other overlay there
   (`/model` with no argument) is closed with `Esc`, so the chat window is not
   left waiting on it, and the result reads "opens a picker in the chat's own
   window; give an argument (e.g. /model <name>) or use the chat". A dialog the

@@ -565,7 +565,7 @@ describe("Central focus composer", () => {
 			await rig.input("\r");
 			expect(command.mock.calls).toEqual([["local/hq", "session-local/hq", expect.any(String), "/refresh"]]);
 			expect(prompt).not.toHaveBeenCalled();
-			expect(rig.text()).toContain("── /refresh · ran in the chat ──");
+			expect(rig.text()).toMatch(/── \d{1,2}:\d{2} [AP]M · \/refresh · ran in the chat ──/);
 			expect(rig.text()).toContain("Restarting…");
 			expect(rig.text()).not.toContain("(queued)");
 			await rig.input("/inbox 5");
@@ -878,6 +878,152 @@ describe("Central focus questions", () => {
 			expect(rig.text()).toContain("INBOX-TAIL 3");
 			expect(rig.text()).toContain("WHICH EVAL?");
 			expect(prompt).not.toHaveBeenCalled();
+		} finally {
+			rig.close();
+		}
+	});
+});
+
+describe("Central focus flow entries", () => {
+	const TIME = String.raw`\d{1,2}:\d{2} [AP]M`;
+	const replyAt = (id: string, text: string, at: number): TranscriptEntryLike => {
+		const entry = assistant(id, [{ type: "text", text }]);
+		if (entry.type === "message") entry.message.timestamp = at;
+		return entry;
+	};
+	const commandWorkspace = {
+		statusLines: [],
+		usageLines: [],
+		canPrompt: true,
+		canCommand: true,
+		commands: [{ name: "tan", description: "Tan" }],
+	};
+	const ask = (options: number) => ({
+		id: "ask1",
+		createdAt: 1,
+		kind: "ask" as const,
+		questions: [
+			{
+				id: "eval",
+				question: "WHICH EVAL?",
+				options: Array.from({ length: options }, (_, index) => ({ label: `Option ${index}` })),
+			},
+		],
+	});
+
+	it("dates each command in the conversation, keeps it across reloads, and later replies render below it", async () => {
+		let transcript: TranscriptEntryLike[] = [replyAt("a1", "EARLIER-REPLY", Date.now() - 60_000)];
+		let revision = "1";
+		const command = vi.fn(async () => "TAN-OUTPUT");
+		const rig = await setup({
+			snapshot: () => ({
+				chats: [chat({ id: "local/hq", requests: [ask(2)], transcriptRevision: revision })],
+				errors: [],
+			}),
+			transcript: async () => transcript,
+			command,
+			workspace: commandWorkspace,
+			height: 50,
+		});
+		try {
+			await rig.input("/dag");
+			await rig.input("\r");
+			await rig.input("/tan");
+			await rig.input("\r");
+			expect(command).toHaveBeenCalledTimes(1);
+			let text = rig.text();
+			expect(text).toMatch(new RegExp(`── ${TIME} · /dag · local, not sent ──`));
+			expect(text).toMatch(new RegExp(`── ${TIME} · /tan · ran in the chat ──`));
+			// In the flow above the question card, not in a band between the card and the composer.
+			const card = text.indexOf("WHICH EVAL?");
+			expect(text.indexOf("https://board.example/board/")).toBeLessThan(card);
+			expect(text.indexOf("TAN-OUTPUT")).toBeLessThan(card);
+			expect(text.slice(card)).not.toContain("ran in the chat");
+			// A live reload brings a reply stamped after both commands.
+			transcript = [...transcript, replyAt("a2", "LATER-REPLY", Date.now() + 1000)];
+			revision = "2";
+			await rig.poll();
+			await rig.poll();
+			text = rig.text();
+			const order = ["EARLIER-REPLY", "· /dag ·", "· /tan ·", "TAN-OUTPUT", "LATER-REPLY", "WHICH EVAL?"].map(s =>
+				text.indexOf(s),
+			);
+			expect(order.every(index => index >= 0)).toBe(true);
+			expect(order).toEqual([...order].sort((a, b) => a - b));
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("jumps to a command's entry and gives it room while a tall question card is open", async () => {
+		const longHistory = Array.from({ length: 60 }, (_, index) =>
+			assistant(`r${index}`, [{ type: "text", text: `HISTORY LINE ${index}` }]),
+		);
+		const commands = commandMocks();
+		commands.inbox = vi.fn(async () => Array.from({ length: 10 }, (_, index) => `INBOX-ROW-${index}`).join("\n"));
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", requests: [ask(20)] })], errors: [] }),
+			transcript: async () => longHistory,
+			commands,
+			height: 36,
+		});
+		try {
+			// Scrolled up into the history first.
+			for (let index = 0; index < 10; index++) await rig.input("\x1b[1;2A");
+			expect(rig.text()).not.toContain("HISTORY LINE 59");
+			await rig.input("/inbox 10");
+			await rig.input("\r");
+			const text = rig.text();
+			expect(text).toMatch(new RegExp(`── ${TIME} · /inbox 10 · local, not sent ──`));
+			for (let index = 0; index < 10; index++) expect(text).toContain(`INBOX-ROW-${index}`);
+			expect(text).toContain("WHICH EVAL?");
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("enters a question that ended elsewhere in the flow, and F8 shows its kept draft", async () => {
+		let requests = [ask(2)];
+		const answer = vi.fn(async () => {});
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", requests })], errors: [] }),
+			answer,
+		});
+		try {
+			// Down on the empty composer moves into the question (to Option 1): a touched, unsent draft.
+			await rig.input("\x1b[B");
+			const second = { ...ask(2), id: "ask2", questions: [{ ...ask(2).questions[0]!, question: "SECOND ASK" }] };
+			// It ends elsewhere, and the chat asks another question.
+			requests = [second];
+			await rig.poll();
+			let text = rig.text();
+			expect(text).toMatch(
+				new RegExp(`── ${TIME} · question "WHICH EVAL\\?" ended elsewhere · draft kept: F8 to view ──`),
+			);
+			expect(text).toContain("SECOND ASK");
+			expect(text).not.toContain("draft retained");
+			expect(text).not.toContain("draft not sent");
+			// F8 shows the kept draft, with its selection, in place of the open card.
+			await rig.input("\x1b[19~");
+			text = rig.text();
+			expect(text).toContain("kept draft · its question ended elsewhere · not sent · F8 back");
+			expect(text).toContain("WHICH EVAL?");
+			expect(text).toContain("❯ ○ Option 1");
+			expect(text).not.toContain("SECOND ASK");
+			// Read-only: keys go to the composer, and nothing is answered.
+			await rig.input("\r");
+			await rig.input("x");
+			expect(answer).not.toHaveBeenCalled();
+			await rig.input("\x1b[19~");
+			text = rig.text();
+			expect(text).toContain("SECOND ASK");
+			expect(text).not.toContain("kept draft ·");
+			// A question that ends untouched leaves a plain entry.
+			requests = [];
+			await rig.poll();
+			text = rig.text();
+			expect(text).toMatch(new RegExp(`── ${TIME} · question "SECOND ASK" ended elsewhere ──`));
+			expect(text).not.toContain("draft not sent");
 		} finally {
 			rig.close();
 		}

@@ -55,10 +55,77 @@ export function focusTranscriptEntries(entries: readonly TranscriptEntryLike[]):
 	return replies;
 }
 
-/** One turn of the focused conversation: a reply, or a message sent from the focus composer. */
+/**
+ * A focus-local event in the conversation flow, at the time it happened: a
+ * command run from the focus composer, or a question that ended elsewhere. It
+ * lives only in this focus view (never in the chat's transcript, never sent),
+ * so a restart of the view drops it.
+ */
+export interface CentralFocusNotice {
+	kind: "notice";
+	id: string;
+	at: number;
+	/** Header text after the time, e.g. `/tan · ran in the chat`. */
+	title: string;
+	/** Body rows (command output), already capped. */
+	lines: readonly string[];
+	/** Source lines left out by the cap. */
+	more: number;
+}
+
+/** Text of one assistant message within a reply, with that message's time. */
+export interface CentralFocusReplyPart {
+	at: number | undefined;
+	text: string;
+}
+
+/** One turn of the focused conversation: a reply, a message sent from the focus composer, or a focus notice. */
 export type CentralFocusTurn =
-	| { kind: "reply"; id: string; at: number | undefined; text: string }
-	| { kind: "sent"; id: string; at: number | undefined; text: string; queued?: boolean };
+	/** `text` is every part joined; `parts` lets a notice split the reply where it happened. */
+	| { kind: "reply"; id: string; at: number | undefined; text: string; parts: CentralFocusReplyPart[] }
+	| { kind: "sent"; id: string; at: number | undefined; text: string; queued?: boolean }
+	| CentralFocusNotice;
+
+/**
+ * Notices (oldest first) in time order among the turns: each goes before the
+ * first turn or reply part stamped after it, so whatever the chat wrote later
+ * renders below it. A notice that lands inside a reply splits it there, and the
+ * rest of the reply continues below under its own time. Turns and parts without
+ * a time keep their place, and notices newer than everything go last.
+ */
+export function mergeFocusNotices(
+	turns: readonly CentralFocusTurn[],
+	notices: readonly CentralFocusNotice[],
+): CentralFocusTurn[] {
+	if (notices.length === 0) return [...turns];
+	const merged: CentralFocusTurn[] = [];
+	let next = 0;
+	const flush = (at: number | undefined): boolean => {
+		const before = next;
+		while (next < notices.length && at !== undefined && notices[next]!.at < at) merged.push(notices[next++]!);
+		return next !== before;
+	};
+	for (const turn of turns) {
+		if (turn.kind !== "reply") {
+			flush(turn.at);
+			merged.push(turn);
+			continue;
+		}
+		let segment: Extract<CentralFocusTurn, { kind: "reply" }> | undefined;
+		turn.parts.forEach((part, index) => {
+			if (flush(part.at) || !segment) {
+				const id = index === 0 ? turn.id : `${turn.id}:${index}`;
+				segment = { kind: "reply", id, at: part.at, text: part.text, parts: [part] };
+				merged.push(segment);
+			} else {
+				segment.text += `\n\n${part.text}`;
+				segment.parts.push(part);
+			}
+		});
+	}
+	for (; next < notices.length; next++) merged.push(notices[next]!);
+	return merged;
+}
 
 function entryTime(entry: TranscriptEntryLike): number | undefined {
 	const raw = entry.type === "message" ? entry.message.timestamp : undefined;
@@ -79,9 +146,10 @@ function userText(content: unknown): string | undefined {
 /**
  * The conversation as turns. One reply is the text of every assistant message
  * between two user messages, so a reply split by hidden tool calls stays one
- * turn, timed by its first text. A user message beginning with the focus
- * `prefix` is a sent turn (shown without it). Other user messages end the
- * current reply but are not shown; tool results and custom messages are omitted.
+ * turn, timed by its first text; its `parts` keep each message's own time. A
+ * user message beginning with the focus `prefix` is a sent turn (shown without
+ * it). Other user messages end the current reply but are not shown; tool
+ * results and custom messages are omitted.
  */
 export function focusTurns(entries: readonly TranscriptEntryLike[], prefix: string): CentralFocusTurn[] {
 	const turns: CentralFocusTurn[] = [];
@@ -91,9 +159,12 @@ export function focusTurns(entries: readonly TranscriptEntryLike[], prefix: stri
 		const reply = replies.get(entry.id);
 		if (reply?.type === "message" && reply.message.role === "assistant") {
 			const text = (reply.message.content as TextContent[]).map(block => block.text).join("\n\n");
-			if (open) open.text += `\n\n${text}`;
-			else {
-				open = { kind: "reply", id: entry.id, at: entryTime(entry), text };
+			const part = { at: entryTime(entry), text };
+			if (open) {
+				open.text += `\n\n${text}`;
+				open.parts.push(part);
+			} else {
+				open = { kind: "reply", id: entry.id, at: part.at, text, parts: [part] };
 				turns.push(open);
 			}
 			continue;
@@ -115,12 +186,22 @@ export function focusTurnTime(at: number | undefined): string {
 
 /**
  * Each reply under a `── 10:38 PM ──` divider, rendered as Markdown; each sent
- * message as a dimmed `you:` line. A `…working` line follows while the chat is busy.
+ * message as a dimmed `you:` line; each notice as a dimmed `── 10:40 PM · … ──`
+ * header followed by its output rows. A `…working` line follows while the chat is busy.
  */
 export function renderFocusTurns(turns: readonly CentralFocusTurn[], width: number, busy: boolean): string[] {
 	const rows: string[] = [];
 	const mdTheme = getMarkdownTheme();
 	for (const turn of turns) {
+		if (turn.kind === "notice") {
+			if (rows.length > 0) rows.push("");
+			const header = `── ${focusTurnTime(turn.at)} · ${sanitizeDisplayLine(turn.title)} ──`;
+			rows.push(...wrapTextWithAnsi(header, Math.max(1, width)).map(line => theme.fg("dim", line)));
+			for (const line of turn.lines)
+				rows.push(...wrapTextWithAnsi(sanitizeDisplayLine(line), Math.max(1, width - 2)));
+			if (turn.more > 0) rows.push(theme.fg("dim", `… ${turn.more} more line${turn.more === 1 ? "" : "s"}`));
+			continue;
+		}
 		if (turn.kind === "sent") {
 			const lines = wrapTextWithAnsi(
 				`you: ${sanitizeDisplayLine(turn.text.replace(/\s*\n\s*/g, " "))}${turn.queued ? "  (queued)" : ""}`,

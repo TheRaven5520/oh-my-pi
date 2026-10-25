@@ -22,10 +22,12 @@ import {
 	CentralFocusAutocompleteProvider,
 	type CentralFocusCommand,
 	type CentralFocusMemory,
+	type CentralFocusNotice,
 	type CentralFocusTurn,
 	focusChatLines,
 	focusHelpLines,
 	focusTurns,
+	mergeFocusNotices,
 	parseFocusCommand,
 	renderFocusTurns,
 	resolveFocusTarget,
@@ -53,6 +55,10 @@ import {
 const FOCUS_DRAFT_KEY = "\0focus";
 /** How far before its send time a queued echo's transcript copy may be stamped (host clock skew). */
 const FOCUS_QUEUED_SKEW_MS = 15_000;
+/** Output lines a command's flow entry shows; the rest is counted as `… N more lines`. */
+const FOCUS_NOTICE_LINES = 40;
+/** Flow entries kept for the view's lifetime; the oldest go first. */
+const FOCUS_NOTICE_LIMIT = 200;
 
 interface CentralForm {
 	component: Component;
@@ -87,7 +93,7 @@ interface CentralDraft {
 
 /** A block of the focus frame whose text a drag can select. */
 interface FocusSelectRegion {
-	kind: "transcript" | "question" | "output";
+	kind: "transcript" | "question";
 	/** Logical rows; a scrolling region shows them from its view's offset. */
 	lines: readonly string[];
 	/** Frame row of the region's first row (negative when cut off above the frame). */
@@ -160,7 +166,15 @@ export class CentralComponent implements Component {
 	#focusMemory: CentralFocusMemory = {};
 	/** Why the focused chat's view is stale; the last view and draft stay. */
 	#focusNotice: string | undefined;
-	#focusOutput: { title: string; lines: string[]; remote?: boolean } | undefined;
+	/**
+	 * Commands run and questions that ended elsewhere, oldest first, merged by time
+	 * into the turns. Local to this view: a reload keeps them, a restart drops them.
+	 */
+	#focusNotices: CentralFocusNotice[] = [];
+	#focusNoticeRevision = 0;
+	#focusNoticeSeq = 0;
+	/** The entry announcing {@link #retired}, whose recovery hint changes if a newer draft replaces it. */
+	#retiredNotice: { notice: CentralFocusNotice; text: string } | undefined;
 	/** Focus mode renders turns itself: dated replies and the user's own sent lines. */
 	#focusTurns: CentralFocusTurn[] | undefined;
 	/**
@@ -174,7 +188,7 @@ export class CentralComponent implements Component {
 	#focusQueued: Array<{ text: string; at: number }> = [];
 	/** `${timestamp}\0${text}` of sent turns a queued echo already claimed; each turn matches once. */
 	#focusClaimed = new Set<string>();
-	#focusRows: { key: string; rows: string[] } | undefined;
+	#focusRows: { key: string; rows: string[]; tailRows: number } | undefined;
 	#focusCommandRunning = false;
 	/** JSON of the command list the focus composer's completion was built from. */
 	#focusCompletionKey: string | undefined;
@@ -281,12 +295,46 @@ export class CentralComponent implements Component {
 
 	#retire(entries: CentralQueueEntry<CentralForm>[]): void {
 		for (const entry of entries) {
-			if (entry.draft?.touched && entry.draft.answer === undefined) {
+			const kept = entry.draft?.touched === true && entry.draft.answer === undefined;
+			if (kept) {
 				if (this.#retired?.draft) this.#disposeForm(this.#retired.draft);
 				this.#retired = entry;
 				this.#showRetired = false;
 			} else if (entry.draft) this.#disposeForm(entry.draft);
+			if (this.focus) this.#noteRetired(entry, kept);
 		}
+	}
+
+	/** A question that ended elsewhere, as a flow entry; a kept draft says how to view it. */
+	#noteRetired(entry: CentralQueueEntry<CentralForm>, kept: boolean): void {
+		const request = entry.request;
+		const asked = request.kind === "ask" ? (request.questions[0]?.question ?? "") : request.title;
+		const first = sanitizeDisplayLine(asked.split("\n").find(line => line.trim()) ?? "").trim();
+		const text = `question "${truncateToWidth(first, 60)}" ended elsewhere`;
+		if (kept && this.#retiredNotice) {
+			this.#retiredNotice.notice.title = `${this.#retiredNotice.text} · draft replaced by a newer one`;
+		}
+		const notice = this.#addFocusNotice(kept ? `${text} · draft kept: F8 to view` : text, []);
+		if (kept) this.#retiredNotice = { notice, text };
+	}
+
+	/** Kept oldest first by time, for {@link mergeFocusNotices}; `at` defaults to now. */
+	#addFocusNotice(title: string, lines: readonly string[], more = 0, at = Date.now()): CentralFocusNotice {
+		// Date.now(), like the chat's own stamps; each host's clock, so skew between hosts can reorder close calls.
+		const notice: CentralFocusNotice = {
+			kind: "notice",
+			id: `notice-${++this.#focusNoticeSeq}`,
+			at,
+			title,
+			lines,
+			more,
+		};
+		let index = this.#focusNotices.length;
+		while (index > 0 && this.#focusNotices[index - 1]!.at > at) index--;
+		this.#focusNotices.splice(index, 0, notice);
+		if (this.#focusNotices.length > FOCUS_NOTICE_LIMIT) this.#focusNotices.shift();
+		this.#focusNoticeRevision++;
+		return notice;
 	}
 
 	#focusLabel(): string {
@@ -294,12 +342,14 @@ export class CentralComponent implements Component {
 	}
 
 	/**
-	 * Rendered turns, rebuilt only when the turns, queued sends, width, busy
-	 * state or theme change; Markdown for a long chat is too costly per frame.
+	 * Rendered turns and notices, rebuilt only when the turns, notices, queued
+	 * sends, width, busy state or theme change; Markdown for a long chat is too
+	 * costly per frame. `tailRows` is the height of a notice that is the newest
+	 * entry (with the `…working` line), else 0.
 	 */
-	#renderFocusRows(width: number, busy: boolean): string[] {
-		const key = `${width}|${busy}|${getThemeEpoch()}|${this.#focusQueued.length}`;
-		if (this.#focusRows?.key === key) return this.#focusRows.rows;
+	#renderFocusRows(width: number, busy: boolean): { rows: string[]; tailRows: number } {
+		const key = `${width}|${busy}|${getThemeEpoch()}|${this.#focusQueued.length}|${this.#focusNoticeRevision}`;
+		if (this.#focusRows?.key === key) return this.#focusRows;
 		const queued: CentralFocusTurn[] = this.#focusQueued.map((entry, index) => ({
 			kind: "sent",
 			id: `queued-${index}`,
@@ -307,9 +357,14 @@ export class CentralComponent implements Component {
 			text: entry.text,
 			queued: true,
 		}));
-		const rows = renderFocusTurns([...(this.#focusTurns ?? []), ...queued], width, busy);
-		this.#focusRows = { key, rows };
-		return rows;
+		const turns = mergeFocusNotices([...(this.#focusTurns ?? []), ...queued], this.#focusNotices);
+		const rows = renderFocusTurns(turns, width, busy && this.#focusTurns !== undefined);
+		// Before the first load, notices (command output) still show, under the loading line.
+		if (!this.#focusTurns) rows.unshift(theme.fg("muted", "Loading chat transcript…"));
+		const last = turns.at(-1);
+		const tailRows = last?.kind === "notice" ? renderFocusTurns([last], width, busy).length + 1 : 0;
+		this.#focusRows = { key, rows, tailRows };
+		return this.#focusRows;
 	}
 
 	/**
@@ -633,10 +688,12 @@ export class CentralComponent implements Component {
 		draft.error = undefined;
 		this.ui.requestRender();
 		try {
+			// Stamped when it started, so anything the chat writes for it lands below it.
+			const ranAt = Date.now();
 			const result = await this.host.command(pending.chatId, pending.sessionId, pending.requestId, pending.text);
 			if (draft.version === pending.version) draft.input.setText("");
 			draft.pending = undefined;
-			this.#showFocusOutput(pending.text.split(/\s/, 1)[0]!, result, true);
+			this.#showFocusOutput(pending.text.split(/\s/, 1)[0]!, result, ranAt, true);
 			void this.#loadWorkspace(true);
 		} catch (error) {
 			if (error instanceof CentralPromptRejectedError) {
@@ -651,9 +708,19 @@ export class CentralComponent implements Component {
 		}
 	}
 
-	#showFocusOutput(title: string, text: string | string[], remote = false): void {
-		const lines = typeof text === "string" ? text.replace(/\s+$/, "").split("\n") : text;
-		this.#focusOutput = { title, lines: lines.some(Boolean) ? lines : ["(no output)"], remote };
+	/**
+	 * A command's output as a dated flow entry at `at`. It was the user's own
+	 * action, so the view jumps to the bottom even if he had scrolled up.
+	 */
+	#showFocusOutput(title: string, text: string | string[], at: number, remote = false): void {
+		const all = typeof text === "string" ? text.replace(/\s+$/, "").split("\n") : text;
+		const lines = all.some(Boolean) ? all : ["(no output)"];
+		this.#addFocusNotice(
+			`${title} · ${remote ? "ran in the chat" : "local, not sent"}`,
+			lines.slice(0, FOCUS_NOTICE_LINES),
+			Math.max(0, lines.length - FOCUS_NOTICE_LINES),
+			at,
+		);
 		this.#transcriptView.setFollowTail(true);
 		this.#transcriptView.scrollToBottom();
 	}
@@ -673,6 +740,7 @@ export class CentralComponent implements Component {
 		}
 		const commands = this.focus!.commands;
 		const version = draft.version;
+		const ranAt = Date.now();
 		this.#focusCommandRunning = true;
 		draft.error = undefined;
 		this.ui.requestRender();
@@ -682,23 +750,28 @@ export class CentralComponent implements Component {
 					this.#showFocusOutput(
 						"/help",
 						focusHelpLines(this.#workspace?.commands, !!(this.#workspace?.canCommand && this.host.command)),
+						ranAt,
 					);
 					break;
 				case "chats":
-					this.#showFocusOutput("/chats", focusChatLines(this.#snapshot, this.#selectedChatId));
+					this.#showFocusOutput("/chats", focusChatLines(this.#snapshot, this.#selectedChatId), ranAt);
 					break;
 				case "dag":
-					this.#showFocusOutput("/dag", commands.boardUrl());
+					this.#showFocusOutput("/dag", commands.boardUrl(), ranAt);
 					break;
 				case "inbox":
-					this.#showFocusOutput(`/inbox ${command.count}`, await commands.inbox(command.count));
+					this.#showFocusOutput(`/inbox ${command.count}`, await commands.inbox(command.count), ranAt);
 					break;
 				case "pause":
 				case "resume":
-					this.#showFocusOutput(`/${command.name}`, await commands.setPaused(command.name === "pause"));
+					this.#showFocusOutput(`/${command.name}`, await commands.setPaused(command.name === "pause"), ranAt);
 					break;
 				case "send":
-					this.#showFocusOutput(`/send ${command.chat}`, await commands.relay(command.chat, command.message));
+					this.#showFocusOutput(
+						`/send ${command.chat}`,
+						await commands.relay(command.chat, command.message),
+						ranAt,
+					);
 					break;
 			}
 			if (draft.version === version) draft.input.setText("");
@@ -1083,7 +1156,25 @@ export class CentralComponent implements Component {
 			this.ui.requestRender();
 			return;
 		}
-		const entry = this.#entryForSelectedChat();
+		// Focus: F8 shows the kept draft of a question that ended elsewhere, read-only,
+		// in place of the question card; F8 or Esc goes back. Keys meanwhile go to the
+		// composer, so nothing typed can reach a question the card no longer shows.
+		if (this.focus && matchesKey(data, "f8") && (this.#showRetired || this.#retired?.draft)) {
+			this.#showRetired = !this.#showRetired;
+			this.ui.requestRender();
+			return;
+		}
+		if (
+			this.focus &&
+			this.#showRetired &&
+			matchesKey(data, "escape") &&
+			!this.#drafts.get(FOCUS_DRAFT_KEY)?.input.isShowingAutocomplete()
+		) {
+			this.#showRetired = false;
+			this.ui.requestRender();
+			return;
+		}
+		const entry = this.focus && this.#showRetired ? undefined : this.#entryForSelectedChat();
 		const form = entry ? this.#form(entry) : undefined;
 		if (matchesKey(data, "ctrl+o") && this.#selectedChatId) {
 			void this.#open(this.#selectedChatId);
@@ -1384,33 +1475,18 @@ export class CentralComponent implements Component {
 				body.push(...component.render(Math.max(1, mainWidth - 2)));
 			}
 		}
-		if (!form && this.#retired) body.push(theme.fg("muted", "Question ended elsewhere; draft not sent"));
+		// Focus announces an ended question once, as an entry in the flow, not here.
+		if (!focus && !form && this.#retired) body.push(theme.fg("muted", "Question ended elsewhere; draft not sent"));
 		const questionBody = body;
-		const transcriptRows = focus
-			? this.#focusTurns
-				? this.#renderFocusRows(Math.max(1, mainWidth - 2), selectedChat?.busy === true)
-				: [theme.fg("muted", "Loading chat transcript…")]
+		// Focus: commands and ended questions are dated entries in the flow, merged by time.
+		const focusRows = focus
+			? this.#renderFocusRows(Math.max(1, mainWidth - 2), selectedChat?.busy === true)
+			: undefined;
+		const transcriptRows = focusRows
+			? focusRows.rows
 			: this.#transcriptLoading && !this.#transcriptBuilder
 				? [theme.fg("muted", "Loading chat transcript…")]
 				: (this.#transcriptBuilder?.container.render(Math.max(1, mainWidth - 2)) ?? []);
-		// Command output sits right above the composer, below any open question, so
-		// a question card never hides it. Local output never reached the chat; a chat
-		// command's output is what that chat showed while running it.
-		const focusOutput =
-			focus && this.#focusOutput
-				? [
-						truncateToWidth(
-							theme.fg(
-								"dim",
-								`── ${this.#focusOutput.title} · ${this.#focusOutput.remote ? "ran in the chat" : "local, not sent"} ──`,
-							),
-							mainWidth,
-						),
-						...this.#focusOutput.lines
-							.flatMap(line => wrapTextWithAnsi(sanitizeDisplayLine(line), Math.max(1, mainWidth - 2)))
-							.slice(0, Math.max(1, Math.floor(contentHeight / 3))),
-					]
-				: [];
 		const status = focus
 			? []
 			: workspaceLines(this.#workspace?.statusLines ?? [], mainWidth).slice(
@@ -1420,7 +1496,8 @@ export class CentralComponent implements Component {
 		if (!focus && status.length === 0 && !this.#workspace?.composer)
 			status.push(truncateToWidth(theme.fg("dim", this.#workspaceError ?? "Status unavailable"), mainWidth));
 		const draft = focus ? this.#draft(FOCUS_DRAFT_KEY) : selectedChat ? this.#draft(selectedChat.id) : undefined;
-		const inputFocused = this.#inputFocus || !form;
+		// The kept draft of an ended question is read-only; keys go to the composer.
+		const inputFocused = this.#inputFocus || !form || (!!focus && this.#showRetired);
 		const inputHeight = compactQuestion
 			? 1
 			: Math.max(1, Math.min(5, contentHeight - status.length - (this.#usageMaxOffset ? 2 : 1) - 3));
@@ -1442,10 +1519,9 @@ export class CentralComponent implements Component {
 		const canSend = this.#workspace?.canPrompt && this.host.prompt;
 		const copyStatus = this.#copyStatus && this.#copyStatus.until > this.#now() ? this.#copyStatus : undefined;
 		const hint = focus
-			? `${form ? (inputFocused ? (draft?.input.hasDraftContent() ? "F2 question · " : "↑/↓ question · ") : "Enter answer · Esc back to input · ") : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · / commands · /help · drag to copy · Ctrl+X copy reply · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
+			? `${this.#showRetired ? "F8/Esc back · " : form ? (inputFocused ? (draft?.input.hasDraftContent() ? "F2 question · " : "↑/↓ question · ") : "Enter answer · Esc back to input · ") : ""}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · / commands · /help · drag to copy · Ctrl+X copy reply · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
 			: `${form ? `F2 ${inputFocused ? "question" : "input"} · ` : ""}Ctrl+O open · Tab/Shift+Tab chats · ${inputFocused ? (canSend ? "Enter send · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · Shift+↑/↓ scroll · Ctrl+C close`;
 		const footer = [
-			...focusOutput,
 			...input,
 			...status,
 			truncateToWidth(
@@ -1458,7 +1534,12 @@ export class CentralComponent implements Component {
 		];
 		const headerRows = !compactQuestion && contentHeight >= footer.length + (form ? 7 : 5) ? 2 : 0;
 		const contentBudget = Math.max(0, contentHeight - footer.length - headerRows);
-		const minimumTranscriptHeight = Math.min(compactQuestion ? 1 : 3, contentBudget);
+		// While a command's entry is the newest in the flow, an open question card leaves
+		// it up to a third of the screen, so the card never hides the output just shown.
+		const minimumTranscriptHeight = Math.min(
+			Math.max(compactQuestion ? 1 : 3, Math.min(focusRows?.tailRows ?? 0, Math.floor(contentHeight / 3))),
+			contentBudget,
+		);
 		const questionHeight = Math.min(
 			questionBody.length,
 			Math.max(0, contentBudget - minimumTranscriptHeight - (compactQuestion ? 0 : 1)),
@@ -1481,18 +1562,16 @@ export class CentralComponent implements Component {
 				: formStart < view.getScrollOffset() + questionHeight)
 				? entry
 				: undefined;
-		const notice = this.#retired ? " · question ended elsewhere; draft retained" : "";
+		const questionLabel =
+			focus && this.#showRetired
+				? "kept draft · its question ended elsewhere · not sent · F8 back"
+				: `${inputFocused ? "question" : "question focused"}${!focus && this.#retired ? " · question ended elsewhere; draft retained" : ""}`;
 		const headerBlock = headerRows
 			? [truncateToWidth(theme.fg("muted", heading), mainWidth), truncateToWidth(identity, mainWidth)]
 			: [];
 		const transcriptBlock = this.#transcriptView.render(mainWidth).slice(0, transcriptHeight);
 		const questionHeaderBlock = questionHeaderRows
-			? [
-					truncateToWidth(
-						theme.fg("dim", `── ${inputFocused ? "question" : "question focused"}${notice} ──`),
-						mainWidth,
-					),
-				]
+			? [truncateToWidth(theme.fg("dim", `── ${questionLabel} ──`), mainWidth)]
 			: [];
 		const questionBlock = view.render(mainWidth).slice(0, questionHeight);
 		const full = [...headerBlock, ...transcriptBlock, ...questionHeaderBlock, ...questionBlock, ...footer];
@@ -1518,7 +1597,6 @@ export class CentralComponent implements Component {
 							},
 						]
 					: []),
-				{ kind: "output", lines: focusOutput, top: full.length - footer.length - cut, height: focusOutput.length },
 			];
 			this.#paintSelection(full, cut);
 		}
