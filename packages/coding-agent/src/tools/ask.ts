@@ -573,7 +573,7 @@ function describeHeldAssumptions(assumptions: readonly AskAssumption[]): string 
 /** Tool result text when the agent continues without an answer. */
 function formatContinuationNotice(continuation: AskContinuation): string {
 	return [
-		`No answer after ${formatDuration(continuation.afterMs)}. The question stays open and the user may answer later; the answer will arrive as background job ${continuation.jobId}.`,
+		`No answer after ${formatDuration(continuation.afterMs)}. The question stays open only while this chat keeps running: the user may answer later and the answer will arrive as background job ${continuation.jobId}, but if the chat restarts or refreshes before then the question closes unanswered and nothing reports it; ask again if you still need the answer after a restart.`,
 		"Until then:",
 		describeAssumptions(continuation.assumptions),
 		"Keep working on anything that does not depend on this answer and state the assumption you made. If nothing useful can proceed without it, finish what you can and end your turn. Do not wait or poll for this job and do not ask the same question again: the answer is delivered to you on its own.",

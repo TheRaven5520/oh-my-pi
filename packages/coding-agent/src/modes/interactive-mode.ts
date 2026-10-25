@@ -2254,7 +2254,9 @@ export class InteractiveMode implements InteractiveModeContext {
 					? "forks open"
 					: this.#liveCommandController.active
 						? "live voice session"
-						: undefined,
+						: this.#extensionUiController.hasOpenCentralQuestions()
+							? "open question"
+							: undefined,
 		});
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);

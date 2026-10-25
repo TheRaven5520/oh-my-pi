@@ -136,6 +136,24 @@ describe("UpdateRefreshController", () => {
 		expect(refresh).toHaveBeenCalledTimes(1);
 	});
 
+	it("never refreshes away a question still waiting for an answer, then refreshes once it is answered", () => {
+		vi.useFakeTimers();
+		const jobs: Array<{ type: string }> = [{ type: "ask" }];
+		const { controller, refresh, install, ctx } = setup();
+		// The ask job is not "work" (it never blocks waits), yet a restart would lose it.
+		Object.defineProperty(ctx.session, "asyncJobManager", {
+			value: { getRunningWorkJobs: () => [], getRunningJobs: () => jobs },
+			configurable: true,
+		});
+		install("new build");
+		controller.onTurnSettled();
+		vi.advanceTimersByTime(100);
+		expect(refresh).not.toHaveBeenCalled();
+		jobs.length = 0;
+		vi.advanceTimersByTime(10);
+		expect(refresh).toHaveBeenCalledTimes(1);
+	});
+
 	it("never refreshes source launches with no installed binary", () => {
 		vi.useFakeTimers();
 		const ctx = createInteractiveModeContext({ refresh: vi.fn(async () => {}) });

@@ -111,9 +111,7 @@ function makeHarness() {
 describe("ExtensionUiController question reply alerts", () => {
 	const controllers: ExtensionUiController[] = [];
 	const resolveAlert = replyAlert.resolveReplyAlert;
-	const questions: ExtensionAskDialogQuestion[] = [
-		{ id: "answer", question: "Choose?", options: [{ label: "Yes" }] },
-	];
+	const questions: ExtensionAskDialogQuestion[] = [{ id: "answer", question: "Choose?", options: [{ label: "Yes" }] }];
 
 	afterEach(() => {
 		for (const controller of controllers.splice(0)) controller.disposeCentral();
@@ -128,7 +126,7 @@ describe("ExtensionUiController question reply alerts", () => {
 		);
 		const harness = makeHarness();
 		controllers.push(harness.controller);
-		const events = () => frames.map(frame => frame.includes("omp_reply_ack=") ? "ack" : "set");
+		const events = () => frames.map(frame => (frame.includes("omp_reply_ack=") ? "ack" : "set"));
 		return { ...harness, frames, events };
 	}
 
@@ -248,7 +246,9 @@ describe("ExtensionUiController question reply alerts", () => {
 
 	it("clears failed presentations rather than leaving a question alert behind", async () => {
 		const harness = setup();
-		vi.spyOn(harness.ctx.ui, "setFocus").mockImplementationOnce(() => { throw new Error("presentation failed"); });
+		vi.spyOn(harness.ctx.ui, "setFocus").mockImplementationOnce(() => {
+			throw new Error("presentation failed");
+		});
 		await expect(harness.controller.showHookInput("Broken?")).rejects.toThrow("presentation failed");
 		expect(harness.events()).toEqual(["set", "ack"]);
 	});
@@ -275,16 +275,20 @@ describe("ExtensionUiController question reply alerts", () => {
 			await harness.init();
 			const answer = harness.controller.showCollabAwareSelector("Choose?", ["Yes"]);
 			const second = harness.controller.showCollabAwareSelector("Another?", ["No"]);
+			// Published questions keep the chat from refreshing itself away from them.
+			expect(harness.controller.hasOpenCentralQuestions()).toBe(true);
 			const [chat] = (await centralBridge.listCentralChats({ dir })).chats;
 			await centralBridge.promptCentralChat(chat!.id, "alert-session", "message-1", "hello", { dir });
 			expect(harness.events()).toEqual(["set"]);
 			await centralBridge.answerCentralQuestion(chat!.id, chat!.requests[0]!.id, "Yes", { dir });
 			expect(await answer).toBe("Yes");
 			expect(harness.events()).toEqual(["set"]);
+			expect(harness.controller.hasOpenCentralQuestions()).toBe(true);
 			await centralBridge.answerCentralQuestion(chat!.id, chat!.requests[1]!.id, "No", { dir });
 			expect(await second).toBe("No");
 			expect(harness.events()).toEqual(["set", "ack"]);
 			expect(harness.getFocused()).toBe(harness.editor);
+			expect(harness.controller.hasOpenCentralQuestions()).toBe(false);
 		} finally {
 			await host?.close();
 		}

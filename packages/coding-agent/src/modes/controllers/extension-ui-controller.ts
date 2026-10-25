@@ -375,6 +375,11 @@ export class ExtensionUiController {
 		return this.#centralHost.race(request, scopedSignal, local).finally(() => this.#centralQuestions--);
 	}
 
+	/** Whether a question published to Central is still waiting; a restart would drop it unanswered. */
+	hasOpenCentralQuestions(): boolean {
+		return this.#centralQuestions > 0;
+	}
+
 	/**
 	 * Initialize the hook system with TUI-based UI context.
 	 */

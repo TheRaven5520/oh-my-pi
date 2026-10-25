@@ -114,6 +114,9 @@ describe("ask.continueAfter", () => {
 		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 		expect(text).toContain('assume "Postgres"');
 		expect(text).toContain("Do not wait or poll");
+		// The agent is told the open question does not survive a restart, so it can ask again.
+		expect(text).toContain("only while this chat keeps running");
+		expect(text).toContain("ask again if you still need the answer after a restart");
 		// The question stays open, and yields to any other prompt from now on.
 		expect(dialog.options()?.signal?.aborted).toBe(false);
 		expect(dialog.options()?.yieldSignal?.aborted).toBe(true);

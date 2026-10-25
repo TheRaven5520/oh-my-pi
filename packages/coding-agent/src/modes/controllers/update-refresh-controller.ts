@@ -18,6 +18,10 @@ export function autoRefreshBlocker(ctx: InteractiveModeContext, extra?: ExtraRef
 	if (session.queuedMessageCount > 0) return "queued messages";
 	if (session.hasPendingAsyncWork()) return "pending background wake";
 	if ((session.asyncJobManager?.getRunningWorkJobs().length ?? 0) > 0) return "background jobs running";
+	// A question the agent continued past lives only in this process; a restart
+	// would drop it unanswered, so wait for the answer (or its withdrawal).
+	if ((session.asyncJobManager?.getRunningJobs().filter(job => job.type === "ask").length ?? 0) > 0)
+		return "open question";
 	if (
 		AgentRegistry.global()
 			.list()
