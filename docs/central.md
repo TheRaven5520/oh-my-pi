@@ -138,17 +138,41 @@ plus every open question from every chat Central lists.
   in it); the top line adds `N from other chats`. An answer goes only to the
   card's own chat, as an answer to that question; it is never sent to the
   focused chat or as a message, and `Ctrl+O` from a card opens the card's chat.
-  The composer keeps keyboard focus when a question appears, so text typed for
-  the chat never answers it. With the composer empty, an arrow key moves into a
-  choice question (and moves its selection); `Enter` then answers. `F2` or a
-  click also selects it, and `Esc` returns to the composer without cancelling.
+  A question that arrives takes the keyboard by itself, scrolled into view
+  with its control showing (`· focused` in the header, `Enter answer` in the
+  footer), so arrows, digits and `Enter` answer it at once. It does so only when
+  nothing typed can land in it: the composer is empty (no `/` popup), no key
+  or click for 3 seconds, the keyboard is in the composer, no drag is under
+  way, and the card on screen has no answer started (an untouched card it
+  replaces stays in the queue for `Tab`). It also closes the `F8` view. A
+  not-responding chat's question never takes it until the chat responds.
+  Until then the question is marked: a highlighted header
+  `── new question · SPRILICIM (mini) · ↓ or F2 to answer ──` (`F2 to answer`
+  while the composer has text), the footer `new question: … to answer`, or,
+  on a card in use, `· new question from SPRILICIM (mini)`; in the `F8` view
+  the footer says `new question waiting`. Polls run every second, so it takes
+  the keyboard within about a second of the composer becoming empty and quiet.
+  Race guard: quiet is measured at the moment of the switch, and for 1 second
+  after it, until another key reaches the card, text, a paste, `Enter` or
+  `Backspace` counts as typing for the composer that began as the card
+  appeared: it goes to the composer, the keyboard goes back with it, and the
+  question is marked new again (it retakes the keyboard after the next 3 quiet
+  seconds). So nothing meant for the composer ever answers a question; arrows
+  and `Tab` in that second are the card's. Several new questions take the
+  keyboard one at a time, the focused chat's first, each after an answer and
+  3 quiet seconds. With the composer empty, an arrow key also moves into the
+  shown question (and moves its selection); `Enter` then answers. `F2` or a
+  click also selects it, and `Esc` returns to the composer without cancelling;
+  a question the keyboard has been in is no longer new and does not take it
+  again by itself.
   From a selected card, `Tab` / `Shift+Tab` show the next or previous open
   question (in the composer, `Tab` stays completion). `Enter`, `Esc`, `Space`,
   digits and typing on the composer never touch a question. A poll never swaps
   the card while the keyboard is in it, an answer is started, or it was chosen
-  with `Tab`; otherwise the first in order shows. After an answer, typing goes
-  back to the composer. A chat that is not responding (or whose host is
-  unreachable) keeps its last-known question on screen, marked `not responding`
+  with `Tab`; otherwise the first new question shows, else the first in order.
+  After an answer, typing goes back to the composer. A chat that is not
+  responding (or whose host is unreachable) keeps its last-known question on
+  screen, marked `not responding`
   in the header and a line on the card; no key answers it until the chat
   answers a poll again. A question answered, withdrawn or ended in its own chat
   leaves the flow entry above, and if the keyboard was in its card it returns

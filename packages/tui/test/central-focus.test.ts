@@ -1,13 +1,19 @@
 import { beforeAll, describe, expect, it, vi } from "bun:test";
 import type { TranscriptEntryLike } from "../src/chat/transcript-entry";
 import { TUI } from "../src/tui";
-import { initTheme } from "../src/theme/theme";
+import { initTheme, theme } from "../src/theme/theme";
 import { setClockTimeZone } from "../src/render/clock";
 import { CentralComponent, type CentralExit, type CentralRestartOptions } from "../src/apps/central/central-tui";
 import { focusTranscriptEntries, parseFocusCommand, resolveFocusTarget } from "../src/apps/central/focus";
 import { selectCells, selectionText } from "../src/apps/central/selection";
 import { DEFAULT_TAB_WIDTH } from "../src/utils";
-import type { CentralChat, CentralFocusCommands, CentralSnapshot, CentralTuiHost } from "../src/apps/central/types";
+import type {
+	CentralChat,
+	CentralFocusCommands,
+	CentralRequest,
+	CentralSnapshot,
+	CentralTuiHost,
+} from "../src/apps/central/types";
 import { VirtualTerminal } from "./virtual-terminal";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { withoutTerminalMultiplexer } from "./terminal-multiplexer-environment";
@@ -662,7 +668,7 @@ describe("Central focus composer", () => {
 			// Down moves the popup selection; it never hands focus to the open question.
 			await rig.input("\x1b[B");
 			await rig.input("\x1b[A");
-			expect(rig.text()).toContain("── question · TMUX ORCHESTRATION ──");
+			expect(rig.text()).toContain("── new question · TMUX ORCHESTRATION · F2 to answer ──");
 			await rig.input("\r");
 			expect(command).not.toHaveBeenCalled();
 			expect(prompt).not.toHaveBeenCalled();
@@ -917,7 +923,7 @@ describe("Central focus questions", () => {
 		});
 		try {
 			const text = rig.text();
-			expect(text).toContain("── question · SPRILICIM (mini) ──");
+			expect(text).toContain("── new question · SPRILICIM (mini) · ↓ or F2 to answer ──");
 			expect(text).toContain("OTHER ASK?");
 			expect(text).toContain("0 open questions  ·  1 from other chats");
 			await rig.input("\x1b[B");
@@ -954,7 +960,9 @@ describe("Central focus questions", () => {
 		const rig = await setup({ snapshot: () => ({ chats: [otherAsk(), own], errors: [] }), answer, prompt });
 		try {
 			let text = rig.text();
-			expect(text).toContain("── question 1 of 2 · TMUX ORCHESTRATION ──");
+			expect(text).toContain(
+				"── new question 1 of 2 · TMUX ORCHESTRATION · ↓ or F2 to answer · new question from SPRILICIM (mini) ──",
+			);
 			expect(text).toContain("OWN ASK?");
 			expect(text).not.toContain("OTHER ASK?");
 			// Enter on the empty composer answers nothing; Tab there stays the composer's.
@@ -962,9 +970,13 @@ describe("Central focus questions", () => {
 			await rig.input("\t");
 			await rig.input("\x1b");
 			expect(answer).not.toHaveBeenCalled();
-			expect(rig.text()).toContain("── question 1 of 2 · TMUX ORCHESTRATION ──");
+			expect(rig.text()).toContain(
+				"── new question 1 of 2 · TMUX ORCHESTRATION · ↓ or F2 to answer · new question from SPRILICIM (mini) ──",
+			);
 			await rig.input("\x1bOQ");
-			expect(rig.text()).toContain("── question 1 of 2 · TMUX ORCHESTRATION · focused ──");
+			expect(rig.text()).toContain(
+				"── question 1 of 2 · TMUX ORCHESTRATION · focused · new question from SPRILICIM (mini) ──",
+			);
 			expect(rig.text()).toContain("Tab/Shift+Tab next question");
 			await rig.input("\t");
 			text = rig.text();
@@ -1003,7 +1015,7 @@ describe("Central focus questions", () => {
 		});
 		try {
 			const text = rig.text();
-			expect(text).toContain("── question · SPRILICIM (mini) · not responding ──");
+			expect(text).toContain("── new question · SPRILICIM (mini) · not responding ──");
 			expect(text).toContain("SPRILICIM (mini) is not responding (host_timeout)");
 			expect(text).toContain("OTHER ASK?");
 			// Arrows on the empty composer do not move into it; F2 does, but no key answers it.
@@ -1019,6 +1031,459 @@ describe("Central focus questions", () => {
 			expect(rig.text()).not.toContain("not responding");
 			await rig.input("\r");
 			expect(answer.mock.calls.map(call => call.slice(0, 2))).toEqual([["mini/other", "ask9"]]);
+		} finally {
+			rig.close();
+		}
+	});
+});
+
+describe("Central focus auto-focus", () => {
+	/** The footer hint while the keyboard is in a question card. */
+	const IN_CARD = "Enter answer · Esc back to input";
+	const choice = (id: string, question: string, createdAt = 1): CentralRequest => ({
+		id,
+		createdAt,
+		kind: "ask",
+		questions: [{ id: "q", question, options: [{ label: "One" }, { label: "Two" }] }],
+	});
+	/** Each answer as [chat, request, picked options]. */
+	const answers = (calls: ReadonlyArray<Parameters<CentralTuiHost["answer"]>>) =>
+		calls.map(([chatId, requestId, value]) => [
+			chatId,
+			requestId,
+			typeof value === "object" && "results" in value ? value.results[0]?.selectedOptions : value,
+		]);
+	const longHistory = Array.from({ length: 60 }, (_, index) =>
+		assistant(`r${index}`, [{ type: "text", text: `HISTORY LINE ${index}` }]),
+	);
+	/** A clock the test moves; `restart.now` drives the 3 s quiet threshold (the restart itself never fires). */
+	const quietClock = () => {
+		const clock = { now: 1_000_000 };
+		return { clock, restart: { restartReady: () => false, now: () => clock.now } };
+	};
+
+	const cases: Array<{
+		name: string;
+		chats: (arrived: boolean) => CentralChat[];
+		before?: (input: (value: string) => Promise<void>) => Promise<void>;
+		transcript?: CentralTuiHost["transcript"];
+		height?: number;
+		expected: [string, string];
+	}> = [
+		{
+			name: "the focused chat's own question",
+			chats: arrived => [chat({ id: "local/hq", requests: arrived ? [choice("n", "NEW ASK?")] : [] })],
+			expected: ["local/hq", "n"],
+		},
+		{
+			name: "another host's question",
+			chats: arrived => [chat({ id: "local/hq" }), otherAsk({ requests: arrived ? [choice("n", "NEW ASK?")] : [] })],
+			expected: ["mini/other", "n"],
+		},
+		{
+			name: "a question while the transcript is scrolled up",
+			chats: arrived => [chat({ id: "local/hq" }), otherAsk({ requests: arrived ? [choice("n", "NEW ASK?")] : [] })],
+			transcript: async () => longHistory,
+			before: async input => {
+				for (let index = 0; index < 6; index++) await input("\x1b[1;2A");
+			},
+			expected: ["mini/other", "n"],
+		},
+		{
+			name: "a question while another chat's untouched card is shown",
+			chats: arrived => [
+				chat({ id: "local/hq", requests: [choice("o", "OLD ASK?", 5)] }),
+				otherAsk({ requests: arrived ? [choice("n", "NEW ASK?", 9)] : [] }),
+			],
+			// The keyboard went into the old card and back without answering.
+			before: async input => {
+				await input("\x1bOQ");
+				await input("\x1b");
+			},
+			expected: ["mini/other", "n"],
+		},
+		{
+			name: "a question asked again after the target restarted under a new id",
+			chats: arrived =>
+				arrived
+					? [chat({ id: "local/hq-restarted", sessionId: "s2", requests: [choice("n", "NEW ASK?")] })]
+					: [chat({ id: "local/hq" })],
+			expected: ["local/hq-restarted", "n"],
+		},
+		{
+			name: "a question after a click on the transcript",
+			chats: arrived => [chat({ id: "local/hq", requests: arrived ? [choice("n", "NEW ASK?")] : [] })],
+			before: async input => {
+				await input("\x1b[<0;5;5M");
+				await input("\x1b[<0;5;5m");
+			},
+			expected: ["local/hq", "n"],
+		},
+		{
+			name: "a question in a short terminal (compact card)",
+			chats: arrived => [chat({ id: "local/hq", requests: arrived ? [choice("n", "NEW ASK?")] : [] })],
+			height: 16,
+			expected: ["local/hq", "n"],
+		},
+	];
+	for (const testCase of cases) {
+		it(`takes the keyboard after 3 s quiet with the composer empty: ${testCase.name}`, async () => {
+			let arrived = false;
+			const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+			const prompt = vi.fn(async () => {});
+			const { clock, restart } = quietClock();
+			const rig = await setup({
+				snapshot: () => ({ chats: testCase.chats(arrived), errors: [] }),
+				transcript: testCase.transcript,
+				height: testCase.height,
+				answer,
+				prompt,
+				restart,
+			});
+			try {
+				await testCase.before?.(rig.input);
+				arrived = true;
+				await rig.poll();
+				expect(rig.text()).toContain("NEW ASK?");
+				// Input was not quiet for 3 s yet.
+				expect(rig.text()).not.toContain(IN_CARD);
+				clock.now += 3000;
+				await rig.poll();
+				expect(rig.text()).toContain("NEW ASK?");
+				expect(rig.text()).toContain(IN_CARD);
+				await rig.input("\x1b[B");
+				await rig.input("\r");
+				expect(prompt).not.toHaveBeenCalled();
+				expect(answers(answer.mock.calls)).toEqual([[...testCase.expected, ["Two"]]]);
+			} finally {
+				rig.close();
+			}
+		});
+	}
+
+	it("takes the keyboard from the F8 view of a kept draft, closing it", async () => {
+		let requests = [choice("old", "OLD ASK?")];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", requests })], errors: [] }),
+			answer,
+			restart,
+		});
+		try {
+			await rig.input("\x1b[B");
+			requests = [];
+			await rig.poll();
+			await rig.input("\x1b[19~");
+			requests = [choice("n", "NEW ASK?")];
+			await rig.poll();
+			expect(rig.text()).toContain("new question waiting · F8/Esc back · F9 discard · ");
+			// The header is highlighted (bold warning), not dim.
+			const marked = theme.bold(theme.fg("warning", "\0")).split("\0")[0]!;
+			expect(rig.raw()).toContain(`${marked}── kept draft · TMUX ORCHESTRATION`);
+			clock.now += 3000;
+			await rig.poll();
+			const text = rig.text();
+			expect(text).not.toContain("kept draft ·");
+			expect(text).toContain("── question · TMUX ORCHESTRATION · focused ──");
+			await rig.input("\x1b[B");
+			await rig.input("\r");
+			expect(answers(answer.mock.calls)).toEqual([["local/hq", "n", ["Two"]]]);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("gives two questions arriving together the keyboard one after the other, the focused chat's first", async () => {
+		let own: CentralRequest[] = [];
+		let other: CentralRequest[] = [];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({
+				chats: [chat({ id: "local/hq", requests: own }), otherAsk({ requests: other })],
+				errors: [],
+			}),
+			answer,
+			restart,
+		});
+		try {
+			own = [choice("n", "NEW ASK?", 3)];
+			other = [choice("n2", "SECOND ASK?", 2)];
+			await rig.poll();
+			clock.now += 3000;
+			await rig.poll();
+			expect(rig.text()).toContain(
+				"── question 1 of 2 · TMUX ORCHESTRATION · focused · new question from SPRILICIM (mini) ──",
+			);
+			await rig.input("\x1b[B");
+			await rig.input("\r");
+			own = [];
+			await rig.poll();
+			// The answer was a key: the second waits, marked, until input is quiet again.
+			expect(rig.text()).toContain("── new question · SPRILICIM (mini) · ↓ or F2 to answer ──");
+			expect(rig.text()).not.toContain(IN_CARD);
+			clock.now += 3000;
+			await rig.poll();
+			expect(rig.text()).toContain("── question · SPRILICIM (mini) · focused ──");
+			// Enter alone right after a switch is the composer's; a second later it answers.
+			clock.now += 1000;
+			await rig.input("\r");
+			expect(answers(answer.mock.calls)).toEqual([
+				["local/hq", "n", ["Two"]],
+				["mini/other", "n2", ["One"]],
+			]);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("marks a question that arrives while the composer has text or a popup, and it takes the keyboard once the composer is empty and quiet", async () => {
+		let requests: CentralRequest[] = [];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const prompt = vi.fn(async () => {});
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", requests })], errors: [] }),
+			answer,
+			prompt,
+			restart,
+		});
+		try {
+			await rig.input("hello");
+			requests = [choice("n", "NEW ASK?")];
+			await rig.poll();
+			clock.now += 10_000;
+			await rig.poll();
+			let text = rig.text();
+			expect(text).toContain("── new question · TMUX ORCHESTRATION · F2 to answer ──");
+			expect(text).toContain("new question: F2 to answer · ");
+			expect(text).not.toContain(IN_CARD);
+			const marked = theme.bold(theme.fg("warning", "\0")).split("\0")[0]!;
+			expect(rig.raw()).toContain(`${marked}── new question · TMUX ORCHESTRATION · F2 to answer ──`);
+			// The slash popup is the composer's too.
+			for (let index = 0; index < 5; index++) await rig.input("\x7f");
+			await rig.input("/");
+			expect(rig.text()).toContain("local · task board URL");
+			clock.now += 10_000;
+			await rig.poll();
+			expect(rig.text()).not.toContain(IN_CARD);
+			await rig.input("\x7f");
+			clock.now += 2999;
+			await rig.poll();
+			text = rig.text();
+			expect(text).toContain("── new question · TMUX ORCHESTRATION · ↓ or F2 to answer ──");
+			expect(text).not.toContain(IN_CARD);
+			clock.now += 1;
+			await rig.poll();
+			expect(rig.text()).toContain("── question · TMUX ORCHESTRATION · focused ──");
+			clock.now += 1000;
+			await rig.input("\r");
+			expect(prompt).not.toHaveBeenCalled();
+			expect(answers(answer.mock.calls)).toEqual([["local/hq", "n", ["One"]]]);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("never lets a key typed as it takes the keyboard land in the card", async () => {
+		const requests: CentralRequest[] = [choice("n", "NEW ASK?")];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const prompt = vi.fn(async (..._args: Parameters<NonNullable<CentralTuiHost["prompt"]>>) => {});
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", requests })], errors: [] }),
+			answer,
+			prompt,
+			restart,
+		});
+		try {
+			// Quiet is measured from the last key at the moment of the switch.
+			clock.now += 2000;
+			await rig.input("\x7f");
+			clock.now += 2999;
+			await rig.poll();
+			expect(rig.text()).not.toContain(IN_CARD);
+			clock.now += 1;
+			await rig.poll();
+			expect(rig.text()).toContain(IN_CARD);
+			// Typing that began as it switched goes to the composer, with the keyboard.
+			await rig.input("h");
+			let text = rig.text();
+			expect(text).not.toContain(IN_CARD);
+			expect(text).toContain("── new question · TMUX ORCHESTRATION · F2 to answer ──");
+			await rig.input("i");
+			await rig.input("\r");
+			expect(prompt.mock.calls.map(call => call[3])).toEqual([`${PREFIX}hi`]);
+			// A paste and Enter right after a switch are the composer's as well.
+			clock.now += 3000;
+			await rig.poll();
+			expect(rig.text()).toContain(IN_CARD);
+			await rig.input("\x1b[200~2\x1b[201~");
+			expect(rig.text()).not.toContain(IN_CARD);
+			await rig.input("\x7f");
+			clock.now += 3000;
+			await rig.poll();
+			expect(rig.text()).toContain(IN_CARD);
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+			text = rig.text();
+			expect(text).not.toContain(IN_CARD);
+			expect(text).toContain("── new question · TMUX ORCHESTRATION · ↓ or F2 to answer ──");
+			// After the window, keys are the card's.
+			clock.now += 3000;
+			await rig.poll();
+			clock.now += 1000;
+			await rig.input("\x1b[B");
+			await rig.input("\r");
+			expect(answers(answer.mock.calls)).toEqual([["local/hq", "n", ["Two"]]]);
+			expect(prompt).toHaveBeenCalledTimes(1);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("never replaces a card the keyboard is in or an answer was started on", async () => {
+		let own: CentralRequest[] = [];
+		let other: CentralRequest[] = [];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({
+				chats: [chat({ id: "local/hq", requests: own }), otherAsk({ requests: other })],
+				errors: [],
+			}),
+			answer,
+			restart,
+		});
+		try {
+			own = [choice("a", "OWN ASK?")];
+			await rig.poll();
+			clock.now += 3000;
+			await rig.poll();
+			expect(rig.text()).toContain("── question · TMUX ORCHESTRATION · focused ──");
+			// Keyboard in the untouched card: the new one waits, named in the header.
+			other = [choice("b", "OTHER NEW ASK?", 9)];
+			await rig.poll();
+			clock.now += 10_000;
+			await rig.poll();
+			expect(rig.text()).toContain(
+				"── question 1 of 2 · TMUX ORCHESTRATION · focused · new question from SPRILICIM (mini) ──",
+			);
+			// An answer started, then back to the composer: still not replaced.
+			await rig.input("\x1b[B");
+			await rig.input("\x1b");
+			clock.now += 10_000;
+			await rig.poll();
+			let text = rig.text();
+			expect(text).toContain("OWN ASK?");
+			expect(text).not.toContain("OTHER NEW ASK?");
+			expect(text).not.toContain(IN_CARD);
+			await rig.input("\x1bOQ");
+			await rig.input("\r");
+			own = [];
+			await rig.poll();
+			clock.now += 3000;
+			await rig.poll();
+			text = rig.text();
+			expect(text).toContain("OTHER NEW ASK?");
+			expect(text).toContain(IN_CARD);
+			clock.now += 1000;
+			await rig.input("\r");
+			expect(answers(answer.mock.calls)).toEqual([
+				["local/hq", "a", ["Two"]],
+				["mini/other", "b", ["One"]],
+			]);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("shows a new question, marked, in place of an untouched card while the composer has text", async () => {
+		let other: CentralRequest[] = [];
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({
+				chats: [chat({ id: "local/hq", requests: [choice("o", "OLD ASK?", 5)] }), otherAsk({ requests: other })],
+				errors: [],
+			}),
+			restart,
+		});
+		try {
+			await rig.input("\x1bOQ");
+			await rig.input("\x1b");
+			await rig.input("draft");
+			other = [choice("n", "NEW ASK?", 9)];
+			await rig.poll();
+			clock.now += 10_000;
+			await rig.poll();
+			const text = rig.text();
+			expect(text).toContain("── new question 2 of 2 · SPRILICIM (mini) · F2 to answer ──");
+			expect(text).toContain("NEW ASK?");
+			expect(text).not.toContain("OLD ASK?");
+			expect(text).not.toContain(IN_CARD);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("scrolls a card that was scrolled away back to its control when it takes the keyboard", async () => {
+		let requests: CentralRequest[] = [];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", requests })], errors: [] }),
+			answer,
+			restart,
+			height: 24,
+		});
+		try {
+			await rig.input("x");
+			const options = Array.from({ length: 20 }, (_, index) => `Option ${index}`);
+			const title = ["PICK ONE", ...Array.from({ length: 12 }, (_, index) => `Context line ${index}`)].join("\n");
+			requests = [{ id: "s", createdAt: 1, kind: "select", title, options }];
+			await rig.poll();
+			const header = rig
+				.text()
+				.split("\n")
+				.findIndex(line => line.includes("── new question"));
+			expect(header).toBeGreaterThan(0);
+			for (let index = 0; index < 4; index++) await rig.input(`\x1b[<64;5;${header + 3}M`);
+			expect(rig.text()).toContain("PICK ONE");
+			expect(rig.text()).not.toContain("Type to search");
+			await rig.input("\x7f");
+			clock.now += 3000;
+			await rig.poll();
+			expect(rig.text()).toContain(IN_CARD);
+			expect(rig.text()).toContain("❯ Option 0");
+			clock.now += 1000;
+			await rig.input("\r");
+			expect(answers(answer.mock.calls)).toEqual([["local/hq", "s", "Option 0"]]);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("does not give a not-responding chat's question the keyboard until it responds", async () => {
+		let unresponsive: string | undefined = "host_timeout";
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq" }), otherAsk({ unresponsive })], errors: [] }),
+			answer,
+			restart,
+		});
+		try {
+			clock.now += 10_000;
+			await rig.poll();
+			expect(rig.text()).toContain("── new question · SPRILICIM (mini) · not responding ──");
+			expect(rig.text()).not.toContain(IN_CARD);
+			unresponsive = undefined;
+			await rig.poll();
+			expect(rig.text()).toContain("── question · SPRILICIM (mini) · focused ──");
+			clock.now += 1000;
+			await rig.input("\r");
+			expect(answers(answer.mock.calls)).toEqual([["mini/other", "ask9", ["One"]]]);
 		} finally {
 			rig.close();
 		}

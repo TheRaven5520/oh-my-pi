@@ -1,7 +1,7 @@
 import { TUI, CURSOR_MARKER, type Component } from "../../tui";
 import { ScrollView } from "../../components/scroll-view";
 import { CustomEditor } from "../../prompt/custom-editor";
-import { matchesKey } from "../../keys";
+import { decodePrintableKey, matchesKey } from "../../keys";
 import { getKeybindings } from "../../keybindings";
 import { getDefaultPasteImageKeys } from "../../app-keybindings";
 import { AskDialogComponent, type AskDialogPrompt, type AskDialogPromptValue } from "../../overlays/ask-dialog";
@@ -64,6 +64,19 @@ const FOCUS_NOTICE_LIMIT = 200;
  * closed, or after this long unviewed; the restart then drops it.
  */
 const FOCUS_KEPT_DRAFT_MS = 30 * 60_000;
+/**
+ * Focus: a question that arrived takes the keyboard by itself only after input
+ * (any key or click) has been quiet this long, with the composer empty and no
+ * card in use; see {@link CentralComponent#autoFocus}.
+ */
+const FOCUS_AUTO_IDLE_MS = 3000;
+/**
+ * After a question took the keyboard by itself, text, a paste, Enter or
+ * Backspace typed this soon, before any other key reached the card, was meant
+ * for the composer (typing began as it switched): it goes there, the keyboard
+ * with it, and the question is marked new again.
+ */
+const FOCUS_AUTO_GRACE_MS = 1000;
 
 interface CentralForm {
 	component: Component;
@@ -78,6 +91,11 @@ interface CentralForm {
 	touched: boolean;
 	details?: boolean;
 	error?: string;
+}
+
+/** An answer was started on the card (moved, typed, sending or sent, or a sub-prompt open): it must not be swapped away. */
+function formInUse(form: CentralForm | undefined): boolean {
+	return form !== undefined && (form.touched || form.sending || form.answer !== undefined || !!form.prompt);
 }
 
 interface CentralDraft {
@@ -146,6 +164,18 @@ export class CentralComponent implements Component {
 	#focusEntryKey: string | undefined;
 	/** Chosen with Tab/Shift+Tab: kept until it ends, even over the focused chat's own questions. */
 	#focusEntryManual = false;
+	/**
+	 * Focus: open questions that have not had the keyboard yet, by queue key, in
+	 * arrival order. Shown marked `new question`; {@link #autoFocus} moves the
+	 * keyboard into the first whose chat responds once nothing typed can land in it.
+	 */
+	#focusNew: string[] = [];
+	/** Keys of the open questions already seen, so each arrival counts as new once. */
+	#focusSeen = new Set<string>();
+	/** When a question last took the keyboard by itself, until the next key; see {@link FOCUS_AUTO_GRACE_MS}. */
+	#autoFocusAt: number | undefined;
+	/** Scroll the shown card's control into view at the next render (after an automatic switch). */
+	#revealCard = false;
 	focused = false;
 	#selectedChatId: string | undefined;
 	#manualSelection = false;
@@ -230,7 +260,9 @@ export class CentralComponent implements Component {
 	) {
 		this.#lastInputAt = this.#now();
 		// Focus is a typing surface: a question that appears mid-message must not
-		// capture keystrokes meant for the composer. F2 or a click selects it.
+		// capture keystrokes meant for the composer. It takes the keyboard by itself
+		// only when nothing typed can land in it ({@link #autoFocus}); F2, an arrow
+		// on the empty composer, or a click select it sooner.
 		this.#inputFocus = focus !== undefined;
 	}
 
@@ -249,10 +281,7 @@ export class CentralComponent implements Component {
 		if (!this.restart || this.#opening) return false;
 		if (this.#now() - this.#lastInputAt < (this.restart.quietMs ?? 60_000)) return false;
 		if (this.#retired?.draft && this.#retiredHoldsRestart()) return false;
-		for (const entry of this.#queue.entries) {
-			const form = entry.draft;
-			if (form && (form.touched || form.sending || form.answer !== undefined || form.prompt)) return false;
-		}
+		for (const entry of this.#queue.entries) if (formInUse(entry.draft)) return false;
 		for (const draft of this.#drafts.values()) {
 			if (draft.sending || draft.pending) return false;
 			if (draft.input.hasDraftContent()) return false;
@@ -419,7 +448,57 @@ export class CentralComponent implements Component {
 		// Every listed chat's questions, on every host; each is answered in its own chat.
 		this.#retire(this.#queue.update(snapshot.chats));
 		this.#resolveFocus(snapshot);
+		this.#trackNewQuestions();
 		this.#syncFocusEntry();
+		this.#autoFocus();
+	}
+
+	/**
+	 * Every open question not seen before is new, in focus order (two arriving in
+	 * one poll: the focused chat's first). A question stops being new once the
+	 * keyboard has been in its card or an answer to it was started.
+	 */
+	#trackNewQuestions(): void {
+		const entries = this.#focusEntries();
+		const open = new Set(entries.map(entry => entry.key));
+		for (const key of this.#focusSeen) if (!open.has(key)) this.#focusSeen.delete(key);
+		this.#focusNew = this.#focusNew.filter(key => open.has(key));
+		for (const entry of entries) {
+			if (this.#focusSeen.has(entry.key)) continue;
+			this.#focusSeen.add(entry.key);
+			this.#focusNew.push(entry.key);
+		}
+		const started = new Set(entries.filter(entry => formInUse(entry.draft)).map(entry => entry.key));
+		if (!this.#inputFocus && this.#focusEntryKey !== undefined) started.add(this.#focusEntryKey);
+		this.#focusNew = this.#focusNew.filter(key => !started.has(key));
+	}
+
+	/**
+	 * Move the keyboard into the first new question whose chat responds, scrolled
+	 * into view, once nothing typed can land in it: the keyboard is in the composer,
+	 * the composer is empty (no completion popup), no key or click for
+	 * {@link FOCUS_AUTO_IDLE_MS}, no drag under way, and the shown card has no
+	 * answer started. It replaces the shown card (an untouched one stays in the
+	 * queue for `Tab`) and closes the F8 view. A card in use is never replaced;
+	 * until then the new question stays marked and this runs again each poll.
+	 * Keys right after the switch are guarded in {@link handleInput}.
+	 */
+	#autoFocus(): void {
+		if (!this.focus || !this.#inputFocus || this.#press || this.#selection) return;
+		if (this.#now() - this.#lastInputAt < FOCUS_AUTO_IDLE_MS) return;
+		const composer = this.#drafts.get(FOCUS_DRAFT_KEY)?.input;
+		if (composer?.hasDraftContent() || composer?.isShowingAutocomplete()) return;
+		const entries = this.#focusEntries();
+		if (formInUse(entries.find(entry => entry.key === this.#focusEntryKey)?.draft)) return;
+		const next = entries.find(entry => this.#focusNew.includes(entry.key) && !this.#focusUnresponsive(entry.chat));
+		if (!next) return;
+		this.#focusNew = this.#focusNew.filter(key => key !== next.key);
+		this.#focusEntryKey = next.key;
+		this.#focusEntryManual = true;
+		this.#showRetired = false;
+		this.#inputFocus = false;
+		this.#autoFocusAt = this.#now();
+		this.#revealCard = true;
 	}
 
 	#resolveFocus(snapshot: CentralSnapshot): void {
@@ -472,24 +551,23 @@ export class CentralComponent implements Component {
 	/**
 	 * After a poll: the card stays while it is in use (keyboard in it, an answer
 	 * started, or chosen with Tab), so a poll never swaps the question under a key;
-	 * otherwise the first in order shows. When the shown card's question ends, keys
-	 * go back to the composer, never to the card that replaces it.
+	 * otherwise the first new question shows (marked; one whose chat responds
+	 * first), else the first in order. When the shown card's question ends, keys go
+	 * back to the composer, never to the card that replaces it.
 	 */
 	#syncFocusEntry(): void {
 		const entries = this.#focusEntries();
+		const fresh = entries.filter(entry => this.#focusNew.includes(entry.key));
+		const preferred = (fresh.find(entry => !this.#focusUnresponsive(entry.chat)) ?? fresh[0] ?? entries[0])?.key;
 		const current = entries.find(entry => entry.key === this.#focusEntryKey);
 		if (!current) {
 			if (this.#focusEntryKey !== undefined) this.#inputFocus = true;
 			this.#focusEntryManual = false;
-			this.#focusEntryKey = entries[0]?.key;
+			this.#focusEntryKey = preferred;
 			return;
 		}
-		const form = current.draft;
-		const inUse =
-			this.#focusEntryManual ||
-			!this.#inputFocus ||
-			(form !== undefined && (form.touched || form.sending || form.answer !== undefined || !!form.prompt));
-		if (!inUse) this.#focusEntryKey = entries[0]?.key;
+		const inUse = this.#focusEntryManual || !this.#inputFocus || formInUse(current.draft);
+		if (!inUse) this.#focusEntryKey = preferred;
 	}
 
 	/** Tab/Shift+Tab in a focused question card: the next or previous open question, keyboard staying in the card. */
@@ -1222,6 +1300,15 @@ export class CentralComponent implements Component {
 	}
 
 	handleInput(data: string): void {
+		this.#routeInput(data);
+		// A card the keyboard went into (arrow, F2, click, Tab or by itself) is no longer new.
+		if (this.focus && !this.#inputFocus && !this.#showRetired) {
+			const shown = this.#focusEntry()?.key;
+			this.#focusNew = this.#focusNew.filter(key => key !== shown);
+		}
+	}
+
+	#routeInput(data: string): void {
 		this.#lastInputAt = this.#now();
 		if (
 			data.startsWith("\x1b[<") &&
@@ -1248,6 +1335,26 @@ export class CentralComponent implements Component {
 		if (this.#selection || this.#press) {
 			this.#clearSelection();
 			this.ui.requestRender();
+		}
+		// Focus: the first key after a question took the keyboard by itself. Text, a
+		// paste, Enter or Backspace within FOCUS_AUTO_GRACE_MS was typed for the
+		// composer as the switch happened, so it goes there with the keyboard, and
+		// the question is marked new again (it retakes the keyboard once input is
+		// quiet). Any other key, or one after the window, belongs to the card.
+		if (this.#autoFocusAt !== undefined) {
+			const switchedAt = this.#autoFocusAt;
+			this.#autoFocusAt = undefined;
+			const shown = this.#inputFocus || this.#showRetired ? undefined : this.#focusEntry();
+			const composerKey =
+				matchesKey(data, "enter") ||
+				matchesKey(data, "backspace") ||
+				data.startsWith("\x1b[200~") ||
+				decodePrintableKey(data) !== undefined ||
+				(!data.startsWith("\x1b") && [...data].every(char => char >= " " && char !== "\x7f"));
+			if (shown && !formInUse(shown.draft) && this.#now() - switchedAt < FOCUS_AUTO_GRACE_MS && composerKey) {
+				this.#inputFocus = true;
+				this.#focusNew = [shown.key, ...this.#focusNew.filter(key => key !== shown.key)];
+			}
 		}
 		if (matchesKey(data, "ctrl+c")) {
 			this.#finished.resolve();
@@ -1660,14 +1767,21 @@ export class CentralComponent implements Component {
 				: (draft?.error ?? this.#promptUnavailable());
 		const canSend = this.#workspace?.canPrompt && this.host.prompt;
 		const copyStatus = this.#copyStatus && this.#copyStatus.until > this.#now() ? this.#copyStatus : undefined;
+		// Focus: questions that have not had the keyboard yet are marked new until they take it.
+		const freshEntries = focusEntries.filter(other => this.#focusNew.includes(other.key));
+		const shownNew = !!entry && inputFocused && freshEntries.includes(entry);
+		const otherNew = freshEntries.filter(other => other !== entry);
+		const answerKeys = draft?.input.hasDraftContent() ? "F2" : "↓ or F2";
 		const focusQuestionHint = this.#showRetired
-			? "F8/Esc back · F9 discard · "
+			? `${this.#focusNew.length ? "new question waiting · " : ""}F8/Esc back · F9 discard · `
 			: !form
 				? ""
 				: inputFocused
-					? draft?.input.hasDraftContent() || cardUnresponsive
-						? "F2 question · "
-						: "↑/↓ question · "
+					? shownNew && !cardUnresponsive
+						? `new question: ${answerKeys} to answer · `
+						: draft?.input.hasDraftContent() || cardUnresponsive
+							? "F2 question · "
+							: "↑/↓ question · "
 					: `${cardUnresponsive ? "not responding" : "Enter answer"} · Esc back to input · ${focusEntries.length > 1 ? "Tab/Shift+Tab next question · " : ""}`;
 		const hint = focus
 			? `${focusQuestionHint}${inputFocused ? (canSend ? "Enter send (focus) · Shift+Enter newline" : "Send unavailable") : "←/→ questions"} · / commands · /help · drag to copy · Ctrl+X copy reply · Shift+↑/↓ scroll · Ctrl+O open · Ctrl+C close`
@@ -1705,6 +1819,14 @@ export class CentralComponent implements Component {
 		view.setLines(questionBody);
 		const requiresControlMarker =
 			!!form && form.answer === undefined && (form.prompt !== undefined || entry?.request.kind !== "ask");
+		// A question that just took the keyboard by itself: show its control (the
+		// cursor row, or an ask card's first row), scrolling as little as possible.
+		if (this.#revealCard && form && questionHeight > 0) {
+			this.#revealCard = false;
+			const marker = requiresControlMarker ? questionBody.findIndex(line => line.includes(CURSOR_MARKER)) : -1;
+			const row = marker >= 0 ? marker : formStart;
+			view.setScrollOffset(row < questionHeight ? 0 : marker >= 0 ? row - questionHeight + 1 : row);
+		}
 		const visibleQuestionRows = questionBody.slice(view.getScrollOffset(), view.getScrollOffset() + questionHeight);
 		this.#questionVisibleFor =
 			questionHeight > 0 &&
@@ -1718,13 +1840,20 @@ export class CentralComponent implements Component {
 			? `${inputFocused ? "question" : "question focused"}${this.#retired ? " · question ended elsewhere; draft retained" : ""}`
 			: this.#showRetired
 				? `kept draft · ${entry ? this.#chatLabel(entry.chat) : "its"} question ended elsewhere · not sent · F8 back · F9 discard`
-				: `question${focusEntries.length > 1 ? ` ${focusIndex + 1} of ${focusEntries.length}` : ""}${entry ? ` · ${this.#chatLabel(entry.chat)}` : ""}${cardUnresponsive ? " · not responding" : ""}${inputFocused ? "" : " · focused"}`;
+				: `${shownNew ? "new question" : "question"}${focusEntries.length > 1 ? ` ${focusIndex + 1} of ${focusEntries.length}` : ""}${entry ? ` · ${this.#chatLabel(entry.chat)}` : ""}${cardUnresponsive ? " · not responding" : ""}${inputFocused ? "" : " · focused"}${shownNew && !cardUnresponsive ? ` · ${answerKeys} to answer` : ""}${otherNew.length ? ` · new question from ${this.#chatLabel(otherNew[0]!.chat)}${otherNew.length > 1 ? ` +${otherNew.length - 1}` : ""}` : ""}`;
+		const markNew = shownNew || otherNew.length > 0 || (!!focus && this.#showRetired && this.#focusNew.length > 0);
 		const headerBlock = headerRows
 			? [truncateToWidth(theme.fg("muted", heading), mainWidth), truncateToWidth(identity, mainWidth)]
 			: [];
 		const transcriptBlock = this.#transcriptView.render(mainWidth).slice(0, transcriptHeight);
+		const questionHeaderLabel = `── ${questionLabel} ──`;
 		const questionHeaderBlock = questionHeaderRows
-			? [truncateToWidth(theme.fg("dim", `── ${questionLabel} ──`), mainWidth)]
+			? [
+					truncateToWidth(
+						markNew ? theme.bold(theme.fg("warning", questionHeaderLabel)) : theme.fg("dim", questionHeaderLabel),
+						mainWidth,
+					),
+				]
 			: [];
 		const questionBlock = view.render(mainWidth).slice(0, questionHeight);
 		const full = [...headerBlock, ...transcriptBlock, ...questionHeaderBlock, ...questionBlock, ...footer];
