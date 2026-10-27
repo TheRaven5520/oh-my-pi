@@ -717,7 +717,13 @@ describe("SpriliCred login", () => {
 			}
 			if (!/^https:\/\/sprilicred\.test\/v1\/models$/.test(String(input))) return response;
 			const { data } = (await response.json()) as { data: unknown[] };
-			return Response.json({ data: [...data, { id: "gpt-7-nova", context_window: 272000 }] });
+			return Response.json({
+				data: [
+					...data,
+					{ id: "gpt-7-nova", context_window: 272000 },
+					{ id: "gpt-6.1-terra", context_window: 500000 },
+				],
+			});
 		}) as typeof fetch;
 		const paths = { home: root, agentDir, tokenPath };
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
@@ -742,6 +748,7 @@ describe("SpriliCred login", () => {
 			first.providers["sprilicred-openai"].models.map((model: { id: string }) => [model.id, model]),
 		);
 		expect(openai["gpt-6-astra"].compat).toEqual({ reasoningDisableMode: "none-effort" });
+		expect(openai["gpt-6.1-terra"].compat).toEqual({ reasoningDisableMode: "none-effort" });
 		// Never guessed for an id the installer does not know.
 		expect(openai["gpt-7-nova"].compat).toBeUndefined();
 

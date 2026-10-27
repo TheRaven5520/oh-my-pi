@@ -29,7 +29,7 @@ const DEFAULT_MODEL = "claude-sonnet-5-5";
 const SUCCESSORS: Record<string, string> = {
 	"gpt-6-sol": "gpt-6.1-sol",
 	"gpt-5.6-sol": "gpt-6.1-sol",
-	"gpt-5.6-terra": "gpt-6.1-sol",
+	"gpt-5.6-terra": "gpt-6.1-terra",
 	"gpt-5.6-luna": "gpt-6-luna",
 	"claude-sonnet-5": "claude-sonnet-5-5",
 	"claude-haiku-4-5": "claude-haiku-5-5",
@@ -95,6 +95,7 @@ const RETIRED_OPENAI_MODELS: Record<string, true> = { "abliterated-model-large-v
 const NONE_EFFORT_MODELS: Record<string, true> = {
 	"gpt-6-astra": true,
 	"gpt-6.1-sol": true,
+	"gpt-6.1-terra": true,
 	"gpt-6-luna": true,
 	...DEDICATED_MODELS,
 };
