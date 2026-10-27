@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `/model <selector>` now selects the model and optional `:level` through Central's `command` operation and the local composer, using the existing model resolver. Unknown selectors leave model and thinking unchanged; argument-free `/model` still opens the local picker.
 - `omp login sprilicred` recognizes GPT-6.1 Terra's `none` effort and moves remaining GPT-5.6 Terra defaults/roles to it when the server offers it. Existing Sol picks stay unchanged.
 - `omp central --focus`: a newly arrived question (from the focused chat or any other) now takes the keyboard by itself, scrolled into view, so `↓`/digits/`Enter` answer it without clicking the card first. It switches only when nothing typed can land in it: empty composer (no `/` popup), 3 seconds without a key or click, keyboard in the composer, no answer started on the card on screen, and the asking chat responding. Otherwise it is marked (`── new question · CHAT · ↓ or F2 to answer ──`) and takes the keyboard once the composer is empty and quiet. Typing, a paste, `Enter` or `Backspace` in the first second after an automatic switch goes to the composer instead, so no keystroke meant for the composer lands in the card.
 - A chat no longer refreshes itself onto a new build while it has an open question, either one it continued past after the ask timeout (its answer would otherwise be lost, unreported) or one published to Central. The continued-ask notice now says the question stays open only while the chat keeps running and to ask again after a restart.

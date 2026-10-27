@@ -214,6 +214,17 @@ plus every open question from every chat Central lists.
   `command` operation refuses `/commands` with "update OMP on the chat's host"
   and nothing is sent. Uncertain results keep their request ID for `Ctrl+R`.
 
+To switch a chat's model without opening its picker, run `/model provider/model:level`
+(for example, `/model sprilicred-openai/gpt-6-astra:high`). This uses the same
+selector resolution as `--model`, including fuzzy IDs and configured role aliases.
+An unknown selector reports an error without changing the model or thinking level.
+For automation, send a JSON line to `omp central --bridge`, using the target's
+current `chatId` and `sessionId` and a unique request ID:
+
+```json
+{"id":1,"op":"command","chatId":"<chatId>","sessionId":"<sessionId>","requestId":"model-switch-1","text":"/model sprilicred-openai/gpt-6-astra:high"}
+```
+
 | Local command | Effect |
 | --- | --- |
 | `/chats` | every chat on every host, busy/idle, open questions, and chats that are not responding |

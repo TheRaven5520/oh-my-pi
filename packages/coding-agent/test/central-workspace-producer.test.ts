@@ -1,3 +1,4 @@
+import { Effort } from "@oh-my-pi/pi-ai";
 import { afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
@@ -480,6 +481,7 @@ describe("Central slash commands through private IPC and the composer's submit p
 			fileSlashCommands: new Set<string>(),
 			locallySubmittedUserSignatures: new Set<string>(),
 			statusLine: {
+				invalidate() {},
 				renderCentralWorkspace: () => ({ statusLines: ["Source"], usageLines: [] }),
 			},
 			updatePendingMessagesDisplay() {},
@@ -547,6 +549,54 @@ describe("Central slash commands through private IPC and the composer's submit p
 			"Not run: Unknown command /no-such-command in this chat; nothing was run",
 		);
 		expect(f.session.messages).toEqual([]);
+	});
+
+	it("switches model and thinking via a Central command without opening a picker", async () => {
+		const f = await commandFixture();
+		f.editor.setText("local unsent draft");
+		const target = getBundledModel("anthropic", "claude-opus-4-1");
+		if (!target) throw new Error("Expected target model");
+		expect(f.session.model?.id).not.toBe(target.id);
+		f.session.setThinkingLevel(Effort.Low);
+		const reply = await f.sources.command(
+			f.chat.id,
+			f.chat.sessionId,
+			"model-select",
+			`/model ${target.provider}/${target.id}:high`,
+		);
+		expect(reply).toBe(`Model set to ${target.provider}/${target.id}.`);
+		expect(f.session.model?.id).toBe(target.id);
+		expect(f.session.model?.provider).toBe(target.provider);
+		expect(f.session.thinkingLevel).toBe(Effort.High);
+		expect(f.pickers).toEqual([]);
+		expect(f.session.messages).toEqual([]);
+		expect(f.editor.getText()).toBe("local unsent draft");
+	});
+
+	it("reports an unknown model selector without changing model, thinking or draft", async () => {
+		const f = await commandFixture();
+		const model = f.session.model;
+		f.session.setThinkingLevel(Effort.Low);
+		f.editor.setText("local unsent draft");
+		const reply = await f.sources.command(
+			f.chat.id,
+			f.chat.sessionId,
+			"model-unknown",
+			"/model nonexistent-provider/nonexistent-model:high",
+		);
+		expect(reply).toContain("Unknown model: nonexistent-provider/nonexistent-model:high");
+		expect(f.session.model).toBe(model);
+		expect(f.session.thinkingLevel).toBe(Effort.Low);
+		expect(f.pickers).toEqual([]);
+		expect(f.session.messages).toEqual([]);
+		expect(f.editor.getText()).toBe("local unsent draft");
+	});
+
+	it("still opens the model picker for a local argument-free command", async () => {
+		const f = await commandFixture();
+		await f.editor.onSubmit?.("/model");
+		expect(f.pickers).toHaveLength(1);
+		expect(f.pickers[0]!.escapes).toBe(0);
 	});
 
 	it("closes a picker the command opened and leaves the chat window on its editor", async () => {

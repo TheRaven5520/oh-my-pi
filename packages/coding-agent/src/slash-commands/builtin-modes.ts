@@ -33,7 +33,8 @@ import { CLI_THINKING_LEVELS, getConfiguredThinkingLevelMetadata } from "@oh-my-
 import { noThinkingMessage, resolveThinkingArgument } from "./helpers/effort";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
-import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
+import type { ParsedSlashCommand, SlashCommandRuntime, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
+import { reloadTuiPluginState } from "./builtin-marketplace";
 
 import {
 	cfgComputerDisplay,
@@ -72,6 +73,34 @@ function resolveSessionModelSelector(
 		settings,
 		preferences: getModelMatchPreferences(settings),
 	});
+}
+
+async function handleModelCommand(command: ParsedSlashCommand, runtime: SlashCommandRuntime) {
+	if (command.args) {
+		const selector = command.args.trim();
+		const resolved = resolveSessionModelSelector(selector, runtime.session, runtime.settings);
+		const match = resolved.model;
+		if (!match) {
+			return usage(
+				`Unknown model: ${selector}. Use ACP \`session/setModel\` for picker-driven selection or list available models with /model.`,
+				runtime,
+			);
+		}
+		try {
+			await runtime.session.setModel(match);
+			if (resolved.thinkingLevel !== undefined) runtime.session.setThinkingLevel(resolved.thinkingLevel);
+			await runtime.output(`Model set to ${match.provider}/${match.id}.`);
+			await runtime.notifyTitleChanged?.();
+			await runtime.notifyConfigChanged?.();
+			return commandConsumed();
+		} catch (err) {
+			return usage(`Failed to set model: ${errorMessage(err)}`, runtime);
+		}
+	}
+
+	const model = runtime.session.model;
+	await runtime.output(model ? `Current model: ${model.provider}/${model.id}` : "No model is currently selected.");
+	return commandConsumed();
 }
 
 async function runWithDetachedModeDraft(
@@ -479,42 +508,31 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "model",
 		description: "Switch model for this session",
 		acpDescription: "Show current model selection",
+		allowArgs: true,
+		inlineHint: "[model]",
+		acpInputHint: "[model]",
 		getTuiAutocompleteDescription: runtime => {
 			const model = runtime.ctx.viewSession.model;
 			return model ? `Model: ${model.provider}/${model.id}` : "Model: none selected";
 		},
-		handle: async (command, runtime) => {
-			if (command.args) {
-				const selector = command.args.trim();
-				const resolved = resolveSessionModelSelector(selector, runtime.session, runtime.settings);
-				const match = resolved.model;
-				if (!match) {
-					return usage(
-						`Unknown model: ${selector}. Use ACP \`session/setModel\` for picker-driven selection or list available models with /model.`,
-						runtime,
-					);
-				}
-				try {
-					await runtime.session.setModel(match);
-					if (resolved.thinkingLevel !== undefined) runtime.session.setThinkingLevel(resolved.thinkingLevel);
-					await runtime.output(`Model set to ${match.provider}/${match.id}.`);
-					await runtime.notifyTitleChanged?.();
-					await runtime.notifyConfigChanged?.();
-					return commandConsumed();
-				} catch (err) {
-					return usage(`Failed to set model: ${errorMessage(err)}`, runtime);
-				}
-			}
-
-			const model = runtime.session.model;
-			await runtime.output(
-				model ? `Current model: ${model.provider}/${model.id}` : "No model is currently selected.",
-			);
-			return commandConsumed();
-		},
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showModelSelector();
+		handle: handleModelCommand,
+		handleTui: async (command, runtime) => {
 			clearSubmittedText(runtime);
+			const ctx = runtime.ctx;
+			if (!command.args) {
+				ctx.showModelSelector();
+				return;
+			}
+			await handleModelCommand(command, {
+				session: ctx.viewSession,
+				sessionManager: ctx.sessionManager,
+				settings: ctx.settings,
+				cwd: ctx.sessionManager.getCwd(),
+				output: text => ctx.showStatus(text),
+				refreshCommands: () => ctx.refreshSlashCommandState(),
+				reloadPlugins: () => reloadTuiPluginState(ctx),
+			});
+			refreshStatusLine(ctx);
 		},
 	},
 	{
