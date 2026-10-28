@@ -147,8 +147,9 @@ plus every open question from every chat Central lists.
   replaces stays in the queue for `Tab`). It also closes the `F8` view. A
   not-responding chat's question never takes it until the chat responds.
   Until then the question is marked: a highlighted header
-  `── new question · SPRILICIM (mini) · ↓ or F2 to answer ──` (`F2 to answer`
-  while the composer has text), the footer `new question: … to answer`, or,
+  `── new question · SPRILICIM (mini) · Enter or ↓ to answer ──` (`↓ or F2 to
+  answer` for a free-text question, `F2 to answer` while the composer has
+  text), the footer `new question: … to answer`, or,
   on a card in use, `· new question from SPRILICIM (mini)`; in the `F8` view
   the footer says `new question waiting`. Polls run every second, so it takes
   the keyboard within about a second of the composer becoming empty and quiet.
@@ -161,13 +162,19 @@ plus every open question from every chat Central lists.
   and `Tab` in that second are the card's. Several new questions take the
   keyboard one at a time, the focused chat's first, each after an answer and
   3 quiet seconds. With the composer empty, an arrow key also moves into the
-  shown question (and moves its selection); `Enter` then answers. `F2` or a
-  click also selects it, and `Esc` returns to the composer without cancelling;
-  a question the keyboard has been in is no longer new and does not take it
-  again by itself.
+  shown question (and moves its selection); `Enter` then answers. `Enter` on
+  the empty composer also answers a new choice question at once with its
+  highlighted option, without waiting for it to take the keyboard, once its
+  card has been on screen for 1 second and no key came in the second before
+  (so an `Enter` pressed as the card appears, or a second one right after
+  sending a message, is not an answer). A free-text question still needs an
+  arrow, `F2` or a click. `F2` or a click also selects it, and `Esc` returns to
+  the composer without cancelling; a question the keyboard has been in is no
+  longer new and does not take it again by itself.
   From a selected card, `Tab` / `Shift+Tab` show the next or previous open
-  question (in the composer, `Tab` stays completion). `Enter`, `Esc`, `Space`,
-  digits and typing on the composer never touch a question. A poll never swaps
+  question (in the composer, `Tab` stays completion). `Esc`, `Space`, digits
+  and typing on the composer never touch a question, and `Enter` there only
+  answers a new one as above. A poll never swaps
   the card while the keyboard is in it, an answer is started, or it was chosen
   with `Tab`; otherwise the first new question shows, else the first in order.
   After an answer, typing goes back to the composer. A chat that is not

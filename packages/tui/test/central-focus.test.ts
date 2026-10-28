@@ -849,10 +849,16 @@ describe("Central focus questions", () => {
 		}
 	});
 
-	it("never answers or cancels a question from an empty composer with Enter, Esc, Space or a digit", async () => {
+	it("never answers or cancels a question from an empty composer with Esc, Space, a digit, or Enter as it appears", async () => {
 		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
 		const prompt = vi.fn(async () => {});
-		const rig = await setup({ snapshot: () => ({ chats: [askChat()], errors: [] }), answer, prompt });
+		const clock = { now: 1_000_000 };
+		const rig = await setup({
+			snapshot: () => ({ chats: [askChat()], errors: [] }),
+			answer,
+			prompt,
+			restart: { restartReady: () => false, now: () => clock.now },
+		});
 		try {
 			for (const key of ["\r", "\x1b", " ", "2", "1"]) {
 				await rig.input(key);
@@ -866,9 +872,11 @@ describe("Central focus questions", () => {
 			await rig.input("\r");
 			expect(answer).not.toHaveBeenCalled();
 			expect(prompt.mock.calls.map(call => (call as unknown[])[3])).toEqual([`${PREFIX}2 evals`]);
-			// Esc after moving into the question returns to the composer; it does not cancel.
+			// Esc after moving into the question returns to the composer; it does not
+			// cancel, and the question is no longer new, so Enter there stays the composer's.
 			await rig.input("\x1b[B");
 			await rig.input("\x1b");
+			clock.now += 5000;
 			await rig.input("\r");
 			expect(answer).not.toHaveBeenCalled();
 		} finally {
@@ -923,7 +931,7 @@ describe("Central focus questions", () => {
 		});
 		try {
 			const text = rig.text();
-			expect(text).toContain("── new question · SPRILICIM (mini) · ↓ or F2 to answer ──");
+			expect(text).toContain("── new question · SPRILICIM (mini) · Enter or ↓ to answer ──");
 			expect(text).toContain("OTHER ASK?");
 			expect(text).toContain("0 open questions  ·  1 from other chats");
 			await rig.input("\x1b[B");
@@ -961,17 +969,17 @@ describe("Central focus questions", () => {
 		try {
 			let text = rig.text();
 			expect(text).toContain(
-				"── new question 1 of 2 · TMUX ORCHESTRATION · ↓ or F2 to answer · new question from SPRILICIM (mini) ──",
+				"── new question 1 of 2 · TMUX ORCHESTRATION · Enter or ↓ to answer · new question from SPRILICIM (mini) ──",
 			);
 			expect(text).toContain("OWN ASK?");
 			expect(text).not.toContain("OTHER ASK?");
-			// Enter on the empty composer answers nothing; Tab there stays the composer's.
+			// Enter on the empty composer as the card appears answers nothing; Tab there stays the composer's.
 			await rig.input("\r");
 			await rig.input("\t");
 			await rig.input("\x1b");
 			expect(answer).not.toHaveBeenCalled();
 			expect(rig.text()).toContain(
-				"── new question 1 of 2 · TMUX ORCHESTRATION · ↓ or F2 to answer · new question from SPRILICIM (mini) ──",
+				"── new question 1 of 2 · TMUX ORCHESTRATION · Enter or ↓ to answer · new question from SPRILICIM (mini) ──",
 			);
 			await rig.input("\x1bOQ");
 			expect(rig.text()).toContain(
@@ -1221,7 +1229,7 @@ describe("Central focus auto-focus", () => {
 			own = [];
 			await rig.poll();
 			// The answer was a key: the second waits, marked, until input is quiet again.
-			expect(rig.text()).toContain("── new question · SPRILICIM (mini) · ↓ or F2 to answer ──");
+			expect(rig.text()).toContain("── new question · SPRILICIM (mini) · Enter or ↓ to answer ──");
 			expect(rig.text()).not.toContain(IN_CARD);
 			clock.now += 3000;
 			await rig.poll();
@@ -1272,7 +1280,7 @@ describe("Central focus auto-focus", () => {
 			clock.now += 2999;
 			await rig.poll();
 			text = rig.text();
-			expect(text).toContain("── new question · TMUX ORCHESTRATION · ↓ or F2 to answer ──");
+			expect(text).toContain("── new question · TMUX ORCHESTRATION · Enter or ↓ to answer ──");
 			expect(text).not.toContain(IN_CARD);
 			clock.now += 1;
 			await rig.poll();
@@ -1329,7 +1337,7 @@ describe("Central focus auto-focus", () => {
 			expect(answer).not.toHaveBeenCalled();
 			text = rig.text();
 			expect(text).not.toContain(IN_CARD);
-			expect(text).toContain("── new question · TMUX ORCHESTRATION · ↓ or F2 to answer ──");
+			expect(text).toContain("── new question · TMUX ORCHESTRATION · Enter or ↓ to answer ──");
 			// After the window, keys are the card's.
 			clock.now += 3000;
 			await rig.poll();
@@ -1338,6 +1346,64 @@ describe("Central focus auto-focus", () => {
 			await rig.input("\r");
 			expect(answers(answer.mock.calls)).toEqual([["local/hq", "n", ["Two"]]]);
 			expect(prompt).toHaveBeenCalledTimes(1);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("answers a new question's highlighted choice with Enter on the empty composer once it has shown 1 s and no key came 1 s before", async () => {
+		let requests: CentralRequest[] = [];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const prompt = vi.fn(async () => {});
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", requests })], errors: [] }),
+			answer,
+			prompt,
+			restart,
+		});
+		try {
+			// The question arrives 1.5 s after the last key: too soon to take the keyboard by itself.
+			clock.now += 1500;
+			requests = [choice("n", "NEW ASK?")];
+			await rig.poll();
+			expect(rig.text()).toContain("── new question · TMUX ORCHESTRATION · Enter or ↓ to answer ──");
+			expect(rig.text()).not.toContain(IN_CARD);
+			// Enter as the card appears is not an answer, however quiet the keys were.
+			clock.now += 500;
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+			// Nor is Enter right after another key (a message just sent, a double press).
+			clock.now += 999;
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+			// Shown long enough and quiet: Enter answers with the highlighted choice.
+			clock.now += 1000;
+			await rig.input("\r");
+			expect(prompt).not.toHaveBeenCalled();
+			expect(answers(answer.mock.calls)).toEqual([["local/hq", "n", ["One"]]]);
+		} finally {
+			rig.close();
+		}
+	});
+
+	it("keeps Enter for the composer on a new free-text question", async () => {
+		let requests: CentralRequest[] = [];
+		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});
+		const { clock, restart } = quietClock();
+		const rig = await setup({
+			snapshot: () => ({ chats: [chat({ id: "local/hq", requests })], errors: [] }),
+			answer,
+			restart,
+		});
+		try {
+			requests = [{ id: "e", createdAt: 1, kind: "editor", title: "WHY THIS ONE?" }];
+			await rig.poll();
+			expect(rig.text()).toContain("── new question · TMUX ORCHESTRATION · ↓ or F2 to answer ──");
+			clock.now += 2000;
+			await rig.input("\r");
+			expect(answer).not.toHaveBeenCalled();
+			expect(rig.text()).not.toContain(IN_CARD);
 		} finally {
 			rig.close();
 		}

@@ -77,6 +77,13 @@ const FOCUS_AUTO_IDLE_MS = 3000;
  * with it, and the question is marked new again.
  */
 const FOCUS_AUTO_GRACE_MS = 1000;
+/**
+ * Enter on the empty composer answers the new question on screen only once its
+ * card has shown this long and no other key came this soon before it, so an
+ * Enter pressed as the card appeared, or a second one right after sending a
+ * message, never answers a question unseen.
+ */
+const FOCUS_ENTER_SETTLE_MS = 1000;
 
 interface CentralForm {
 	component: Component;
@@ -190,6 +197,9 @@ export class CentralComponent implements Component {
 	#questionTop = 0;
 	#questionBudget = 12;
 	#questionVisibleFor: CentralQueueEntry<CentralForm> | undefined;
+	/** Focus: the question card on screen as last drawn, and since when (see {@link FOCUS_ENTER_SETTLE_MS}). */
+	#shownCardKey: string | undefined;
+	#shownCardAt = 0;
 	#transcriptView = new ScrollView([], { height: 1, followTail: true, scrollbar: "auto" });
 	readonly #drafts = new Map<string, CentralDraft>();
 	#inputFocus = false;
@@ -1309,6 +1319,7 @@ export class CentralComponent implements Component {
 	}
 
 	#routeInput(data: string): void {
+		const previousInputAt = this.#lastInputAt;
 		this.#lastInputAt = this.#now();
 		if (
 			data.startsWith("\x1b[<") &&
@@ -1341,6 +1352,7 @@ export class CentralComponent implements Component {
 		// composer as the switch happened, so it goes there with the keyboard, and
 		// the question is marked new again (it retakes the keyboard once input is
 		// quiet). Any other key, or one after the window, belongs to the card.
+		let sentBack = false;
 		if (this.#autoFocusAt !== undefined) {
 			const switchedAt = this.#autoFocusAt;
 			this.#autoFocusAt = undefined;
@@ -1354,6 +1366,7 @@ export class CentralComponent implements Component {
 			if (shown && !formInUse(shown.draft) && this.#now() - switchedAt < FOCUS_AUTO_GRACE_MS && composerKey) {
 				this.#inputFocus = true;
 				this.#focusNew = [shown.key, ...this.#focusNew.filter(key => key !== shown.key)];
+				sentBack = true;
 			}
 		}
 		if (matchesKey(data, "ctrl+c")) {
@@ -1446,9 +1459,9 @@ export class CentralComponent implements Component {
 			return;
 		}
 		// Focus: an arrow key on an empty composer moves keyboard focus into the
-		// open question (and moves its selection); Enter then answers it. Enter,
-		// Esc, Space, digits and typing on the composer never touch a question,
-		// since the chat treats any answer as Shreyan's decision.
+		// open question (and moves its selection); Enter then answers it. Esc,
+		// Space, digits and typing on the composer never touch a question, since
+		// the chat treats any answer as Shreyan's decision; Enter only as below.
 		if (
 			this.focus &&
 			this.#inputFocus &&
@@ -1465,6 +1478,38 @@ export class CentralComponent implements Component {
 			form.component.handleInput?.(data);
 			this.ui.requestRender();
 			return;
+		}
+		// Focus: Enter on the empty composer answers the new question on screen with
+		// its highlighted choice, as Enter in the card would, without first moving
+		// in: only an ask or select card, shown for FOCUS_ENTER_SETTLE_MS with no key
+		// that soon before, nothing pending in the composer, and not a key the race
+		// guard above just sent back. A free-text card still needs an arrow or F2.
+		if (
+			this.focus &&
+			this.#inputFocus &&
+			!sentBack &&
+			form &&
+			entry!.request.kind !== "editor" &&
+			!form.prompt &&
+			form.answer === undefined &&
+			!form.sending &&
+			matchesKey(data, "enter") &&
+			data !== "\n" &&
+			this.#focusNew.includes(entry!.key) &&
+			this.#questionVisibleFor === entry &&
+			this.#shownCardKey === entry!.key &&
+			this.#now() - this.#shownCardAt >= FOCUS_ENTER_SETTLE_MS &&
+			this.#now() - previousInputAt >= FOCUS_ENTER_SETTLE_MS &&
+			!this.#focusUnresponsive(entry!.chat)
+		) {
+			const composer = this.#draft(FOCUS_DRAFT_KEY);
+			if (!composer.input.hasDraftContent() && !composer.pending && !composer.sending) {
+				this.#inputFocus = false;
+				form.touched = true;
+				form.component.handleInput?.(data);
+				this.ui.requestRender();
+				return;
+			}
 		}
 		// Esc in a focused question returns to the composer instead of cancelling it.
 		if (this.focus && !this.#inputFocus && form && !form.prompt && matchesKey(data, "escape")) {
@@ -1771,7 +1816,11 @@ export class CentralComponent implements Component {
 		const freshEntries = focusEntries.filter(other => this.#focusNew.includes(other.key));
 		const shownNew = !!entry && inputFocused && freshEntries.includes(entry);
 		const otherNew = freshEntries.filter(other => other !== entry);
-		const answerKeys = draft?.input.hasDraftContent() ? "F2" : "↓ or F2";
+		const answerKeys = draft?.input.hasDraftContent()
+			? "F2"
+			: entry?.request.kind === "editor"
+				? "↓ or F2"
+				: "Enter or ↓";
 		const focusQuestionHint = this.#showRetired
 			? `${this.#focusNew.length ? "new question waiting · " : ""}F8/Esc back · F9 discard · `
 			: !form
@@ -1835,6 +1884,11 @@ export class CentralComponent implements Component {
 				: formStart < view.getScrollOffset() + questionHeight)
 				? entry
 				: undefined;
+		const shownCardKey = focus && !this.#showRetired && this.#questionVisibleFor ? entry?.key : undefined;
+		if (shownCardKey !== this.#shownCardKey) {
+			this.#shownCardKey = shownCardKey;
+			this.#shownCardAt = this.#now();
+		}
 		const focusIndex = entry ? focusEntries.indexOf(entry) : -1;
 		const questionLabel = !focus
 			? `${inputFocused ? "question" : "question focused"}${this.#retired ? " · question ended elsewhere; draft retained" : ""}`
