@@ -24,11 +24,16 @@ import { replaceTabs, TERMINAL, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, isRecord, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 
 import type { AsyncJobManager } from "../async";
-import type { ExtensionUISelectItem } from "../extensibility/extensions";
+import type { ExtensionUIContext, ExtensionUISelectItem } from "../extensibility/extensions";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/app-keybindings";
 import { editorKey, editorKeys } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { theme } from "@oh-my-pi/pi-tui/theme";
-import type { ExtensionAskDialogResult } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
+import type {
+	AskDialogDraft,
+	AskDialogDraftState,
+	ExtensionAskDialogQuestion,
+	ExtensionAskDialogResult,
+} from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
 
@@ -540,6 +545,46 @@ type RichAnswer =
 	| { kind: "chat"; toolResult: AgentToolResult<AskToolDetails> }
 	| { kind: "cancelled" };
 
+/** A question still waiting for the user, as a forced age refresh checkpoints it. */
+export interface OpenAsk {
+	/** The asking agent (`ToolSession.getAgentId`); the main chat's own questions are restored. */
+	ownerId: string | undefined;
+	toolCallId: string;
+	questions: AskParams["questions"];
+	/** Set once the agent continued past the question; its answer is due as this background job. */
+	continuation?: AskContinuation;
+	/** Live dialog state, readable while the dialog exists. */
+	draft: AskDialogDraft;
+}
+
+const openAsks = new Set<OpenAsk>();
+
+/** Questions `ownerId` asked that nobody has answered yet, oldest first. */
+export function listOpenAsks(ownerId: string | undefined): OpenAsk[] {
+	return [...openAsks].filter(ask => ask.ownerId === ownerId);
+}
+
+/** The rich dialog's view of the tool's questions. */
+function toDialogQuestions(params: AskParams): ExtensionAskDialogQuestion[] {
+	return params.questions.map(q => ({
+		id: q.id,
+		question: q.question,
+		...(q.header?.trim() ? { header: q.header } : {}),
+		options: q.options.map(option => ({
+			label: option.label,
+			...(option.description?.trim() ? { description: option.description.trim() } : {}),
+			...(option.preview?.trim() ? { preview: option.preview } : {}),
+		})),
+		...(q.multi !== undefined ? { multi: q.multi } : {}),
+		...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
+	}));
+}
+
+/** The background job's label for a question the agent continued past. */
+function lateAnswerJobLabel(params: AskParams): string {
+	return truncateToWidth(`answer to: ${replaceTabs(params.questions[0]!.question).replaceAll("\n", " ")}`, 80);
+}
+
 /** The option the agent should assume while a question is unanswered, if the question named one. */
 function assumedOption(question: AskParams["questions"][number]): string | undefined {
 	const { recommended, options } = question;
@@ -573,7 +618,7 @@ function describeHeldAssumptions(assumptions: readonly AskAssumption[]): string 
 /** Tool result text when the agent continues without an answer. */
 function formatContinuationNotice(continuation: AskContinuation): string {
 	return [
-		`No answer after ${formatDuration(continuation.afterMs)}. The question stays open only while this chat keeps running: the user may answer later and the answer will arrive as background job ${continuation.jobId}, but if the chat restarts or refreshes before then the question closes unanswered and nothing reports it; ask again if you still need the answer after a restart.`,
+		`No answer after ${formatDuration(continuation.afterMs)}. The question stays open, also across automatic age refreshes: the user may answer later and the answer will arrive as background job ${continuation.jobId}. A manual /refresh, a restart or a crash closes it unanswered without reporting it; ask again if you still need the answer after one.`,
 		"Until then:",
 		describeAssumptions(continuation.assumptions),
 		"Keep working on anything that does not depend on this answer and state the assumption you made. If nothing useful can proceed without it, finish what you can and end your turn. Do not wait or poll for this job and do not ask the same question again: the answer is delivered to you on its own.",
@@ -785,8 +830,9 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		askedAt: number;
 		afterMs: number;
 		jobManager: AsyncJobManager;
+		openAsk: OpenAsk;
 	}): Promise<AgentToolResult<AskToolDetails>> {
-		const { params, answered, dialogAbort, yieldController, askedAt, afterMs, jobManager } = state;
+		const { params, answered, dialogAbort, yieldController, askedAt, afterMs, jobManager, openAsk } = state;
 		const assumptions: AskAssumption[] = params.questions.map(q => ({
 			id: q.id,
 			question: q.question,
@@ -796,26 +842,10 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		try {
 			jobId = jobManager.register(
 				"ask",
-				truncateToWidth(`answer to: ${replaceTabs(params.questions[0]!.question).replaceAll("\n", " ")}`, 80),
-				async ({ signal: jobSignal, reportProgress }) => {
-					const closeDialog = () => dialogAbort.abort(jobSignal.reason);
-					jobSignal.addEventListener("abort", closeDialog, { once: true });
-					try {
-						const result = await answered;
-						const answer = await this.#interpretRichAnswer(params, result, jobSignal);
-						const text = formatLateAnswer(params, assumptions, answer, Date.now() - askedAt);
-						if (answer.kind === "answered") {
-							const images = answer.toolResult.content.filter(
-								(part): part is ImageContent => part.type === "image",
-							);
-							await reportProgress(text, { images });
-						}
-						return text;
-					} finally {
-						jobSignal.removeEventListener("abort", closeDialog);
-					}
-				},
-				{ ownerId: this.session.getAgentId?.() ?? undefined },
+				lateAnswerJobLabel(params),
+				this.#lateAnswerJob({ params, assumptions, answered, dialogAbort, askedAt, openAsk }),
+				// Its elapsed time counts from when the question was asked.
+				{ ownerId: this.session.getAgentId?.() ?? undefined, startTime: askedAt },
 			);
 		} catch (error) {
 			// No job slot (limit reached or shutting down): keep waiting inline.
@@ -827,16 +857,136 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				if (answer.kind === "cancelled") throw new ToolAbortError("Ask tool was cancelled by the user");
 				return answer.toolResult;
 			} finally {
+				openAsks.delete(openAsk);
 				dialogAbort.abort();
 			}
 		}
 		// Other prompts (a later question, a permission check) may now go first.
 		yieldController.abort();
 		const continuation: AskContinuation = { jobId, askedAt, afterMs, assumptions };
+		openAsk.continuation = continuation;
 		return {
 			content: [{ type: "text" as const, text: formatContinuationNotice(continuation) }],
 			details: { continued: continuation },
 		};
+	}
+
+	/** The background job that waits for the answer to a question the agent continued past and reports it. */
+	#lateAnswerJob(state: {
+		params: AskParams;
+		assumptions: readonly AskAssumption[];
+		answered: Promise<ExtensionAskDialogResult | undefined>;
+		dialogAbort: AbortController;
+		askedAt: number;
+		openAsk: OpenAsk;
+	}): Parameters<AsyncJobManager["register"]>[2] {
+		const { params, assumptions, answered, dialogAbort, askedAt, openAsk } = state;
+		return async ({ signal: jobSignal, reportProgress }) => {
+			const closeDialog = () => dialogAbort.abort(jobSignal.reason);
+			jobSignal.addEventListener("abort", closeDialog, { once: true });
+			try {
+				const result = await answered;
+				const answer = await this.#interpretRichAnswer(params, result, jobSignal);
+				const text = formatLateAnswer(params, assumptions, answer, Date.now() - askedAt);
+				if (answer.kind === "answered") {
+					const images = answer.toolResult.content.filter((part): part is ImageContent => part.type === "image");
+					await reportProgress(text, { images });
+				}
+				return text;
+			} finally {
+				openAsks.delete(openAsk);
+				jobSignal.removeEventListener("abort", closeDialog);
+			}
+		};
+	}
+
+	/**
+	 * Re-open a question whose turn a forced age refresh aborted, starting from its
+	 * checkpointed answers. No timeout and no continue-after: nothing is running that
+	 * could proceed without it, and an unattended default would be an answer the user
+	 * never gave. Resolves undefined when the user dismisses it; the caller commits a
+	 * result as the original call's answer.
+	 */
+	async reopenInterrupted(
+		toolCallId: string,
+		params: AskParams,
+		ui: ExtensionUIContext,
+		initial: AskDialogDraftState | undefined,
+	): Promise<AgentToolResult<AskToolDetails> | undefined> {
+		if (!ui.askDialog) throw new Error("Restoring a question needs the interactive ask dialog");
+		const openAsk: OpenAsk = {
+			ownerId: this.session.getAgentId?.() ?? undefined,
+			toolCallId,
+			questions: params.questions,
+			draft: { initial },
+		};
+		openAsks.add(openAsk);
+		try {
+			const result = await ui.askDialog(toDialogQuestions(params), { acceptImages: true, askDraft: openAsk.draft });
+			const answer = await this.#interpretRichAnswer(params, result);
+			return answer.kind === "cancelled" ? undefined : answer.toolResult;
+		} finally {
+			openAsks.delete(openAsk);
+		}
+	}
+
+	/**
+	 * Re-open a question the agent continued past, after a forced age refresh, under its
+	 * original background job id so the answer arrives exactly as the continuation notice
+	 * promised. Throws when no job can be registered.
+	 */
+	rearmContinued(
+		toolCallId: string,
+		params: AskParams,
+		continuation: AskContinuation,
+		ui: ExtensionUIContext,
+		initial: AskDialogDraftState | undefined,
+	): void {
+		const jobManager = this.session.asyncJobManager;
+		const askDialog = ui.askDialog;
+		if (!jobManager || !askDialog)
+			throw new Error("Restoring a continued question needs background jobs and the ask dialog");
+		const openAsk: OpenAsk = {
+			ownerId: this.session.getAgentId?.() ?? undefined,
+			toolCallId,
+			questions: params.questions,
+			continuation,
+			draft: { initial },
+		};
+		const dialogAbort = new AbortController();
+		// It had already stepped aside for other prompts before the refresh.
+		const yielded = new AbortController();
+		yielded.abort();
+		const answered = untilAborted(dialogAbort.signal, () =>
+			askDialog(toDialogQuestions(params), {
+				signal: dialogAbort.signal,
+				yieldSignal: yielded.signal,
+				acceptImages: true,
+				askDraft: openAsk.draft,
+			}),
+		);
+		// The rejection of an aborted wait is observed by the job; never leave it unhandled.
+		answered.catch(() => {});
+		openAsks.add(openAsk);
+		try {
+			jobManager.register(
+				"ask",
+				lateAnswerJobLabel(params),
+				this.#lateAnswerJob({
+					params,
+					assumptions: continuation.assumptions,
+					answered,
+					dialogAbort,
+					askedAt: continuation.askedAt,
+					openAsk,
+				}),
+				{ id: continuation.jobId, ownerId: openAsk.ownerId, startTime: continuation.askedAt },
+			);
+		} catch (error) {
+			openAsks.delete(openAsk);
+			dialogAbort.abort();
+			throw error;
+		}
 	}
 
 	/**
@@ -885,7 +1035,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	}
 
 	async execute(
-		_toolCallId: string,
+		toolCallId: string,
 		params: AskParams,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
@@ -1031,29 +1181,24 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				askedAt = Date.now();
 				deadlineTimer = setTimeout(() => deadline.resolve(CONTINUE_WITHOUT_ANSWER), continueAfterMs);
 			};
-			const dialog = richAskDialog(
-				params.questions.map(q => ({
-					id: q.id,
-					question: q.question,
-					...(q.header?.trim() ? { header: q.header } : {}),
-					options: q.options.map(option => ({
-						label: option.label,
-						...(option.description?.trim() ? { description: option.description.trim() } : {}),
-						...(option.preview?.trim() ? { preview: option.preview } : {}),
-					})),
-					...(q.multi !== undefined ? { multi: q.multi } : {}),
-					...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
-				})),
-				{
-					// `ask.continueAfter` replaces the auto-select timeout: the question
-					// must stay answerable instead of closing on the recommended option.
-					timeout: continueAfterMs > 0 ? undefined : (timeout ?? undefined),
-					signal: dialogAbort.signal,
-					yieldSignal: yieldController.signal,
-					onPresented: startDeadline,
-					acceptImages: true,
-				},
-			);
+			// A forced age refresh reads this to checkpoint the question with its unsubmitted answers.
+			const openAsk: OpenAsk = {
+				ownerId: this.session.getAgentId?.() ?? undefined,
+				toolCallId,
+				questions: params.questions,
+				draft: {},
+			};
+			openAsks.add(openAsk);
+			const dialog = richAskDialog(toDialogQuestions(params), {
+				// `ask.continueAfter` replaces the auto-select timeout: the question
+				// must stay answerable instead of closing on the recommended option.
+				timeout: continueAfterMs > 0 ? undefined : (timeout ?? undefined),
+				signal: dialogAbort.signal,
+				yieldSignal: yieldController.signal,
+				onPresented: startDeadline,
+				acceptImages: true,
+				askDraft: openAsk.draft,
+			});
 			if (!extensionUi.timeoutStartsOnPresentation) startDeadline();
 			// Even a surface that ignores `signal` must not hang an aborted call.
 			const answered = untilAborted(dialogAbort.signal, () => dialog);
@@ -1074,6 +1219,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 						askedAt,
 						afterMs: continueAfterMs,
 						jobManager: jobManager!,
+						openAsk,
 					});
 				}
 				const answer = await this.#interpretRichAnswer(params, raced.result, dialogAbort.signal);
@@ -1090,6 +1236,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			} finally {
 				clearTimeout(deadlineTimer);
 				if (!continued) {
+					openAsks.delete(openAsk);
 					signal?.removeEventListener("abort", forwardCallAbort);
 					dialogAbort.abort();
 				}

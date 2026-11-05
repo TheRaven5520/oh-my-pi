@@ -10,6 +10,7 @@ import {
 } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import * as centralBridge from "../../../src/central/bridge";
+import { Settings } from "../../../src/config/settings";
 import type { ExtensionAskDialogQuestion, ExtensionUIContext } from "../../../src/extensibility/extensions";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
@@ -55,6 +56,8 @@ function makeHarness() {
 	const ctx = {
 		// Exercise local dialogs and editor behavior without publishing a Central host.
 		collabGuest: {},
+		// Central publishes each chat's age policy from its settings.
+		settings: Settings.isolated(),
 		editor,
 		ui: {
 			requestRender,

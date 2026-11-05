@@ -15,8 +15,11 @@ import type {
 } from "@oh-my-pi/pi-tui/apps/central/types";
 import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types";
 import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import type { CentralAgeRefreshRequest } from "./age-refresh";
 import {
+	ageRefreshCentralChat,
 	answerCentralQuestion,
+	centralIpcErrorCode,
 	commandCentralChat,
 	getCentralChatTranscript,
 	getCentralChatWorkspace,
@@ -54,7 +57,16 @@ type BridgeRequest =
 	| { op: "workspace"; chatId: string; statusWidth: number; usageWidth: number }
 	| { op: "prompt"; chatId: string; sessionId: string; requestId: string; text: string }
 	| { op: "command"; chatId: string; sessionId: string; requestId: string; text: string }
-	| { op: "answer"; chatId: string; requestId: string; answer: CentralAnswer };
+	| { op: "answer"; chatId: string; requestId: string; answer: CentralAnswer }
+	| {
+			op: "ageRefresh";
+			chatId: string;
+			requestId: string;
+			sessionId: string;
+			pid: number;
+			startedAt: number;
+			blockers?: string[];
+	  };
 
 /**
  * No network listener: SSH supplies authenticated stdin/stdout. `restartReady`
@@ -114,11 +126,26 @@ export async function serveCentralStdio(restartReady: () => boolean = () => fals
 				// The owning process validates the answer against its live question.
 				await answerCentralQuestion(request.chatId, request.requestId, request.answer as CentralAnswer);
 				process.stdout.write(`${JSON.stringify({ id, ok: true })}\n`);
+			} else if (
+				request.op === "ageRefresh" &&
+				typeof request.chatId === "string" &&
+				typeof request.requestId === "string"
+			) {
+				// Validated by the client call, which reports a malformed request as `invalid_request`.
+				const ageRequest = {
+					sessionId: request.sessionId,
+					pid: request.pid,
+					startedAt: request.startedAt,
+					blockers: request.blockers ?? [],
+				} as CentralAgeRefreshRequest;
+				const result = await ageRefreshCentralChat(request.chatId, request.requestId, ageRequest);
+				process.stdout.write(`${JSON.stringify({ id, ok: true, result })}\n`);
 			} else throw new Error("Invalid Central operation");
 		} catch (error) {
-			// Answers and room credentials must never be reflected into diagnostics.
+			// Answers and room credentials must never be reflected into diagnostics; IPC codes are fixed tokens.
+			const code = centralIpcErrorCode(error);
 			process.stdout.write(
-				`${JSON.stringify({ id, error: "Central operation unavailable or rejected; refresh the chat and update OMP on its host", confirmedNoAdmission: error instanceof CentralPromptRejectedError })}\n`,
+				`${JSON.stringify({ id, error: "Central operation unavailable or rejected; refresh the chat and update OMP on its host", confirmedNoAdmission: error instanceof CentralPromptRejectedError, ...(code ? { code } : {}) })}\n`,
 			);
 		}
 	}

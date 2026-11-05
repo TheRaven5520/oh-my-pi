@@ -9,6 +9,7 @@ import type { ExtensionAskDialogSubmitResult } from "@oh-my-pi/pi-tui/overlays/a
 import {
 	CENTRAL_MAX_FRAME_BYTES,
 	CENTRAL_MAX_TRANSCRIPT_BYTES,
+	ageRefreshCentralChat,
 	answerCentralQuestion,
 	getCentralChatTranscript,
 	getCentralChatWorkspace,
@@ -18,6 +19,7 @@ import {
 	parseCentralChat,
 	startCentralHost,
 } from "../src/central/bridge";
+import type { CentralAgeRefreshRequest, CentralAgeRefreshResult } from "../src/central/age-refresh";
 
 const dirs: string[] = [];
 const hosts = new Set<CentralHost>();
@@ -226,7 +228,7 @@ describe("private Central host IPC", () => {
 		await answerCentralQuestion(chat!.id, chat!.requests[0]!.id, answer, { dir });
 		expect(await result).toEqual(answer);
 		expect(localSignal!.aborted).toBe(true);
-		expect(((await listCentralChats({ dir })).chats)[0]!.requests).toEqual([]);
+		expect((await listCentralChats({ dir })).chats[0]!.requests).toEqual([]);
 		await expect(answerCentralQuestion(chat!.id, chat!.requests[0]!.id, answer, { dir })).rejects.toThrow(
 			"stale_request",
 		);
@@ -239,7 +241,7 @@ describe("private Central host IPC", () => {
 		const [chat] = (await listCentralChats({ dir })).chats;
 		local.resolve(submitted(["Green"]));
 		expect(await result).toEqual(submitted(["Green"]));
-		expect(((await listCentralChats({ dir })).chats)[0]!.requests).toEqual([]);
+		expect((await listCentralChats({ dir })).chats[0]!.requests).toEqual([]);
 		await expect(answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir })).rejects.toThrow(
 			"stale_request",
 		);
@@ -256,7 +258,7 @@ describe("private Central host IPC", () => {
 		expect(called).toBe(false);
 		const failure = new Error("local renderer failed");
 		await expect(host.race(ask, undefined, () => Promise.reject(failure))).rejects.toBe(failure);
-		expect(((await listCentralChats({ dir })).chats)[0]!.requests).toEqual([]);
+		expect((await listCentralChats({ dir })).chats[0]!.requests).toEqual([]);
 	});
 
 	it("rejects wrong options, ids, multi flags, and forged answer metadata without settling", async () => {
@@ -282,7 +284,7 @@ describe("private Central host IPC", () => {
 				"invalid_answer",
 			);
 		}
-		expect(((await listCentralChats({ dir })).chats)[0]!.requests).toHaveLength(1);
+		expect((await listCentralChats({ dir })).chats[0]!.requests).toHaveLength(1);
 		await answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir });
 		expect(await result).toEqual(submitted());
 	});
@@ -312,7 +314,7 @@ describe("private Central host IPC", () => {
 		expect(chat!.requests).toHaveLength(2);
 		await answerCentralQuestion(chat!.id, chat!.requests[1]!.id, { kind: "chat" }, { dir });
 		expect(await second).toEqual({ kind: "chat" });
-		expect(((await listCentralChats({ dir })).chats)[0]!.requests.map(request => request.id)).toEqual([
+		expect((await listCentralChats({ dir })).chats[0]!.requests.map(request => request.id)).toEqual([
 			chat!.requests[0]!.id,
 		]);
 		await answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir });
@@ -344,7 +346,7 @@ describe("private Central host IPC", () => {
 		const [chat] = (await listCentralChats({ dir })).chats;
 		abort.abort();
 		expect(await first).toBeUndefined();
-		expect(((await listCentralChats({ dir })).chats)[0]!.requests.map(request => request.id)).toEqual([
+		expect((await listCentralChats({ dir })).chats[0]!.requests.map(request => request.id)).toEqual([
 			chat!.requests[1]!.id,
 		]);
 		await expect(answerCentralQuestion(chat!.id, chat!.requests[0]!.id, submitted(), { dir })).rejects.toThrow(
@@ -567,5 +569,103 @@ describe("private Central host IPC", () => {
 		dirs.push(dir);
 		await fs.writeFile(path.join(dir, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.json"), "not json", { mode: 0o600 });
 		await expect(listCentralChats({ dir })).rejects.toThrow("invalid_metadata");
+	});
+
+	describe("ageRefresh", () => {
+		function decision(outcome: CentralAgeRefreshResult["outcome"]): CentralAgeRefreshResult {
+			return {
+				v: 1,
+				outcome,
+				trigger: outcome === "refreshing" ? "hard" : null,
+				reason: outcome,
+				runtime: { pid: process.pid, startedAt: 1_000, ageMs: 5 },
+				settings: { enabled: true, softMs: 1, hardMs: 2, hardGraceMs: 3 },
+				interrupted: [{ kind: "job", id: "bg_1", label: "sleep 600" }],
+			};
+		}
+		const request = (overrides: Partial<CentralAgeRefreshRequest> = {}): CentralAgeRefreshRequest => ({
+			sessionId: "session-one",
+			pid: process.pid,
+			startedAt: 1_000,
+			blockers: [],
+			...overrides,
+		});
+
+		it("starts the refresh once its reply is out, and answers a retried id without deciding again", async () => {
+			const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-age-"));
+			dirs.push(dir);
+			const seen: CentralAgeRefreshRequest[] = [];
+			const started = Promise.withResolvers<void>();
+			let starts = 0;
+			const host = await startCentralHost(
+				() => ({ sessionId: "session-one", name: "Old chat", cwd: "/workspace", busy: true }),
+				{
+					dir,
+					ageRefresh: received => {
+						seen.push(received);
+						return {
+							result: decision("refreshing"),
+							start: () => {
+								starts++;
+								started.resolve();
+							},
+						};
+					},
+				},
+			);
+			hosts.add(host);
+			const [chat] = (await listCentralChats({ dir })).chats;
+			const copyMode = request({ blockers: ["tmux-copy-mode"] });
+			const result = await ageRefreshCentralChat(chat!.id, "age-1", copyMode, { dir });
+			// The host hangs up after replying; only then may the refresh tear it down.
+			expect(result.outcome).toBe("refreshing");
+			expect(result.interrupted).toEqual([{ kind: "job", id: "bg_1", label: "sleep 600" }]);
+			await started.promise;
+			expect(seen).toEqual([copyMode]);
+			// A lost reply is retried with the same id: same decision, no second refresh.
+			expect((await ageRefreshCentralChat(chat!.id, "age-1", copyMode, { dir })).outcome).toBe("refreshing");
+			expect(seen).toHaveLength(1);
+			expect(starts).toBe(1);
+			await expect(ageRefreshCentralChat(chat!.id, "age-1", request(), { dir })).rejects.toThrow(
+				"request_id_conflict",
+			);
+		});
+
+		it("refuses another session, malformed requests, and hosts without the operation", async () => {
+			const { dir, host } = await fixture();
+			const [chat] = (await listCentralChats({ dir })).chats;
+			await expect(ageRefreshCentralChat(chat!.id, "age-1", request(), { dir })).rejects.toThrow(
+				"unsupported_operation",
+			);
+			await host.close();
+			hosts.delete(host);
+
+			const ageDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-age-refuse-"));
+			dirs.push(ageDir);
+			let decided = 0;
+			const ageHost = await startCentralHost(
+				() => ({ sessionId: "session-one", name: "Chat", cwd: "/workspace", busy: false }),
+				{
+					dir: ageDir,
+					ageRefresh: () => {
+						decided++;
+						return { result: decision("not-due") };
+					},
+				},
+			);
+			hosts.add(ageHost);
+			const [ageChat] = (await listCentralChats({ dir: ageDir })).chats;
+			await expect(
+				ageRefreshCentralChat(ageChat!.id, "age-2", request({ sessionId: "other" }), { dir: ageDir }),
+			).rejects.toThrow("stale_session");
+			await expect(ageRefreshCentralChat(ageChat!.id, "bad id!", request(), { dir: ageDir })).rejects.toThrow(
+				"invalid_request",
+			);
+			expect(decided).toBe(0);
+			expect((await ageRefreshCentralChat(ageChat!.id, "age-4", request(), { dir: ageDir })).outcome).toBe(
+				"not-due",
+			);
+			expect(decided).toBe(1);
+		});
 	});
 });

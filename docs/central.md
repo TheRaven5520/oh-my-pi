@@ -256,6 +256,102 @@ matches. While the chat does not answer, is unlisted or is restarting, the last
 view and draft stay and the header shows `not responding; retrying`. The
 automatic restart onto a new build keeps `--focus`.
 
+## Age refresh
+
+A chat's memory grows with the life of its process, and `/refresh` gives it
+back. A scheduler outside OMP (the dotfiles age-refresh worker, one tick a
+minute) asks each chat over the bridge; the chat alone decides, from its own
+settings and state. There is no timer inside the chat.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `refresh.age.enabled` | `true` | off: every request answers `disabled` |
+| `refresh.age.softHours` | `24` | from this age, refresh at the next fully idle moment; `0` turns the tier off |
+| `refresh.age.hardHours` | `72` | from this age, refresh even mid-turn (below); `0` turns the tier off |
+| `refresh.age.hardGraceSeconds` | `120` | how long running work may finish once the forced tier is due; `0` stops it at once |
+
+Age is measured from this runtime process's own start (launch, `/refresh`, or
+`/restart`, which resets it even when exec keeps the PID), never from the
+launcher. Every chat in the list carries it:
+
+```json
+"age": {"v":1,"startedAt":1762300000000,"ageMs":90061000,"enabled":true,"softMs":86400000,"hardMs":259200000,"hardGraceMs":120000,"due":"soft"}
+```
+
+A runtime that restored a forced refresh's checkpoint adds
+`"lastRefresh":{"trigger":"hard","checkpointId":"…","promptSubmitted":true,"stopped":3,"restoredAt":…}`.
+
+A chat without `age` runs an OMP that predates the operation; it must be left
+alone until its own idle refresh onto a new build. To ask a chat to refresh:
+
+```json
+{"id":7,"op":"ageRefresh","chatId":"<chatId>","sessionId":"<sessionId>","pid":<chat pid>,"startedAt":<age.startedAt>,"requestId":"<uuid>","blockers":["tmux-copy-mode"]}
+```
+
+`blockers` (at most 8 printable strings of up to 64 characters) are conditions
+only the caller can see; any one defers the idle tier and none stops the forced
+one. The reply is `{"id":7,"ok":true,"result":{...}}`, where `result` has:
+
+- `outcome`: `refreshing`, `not-due`, `deferred`, `disabled`, `stale-runtime`
+  (pid, start or session is not this runtime's) or `blocked` (the forced tier
+  cannot run, e.g. an unsaved session that could not be resumed).
+- `trigger` (`soft`, `hard` or `null`) and `reason`, e.g. `soft: unsent draft`
+  or `hard: waiting for provider stream boundary`.
+- `runtime` `{pid, startedAt, ageMs}`, `settings` `{enabled, softMs, hardMs}`.
+- `interrupted`: `{kind, id, label}` for everything the forced tier stops or
+  sets aside. Kinds include `turn`, `tool`, `bash`, `eval`, `job`, `subagent`,
+  `loop`, `goal`, `fork`, `voice`, `collab`, `side-request` and `dialog` (stopped),
+  and `ask` and `draft` (kept).
+
+The reply is sent before the chat starts tearing itself down. `refreshing`
+means started; confirm it from the next list: same `sessionId`, newer
+`age.startedAt`. The first forced request that finds work running opens the
+grace window instead and answers `deferred` with
+`draining: <n> s left; waiting for <kind> <label>, …`; the chat refreshes by itself
+when the work drains or the window ends, and later requests only read the
+countdown and the current `interrupted` list (they never restart it). A repeated `requestId` returns the first decision and never
+refreshes twice. Failures reply `{"id":7,"error":"…","code":"<ipc code>"}`
+(`unsupported_operation` from a chat that predates the operation, plus
+`stale_session`, `host_unavailable`, `host_timeout`, `invalid_request`,
+`request_id_conflict`); a bridge that predates the operation replies with an
+error and no `code`.
+
+**Idle tier.** Waits for the same idle state as the refresh onto a new build: no
+turn, queued message, background job, subagent, open question, dialog, side
+request, loop or goal run, fork, voice session, collaboration session or unsent
+draft, and a saved session.
+
+**Forced tier.** The first due request opens a grace window owned by the chat
+(`refresh.age.hardGraceSeconds`). Running work (the provider stream, tool calls,
+`!`/`$` commands, background jobs, subagents) may finish; nothing new starts:
+Enter keeps what is typed in the composer, queued messages go back into it,
+Central prompts and commands are refused, new background jobs are refused, and
+loop and goal auto-submits stop. As soon as the work drains, or when the window
+ends, the chat aborts whatever still runs and refreshes. A turn that only waits
+for the answer to an inline question, with nothing else running, is not running
+work: the chat refreshes at once, and that turn is not reported as stopped.
+Teardown stops background jobs, parks subagents and releases the chat's own
+Python kernels, JavaScript eval workers, MCP servers and browser tabs, as
+`/refresh` does; commands a shell backgrounded with `&` and `launch` daemons are
+left running, as on any exit. Nothing is ever answered on the user's behalf: the
+composer (text, images, paste chips, queued messages) and every open question,
+with whatever was picked or typed in its dialog, are checkpointed in the session.
+The next process puts the draft back untouched and reopens the questions: a
+question the interrupted turn was waiting on becomes that same tool call's answer
+(a sibling of the aborted result, as `/tree` re-answer does) and the turn resumes;
+a question the agent had continued past is answered through its original
+background job id.
+Text half-typed into an open custom-answer or note prompt comes back as that
+prompt's prefill. Then, only if something was actually stopped, the chat sends
+itself one user prompt beginning `[Automatic refresh]` that lists each stopped
+item with its last known state and asks the agent to take inventory before
+resuming; the draft stays in the composer. Both tiers log the age, what was
+running, and the process's RSS and swap. An answer being composed in another
+Central window is not part of the checkpoint; the reopened question appears there
+as a new question. If the chat has moved on by the time an interrupted question
+is answered (the automatic prompt already started a turn), the answer arrives as
+a message naming its tool call instead of rewriting history.
+
 ## Other hosts
 
 Central uses only explicitly configured SSH destinations; it never scans the

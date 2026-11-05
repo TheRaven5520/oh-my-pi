@@ -13,6 +13,11 @@ import { CentralPromptRejectedError } from "@oh-my-pi/pi-tui/apps/central/types"
 import type { TranscriptEntryLike } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { getBaseConfigRoot, isEnoent } from "@oh-my-pi/pi-utils";
 import {
+	type CentralAgeRefreshRequest,
+	type CentralAgeRefreshResult,
+	parseCentralAgeRefreshRequest,
+} from "./age-refresh";
+import {
 	isCentralCommand,
 	isCentralPrompt,
 	isCentralRequestDraft,
@@ -43,6 +48,11 @@ type Options = {
 	 * showed. Rejects only when the command was refused before it ran.
 	 */
 	command?: (sessionId: string, text: string) => Promise<string>;
+	/**
+	 * Decides an `ageRefresh` request. `start`, when returned, runs only after the
+	 * reply has left this process, because it tears down this very host.
+	 */
+	ageRefresh?: (request: CentralAgeRefreshRequest) => { result: CentralAgeRefreshResult; start?: () => void };
 };
 export const CENTRAL_MAX_TRANSCRIPT_BYTES = 512 * 1024;
 
@@ -92,6 +102,11 @@ class IpcError extends Error {
 	) {
 		super(`OMP Central: ${code}${code === "unsupported_operation" ? "; update OMP on the chat host" : ""}`);
 	}
+}
+
+/** The IPC code behind a failed Central call; undefined for anything that is not a Central IPC failure. */
+export function centralIpcErrorCode(error: unknown): string | undefined {
+	return error instanceof IpcError ? error.code : undefined;
 }
 
 async function privateDirectory(dir: string, create = false): Promise<void> {
@@ -202,7 +217,11 @@ function query(meta: Metadata, request: object): Promise<Record<string, unknown>
 					"command_rejected",
 				].includes(String(payload.error))
 					? String(payload.error)
-					: "op" in request && (request.op === "workspace" || request.op === "prompt" || request.op === "command")
+					: "op" in request &&
+						  (request.op === "workspace" ||
+								request.op === "prompt" ||
+								request.op === "command" ||
+								request.op === "ageRefresh")
 						? "unsupported_operation"
 						: "request_rejected";
 				const error = new IpcError(code);
@@ -263,6 +282,8 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 	// refuse new requests; existing IDs remain retryable until this host exits.
 	// Prompts and commands share the ID space: the digest covers the operation.
 	const prompts = new Map<string, { sessionId: string; digest: string; result: Promise<string | undefined> }>();
+	// A repeated `ageRefresh` request id gets its first decision back and never starts a second refresh.
+	const ageRefreshes = new Map<string, { digest: string; result: CentralAgeRefreshResult }>();
 	const sockets = new Set<net.Socket>();
 	let closed = false;
 	const state = (): ChatState => {
@@ -395,6 +416,29 @@ async function createHost(getState: () => ChatState, options?: Options): Promise
 							}),
 					);
 					return;
+				}
+				if (request.op === "ageRefresh") {
+					const parsed = parseCentralAgeRefreshRequest(request);
+					if (
+						!parsed ||
+						typeof request.requestId !== "string" ||
+						!/^[A-Za-z0-9_-]{1,128}$/.test(request.requestId)
+					)
+						return respond({ ok: false, error: "invalid_request" });
+					const digest = crypto.createHash("sha256").update(JSON.stringify(parsed)).digest("hex");
+					const known = ageRefreshes.get(request.requestId);
+					if (known)
+						return known.digest === digest
+							? respond({ ok: true, result: known.result })
+							: respond({ ok: false, error: "request_id_conflict" });
+					if (!options?.ageRefresh) return respond({ ok: false, error: "unsupported_operation" });
+					if (parsed.sessionId !== current.sessionId) return respond({ ok: false, error: "stale_session" });
+					if (ageRefreshes.size >= 4_096) return respond({ ok: false, error: "prompt_capacity" });
+					const { result, start } = options.ageRefresh(parsed);
+					ageRefreshes.set(request.requestId, { digest, result });
+					// `close` follows the flushed reply, the caller hanging up, or the socket timeout.
+					if (start) socket.once("close", start);
+					return respond({ ok: true, result });
 				}
 				if (request.op !== "answer" || typeof request.requestId !== "string")
 					return respond({ ok: false, error: "request_rejected" });
@@ -647,4 +691,24 @@ export async function commandCentralChat(
 	const result = parseCentralCommandResult(response.result);
 	if (result === null) throw new IpcError("invalid_response");
 	return result;
+}
+
+/** Ask a chat to refresh because its process is old; the chat decides and reports the outcome. */
+export async function ageRefreshCentralChat(
+	chatId: string,
+	requestId: string,
+	request: CentralAgeRefreshRequest,
+	options?: Options,
+): Promise<CentralAgeRefreshResult> {
+	if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId) || !parseCentralAgeRefreshRequest({ ...request }))
+		throw new IpcError("invalid_request");
+	const dir = path.resolve(options?.dir ?? path.join(getBaseConfigRoot(), "run", "central-hosts"));
+	await privateDirectory(dir);
+	const meta = await readMetadata(dir, chatId);
+	if (!meta) throw new IpcError("host_unavailable");
+	const response = await query(meta, { op: "ageRefresh", requestId, ...request });
+	const result = response.result as Partial<CentralAgeRefreshResult> | undefined;
+	if (!result || typeof result !== "object" || result.v !== 1 || typeof result.outcome !== "string")
+		throw new IpcError("invalid_response");
+	return result as CentralAgeRefreshResult;
 }

@@ -1,7 +1,28 @@
-import { logger } from "@oh-my-pi/pi-utils";
+import { formatDuration, logger } from "@oh-my-pi/pi-utils";
+import {
+	type AgeRefreshInterrupted,
+	type AgeRefreshOutcome,
+	ageRefreshDue,
+	type CentralAgeRefreshRequest,
+	type CentralAgeRefreshResult,
+	processMemory,
+	RUNTIME_STARTED_AT,
+	readAgeRefreshPolicy,
+	runtimeAgeMs,
+	STOPPED_WORK_KINDS,
+} from "../../central/age-refresh";
 import { type BinaryIdentity, readBinaryIdentity, sameIdentity } from "../../installed-build";
 import { AgentRegistry } from "../../registry/agent-registry";
 import type { InteractiveModeContext } from "../types";
+
+/** How often a draining forced refresh checks whether running work has finished. */
+export const AGE_DRAIN_POLL_MS = 1_000;
+
+/** An `ageRefresh` decision; `start` runs once the reply has been sent. */
+export interface AgeRefreshDecision {
+	result: CentralAgeRefreshResult;
+	start?: () => void;
+}
 
 /** Work owned by this process that a restart would cut off, beyond what `ctx` exposes. */
 export type ExtraRefreshBlocker = () => string | undefined;
@@ -72,6 +93,8 @@ export class UpdateRefreshController {
 	#idleTimer: NodeJS.Timeout | undefined;
 	#candidate: BinaryIdentity | undefined;
 	#refreshing = false;
+	/** The forced tier's grace window; owned by this runtime, started once, never restarted. */
+	#drain: { deadlineAt: number; poll: NodeJS.Timeout; deadline: NodeJS.Timeout } | undefined;
 
 	constructor(ctx: InteractiveModeContext, options: UpdateRefreshOptions) {
 		this.#ctx = ctx;
@@ -106,6 +129,156 @@ export class UpdateRefreshController {
 		this.#clearTimer();
 		if (this.#idleTimer) clearInterval(this.#idleTimer);
 		this.#idleTimer = undefined;
+		this.#endDrain();
+	}
+
+	/**
+	 * Decide a Central `ageRefresh` request. The external worker only asks; this
+	 * runtime checks that the request is for this very process, reads its own
+	 * settings, and refreshes only when its age and state allow it.
+	 */
+	handleAgeRefresh(request: CentralAgeRefreshRequest, now = Date.now()): AgeRefreshDecision {
+		const settings = readAgeRefreshPolicy(this.#ctx.settings);
+		const ageMs = runtimeAgeMs(now);
+		const decide = (
+			outcome: AgeRefreshOutcome,
+			trigger: "soft" | "hard" | null,
+			reason: string,
+			interrupted: AgeRefreshInterrupted[] = [],
+		): CentralAgeRefreshResult => ({
+			v: 1,
+			outcome,
+			trigger,
+			reason,
+			runtime: { pid: process.pid, startedAt: RUNTIME_STARTED_AT, ageMs },
+			settings,
+			interrupted,
+		});
+		if (
+			request.pid !== process.pid ||
+			request.startedAt !== RUNTIME_STARTED_AT ||
+			request.sessionId !== this.#ctx.sessionManager.getSessionId()
+		)
+			return { result: decide("stale-runtime", null, "pid, start time or session differs from this runtime") };
+		if (!settings.enabled) return { result: decide("disabled", null, "refresh.age.enabled is off") };
+		const due = ageRefreshDue(ageMs, settings);
+		if (due === "none")
+			return { result: decide("not-due", null, `age ${formatDuration(ageMs)} is below every limit`) };
+		// Every drain reply names what it still waits for and sets aside, as the first one did.
+		if (this.#drain)
+			return { result: decide("deferred", "hard", this.#drainReason(now), this.#ctx.ageRefreshInventory()) };
+		if (this.#refreshing) return { result: decide("deferred", due, `${due}: a refresh is already in progress`) };
+		if (due === "soft") {
+			const blocker = autoRefreshBlocker(this.#ctx, this.#extraBlocker) ?? request.blockers[0];
+			if (blocker) return { result: decide("deferred", "soft", `soft: ${blocker}`) };
+			this.#refreshing = true;
+			return {
+				result: decide("refreshing", "soft", `soft: idle at age ${formatDuration(ageMs)}`),
+				start: () => this.#startSoftAgeRefresh(ageMs, settings.softMs),
+			};
+		}
+		if (this.#ctx.isShuttingDown)
+			return { result: decide("deferred", "hard", "hard: chat is already shutting down") };
+		if (!this.#ctx.sessionManager.getSessionFile())
+			return { result: decide("blocked", "hard", "hard: unsaved session cannot be resumed after a refresh") };
+		if (this.#ctx.collabGuest)
+			return { result: decide("blocked", "hard", "hard: collaboration guest; refresh the host chat") };
+		const interrupted = this.#ctx.ageRefreshInventory();
+		const running = interrupted.filter(item => STOPPED_WORK_KINDS[item.kind]);
+		if (running.length === 0 || settings.hardGraceMs === 0) {
+			this.#refreshing = true;
+			return {
+				result: decide(
+					"refreshing",
+					"hard",
+					running.length > 0
+						? `hard: stopping ${running.length} item(s) at age ${formatDuration(ageMs)}`
+						: `hard: nothing running at age ${formatDuration(ageMs)}`,
+					interrupted,
+				),
+				start: () => this.#startHardAgeRefresh(ageMs, settings.hardMs, settings.hardGraceMs),
+			};
+		}
+		this.#startDrain(now, ageMs, settings.hardMs, settings.hardGraceMs);
+		return { result: decide("deferred", "hard", this.#drainReason(now), interrupted) };
+	}
+
+	/**
+	 * Let running work finish for up to the grace window while nothing new starts,
+	 * then refresh: as soon as it drains, or at the deadline with whatever still runs
+	 * stopped. The worker's later requests only read the countdown.
+	 */
+	#startDrain(now: number, ageMs: number, hardMs: number, graceMs: number): void {
+		this.#ctx.beginAgeDrain(graceMs);
+		logger.info("Age refresh (hard) draining", { ageMs, hardMs, graceMs, running: this.#runningWork() });
+		const finish = (drained: boolean): void => {
+			if (!this.#drain) return;
+			this.#endDrain();
+			logger.info("Age refresh (hard) grace ended", { drained, running: this.#runningWork() });
+			this.#refreshing = true;
+			this.#startHardAgeRefresh(ageMs + (Date.now() - now), hardMs, graceMs);
+		};
+		const poll = setInterval(() => {
+			if (this.#runningWork().length === 0) finish(true);
+		}, AGE_DRAIN_POLL_MS);
+		const deadline = setTimeout(() => finish(false), graceMs);
+		poll.unref?.();
+		deadline.unref?.();
+		this.#drain = { deadlineAt: now + graceMs, poll, deadline };
+	}
+
+	#endDrain(): void {
+		if (!this.#drain) return;
+		clearInterval(this.#drain.poll);
+		clearTimeout(this.#drain.deadline);
+		this.#drain = undefined;
+	}
+
+	#runningWork(): AgeRefreshInterrupted[] {
+		return this.#ctx.ageRefreshInventory().filter(item => STOPPED_WORK_KINDS[item.kind]);
+	}
+
+	#drainReason(now: number): string {
+		const left = Math.max(0, Math.ceil(((this.#drain?.deadlineAt ?? now) - now) / 1000));
+		const waiting = this.#runningWork()
+			.map(item => `${item.kind} ${item.label}`)
+			.join(", ");
+		return `draining: ${left} s left; waiting for ${waiting || "nothing"}`;
+	}
+
+	#startSoftAgeRefresh(ageMs: number, softMs: number): void {
+		// Milliseconds passed while the reply was sent; typing may have started since.
+		const blocker = autoRefreshBlocker(this.#ctx, this.#extraBlocker);
+		if (blocker) {
+			this.#refreshing = false;
+			logger.info("Age refresh (soft) withdrawn after reply", { blocker, ageMs });
+			return;
+		}
+		logger.info("Age refresh (soft) starting", { ageMs, softMs, ...processMemory() });
+		this.#ctx.showStatus(`This chat has run ${formatDuration(ageMs)} since its last refresh — refreshing…`);
+		this.#ctx.refresh().then(
+			() => {
+				// refresh() returns without exiting only when it refused to proceed.
+				this.#refreshing = false;
+			},
+			error => {
+				this.#refreshing = false;
+				logger.warn("Age refresh (soft) failed", { error: String(error) });
+			},
+		);
+	}
+
+	#startHardAgeRefresh(ageMs: number, hardMs: number, graceMs: number): void {
+		this.#ctx.forceAgeRefresh({ ageMs, hardMs, graceMs }).then(
+			() => {
+				// Returns only when the checkpoint or the refresh could not complete.
+				this.#refreshing = false;
+			},
+			error => {
+				this.#refreshing = false;
+				logger.warn("Age refresh (hard) failed", { error: String(error) });
+			},
+		);
 	}
 
 	#clearTimer(): void {

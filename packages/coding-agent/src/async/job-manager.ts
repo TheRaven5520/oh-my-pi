@@ -237,6 +237,8 @@ export interface AsyncJobRegisterOptions {
 	foreground?: boolean;
 	/** The process the job runs; see {@link AsyncJob.process}. */
 	process?: AsyncJobProcess;
+	/** Epoch ms the work began, when that was before registration (default: now). */
+	startTime?: number;
 }
 
 /**
@@ -336,6 +338,13 @@ export class AsyncJobManager {
 		return activeCount >= this.#maxRunningJobs;
 	}
 
+	#refusingNewJobs: string | undefined;
+
+	/** From now on `register` throws `reason`; running jobs are untouched (a forced age refresh is draining). */
+	refuseNewJobs(reason: string): void {
+		this.#refusingNewJobs = reason;
+	}
+
 	register(
 		type: AsyncJobType,
 		label: string,
@@ -351,6 +360,7 @@ export class AsyncJobManager {
 		if (this.#disposed) {
 			throw new Error("Async job manager is disposed");
 		}
+		if (this.#refusingNewJobs !== undefined) throw new Error(this.#refusingNewJobs);
 		// Queued jobs hold no execution slot yet — only count jobs that are
 		// actually running so a large parked batch cannot starve registration.
 		let activeCount = 0;
@@ -370,7 +380,7 @@ export class AsyncJobManager {
 		this.#releasedForegroundJobs.delete(id);
 		if (options?.foreground) this.#suppressedDeliveries.add(id);
 		const abortController = new AbortController();
-		const startTime = Date.now();
+		const startTime = options?.startTime ?? Date.now();
 
 		const job: AsyncJob = {
 			id,

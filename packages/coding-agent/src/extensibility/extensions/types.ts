@@ -153,11 +153,14 @@ export interface ExtensionUISelectOption {
 export type ExtensionUISelectItem = string | ExtensionUISelectOption;
 
 import type {
+	AskDialogDraft,
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResult,
 	ExtensionAskDialogSubmitResult,
 } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 export type {
+	AskDialogDraft,
+	AskDialogDraftState,
 	ExtensionAskDialogOption,
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResultItem,
@@ -239,6 +242,8 @@ export interface ExtensionUIDialogOptions {
 	onPresented?: () => void;
 	/** Allow image pastes in rich ask-dialog custom-answer and note prompts. */
 	acceptImages?: boolean;
+	/** Rich ask dialog only: start from checkpointed answers, and expose the live ones to the caller. */
+	askDraft?: AskDialogDraft;
 }
 
 /** Raw terminal input listener for extensions. */

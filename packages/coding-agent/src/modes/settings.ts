@@ -1159,6 +1159,74 @@ export const cfgStartupChangelogMode = register({
 	},
 });
 
+export const cfgRefreshAgeEnabled = register({
+	id: "refresh.age.enabled",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "interaction",
+		group: "Startup & Updates",
+		label: "Age Refresh",
+		description:
+			"Let the age-refresh worker (`omp central --bridge` op `ageRefresh`) refresh a chat whose process has run longer than the soft (idle only) or hard (forced, with checkpoint) limit since launch or its last /refresh",
+	},
+});
+
+export const cfgRefreshAgeSoftHours = register({
+	id: "refresh.age.softHours",
+	type: "number",
+	default: 24,
+	ui: {
+		tab: "interaction",
+		group: "Startup & Updates",
+		label: "Age Refresh: Idle After",
+		description: "Process age at which the chat refreshes at its next fully idle moment; 0 disables the idle tier",
+		options: [
+			{ value: "0", label: "Off" },
+			{ value: "12", label: "12 hours" },
+			{ value: "24", label: "1 day" },
+			{ value: "48", label: "2 days" },
+		],
+	},
+});
+
+export const cfgRefreshAgeHardHours = register({
+	id: "refresh.age.hardHours",
+	type: "number",
+	default: 72,
+	ui: {
+		tab: "interaction",
+		group: "Startup & Updates",
+		label: "Age Refresh: Force After",
+		description:
+			"Process age at which the chat refreshes even mid-turn: running work is stopped and named in a session note, the draft and open questions are checkpointed and restored; 0 disables the forced tier",
+		options: [
+			{ value: "0", label: "Off" },
+			{ value: "48", label: "2 days" },
+			{ value: "72", label: "3 days" },
+			{ value: "168", label: "7 days" },
+		],
+	},
+});
+
+export const cfgRefreshAgeHardGraceSeconds = register({
+	id: "refresh.age.hardGraceSeconds",
+	type: "number",
+	default: 120,
+	ui: {
+		tab: "interaction",
+		group: "Startup & Updates",
+		label: "Age Refresh: Forced Grace",
+		description:
+			"How long running work may finish once a forced refresh is due; nothing new starts meanwhile, and whatever still runs at the end is stopped",
+		options: [
+			{ value: "30", label: "30 seconds" },
+			{ value: "120", label: "2 minutes" },
+			{ value: "300", label: "5 minutes" },
+		],
+	},
+});
+
 export const cfgMagicKeywordsEnabled = register({
 	id: "magicKeywords.enabled",
 	type: "boolean",

@@ -36,6 +36,35 @@ export interface CentralChat {
 	/** IPC error code while a still-registered chat stands in with its last-known entry. */
 	unresponsive?: string;
 	requests: CentralRequest[];
+	/** Process age and age-refresh policy; absent from runtimes without the Central `ageRefresh` operation. */
+	age?: CentralChatAge;
+}
+
+/** Version 1 of the age a chat publishes: `startedAt` is this process's own start (launch or last refresh). */
+export interface CentralChatAge {
+	v: 1;
+	startedAt: number;
+	ageMs: number;
+	enabled: boolean;
+	/** 0: the idle tier is off. */
+	softMs: number;
+	/** 0: the forced tier is off. */
+	hardMs: number;
+	due: "none" | "soft" | "hard";
+	/** How long running work may finish once the forced tier is due. */
+	hardGraceMs: number;
+	/** Present on a runtime that restored a forced refresh's checkpoint. */
+	lastRefresh?: CentralChatLastAgeRefresh;
+}
+
+export interface CentralChatLastAgeRefresh {
+	trigger: "hard";
+	checkpointId: string;
+	/** The automatic inventory prompt went out (only when something was stopped). */
+	promptSubmitted: boolean;
+	/** How many running items the refresh stopped. */
+	stopped: number;
+	restoredAt: number;
 }
 
 export interface CentralSnapshot {

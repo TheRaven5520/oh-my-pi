@@ -252,7 +252,7 @@ function safeAbort(label: string, fn: () => void): void {
 const LEFT_DOUBLE_TAP_MIN_GAP_MS = 40;
 const LEFT_DOUBLE_TAP_MAX_GAP_MS = 500;
 
-function isComposerDraftSnapshot(value: unknown): value is ComposerDraftSnapshot {
+export function isComposerDraftSnapshot(value: unknown): value is ComposerDraftSnapshot {
 	if (!value || typeof value !== "object") return false;
 	const draft = value as ComposerDraftSnapshot;
 	const strings = (items: unknown): boolean =>
@@ -2376,11 +2376,17 @@ export class InputController {
 		}
 	}
 
-	restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
+	/**
+	 * `abort` interrupts the turn as Esc does; `forInterrupt` only drops the non-user
+	 * steers an abort must not auto-resume, for callers that abort the turn themselves.
+	 */
+	restoreQueuedMessagesToEditor(options?: { abort?: boolean; forInterrupt?: boolean; currentText?: string }): number {
 		this.ctx.locallySubmittedUserSignatures.clear();
 		// On Esc (abort) drop non-user internal steers so the post-abort drain can't
 		// auto-resume; plain Alt+Up dequeue preserves them for the continuing stream.
-		const { steering, followUp } = this.ctx.session.clearQueue({ forInterrupt: options?.abort });
+		const { steering, followUp } = this.ctx.session.clearQueue({
+			forInterrupt: options?.abort || options?.forInterrupt,
+		});
 		// Messages typed while compacting live in `compactionQueuedMessages`, not the
 		// agent queue `clearQueue()` drains — but the pending bar shows the same
 		// "Alt+Up to edit" hint for them (ui-helpers `updatePendingMessagesDisplay`).

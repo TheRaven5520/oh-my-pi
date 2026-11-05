@@ -8,7 +8,7 @@ import type {
 	ExtensionUIDialogOptions,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { AskTool } from "@oh-my-pi/pi-coding-agent/tools/ask";
+import { AskTool, listOpenAsks } from "@oh-my-pi/pi-coding-agent/tools/ask";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
@@ -114,14 +114,18 @@ describe("ask.continueAfter", () => {
 		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 		expect(text).toContain('assume "Postgres"');
 		expect(text).toContain("Do not wait or poll");
-		// The agent is told the open question does not survive a restart, so it can ask again.
-		expect(text).toContain("only while this chat keeps running");
-		expect(text).toContain("ask again if you still need the answer after a restart");
+		// The agent learns the question survives automatic refreshes but not a manual one, a restart or a crash.
+		expect(text).toContain("also across automatic age refreshes");
+		expect(text).toContain("A manual /refresh, a restart or a crash closes it unanswered");
+		expect(text).toContain("ask again if you still need the answer");
 		// The question stays open, and yields to any other prompt from now on.
 		expect(dialog.options()?.signal?.aborted).toBe(false);
 		expect(dialog.options()?.yieldSignal?.aborted).toBe(true);
 		const jobId = details.continued!.jobId;
 		expect(manager.getRunningJobs().map(job => job.id)).toEqual([jobId]);
+		// Its elapsed time counts from when the question was asked, not from the continuation.
+		expect(manager.getJob(jobId)?.startTime).toBe(details.continued!.askedAt);
+		expect(Date.now() - details.continued!.askedAt).toBe(300_000);
 		// Nothing may wait on the user.
 		expect(manager.getRunningWorkJobs()).toEqual([]);
 
@@ -276,5 +280,77 @@ describe("ask.continueAfter", () => {
 		await expect(call).rejects.toBeInstanceOf(ToolAbortError);
 		expect(dialog.options()?.signal?.aborted).toBe(true);
 		expect(manager.getAllJobs()).toEqual([]);
+	});
+
+	describe("forced age refresh checkpoint and restore", () => {
+		it("lists an open question with its continuation, and re-arms it under the original job id", async () => {
+			vi.useFakeTimers();
+			// Earlier tests leave questions nobody answered open (as in a live chat); look only at this one.
+			const mine = () => listOpenAsks("Main").filter(ask => ask.toolCallId === "call-20");
+			const first = setup({ "ask.continueAfter": 60 });
+			const call = first.tool.execute("call-20", { questions: [QUESTION] }, undefined, undefined, first.context);
+			expect(mine()).toHaveLength(1);
+			expect(first.dialog.options()?.askDraft).toBe(mine()[0]!.draft);
+			first.dialog.present();
+			vi.advanceTimersByTime(60_000);
+			const continuation = ((await call).details as AskToolDetails).continued!;
+			expect(mine()[0]!.continuation).toEqual(continuation);
+			// The checkpoint cancels the job: no "dismissed" answer is ever delivered.
+			first.manager.cancel(continuation.jobId);
+			vi.useRealTimers();
+			await first.manager.waitForAll();
+			await first.manager.drainDeliveries({ timeoutMs: 1_000 });
+			expect(first.delivered).toEqual([]);
+			expect(mine()).toEqual([]);
+
+			const next = setup({});
+			const initial = {
+				version: 1 as const,
+				activeTabIndex: 0,
+				questions: [{ id: "db", selectedOptions: ["SQLite"], cursorIndex: 0 }],
+			};
+			next.tool.rearmContinued(
+				"call-20",
+				{ questions: [QUESTION] },
+				continuation,
+				next.context.ui as never,
+				initial,
+			);
+			expect(next.manager.getRunningJobs().map(job => job.id)).toEqual([continuation.jobId]);
+			// The re-armed job's elapsed time still counts from the original question.
+			expect(next.manager.getJob(continuation.jobId)?.startTime).toBe(continuation.askedAt);
+			expect(next.dialog.options()?.askDraft?.initial).toEqual(initial);
+			expect(next.dialog.options()?.yieldSignal?.aborted).toBe(true);
+			next.dialog.answer(submit("SQLite"));
+			await next.manager.waitForAll();
+			await next.manager.drainDeliveries({ timeoutMs: 1_000 });
+			expect(next.delivered).toHaveLength(1);
+			expect(next.delivered[0]!.jobId).toBe(continuation.jobId);
+			expect(next.delivered[0]!.text).toContain("User selected: SQLite");
+		});
+
+		it("reopens an interrupted question without a timeout and returns the user's answer, or nothing when dismissed", async () => {
+			const answered = setup({ "ask.timeout": 5 });
+			const reopened = answered.tool.reopenInterrupted(
+				"call-21",
+				{ questions: [QUESTION] },
+				answered.context.ui as never,
+				undefined,
+			);
+			expect(answered.dialog.options()?.timeout).toBeUndefined();
+			answered.dialog.answer(submit("Postgres"));
+			const result = await reopened;
+			expect(result?.content[0]?.type === "text" ? result.content[0].text : "").toContain("User selected: Postgres");
+
+			const dismissed = setup({});
+			const none = dismissed.tool.reopenInterrupted(
+				"call-22",
+				{ questions: [QUESTION] },
+				dismissed.context.ui as never,
+				undefined,
+			);
+			dismissed.dialog.answer(undefined);
+			expect(await none).toBeUndefined();
+		});
 	});
 });

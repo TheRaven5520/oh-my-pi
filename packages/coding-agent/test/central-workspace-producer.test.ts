@@ -84,6 +84,8 @@ describe("Central workspace producer through private IPC", () => {
 		session.setPromptDropped(prompt => editor.setText(prompt.text));
 		const ctx = {
 			session,
+			// Central publishes the chat's age policy from the chat's settings.
+			settings: session.settings,
 			editor,
 			statusLine: {
 				renderCentralWorkspace(

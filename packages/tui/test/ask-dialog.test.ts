@@ -1836,4 +1836,101 @@ describe("AskDialogComponent", () => {
 		expect(rows).toHaveLength(2);
 		expect(rows[1]).toContain("Retry now (Recommended) (2)");
 	});
+
+	describe("checkpointed drafts (forced age refresh)", () => {
+		const questions: ExtensionAskDialogQuestion[] = [
+			{ id: "q1", question: "Q1?", options: [{ label: "A1" }, { label: "B1" }] },
+			{ id: "q2", question: "Q2?", options: [{ label: "A2" }, { label: "B2" }, { label: "C2" }], multi: true },
+		];
+
+		it("captures partial answers and restores them so submitting yields the same answer", () => {
+			const first = new AskDialogComponent(questions, { onSubmit: vi.fn(), onCancel: vi.fn(), onPrompt: vi.fn() });
+			first.handleInput(DOWN);
+			first.handleInput(ENTER); // B1, advance to q2
+			first.handleInput(SPACE); // check A2
+			first.handleInput(DOWN);
+			first.handleInput(DOWN); // cursor on C2, unchecked
+			const draft = first.captureDraftState();
+			expect(draft).toEqual({
+				version: 1,
+				activeTabIndex: 1,
+				questions: [
+					{ id: "q1", selectedOptions: ["B1"], cursorIndex: 1 },
+					{ id: "q2", selectedOptions: ["A2"], cursorIndex: 2 },
+				],
+			});
+
+			const onSubmit = vi.fn();
+			const restored = new AskDialogComponent(
+				questions,
+				{ onSubmit, onCancel: vi.fn(), onPrompt: vi.fn() },
+				{ initialState: JSON.parse(JSON.stringify(draft)) },
+			);
+			expect(restored.captureDraftState()).toEqual(draft);
+			restored.handleInput(SPACE); // check C2 where the cursor was left
+			restored.handleInput(TAB); // review
+			restored.handleInput(ENTER);
+			expect(onSubmit).toHaveBeenCalledTimes(1);
+			expect(onSubmit.mock.calls[0][0].results.map((r: { selectedOptions: string[] }) => r.selectedOptions)).toEqual(
+				[["B1"], ["A2", "C2"]],
+			);
+		});
+
+		it("ignores a draft that no longer fits the questions instead of inventing answers", () => {
+			const changed = new AskDialogComponent(
+				questions,
+				{ onSubmit: vi.fn(), onCancel: vi.fn(), onPrompt: vi.fn() },
+				{
+					initialState: {
+						version: 1,
+						activeTabIndex: 9,
+						questions: [
+							{ id: "other-id", selectedOptions: ["A1"], cursorIndex: 0 },
+							{ id: "q2", selectedOptions: ["Gone", "B2"], note: "n", noteRowKey: "option:7", cursorIndex: 40 },
+						],
+					},
+				},
+			);
+			expect(changed.captureDraftState()).toEqual({
+				version: 1,
+				// Clamped to the review tab.
+				activeTabIndex: 2,
+				questions: [
+					{ id: "q1", selectedOptions: [], cursorIndex: 0 },
+					{ id: "q2", selectedOptions: ["B2"], cursorIndex: 3 },
+				],
+			});
+		});
+
+		it("keeps text typed into an open custom-answer prompt and offers it when that prompt opens again", async () => {
+			const single: ExtensionAskDialogQuestion[] = [
+				{ id: "q1", question: "Choose one?", options: [{ label: "A" }, { label: "B" }] },
+			];
+			const pendingPrompt = Promise.withResolvers<string | undefined>();
+			const first = new AskDialogComponent(single, {
+				onSubmit: vi.fn(),
+				onCancel: vi.fn(),
+				onPrompt: () => pendingPrompt.promise,
+			});
+			first.handleInput(DOWN);
+			first.handleInput(DOWN);
+			first.handleInput(ENTER); // opens the Other prompt, left pending
+			const draft = first.captureDraftState({ text: "half an ans" });
+			expect(draft.openPrompt).toEqual({ questionId: "q1", kind: "custom", value: { text: "half an ans" } });
+
+			const onPrompt = vi.fn().mockResolvedValue("half an answer");
+			const submitted = Promise.withResolvers<{ results: Array<{ customInput?: string }> }>();
+			const restored = new AskDialogComponent(
+				single,
+				{ onSubmit: submitted.resolve, onCancel: vi.fn(), onPrompt },
+				{ initialState: draft },
+			);
+			// Not reopened yet: a second checkpoint still carries it.
+			expect(restored.captureDraftState().openPrompt).toEqual(draft.openPrompt);
+			restored.handleInput(ENTER); // cursor was left on Other
+			const result = await submitted.promise;
+			expect(onPrompt.mock.calls[0][1]).toBe("half an ans");
+			expect(result.results[0]!.customInput).toBe("half an answer");
+		});
+	});
 });

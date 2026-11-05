@@ -67,6 +67,36 @@ export interface ExtensionAskDialogChatResult {
 
 /** Completed dialog action, distinct from cancellation. */
 export type ExtensionAskDialogResult = ExtensionAskDialogSubmitResult | ExtensionAskDialogChatResult;
+
+/** One question's unsubmitted answer, as a refresh checkpoint stores it. */
+export interface AskDialogQuestionDraft {
+	/** The question id; a draft whose id does not match its question is ignored. */
+	id: string;
+	selectedOptions: string[];
+	customInput?: string;
+	customInputImages?: ImageContent[];
+	note?: string;
+	noteImages?: ImageContent[];
+	/** `option:<index>` or `other`: the row the note belongs to. */
+	noteRowKey?: string;
+	cursorIndex: number;
+}
+
+/** Everything done in an open ask dialog short of submitting it. JSON-safe. */
+export interface AskDialogDraftState {
+	version: 1;
+	activeTabIndex: number;
+	questions: AskDialogQuestionDraft[];
+	/** Text typed into a custom-answer or note prompt that was open but not yet confirmed. */
+	openPrompt?: { questionId: string; kind: "custom" | "note"; rowKey?: string; value: AskDialogPromptValue };
+}
+
+/** Links an ask dialog to its owner: seeds it from a checkpoint and lets the owner read its live state. */
+export interface AskDialogDraft {
+	initial?: AskDialogDraftState;
+	/** Installed by the host while the dialog is on screen or waiting behind another dialog. */
+	capture?: () => AskDialogDraftState | undefined;
+}
 import { disambiguateDisplayLabels, expandKeyHint, sanitizeCarriageReturns } from "../render/render-utils";
 import { getTabBarTheme } from "../chrome/shared";
 import { getMarkdownTheme, highlightCode, theme } from "../theme/theme";
@@ -166,6 +196,8 @@ interface AskDialogOptions {
 	showExpandHint?: boolean;
 	/** Space reserved by an embedding workspace; compact chrome when the full panel cannot fit. */
 	availableRows?: () => number;
+	/** Unsubmitted answers to start from (a forced refresh's checkpoint); mismatched parts are ignored. */
+	initialState?: AskDialogDraftState;
 }
 
 interface QuestionState {
@@ -539,6 +571,10 @@ export class AskDialogComponent implements Component {
 	#remainingSeconds: number | undefined;
 	#countdown: CountdownTimer | undefined;
 	#promptActive = false;
+	/** Which prompt is open, so a checkpoint can say what its typed text answers. */
+	#promptContext: { index: number; kind: "custom" | "note"; rowKey?: string } | undefined;
+	/** A checkpointed open prompt, offered as prefill when that prompt opens again. */
+	#restoredPrompt: AskDialogDraftState["openPrompt"];
 	#timeoutExpired = false;
 	#closed = false;
 	#tabBar: TabBar | undefined;
@@ -585,6 +621,7 @@ export class AskDialogComponent implements Component {
 				timedOut: false,
 			};
 		});
+		this.#restoreDraftState(options.initialState);
 		if (options.timeout && options.timeout > 0) {
 			this.#countdown = new CountdownTimer(
 				options.timeout,
@@ -623,6 +660,89 @@ export class AskDialogComponent implements Component {
 		this.#countdown?.dispose();
 		this.#stopRingTick();
 		this.#panel.dispose();
+	}
+
+	/** Apply checkpointed answers that still fit these questions; anything else keeps its fresh default. */
+	#restoreDraftState(initial: AskDialogDraftState | undefined): void {
+		if (initial?.version !== 1 || initial.questions.length !== this.#questions.length) return;
+		for (const [index, question] of this.#questions.entries()) {
+			const draft = initial.questions[index];
+			const state = this.#states[index];
+			if (!draft || !state || draft.id !== question.id) continue;
+			const labels = new Set(question.options.map(option => option.label));
+			for (const label of draft.selectedOptions) {
+				if (labels.has(label) && (question.multi || state.selectedOptions.size === 0))
+					state.selectedOptions.add(label);
+			}
+			state.customInput = draft.customInput;
+			state.customInputImages = draft.customInputImages;
+			const noteRow = /^option:(\d+)$/.exec(draft.noteRowKey ?? "");
+			if (
+				draft.note !== undefined &&
+				(draft.noteRowKey === "other" || (noteRow && Number(noteRow[1]) < question.options.length))
+			) {
+				state.note = draft.note;
+				state.noteImages = draft.noteImages;
+				state.noteRowKey = draft.noteRowKey;
+			}
+			// Rows are the options plus the trailing "other" row.
+			if (Number.isInteger(draft.cursorIndex))
+				state.cursorIndex = clamp(draft.cursorIndex, 0, question.options.length);
+		}
+		if (Number.isInteger(initial.activeTabIndex)) {
+			const lastTab = this.#hasSubmitTab() ? this.#submitTabIndex() : this.#questions.length - 1;
+			this.#activeTabIndex = clamp(initial.activeTabIndex, 0, Math.max(0, lastTab));
+		}
+		if (initial.openPrompt && this.#questions.some(question => question.id === initial.openPrompt?.questionId))
+			this.#restoredPrompt = initial.openPrompt;
+	}
+
+	/**
+	 * Unsubmitted answers and position, for a checkpoint. `openPrompt` is the text in the
+	 * host's custom-answer or note prompt while one is open; a restored prompt nobody has
+	 * reopened yet is carried over.
+	 */
+	captureDraftState(openPrompt?: AskDialogPromptValue): AskDialogDraftState {
+		const context = this.#promptContext;
+		const question = context ? this.#questions[context.index] : undefined;
+		const typed =
+			context && question && openPrompt && (openPrompt.text.length > 0 || (openPrompt.images?.length ?? 0) > 0)
+				? { questionId: question.id, kind: context.kind, rowKey: context.rowKey, value: openPrompt }
+				: undefined;
+		const prompt = typed ?? (context ? undefined : this.#restoredPrompt);
+		return {
+			version: 1,
+			activeTabIndex: this.#activeTabIndex,
+			questions: this.#questions.map((question, index) => {
+				const state = this.#states[index]!;
+				return {
+					id: question.id,
+					selectedOptions: question.options
+						.map(option => option.label)
+						.filter(label => state.selectedOptions.has(label)),
+					...(state.customInput !== undefined ? { customInput: state.customInput } : {}),
+					...(state.customInputImages ? { customInputImages: state.customInputImages } : {}),
+					...(state.note !== undefined ? { note: state.note, noteRowKey: state.noteRowKey } : {}),
+					...(state.noteImages ? { noteImages: state.noteImages } : {}),
+					cursorIndex: state.cursorIndex,
+				};
+			}),
+			...(prompt ? { openPrompt: prompt } : {}),
+		};
+	}
+
+	/** The checkpointed text of this prompt, used once as its prefill. */
+	#takeRestoredPrompt(index: number, kind: "custom" | "note", rowKey?: string): AskDialogPromptValue | undefined {
+		const restored = this.#restoredPrompt;
+		if (
+			!restored ||
+			restored.questionId !== this.#questions[index]?.id ||
+			restored.kind !== kind ||
+			(kind === "note" && restored.rowKey !== rowKey)
+		)
+			return undefined;
+		this.#restoredPrompt = undefined;
+		return restored.value;
 	}
 	/**
 	 * Toggle truncated question headers and option descriptions. Returns false
@@ -1322,9 +1442,14 @@ export class AskDialogComponent implements Component {
 		rowItem: QuestionRow,
 	): Promise<void> {
 		this.#promptActive = true;
+		const index = this.#questions.indexOf(question);
+		this.#promptContext = { index, kind: "custom" };
 		try {
 			const prefill =
-				state.customInput === undefined ? undefined : { text: state.customInput, images: state.customInputImages };
+				this.#takeRestoredPrompt(index, "custom") ??
+				(state.customInput === undefined
+					? undefined
+					: { text: state.customInput, images: state.customInputImages });
 			const result = await this.#openPrompt({ title: "Custom answer", question: question.question }, prefill);
 			if (result === undefined || this.#closed) return;
 			const input = splitPromptInput(result);
@@ -1349,6 +1474,7 @@ export class AskDialogComponent implements Component {
 			}
 		} finally {
 			this.#promptActive = false;
+			this.#promptContext = undefined;
 			this.#runDeferredTimeout();
 			this.#requestRender();
 		}
@@ -1360,10 +1486,13 @@ export class AskDialogComponent implements Component {
 		rowItem: QuestionRow,
 	): Promise<void> {
 		this.#promptActive = true;
+		const index = this.#questions.indexOf(question);
+		this.#promptContext = { index, kind: "note", rowKey: rowItem.key };
 		try {
 			const isReedit = state.noteRowKey === rowItem.key;
 			const prefill =
-				isReedit && state.note !== undefined ? { text: state.note, images: state.noteImages } : undefined;
+				this.#takeRestoredPrompt(index, "note", rowItem.key) ??
+				(isReedit && state.note !== undefined ? { text: state.note, images: state.noteImages } : undefined);
 			const result = await this.#openPrompt(
 				{ title: `Note for ${rowItem.label}`, question: question.question },
 				prefill,
@@ -1375,6 +1504,7 @@ export class AskDialogComponent implements Component {
 			state.noteRowKey = rowItem.key;
 		} finally {
 			this.#promptActive = false;
+			this.#promptContext = undefined;
 			this.#runDeferredTimeout();
 			this.#requestRender();
 		}

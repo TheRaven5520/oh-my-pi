@@ -3,6 +3,7 @@ import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import type { CollabUiRequestDraft, CollabUiSelectItem } from "@oh-my-pi/pi-wire";
 import type { CollabHost } from "../../collab/host";
 import type { CentralAnswer, CentralRequestDraft } from "@oh-my-pi/pi-tui/apps/central/types";
+import { centralChatAge } from "../../central/age-refresh";
 import { type CentralHost, startCentralHost } from "../../central/bridge";
 import { type ReplyAlert, resolveReplyAlert } from "@oh-my-pi/pi-tui/tmux-reply-alert";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
@@ -30,6 +31,7 @@ import type {
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import {
+	type AskDialogDraftState,
 	type AskDialogPrompt,
 	type AskDialogPromptValue,
 	AskDialogComponent,
@@ -264,6 +266,7 @@ export class ExtensionUiController {
 							this.ctx.session.isCompacting ||
 							this.ctx.session.hasPostPromptWork,
 						transcriptRevision: `${this.ctx.session.messages.length}:${String((this.ctx.session.messages.at(-1) as AgentMessage & { timestamp?: number })?.timestamp ?? "")}`,
+						age: centralChatAge(this.ctx.settings),
 					}),
 					{
 						getTranscript: () => centralTranscript(this.ctx.session.messages),
@@ -275,20 +278,34 @@ export class ExtensionUiController {
 								this.ctx.editor.getBorderStyle(),
 							),
 							canPrompt:
-								!this.#centralStopped && !this.ctx.collabGuest && !this.ctx.session.isSessionTransitioning,
+								!this.#centralStopped &&
+								!this.ctx.isShuttingDown &&
+								!this.ctx.ageDraining &&
+								!this.ctx.collabGuest &&
+								!this.ctx.session.isSessionTransitioning,
 							canCommand:
-								!this.#centralStopped && !this.ctx.collabGuest && !this.ctx.session.isSessionTransitioning,
+								!this.#centralStopped &&
+								!this.ctx.isShuttingDown &&
+								!this.ctx.ageDraining &&
+								!this.ctx.collabGuest &&
+								!this.ctx.session.isSessionTransitioning,
 							commands: this.ctx.centralCommands(),
-							promptUnavailableReason: this.#centralStopped
-								? "Chat is stopping; resume it before sending."
-								: this.ctx.collabGuest
-									? "This is a collaboration guest; select the owning chat."
-									: this.ctx.session.isSessionTransitioning
-										? "Chat is switching sessions; wait and retry."
-										: undefined,
+							promptUnavailableReason:
+								this.#centralStopped || this.ctx.isShuttingDown || this.ctx.ageDraining
+									? "Chat is stopping; resume it before sending."
+									: this.ctx.collabGuest
+										? "This is a collaboration guest; select the owning chat."
+										: this.ctx.session.isSessionTransitioning
+											? "Chat is switching sessions; wait and retry."
+											: undefined,
 						}),
 						command: async (sessionId, text) => {
-							if (this.#centralStopped || this.ctx.session.sessionManager.getSessionId() !== sessionId)
+							if (
+								this.#centralStopped ||
+								this.ctx.isShuttingDown ||
+								this.ctx.ageDraining ||
+								this.ctx.session.sessionManager.getSessionId() !== sessionId
+							)
 								throw new Error("Central command target is unavailable");
 							// A refusal is the command's answer, shown in the focus view like any other result.
 							try {
@@ -300,6 +317,8 @@ export class ExtensionUiController {
 						prompt: (sessionId, text) => {
 							if (
 								this.#centralStopped ||
+								this.ctx.isShuttingDown ||
+								this.ctx.ageDraining ||
 								this.ctx.collabGuest ||
 								this.ctx.session.isSessionTransitioning ||
 								this.ctx.session.sessionManager.getSessionId() !== sessionId
@@ -338,6 +357,7 @@ export class ExtensionUiController {
 								);
 							return admission.promise;
 						},
+						ageRefresh: request => this.ctx.handleAgeRefresh(request),
 						onClosed: () => {
 							if (this.#centralHost === host) this.#centralHost = undefined;
 						},
@@ -1039,8 +1059,13 @@ export class ExtensionUiController {
 						onTimeout: dialogOptions?.onTimeout,
 						tui: this.ctx.ui,
 						inputGuard,
+						initialState: dialogOptions?.askDraft?.initial,
 					},
 				);
+				const askDraft = dialogOptions?.askDraft;
+				const capture = (): AskDialogDraftState | undefined =>
+					closed ? undefined : askDialog.captureDraftState(promptEditor?.currentValue());
+				if (askDraft) askDraft.capture = capture;
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(askDialog);
 				if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
@@ -1051,6 +1076,7 @@ export class ExtensionUiController {
 				return {
 					hide: () => {
 						closed = true;
+						if (askDraft?.capture === capture) askDraft.capture = undefined;
 						askDialog?.dispose();
 						promptEditor?.dispose();
 						promptResolve?.(undefined);

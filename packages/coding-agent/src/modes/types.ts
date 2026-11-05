@@ -6,6 +6,7 @@ import type { Component, Container, EditorTheme, Loader, TUI } from "@oh-my-pi/p
 import type { TspText } from "@oh-my-pi/pi-wire";
 import type { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import type { CentralCommandInfo } from "@oh-my-pi/pi-tui/apps/central/types";
+import type { AgeRefreshInterrupted, CentralAgeRefreshRequest, CentralAgeRefreshResult } from "../central/age-refresh";
 import type { CollabController } from "../collab/controller";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
@@ -295,6 +296,23 @@ export interface InteractiveModeContext {
 	checkShutdownRequested(): Promise<void>;
 	/** A turn fully settled; restarts into a newly installed build once the chat is idle. */
 	onTurnSettled(): void;
+	/** Central `ageRefresh`: this runtime decides from its own age, settings and state; `start` runs after the reply is sent. */
+	handleAgeRefresh(request: CentralAgeRefreshRequest): { result: CentralAgeRefreshResult; start?: () => void };
+	/** Work a forced age refresh would stop or set aside right now (asks and the draft are kept). */
+	ageRefreshInventory(): AgeRefreshInterrupted[];
+	/**
+	 * Forced age refresh: refuse new work, checkpoint the draft and open questions, stop running work
+	 * with a session note naming it, then refresh. Resolves only when it could not complete.
+	 */
+	forceAgeRefresh(info: { ageMs: number; hardMs: number; graceMs: number }): Promise<void>;
+	/**
+	 * A forced age refresh's grace window opened: running work may finish, nothing new starts.
+	 * Enter keeps the draft, queued messages return to the composer, Central refuses prompts
+	 * and commands, new background jobs are refused, and auto-submit timers stop.
+	 */
+	beginAgeDrain(graceMs: number): void;
+	/** True from a forced age refresh's grace window until the process is replaced. */
+	readonly ageDraining: boolean;
 	/** True while a foreground submission is accepted but not yet handed to the session. */
 	hasPendingSubmission(): boolean;
 

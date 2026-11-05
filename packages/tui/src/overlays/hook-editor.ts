@@ -288,6 +288,12 @@ export class HookEditorComponent extends OverlayPanel implements Focusable {
 		else this.#onSubmitCallback(text);
 	}
 
+	/** What is typed and attached so far, unsubmitted (a checkpoint reads it before a forced refresh). */
+	currentValue(): { text: string; images?: ImageContent[] } {
+		const text = this.#editor.getExpandedText();
+		return this.#images.length > 0 ? { text, images: [...this.#images] } : { text };
+	}
+
 	/** Whether this prompt opted into clipboard image attachments. */
 	get acceptsImages(): boolean {
 		return this.#acceptImages && !this.#disposed;

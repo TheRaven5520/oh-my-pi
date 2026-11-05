@@ -11,10 +11,30 @@ import {
 	type Agent,
 	AgentBusyError,
 	type AgentMessage,
+	type AgentToolResult,
 	agentPauseGate,
 	EventLoopKeepalive,
 	ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
+import type { AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
+import {
+	type AgeRefreshInterrupted,
+	type CentralAgeRefreshRequest,
+	processMemory,
+	recordLastAgeRefresh,
+	STOPPED_WORK_KINDS,
+	withRunningTurn,
+} from "../central/age-refresh";
+import { AskTool, listOpenAsks } from "../tools/ask";
+import {
+	AGE_REFRESH_ABORT_REASON,
+	AGE_REFRESH_CHECKPOINT_TYPE,
+	AGE_REFRESH_RESTORED_TYPE,
+	type AgeRefreshCheckpoint,
+	type AgeRefreshCheckpointAsk,
+	findPendingAgeRefreshCheckpoint,
+	restoreAgeRefreshCheckpoint,
+} from "./age-refresh-checkpoint";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Model, Usage, UsageReport } from "@oh-my-pi/pi-ai";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -267,7 +287,7 @@ import { CleanseCommandController } from "./controllers/cleanse-command-controll
 import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
 import { ExtensionUiController } from "./controllers/extension-ui-controller";
-import { InputController } from "./controllers/input-controller";
+import { InputController, isComposerDraftSnapshot } from "./controllers/input-controller";
 import { LiveCommandController } from "./controllers/live-command-controller";
 import { MCPCommandController } from "./controllers/mcp-command-controller";
 import { OmfgController } from "./controllers/omfg-controller";
@@ -275,7 +295,7 @@ import { SelectorController } from "./controllers/selector-controller";
 import { SessionFocusController } from "./controllers/session-focus-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { ForkCommandController } from "./controllers/fork-command-controller";
-import { UpdateRefreshController } from "./controllers/update-refresh-controller";
+import { type AgeRefreshDecision, UpdateRefreshController } from "./controllers/update-refresh-controller";
 import { runningExecutablePath } from "../installed-build";
 import { isForkAgentId } from "../registry/fork-agent-id";
 import { TanCommandController } from "./controllers/tan-command-controller";
@@ -469,6 +489,8 @@ const cfgLiveUiSettings = combine({
 type LiveUiSettings = SettingValueOf<typeof cfgLiveUiSettings>;
 
 const STILL_CLOSING_DELAY_MS = 3_000;
+/** How long a forced age refresh waits for the aborted turn's results to be persisted before writing its note. */
+const AGE_REFRESH_SETTLE_MS = 10_000;
 const JUDGMENT_BATCH_PROGRESS_RETAIN_MS = 1_000;
 /** Startup emits several status-bar changes within a second; persist only the settled one. */
 const COMPOSER_STATUS_PERSIST_DELAY_MS = 1_000;
@@ -1757,6 +1779,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	lastLeftTapTime = 0;
 	shutdownRequested = false;
 	#isShuttingDown = false;
+	/** A forced age refresh's grace window is open: nothing new may start. */
+	#ageDraining = false;
 	/**
 	 * Set once a graceful {@link shutdown} teardown threw. The teardown is
 	 * promise-memoized (and the session manager latches its disk error), so
@@ -2852,6 +2876,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.disableSubmit = false;
 		// Publish native send readiness even when no user input triggers another frame.
 		this.ui.requestRender();
+		// A forced age refresh left the draft and open questions in the session for this process.
+		void this.#restoreAgeRefreshCheckpoint().catch(error => {
+			logger.warn("Age refresh: restoring the checkpoint failed", { error: String(error) });
+			this.showWarning(`Could not restore everything from before the automatic refresh: ${String(error)}`);
+		});
 	}
 
 	/** Reload the title-generation system prompt override for the provided working
@@ -7319,6 +7348,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (this.#isShuttingDown) return;
 		this.#isShuttingDown = true;
+		await this.#relaunchAsRefresh(invocation);
+	}
+
+	/** `/refresh` after the caller set `#isShuttingDown`: tear down, then hand the session to a fresh process. */
+	async #relaunchAsRefresh(invocation: RefreshInvocation): Promise<void> {
 		try {
 			await this.#teardown();
 		} catch (error) {
@@ -7348,6 +7382,317 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 			await postmortem.quit(1);
 		}
+	}
+
+	handleAgeRefresh(request: CentralAgeRefreshRequest): AgeRefreshDecision {
+		return this.#updateRefreshController.handleAgeRefresh(request);
+	}
+
+	ageRefreshInventory(): AgeRefreshInterrupted[] {
+		const session = this.session;
+		const items: AgeRefreshInterrupted[] = [];
+		const state = session.agent.state;
+		const pendingToolCalls = new Map<string, string>();
+		const lastAssistant =
+			state.streamMessage?.role === "assistant"
+				? state.streamMessage
+				: session.messages.findLast(message => message.role === "assistant");
+		for (const toolCallId of state.pendingToolCalls) {
+			const call =
+				lastAssistant?.role === "assistant"
+					? lastAssistant.content.find(block => block.type === "toolCall" && block.id === toolCallId)
+					: undefined;
+			const name = call?.type === "toolCall" ? call.name : "tool";
+			pendingToolCalls.set(toolCallId, name);
+			// Its question is checkpointed below, not stopped.
+			if (name === "ask") continue;
+			const command =
+				name === "bash" && call?.type === "toolCall" && typeof call.arguments?.command === "string"
+					? truncateToWidth(replaceTabs(call.arguments.command).replace(/\s+/g, " "), 120)
+					: undefined;
+			items.push({
+				kind: name === "bash" ? "bash" : "tool",
+				id: toolCallId,
+				label: command ?? name,
+				state: "tool call in progress",
+			});
+		}
+		const jobs = (session.asyncJobManager?.getRunningJobs() ?? []).filter(job => job.type !== "ask");
+		for (const job of jobs) {
+			const lastLine = job.progressText?.trim().split("\n").at(-1);
+			items.push({
+				kind: job.type === "task" ? "subagent" : job.type,
+				id: job.id,
+				label: job.label,
+				state: `running ${formatDuration(Date.now() - job.startTime)}${lastLine ? `; last output: ${truncateToWidth(replaceTabs(lastLine), 120)}` : ""}`,
+			});
+		}
+		const jobAgents = new Set(jobs.map(job => job.agentId).filter(id => id !== undefined));
+		for (const agent of AgentRegistry.global().list()) {
+			if (agent.kind === "sub" && agent.status === "running" && !jobAgents.has(agent.id))
+				items.push({ kind: "subagent", id: agent.id, label: agent.displayName });
+		}
+		if (session.isBashRunning)
+			items.push({ kind: "bash", id: "user-bash", label: "! command typed in the composer" });
+		if (session.isEvalRunning)
+			items.push({ kind: "eval", id: "user-eval", label: "$ command typed in the composer" });
+		if (this.loopModeEnabled && !this.loopModePaused)
+			items.push({ kind: "loop", id: "loop", label: "loop mode run" });
+		if (this.goalModeEnabled && !this.goalModePaused)
+			items.push({ kind: "goal", id: "goal", label: "goal mode run" });
+		if (this.#forkCommandController.size > 0)
+			items.push({ kind: "fork", id: "forks", label: `${this.#forkCommandController.size} open /fork chat(s)` });
+		if (this.#liveCommandController.active) items.push({ kind: "voice", id: "live", label: "live voice session" });
+		if (this.collabController.host) items.push({ kind: "collab", id: "collab", label: "collaboration session" });
+		if (this.hasActiveBtw() || this.hasActiveOmfg() || this.hasActiveCleanse())
+			items.push({ kind: "side-request", id: "side", label: "side request (/btw, /omfg or /cleanse)" });
+		if (this.ui.hasOverlay()) items.push({ kind: "dialog", id: "overlay", label: "open picker or dialog" });
+		const openAsks = listOpenAsks(session.getAgentId());
+		for (const ask of openAsks) {
+			items.push({
+				kind: "ask",
+				id: ask.continuation?.jobId ?? ask.toolCallId,
+				label: `kept open: ${ask.questions.map(question => question.question).join(" / ")}`,
+			});
+		}
+		const queued = session.getQueuedMessages();
+		if (this.editor.hasDraftContent() || queued.steering.length > 0 || queued.followUp.length > 0)
+			items.push({ kind: "draft", id: "composer", label: "unsent draft and queued messages, kept in the composer" });
+		// A turn only waiting on an inline question resumes with its answer after the refresh.
+		return withRunningTurn(items, {
+			streaming: session.isStreaming,
+			providerStreaming: state.streamMessage !== null,
+			pendingToolCalls,
+			openInlineAsks: new Set(openAsks.filter(ask => !ask.continuation).map(ask => ask.toolCallId)),
+		});
+	}
+
+	/** The forced tier's grace window: running work may finish while nothing new starts. */
+	beginAgeDrain(graceMs: number): void {
+		if (this.#ageDraining) return;
+		this.#ageDraining = true;
+		// Enter keeps typing in the composer; Central reads ageDraining and refuses.
+		this.editor.disableSubmit = true;
+		this.#abortLoopCondition();
+		this.#cancelLoopAutoSubmit();
+		this.#cancelGoalContinuation();
+		// Queued messages would start new turns; they wait in the composer instead.
+		this.#inputController.restoreQueuedMessagesToEditor({ forInterrupt: true });
+		this.session.asyncJobManager?.refuseNewJobs("This chat is about to refresh automatically; start it afterwards.");
+		this.showStatus(
+			`Refreshing automatically within ${formatDuration(graceMs)}; running work may finish, new messages stay in the composer.`,
+		);
+	}
+
+	get ageDraining(): boolean {
+		return this.#ageDraining;
+	}
+
+	async forceAgeRefresh(info: { ageMs: number; hardMs: number; graceMs: number }): Promise<void> {
+		if (this.#isShuttingDown) return;
+		const sessionFile = this.sessionManager.getSessionFile();
+		if (!sessionFile) return;
+		let invocation: RefreshInvocation;
+		try {
+			invocation = buildRefreshInvocation(sessionFile);
+		} catch (error) {
+			this.showError(`Automatic refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		this.beginAgeDrain(info.graceMs);
+		// From here the process only checkpoints and hands over.
+		this.#isShuttingDown = true;
+		this.showStatus(
+			`This chat has run ${formatDuration(info.ageMs)} since its last refresh — saving and refreshing…`,
+		);
+		const memory = processMemory();
+		const interrupted = this.ageRefreshInventory();
+		const stopped = interrupted.filter(item => STOPPED_WORK_KINDS[item.kind]);
+		// Questions first, while their dialogs still hold the unsubmitted answers.
+		const asks: AgeRefreshCheckpointAsk[] = listOpenAsks(this.session.getAgentId()).map(ask => {
+			const draft = ask.draft.capture?.() ?? ask.draft.initial;
+			return {
+				toolCallId: ask.toolCallId,
+				questions: ask.questions,
+				...(ask.continuation ? { continuation: ask.continuation } : {}),
+				...(draft ? { draft } : {}),
+			};
+		});
+		// A cancelled job never delivers, so closing these dialogs cannot report a
+		// "dismissed" answer; the next process re-arms them under the same job ids.
+		for (const ask of asks) {
+			if (ask.continuation) this.session.asyncJobManager?.cancel(ask.continuation.jobId);
+		}
+		// Queued messages go back into the composer, as Esc does, so the abort cannot send them;
+		// internal steers are dropped so nothing resumes the run being stopped.
+		this.#inputController.restoreQueuedMessagesToEditor({ forInterrupt: true });
+		try {
+			await this.session.abort({ reason: AGE_REFRESH_ABORT_REASON });
+		} catch (error) {
+			logger.warn("Age refresh: abort failed", { error: String(error) });
+		}
+		// No async result, queued drain or continuation may start a turn before teardown.
+		this.session.beginDispose();
+		// The aborted calls' results must be on disk before the checkpoint, which the restore finds them by.
+		const settle = Promise.withResolvers<void>();
+		const settleTimer = setTimeout(settle.resolve, AGE_REFRESH_SETTLE_MS);
+		await Promise.race([this.session.waitForIdle().catch(() => {}), settle.promise]);
+		clearTimeout(settleTimer);
+		const checkpoint: AgeRefreshCheckpoint = {
+			version: 1,
+			id: crypto.randomUUID(),
+			at: Date.now(),
+			ageMs: info.ageMs,
+			hardMs: info.hardMs,
+			graceMs: info.graceMs,
+			...(this.editor.hasDraftContent() ? { draft: this.editor.captureDraftSnapshot() } : {}),
+			asks,
+			stopped,
+		};
+		this.sessionManager.appendCustomEntry(AGE_REFRESH_CHECKPOINT_TYPE, checkpoint);
+		logger.info("Age refresh (hard) checkpointed", {
+			ageMs: info.ageMs,
+			hardMs: info.hardMs,
+			graceMs: info.graceMs,
+			interrupted,
+			stopped: stopped.length,
+			asks: asks.length,
+			draft: checkpoint.draft !== undefined,
+			...memory,
+		});
+		await this.#relaunchAsRefresh(invocation);
+		// Returned: teardown failed and the error is shown; typing must not be stranded.
+		this.editor.disableSubmit = false;
+	}
+
+	/**
+	 * After a forced age refresh: put the draft back and re-open the questions it
+	 * checkpointed, each answerable as before. Runs once per checkpoint.
+	 */
+	async #restoreAgeRefreshCheckpoint(): Promise<void> {
+		const checkpoint = findPendingAgeRefreshCheckpoint(this.sessionManager.getEntries());
+		if (!checkpoint) return;
+		const ui = this.getToolUIContext();
+		const askTool = new AskTool({
+			cwd: this.sessionManager.getCwd(),
+			hasUI: true,
+			settings: this.settings,
+			getSessionFile: () => this.sessionManager.getSessionFile() ?? null,
+			getSessionSpawns: () => null,
+			getPlanModeState: () => this.session.getPlanModeState(),
+			getAgentId: () => this.session.getAgentId() ?? null,
+			asyncJobManager: this.session.asyncJobManager,
+		});
+		const { promptSubmitted } = await restoreAgeRefreshCheckpoint(checkpoint, {
+			markRestored: checkpointId =>
+				this.sessionManager.appendCustomEntry(AGE_REFRESH_RESTORED_TYPE, { checkpointId }),
+			restoreDraft: draft => {
+				if (!isComposerDraftSnapshot(draft)) return;
+				// Supersedes the plain-text draft sidecar the teardown also wrote.
+				this.editor.restoreDraftSnapshot(draft);
+				this.updateEditorBorderColor();
+				this.ui.requestRender();
+			},
+			rearmContinued: ask => {
+				if (!ui) throw new Error("no dialog surface");
+				askTool.rearmContinued(ask.toolCallId, { questions: ask.questions }, ask.continuation, ui, ask.draft);
+			},
+			reopenInterrupted: (ask, restoredLeafId) => {
+				if (!ui) throw new Error("no dialog surface");
+				void this.#reanswerInterruptedAsk(askTool, ui, ask, checkpoint, restoredLeafId);
+			},
+			// A user turn of its own: the composer and its draft are not touched. Settles
+			// when the session owns the prompt, not when the turn it starts ends.
+			submitPrompt: text => {
+				const admission = Promise.withResolvers<void>();
+				let admitted = false;
+				void this.session
+					.prompt(text, {
+						expandPromptTemplates: false,
+						streamingBehavior: "followUp",
+						restoreOnDrop: false,
+						throwOnDrop: true,
+						onPromptAccepted: () => {
+							admitted = true;
+							admission.resolve();
+						},
+					})
+					.then(
+						() => {
+							if (!admitted) admission.reject(new Error("the prompt was not admitted"));
+						},
+						(error: unknown) => {
+							if (!admitted) admission.reject(error);
+							else logger.warn("Age refresh prompt turn failed", { error: String(error) });
+						},
+					);
+				return admission.promise;
+			},
+			warn: message => this.showWarning(message),
+			record: recordLastAgeRefresh,
+		});
+		logger.info("Age refresh (hard) restored", {
+			checkpointId: checkpoint.id,
+			stopped: checkpoint.stopped.length,
+			asks: checkpoint.asks.length,
+			draft: checkpoint.draft !== undefined,
+			promptSubmitted,
+		});
+	}
+
+	/**
+	 * Re-open the question whose turn the forced refresh aborted. Its answer becomes
+	 * that same tool call's result (a sibling of the aborted one, as `/tree` re-answer
+	 * does) and the turn resumes. If the conversation moved on meanwhile, the answer is
+	 * delivered as a message naming the call instead of rewriting history.
+	 */
+	async #reanswerInterruptedAsk(
+		askTool: AskTool,
+		ui: ExtensionUIContext,
+		ask: AgeRefreshCheckpointAsk,
+		checkpoint: AgeRefreshCheckpoint,
+		restoredLeafId: string,
+	): Promise<void> {
+		const aborted = this.sessionManager
+			.getEntries()
+			.findLast(
+				entry =>
+					entry.type === "message" &&
+					entry.message.role === "toolResult" &&
+					entry.message.toolCallId === ask.toolCallId,
+			);
+		let result: AgentToolResult<AskToolDetails> | undefined;
+		try {
+			result = await askTool.reopenInterrupted(ask.toolCallId, { questions: ask.questions }, ui, ask.draft);
+		} catch (error) {
+			this.showWarning(
+				`The interrupted question could not be reopened: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return;
+		}
+		if (!result || this.#isShuttingDown) return;
+		await this.session.waitForIdle();
+		if (aborted && this.sessionManager.getLeafId() === restoredLeafId && !this.session.isStreaming) {
+			const navigation = await this.session.navigateTree(aborted.id, {
+				allowAskReopen: true,
+				reanswerAskResult: result,
+			});
+			if (navigation.askReanswerCommitted) {
+				await this.renderInitialMessages({ clearTerminalHistory: true });
+				this.session.resumeAfterAskReanswer();
+				return;
+			}
+		}
+		const answer = result.content.map(part => (part.type === "text" ? part.text : "")).join("\n");
+		await this.session.sendCustomMessage(
+			{
+				customType: "age-refresh-answer",
+				content: `<system-notice>\nThe user answered the question from tool call ${ask.toolCallId}, which the automatic refresh interrupted:\n${answer}\n</system-notice>`,
+				display: true,
+				details: { checkpointId: checkpoint.id, toolCallId: ask.toolCallId },
+			},
+			this.session.isStreaming ? { deliverAs: "followUp" } : { triggerTurn: true },
+		);
 	}
 
 	async shutdown(): Promise<void> {
