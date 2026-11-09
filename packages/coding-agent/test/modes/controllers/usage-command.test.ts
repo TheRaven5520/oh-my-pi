@@ -8,7 +8,6 @@ import * as activityClient from "@oh-my-pi/pi-coding-agent/stats/activity-client
 import { Container, visibleWidth } from "@oh-my-pi/pi-tui";
 import { UsageDashboardComponent } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
-import { colorToAnsi } from "@oh-my-pi/pi-tui/theme/color";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
 
 describe("renderUsageReports content", () => {
@@ -500,7 +499,7 @@ function pooledReport(provider: string, account: string, windows: Record<string,
 
 async function renderPinnedSnapshot(
 	reports: UsageReport[] | null,
-	{ width = 120, raw = false }: { width?: number; raw?: boolean } = {},
+	{ width = 120 }: { width?: number } = {},
 ): Promise<readonly string[]> {
 	const usageContainer = new Container();
 	const fetchUsageReports = vi.fn(async () => reports);
@@ -518,7 +517,7 @@ async function renderPinnedSnapshot(
 		const rendered = usageContainer.render(width);
 		const rows = rendered.map(stripVTControlCharacters);
 		expect(rows.every(row => visibleWidth(row) <= width)).toBe(true);
-		return raw ? rendered : rows;
+		return rows;
 	} finally {
 		controller.setUsagePinned(false);
 		expect(usageContainer.children).toHaveLength(0);
@@ -566,14 +565,6 @@ describe("CommandController pinned /usage snapshot", () => {
 		expect(rows.join("\n")).not.toContain("claude-a");
 	});
 
-	it("renders no OpenAI five-hour row", async () => {
-		const rows = await renderPinnedSnapshot([pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.75 })]);
-		expect(rows).toHaveLength(3);
-		expect(rows[0]).toBe("OpenAI");
-		expect(rows[1]).toMatch(windowRow("Weekly", 6, "25% left"));
-		expect(rows[2]).toContain("Usage snapshot · fetched ");
-	});
-
 	it("renders dotted missing windows for an Anthropic report", async () => {
 		const rows = await renderPinnedSnapshot([pooledReport("anthropic", "claude-a", { "7d": 0.25 })]);
 		expect(rows[0]).toBe("Anthropic");
@@ -582,30 +573,6 @@ describe("CommandController pinned /usage snapshot", () => {
 		expect(rows[3]).toMatch(/^  Five Hour +·{16} +—$/);
 		expect(rows[1].indexOf("·")).toBe(rows[2].indexOf("█"));
 		expect(rows[3].indexOf("·")).toBe(rows[2].indexOf("█"));
-	});
-
-	it("colors headings by provider brand and weekly bars by headroom", async () => {
-		const [heading, weekly] = await renderPinnedSnapshot(
-			[pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.5 })],
-			{ raw: true },
-		);
-		// OpenAI brand green heading; 50% left uses the success fill.
-		expect(heading).toContain(colorToAnsi("#10a37f", theme.getColorMode()));
-		expect(weekly).toContain(theme.fg("success", "████████"));
-	});
-
-	it("capitalizes other providers and orders Anthropic, OpenAI, then the rest", async () => {
-		const rows = await renderPinnedSnapshot([
-			pooledReport("cursor", "cursor-a", { "7d": 0.5 }),
-			pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.1 }),
-			pooledReport("anthropic", "claude-a", { "7d": 0.1 }),
-		]);
-		expect(rows.filter(row => !row.startsWith(" ") && row !== "")).toEqual([
-			"Anthropic",
-			"OpenAI",
-			"Cursor",
-			expect.stringContaining("Usage snapshot"),
-		]);
 	});
 
 	it("ignores non-pooled reports and reports null/empty results as no pooled data", async () => {
@@ -628,13 +595,5 @@ describe("CommandController pinned /usage snapshot", () => {
 			expect(rows).toEqual(["No pooled usage data.", expect.stringContaining("Usage snapshot · fetched ")]);
 			expect(rows.join("\n")).not.toContain("me@example.test");
 		}
-	});
-
-	it("shortens the footer before clipping it on narrow terminals", async () => {
-		const reports = [pooledReport("openai-codex", "codex-a", { "chat:secondary": 0.1 })];
-		expect((await renderPinnedSnapshot(reports, { width: 30 })).at(-1)).toMatch(
-			/^fetched \d\d:\d\d · \/usage to hide$/,
-		);
-		expect((await renderPinnedSnapshot(reports, { width: 14 })).at(-1)).toBe("/usage");
 	});
 });

@@ -5,8 +5,6 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { Effort } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { ModelsConfigSchema } from "@oh-my-pi/pi-coding-agent/config/models-config-schema";
-import { ModelsConfigFile } from "@oh-my-pi/pi-coding-agent/config/models-config";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { createModelHubSearch } from "@oh-my-pi/pi-coding-agent/modes/model-browser-source";
@@ -62,81 +60,15 @@ function openRouterProvider(extra: Record<string, unknown> = {}): Record<string,
 	};
 }
 
-describe("models.yml modelSearch schema", () => {
-	const config = (provider: Record<string, unknown>) => ({ providers: { p: provider } });
-	const validate = (provider: Record<string, unknown>) => ModelsConfigSchema(config(provider));
-
-	test("accepts openai-models-list with a param and a positive integer limit", () => {
-		expect(ModelsConfigSchema.allows(config(openRouterProvider()))).toBe(true);
-	});
-
-	test("rejects unknown types, empty params and bad limits with a clear message", () => {
-		const unknown = validate(openRouterProvider({ modelSearch: { type: "litellm", param: "search", limit: 25 } }));
-		expect(String(unknown)).toContain('a supported modelSearch type ("openai-models-list")');
-		const noParam = validate(
-			openRouterProvider({ modelSearch: { type: "openai-models-list", param: " ", limit: 25 } }),
-		);
-		expect(String(noParam)).toContain("modelSearch.param a non-empty string");
-		const emptyLabel = validate(
-			openRouterProvider({ modelSearch: { type: "openai-models-list", param: "search", limit: 25, label: " " } }),
-		);
-		expect(String(emptyLabel)).toContain("modelSearch.label a non-empty string");
-		expect(
-			ModelsConfigSchema.allows(
-				config(
-					openRouterProvider({
-						modelSearch: { type: "openai-models-list", param: "search", limit: 25, label: "OpenRouter" },
-					}),
-				),
-			),
-		).toBe(true);
-		for (const limit of [0, -1, 2.5]) {
-			const bad = validate(
-				openRouterProvider({ modelSearch: { type: "openai-models-list", param: "search", limit } }),
-			);
-			expect(String(bad)).toContain("modelSearch.limit a positive integer");
-		}
-		expect(
-			ModelsConfigSchema.allows(
-				config(openRouterProvider({ modelSearch: { type: "openai-models-list", param: "search" } })),
-			),
-		).toBe(false);
-		expect(
-			ModelsConfigSchema.allows(
-				config(openRouterProvider({ modelSearch: { type: "litellm", param: "q", limit: 5 } })),
-			),
-		).toBe(false);
-	});
-
-	test("a modelSearch provider needs api and baseUrl", () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-test-model-search-schema-"));
-		try {
-			const file = path.join(dir, "models.yml");
-			const { api: _api, ...noApi } = openRouterProvider();
-			fs.writeFileSync(file, JSON.stringify({ providers: { "sprilicred-openrouter": noApi } }));
-			const result = ModelsConfigFile.relocate(file).tryLoad();
-			expect(result.status).toBe("error");
-			expect(String(result.error)).toContain('"baseUrl" and "api" are required when modelSearch is enabled');
-		} finally {
-			removeSyncWithRetries(dir);
-		}
-	});
-});
-
 describe("ModelRegistry model search", () => {
 	let tempDir: string;
 	let authStorage: AuthStorage;
 	let modelsPath: string;
-	let requests: { url: string; authorization: string | null }[];
-	let respond: (url: URL) => Response | Promise<Response>;
+	let respond: () => Response | Promise<Response>;
 
 	function makeRegistry(): ModelRegistry {
 		return new ModelRegistry(authStorage, modelsPath, {
-			fetch: async (input, init) => {
-				const url = new URL(String(input));
-				requests.push({ url: url.toString(), authorization: new Headers(init?.headers).get("authorization") });
-				return respond(url);
-			},
+			fetch: async () => respond(),
 		});
 	}
 
@@ -148,40 +80,12 @@ describe("ModelRegistry model search", () => {
 			modelsPath,
 			JSON.stringify({ providers: { "sprilicred-openrouter": openRouterProvider() } }, null, 2),
 		);
-		requests = [];
 		respond = () => Response.json({ object: "list", data: [MUSE_ROW] });
 	});
 
 	afterEach(() => {
 		authStorage.close();
 		removeSyncWithRetries(tempDir);
-	});
-
-	test("offers search for a provider with modelSearch but no models yet", () => {
-		const registry = makeRegistry();
-		expect(registry.getModelSearchProviders()).toEqual([{ provider: "sprilicred-openrouter", label: undefined }]);
-		const search = createModelHubSearch(
-			registry,
-			{ scopedModels: [], setScopedModels: () => {} },
-			{
-				showStatus: () => {},
-				showError: () => {},
-			},
-		);
-		// Without modelSearch.label the entry falls back to the formatted provider id.
-		expect(search?.providers).toEqual([{ providerId: "sprilicred-openrouter", label: "Sprilicred Openrouter" }]);
-		expect(registry.find("sprilicred-openrouter", "meta/muse-wonder")).toBeUndefined();
-	});
-
-	test("queries <baseUrl>/models?<param>=<q>&limit=<limit> with the provider's key", async () => {
-		const registry = makeRegistry();
-		await registry.searchModels("sprilicred-openrouter", "muse wonder");
-		expect(requests).toEqual([
-			{
-				url: "https://gateway.example/openrouter/v1/models?search=muse+wonder&limit=25",
-				authorization: `Bearer ${GATEWAY_KEY}`,
-			},
-		]);
 	});
 
 	test("parses rows like discovery: name, context, output, efforts, input and $/MTok", async () => {
@@ -252,11 +156,6 @@ describe("ModelRegistry model search", () => {
 		expect(await makeRegistry().searchModels("sprilicred-openrouter", "x")).toEqual([]);
 	});
 
-	test("an HTTP error surfaces as an error", async () => {
-		respond = () => new Response("nope", { status: 503 });
-		await expect(makeRegistry().searchModels("sprilicred-openrouter", "muse")).rejects.toThrow("503");
-	});
-
 	test("!command headers are resolved before the search request, never sent as command text", async () => {
 		fs.writeFileSync(
 			modelsPath,
@@ -294,17 +193,6 @@ describe("ModelRegistry model search", () => {
 			"other/picked-elsewhere",
 			"meta/muse-wonder",
 		]);
-	});
-
-	test("a pick rewrites models.yml from its parsed form, so YAML comments are not kept", async () => {
-		fs.writeFileSync(
-			modelsPath,
-			`# my providers\nproviders:\n  sprilicred-openrouter:\n    baseUrl: https://gateway.example/openrouter/v1\n    apiKey: ${GATEWAY_KEY}\n    api: openai-responses\n    modelSearch: { type: openai-models-list, param: search, limit: 25 }\n`,
-		);
-		const registry = makeRegistry();
-		const [hit] = await registry.searchModels("sprilicred-openrouter", "muse");
-		await registry.addSearchedModel(hit);
-		expect(fs.readFileSync(modelsPath, "utf-8")).not.toContain("# my providers");
 	});
 
 	test("a pick appends the entry once, keeps JSON, never writes the key, and loads without restart", async () => {

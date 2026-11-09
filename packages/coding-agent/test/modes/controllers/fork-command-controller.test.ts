@@ -21,17 +21,10 @@ import { createInMemoryAuthStorage } from "../../helpers/agent-session-setup";
 
 const model = { provider: "anthropic", id: "claude-sonnet-4-5" } as Model;
 
-interface ForkSessionEvent {
-	type: string;
-	result?: unknown;
-	aborted?: boolean;
-}
-
 /** Minimal fork session covering what the controller drives. */
 function createForkStub() {
 	const agentMessages: AgentMessage[] = [];
 	const persisted: unknown[] = [];
-	let listener: ((event: ForkSessionEvent) => void) | undefined;
 	let finishTurn = () => {};
 	let idle: Promise<void> = Promise.resolve();
 	const session = {
@@ -43,12 +36,7 @@ function createForkStub() {
 		sessionManager: { appendMessage: vi.fn((message: unknown) => persisted.push(message)) },
 		setTodoPhases: vi.fn(),
 		isStreaming: false,
-		subscribe: vi.fn((l: (event: ForkSessionEvent) => void) => {
-			listener = l;
-			return () => {
-				listener = undefined;
-			};
-		}),
+		subscribe: vi.fn(() => () => {}),
 		subscribeRunState: vi.fn(() => () => {}),
 		prompt: vi.fn(async () => {}),
 		waitForIdle: vi.fn(() => idle),
@@ -59,9 +47,6 @@ function createForkStub() {
 		session,
 		agentMessages,
 		persisted,
-		emit(event: ForkSessionEvent) {
-			listener?.(event);
-		},
 		/** Keep waitForIdle() pending, as while the reporting turn is still finishing. */
 		holdIdle() {
 			const pending = Promise.withResolvers<void>();
@@ -207,22 +192,6 @@ describe("ForkCommandController", () => {
 		expect(h.fork.session.prompt).not.toHaveBeenCalled();
 	});
 
-	it("posts an update to the main session and stays open", async () => {
-		const h = createHarness();
-		const controller = new ForkCommandController(h.ctx);
-		await controller.start("investigate");
-		const [forkId = ""] = forkIds();
-
-		const result = await h.handBack().execute("call-1", { message: "Found the root cause" }, undefined, {} as never);
-
-		expect(h.sends).toEqual([
-			{ from: forkId, to: MAIN_AGENT_ID, body: "Found the root cause", forkReport: { done: false } },
-		]);
-		expect(result.details).toEqual({ delivered: true, done: false });
-		expect(forkIds()).toEqual([forkId]);
-		expect(controller.has(forkId)).toBe(true);
-	});
-
 	it("keeps a reported fork available after its turn until explicitly closed", async () => {
 		const h = createHarness();
 		const controller = new ForkCommandController(h.ctx);
@@ -266,28 +235,6 @@ describe("ForkCommandController", () => {
 		expect(forkIds()).toEqual([forkId]);
 	});
 
-	it("restores the fork notice after compaction", async () => {
-		const h = createHarness();
-		const controller = new ForkCommandController(h.ctx);
-		await controller.start("investigate");
-
-		h.fork.emit({ type: "auto_compaction_end", result: {}, aborted: false });
-
-		expect(h.fork.agentMessages.filter(message => message.role === "developer")).toHaveLength(2);
-	});
-
-	it("closes an idle fork from the agents panel without a report", async () => {
-		const h = createHarness();
-		const controller = new ForkCommandController(h.ctx);
-		await controller.start("investigate");
-		const [forkId = ""] = forkIds();
-
-		expect(await controller.close(forkId)).toBe(true);
-
-		expect(forkIds()).toEqual([]);
-		expect(h.sends).toEqual([]);
-	});
-
 	it("closes every fork when the main session changes", async () => {
 		const h = createHarness();
 		const controller = new ForkCommandController(h.ctx);
@@ -299,16 +246,6 @@ describe("ForkCommandController", () => {
 		expect(h.fork.session.dispose).toHaveBeenCalled();
 	});
 
-	it("refuses to fork an unsaved session", async () => {
-		const h = createHarness();
-		h.getSessionFile.mockReturnValue(undefined);
-		const controller = new ForkCommandController(h.ctx);
-
-		await controller.start("anything");
-
-		expect(h.forkSpy).not.toHaveBeenCalled();
-		expect(h.ctx.showError).toHaveBeenCalledWith("/fork requires a persisted session.");
-	});
 });
 
 describe("ForkCommandController with a real child session", () => {

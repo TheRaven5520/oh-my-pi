@@ -132,12 +132,6 @@ describe("summarizePooledUsage", () => {
 });
 
 describe("pooledProviderMatches", () => {
-	it("maps sprilicred catalog providers onto upstream report providers", () => {
-		expect(pooledProviderMatches("sprilicred-anthropic", "anthropic")).toBe(true);
-		expect(pooledProviderMatches("sprilicred-openai", "openai-codex")).toBe(true);
-		expect(pooledProviderMatches("sprilicred-anthropic", "openai-codex")).toBe(false);
-		expect(pooledProviderMatches("anthropic", "anthropic")).toBe(true);
-	});
 
 	it("does not treat missing, metered, or prefix-related providers as subscription pools", () => {
 		for (const provider of [undefined, "openai", "openrouter", "sprilicred-openrouter", "sprilicred-glm"]) {

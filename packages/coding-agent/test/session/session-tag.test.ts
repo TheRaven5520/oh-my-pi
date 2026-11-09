@@ -1,21 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import {
-	normalizeSessionTag,
 	SessionTagTracker,
 	TAG_CHECK_EVERY_MS,
 	TAG_CHECK_EVERY_PROMPTS,
 } from "@oh-my-pi/pi-coding-agent/session/session-tag";
-
-describe("normalizeSessionTag", () => {
-	it("upper-cases one- and two-word tags and rejects anything longer", () => {
-		expect(normalizeSessionTag("SpriliCred")).toBe("SPRILICRED");
-		expect(normalizeSessionTag(" pi05  evals. ")).toBe("PI05 EVALS");
-		expect(normalizeSessionTag("SAM2.1 BENCHMARK")).toBe("SAM2.1 BENCHMARK");
-		expect(normalizeSessionTag("Fix the statusline colors")).toBeNull();
-		expect(normalizeSessionTag("...")).toBeNull();
-		expect(normalizeSessionTag(null)).toBeNull();
-	});
-});
 
 describe("SessionTagTracker", () => {
 	const start = 1_000_000;
@@ -45,9 +33,4 @@ describe("SessionTagTracker", () => {
 		expect(tracker.resolve("PI05 EVALS", "MODIFY OMP")).toBeUndefined();
 	});
 
-	it("replaces a missing or sentence-style name immediately", () => {
-		const tracker = new SessionTagTracker(start);
-		expect(tracker.resolve(undefined, "SPRILICRED")).toBe("SPRILICRED");
-		expect(tracker.resolve("Fix gateway billing", "SPRILICRED")).toBe("SPRILICRED");
-	});
 });

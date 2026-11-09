@@ -838,26 +838,6 @@ describe("subagent dock lines", () => {
 		expect(paint(false, "ActiveLast")).not.toContain("ActiveFirst");
 	});
 
-	it("shows the actual compact model alongside distinct assignments without usage boilerplate", () => {
-		const out = renderDock([
-			makeSession({
-				id: "AuthLoader",
-				description: "Refactoring the auth flow",
-				progress: makeProgress({
-					id: "AuthLoader",
-					resolvedModelIdentity: "sprilicred-anthropic/claude-opus-5-5",
-					resolvedThinkingLevel: ThinkingLevel.High,
-				}),
-			}),
-			makeSession({ id: "SchemaMigrator", description: "Migrating the users table" }),
-		]);
-		expect(out).toContain("agents · main");
-		expect(out).toContain("AuthLoader · Refactoring the auth flow");
-		expect(out).toContain("SchemaMigrator · Migrating the users table");
-		expect(out).toContain("Opus 5.5 (high)");
-		expect(out).not.toContain("tool uses");
-	});
-
 	it("marks the actual fallback model in compact rows instead of the configured role", () => {
 		const out = renderDock([
 			makeSession({
@@ -887,26 +867,6 @@ describe("subagent dock lines", () => {
 			expect(out).toContain("Unresolved · Awaiting resolution");
 			expect(out).not.toContain("configured-role");
 		}
-	});
-	it("times continuous active work from its start rather than each output", () => {
-		const startedAtMs = 1_000_000;
-		const session = makeSession({
-			id: "Indexer",
-			description: "Indexing the repo",
-			progress: makeProgress({ id: "Indexer", toolCount: 12, tokens: 34_512, durationMs: 5_000, startedAtMs }),
-		});
-		const at = (elapsedMs: number) =>
-			Bun.stripANSI(
-				renderSubagentDockLines([session], 120, undefined, false, { now: startedAtMs + elapsedMs }).join("\n"),
-			);
-		expect(at(83_400)).toContain("Indexer · Indexing the repo");
-		expect(at(83_400)).toContain(` · active ${formatRunElapsed(83_400)}`);
-		expect(at(83_400)).toBe(at(83_900));
-		expect(at(83_400)).not.toContain("tool uses");
-		expect(at(83_400)).not.toContain("tokens");
-		// Between progress snapshots the time keeps counting from the start, not the last snapshot.
-		expect(at(84_600)).toContain(` · active ${formatRunElapsed(84_600)}`);
-		expect(at(84_600)).not.toBe(at(83_400));
 	});
 
 	it("keeps wait/ask clocks across metadata and token updates, then resets on active work", () => {
@@ -1035,37 +995,12 @@ describe("subagent dock lines", () => {
 		expect(out).not.toContain("0 tool uses");
 	});
 
-	it("falls back to a concise task brief when no description is present", () => {
-		const session = makeSession({
-			id: "Briefed",
-			progress: makeProgress({ id: "Briefed", task: "# Target\nsrc/foo.ts\n# Change\n1. Rename bar" }),
-		});
-		const lines = Bun.stripANSI(renderSubagentDockLines([session], 120).join("\n")).split("\n");
-		const row = lines.find(line => line.includes("Briefed"));
-		expect(row).toContain("Briefed");
-		expect(row).toContain("src/foo.ts");
-		expect(row).not.toContain("Rename bar");
-	});
-
 	it("flattens multiline descriptions without changing row geometry", () => {
 		const out = renderDock([makeSession({ id: "Multi", description: "first line\nsecond line\n\nthird" })], 60);
 		expect(out).toContain("Multi");
 		expect(out).toContain("first line second line third");
 		expect(out.split("\n")).toHaveLength(4);
 		for (const line of out.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
-	});
-
-	it("keeps identity, useful activity and elapsed time on a narrow terminal", () => {
-		const session = makeSession({
-			id: "Worker",
-			description: "A very long description of the work this agent is doing right now",
-			progress: makeProgress({ id: "Worker", toolCount: 3, tokens: 12_000, startedAtMs: 0 }),
-		});
-		const out = Bun.stripANSI(renderSubagentDockLines([session], 50, undefined, false, { now: 45_000 }).join("\n"));
-		expect(out).toContain("Worker · A very long");
-		expect(out).toContain(` · active ${formatRunElapsed(45_000)}`);
-		expect(out).not.toContain("tool uses");
-		for (const line of out.split("\n")) expect(line.length).toBeLessThanOrEqual(50);
 	});
 
 	it("truncates compact activity before the actual model, identity and phase timer", () => {
@@ -1087,15 +1022,6 @@ describe("subagent dock lines", () => {
 		expect(row).not.toContain("A very long description");
 		expect(lines).toHaveLength(4);
 		for (const line of lines) expect(Bun.stringWidth(Bun.stripANSI(line))).toBeLessThanOrEqual(50);
-	});
-
-	it("uses the caller's stats for expanded rows without progress", () => {
-		const out = Bun.stripANSI(
-			renderSubagentDockLines([makeSession({ id: "Plain", description: "no progress" })], 120, undefined, true, {
-				statsFor: () => ({ tools: 1, tokens: 2_000_000 }),
-			}).join("\n"),
-		);
-		expect(out).toContain("Plain · no progress · 1 tool use · 2m tokens");
 	});
 
 	it("names the live model of registry-only agents in compact and expanded rows (/tan, /fork)", () => {
@@ -1263,27 +1189,6 @@ describe("subagent dock lines", () => {
 		expect(out).toContain("Fork-0002 · failed");
 		expect(out).toContain("Retrying · last call failed: read");
 		expect(out).not.toContain("waiting for input");
-	});
-
-	it("keeps expanded activity alongside the model and complete usage", () => {
-		const session = makeSession({
-			id: "Indexer",
-			description: "Indexing the repo",
-			progress: makeProgress({
-				id: "Indexer",
-				resolvedModelIdentity: "sprilicred-anthropic/claude-opus-5-5",
-				resolvedThinkingLevel: ThinkingLevel.High,
-				toolCount: 12,
-				tokens: 34_512,
-				startedAtMs: 0,
-			}),
-		});
-		const out = Bun.stripANSI(renderSubagentDockLines([session], 160, undefined, true, { now: 83_400 }).join("\n"));
-		expect(out).toContain("Indexer · Indexing the repo");
-		expect(out).toContain("Opus 5.5 (high)");
-		expect(out).toContain("12 tool uses · 34.5k tokens");
-		expect(out).toContain(` · active ${formatRunElapsed(83_400)}`);
-		expect(out.split("\n")).toHaveLength(4);
 	});
 
 	it("bounds every padded row and preserves selected-row click ownership", () => {

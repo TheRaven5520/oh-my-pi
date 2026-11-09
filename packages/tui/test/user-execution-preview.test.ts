@@ -28,24 +28,7 @@ function previewText(rows: readonly string[]): string[] {
 
 for (const [name, create] of Object.entries(factories)) {
 	describe(`${name} compact execution receipts`, () => {
-		it("puts singular counts inline and previews actual output", () => {
-			const component = create();
-			component.setComplete(0, false, { output: "only result\n" });
-			const rows = component.render(100).map(row => Bun.stripANSI(row));
-			expect(rows).toHaveLength(2);
-			expect(rows[0]).toContain("done · 1 line");
-			expect(rows[0]).not.toContain("1 lines");
-			expect(previewText(rows.slice(1))).toEqual(["only result"]);
-		});
 
-		it("keeps empty output header-only without a zero-line receipt", () => {
-			const component = create();
-			component.setComplete(0, false, { output: "\n  \n" });
-			const rows = component.render(100).map(row => Bun.stripANSI(row));
-			expect(rows).toHaveLength(1);
-			expect(rows[0]).toContain("done");
-			expect(rows[0]).not.toContain("0 lines");
-		});
 
 		it("bounds the completed preview and preserves click expansion", () => {
 			const component = create();

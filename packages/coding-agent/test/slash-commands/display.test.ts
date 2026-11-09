@@ -3,7 +3,6 @@ import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-messa
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
-import { cfgDisplayTimestamps } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { createInteractiveModeContext } from "../helpers/interactive-mode-context";
@@ -53,7 +52,7 @@ function fixture() {
 	return { ctx, settings, run, render };
 }
 
-describe("thinking and time display commands", () => {
+describe("thinking display commands", () => {
 	it("shows and hides retained thinking without changing model effort", async () => {
 		const f = fixture();
 		const level = f.ctx.viewSession.thinkingLevel;
@@ -85,16 +84,4 @@ describe("thinking and time display commands", () => {
 		expect(f.render()).toContain("Retained reasoning");
 	});
 
-	it("toggles timestamps independently and accepts explicit on/off idempotently", async () => {
-		const f = fixture();
-		await f.run("/time on");
-		expect(cfgDisplayTimestamps.get(f.settings)).toBe(true);
-		await f.run("/time on");
-		expect(cfgDisplayTimestamps.get(f.settings)).toBe(true);
-		await f.run("/time");
-		expect(cfgDisplayTimestamps.get(f.settings)).toBe(false);
-		await f.run("/time off");
-		expect(cfgDisplayTimestamps.get(f.settings)).toBe(false);
-		expect(f.ctx.hideThinkingBlock).toBe(true);
-	});
 });

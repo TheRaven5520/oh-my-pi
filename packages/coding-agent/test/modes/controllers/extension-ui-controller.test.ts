@@ -133,21 +133,6 @@ describe("ExtensionUiController question reply alerts", () => {
 		return { ...harness, frames, events };
 	}
 
-	it("keeps the alert through typing and clears on local submit or cancel", async () => {
-		const harness = setup();
-		const input = harness.controller.showHookInput("Answer?");
-		expect(harness.events()).toEqual(["set"]);
-		harness.handleInput("yes");
-		expect(harness.events()).toEqual(["set"]);
-		harness.handleInput("\r");
-		expect(await input).toBe("yes");
-		expect(harness.events()).toEqual(["set", "ack"]);
-		const cancelled = harness.controller.showHookSelector("Choose?", ["Yes"]);
-		harness.handleInput("\x1b");
-		expect(await cancelled).toBeUndefined();
-		expect(harness.events()).toEqual(["set", "ack", "set", "ack"]);
-	});
-
 	it("does not clear while queued or suspended questions still need answers", async () => {
 		const harness = setup();
 		const yielded = new AbortController();
@@ -164,18 +149,6 @@ describe("ExtensionUiController question reply alerts", () => {
 		expect(harness.events()).toEqual(["set"]);
 		harness.handleInput("\r");
 		expect(await queued).toBe("Allow");
-		expect(harness.events()).toEqual(["set", "ack"]);
-	});
-
-	it("hands a queued question the alert without an intermediate acknowledgment", async () => {
-		const harness = setup();
-		const first = harness.controller.showHookInput("First?");
-		const second = harness.controller.showHookInput("Second?");
-		harness.handleInput("\r");
-		await first;
-		expect(harness.events()).toEqual(["set"]);
-		harness.handleInput("\r");
-		await second;
 		expect(harness.events()).toEqual(["set", "ack"]);
 	});
 

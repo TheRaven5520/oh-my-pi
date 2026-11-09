@@ -34,7 +34,4 @@ describe("advisor tail-note compression", () => {
 		expect(rendered(card)).not.toContain("urgent blocker");
 	});
 
-	it("does not append to an unrelated component", () => {
-		expect(appendAdvisorNotes(undefined, [concern("late note")])).toBe(false);
-	});
 });

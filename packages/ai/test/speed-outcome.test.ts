@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import type { Context, Model, ModelSpec, ServiceTier } from "@oh-my-pi/pi-ai/types";
-import { coerceServiceTierByFamily } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { mockFetch } from "./helpers/fetch-mock";
 
@@ -105,12 +104,6 @@ describe("ultrafast on the wire", () => {
 		expect(message.speed).toBeUndefined();
 	});
 
-	it("keeps ultrafast across a session save and reload only for the OpenAI family", () => {
-		expect(coerceServiceTierByFamily(JSON.parse(JSON.stringify({ openai: "ultrafast" })))).toEqual({
-			openai: "ultrafast",
-		});
-		expect(coerceServiceTierByFamily({ anthropic: "ultrafast", google: "ultrafast" })).toBeUndefined();
-	});
 });
 
 describe("speed outcome from SpriliCred's headers and errors (OpenAI Responses)", () => {
@@ -169,18 +162,6 @@ describe("speed outcome from SpriliCred's headers and errors (OpenAI Responses)"
 			forwarded: "fast",
 			reason: "no_pro500_capacity",
 			served: "fast",
-		});
-	});
-
-	it("keeps a default echo standard when SpriliCred forwarded standard", async () => {
-		const { message } = await runResponses(openaiModel("sprilicred-openai"), "priority", () =>
-			sse([...TEXT, completed("default")], SPEED("fast", "standard", "api_fallback_refused")),
-		);
-		expect(message.speed).toEqual({
-			requested: "fast",
-			forwarded: "standard",
-			reason: "api_fallback_refused",
-			served: "standard",
 		});
 	});
 

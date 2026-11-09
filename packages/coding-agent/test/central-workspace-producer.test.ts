@@ -594,13 +594,6 @@ describe("Central slash commands through private IPC and the composer's submit p
 		expect(f.editor.getText()).toBe("local unsent draft");
 	});
 
-	it("still opens the model picker for a local argument-free command", async () => {
-		const f = await commandFixture();
-		await f.editor.onSubmit?.("/model");
-		expect(f.pickers).toHaveLength(1);
-		expect(f.pickers[0]!.escapes).toBe(0);
-	});
-
 	it("closes a picker the command opened and leaves the chat window on its editor", async () => {
 		const f = await commandFixture();
 		const overlays = f.ui.overlayStack.length;

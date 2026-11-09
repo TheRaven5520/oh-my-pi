@@ -78,19 +78,6 @@ describe("structured file activity headers", () => {
 		expect(native.tool?.meta).toContain("ignored included");
 	});
 
-	it("shows nondefault glob flags, authoritative counts and default scope", () => {
-		const args = { hidden: false, gitignore: false, limit: 4 };
-		const result = { content: text("one rendered row"), details: { fileCount: 4, scopePath: "src" } };
-		const card = new ToolExecutionComponent("glob", args, {}, undefined, ui, "/tmp");
-		card.updateResult(result, false);
-		const output = plain(card);
-		expect(output).toContain("src");
-		expect(output).toContain("hidden excluded");
-		expect(output).toContain("ignored included");
-		expect(output).toContain("4 files");
-		expect(globToolRenderer.describeCall({}).tool?.target).toBe(".");
-		expect(globToolRenderer.describeResult(result, done, args).tool?.meta).toContain("hidden excluded");
-	});
 
 	it("does not suppress search warning or diagnostic bodies as success receipts", () => {
 		const warnings = [

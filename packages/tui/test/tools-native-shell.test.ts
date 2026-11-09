@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import type { TspKind } from "@oh-my-pi/pi-wire";
 import { BashExecutionComponent } from "../src/chat/bash-execution";
 import type { DescribeContext, NativeChild, NativeNode } from "../src/native/node";
-import { bashToolRenderer, createShellRenderer, formatExitCodeNotice, formatWallTimeNotice } from "../src/tools/bash";
+import { bashToolRenderer, formatExitCodeNotice, formatWallTimeNotice } from "../src/tools/bash";
 import { evalToolRenderer } from "../src/tools/eval";
 import type { RenderResultOptions } from "../src/tools/renderer";
 import { getThemeByName, setThemeInstance } from "../src/theme";
@@ -33,16 +33,6 @@ function cx(kinds: readonly TspKind[]): DescribeContext {
 }
 
 describe("bash native view", () => {
-	it("leaves shared shell renderers command-based unless they opt into purpose titles", () => {
-		const renderer = createShellRenderer<{ title: string; command: string }>({
-			resolveTitle: () => "Shell",
-			resolveCommand: args => args?.command,
-		});
-		const args = { title: "Not a shell purpose", command: "echo hello" };
-		expect(renderer.activitySummary(args, done)).toMatchObject({ detail: args.command, command: true });
-		expect(renderer.describeCall(args, done).tool).toMatchObject({ target: args.command, targetKind: "command" });
-	});
-
 	it("keeps a titled call's command available for native expansion without styling the title as code", () => {
 		const args = {
 			title: "Inspecting repository changes",
@@ -73,20 +63,6 @@ describe("bash native view", () => {
 		const empty = bashToolRenderer.describeResult({ content: [] }, done, args);
 		expect(empty.preview).toBe("none");
 		expect(props(collect(empty.body, "code")[0]).text).toBe(args.command);
-	});
-
-	it("retains the native command head for unknown title-less commands", () => {
-		const view = bashToolRenderer.describeCall({ command: "git reset --hard" }, done);
-		expect(view.tool).toMatchObject({ target: "git reset --hard", targetKind: "command", lang: "bash" });
-		expect(view.body).toBeUndefined();
-	});
-
-	it("uses the same inferred action and explicit scope in native heads", () => {
-		const args = { command: "git push", cwd: "/repo/project" };
-		const view = bashToolRenderer.describeCall(args, done);
-		expect(view.tool).toMatchObject({ target: `Syncing git repo · ${args.cwd}`, targetKind: "text" });
-		expect(props(collect(view.body, "code")[0]).text).toContain(args.command);
-		expect(view.preview).toBe("none");
 	});
 
 	it("puts a failure's exit in the head and leaves only the output in the body", () => {

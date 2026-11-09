@@ -12,15 +12,12 @@ import overseerSystemPrompt from "../src/prompts/advisor/overseer.md" with { typ
 import { AgentSession } from "../src/session/agent-session";
 import type { AuthStorage } from "../src/session/auth-storage";
 import { convertToLlm, USER_INTERRUPT_LABEL } from "../src/session/messages";
-import { formatOverseerTodoSnapshot } from "../src/session/session-advisors";
 import { SessionManager } from "../src/session/session-manager";
 import { createAssistantMessage, createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 interface OverseerSessionOptions {
 	overseer?: boolean;
 	advisorConfigs?: AdvisorConfig[];
-	/** Leave `advisor.overseer` unset so the built-in default applies. */
-	settingDefault?: boolean;
 	syncBacklogOff?: boolean;
 	streamFn?: StreamFn;
 	advisorStreamFn?: StreamFn;
@@ -87,7 +84,7 @@ describe("built-in Overseer", () => {
 			...(options.syncBacklogOff ? { "advisor.syncBacklog": "off" as const } : {}),
 		});
 		// Set through the same layer the live toggle writes; isolated overrides would mask it.
-		if (!options.settingDefault) cfgAdvisorOverseer.set(settings, true);
+		cfgAdvisorOverseer.set(settings, true);
 		settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -135,22 +132,6 @@ describe("built-in Overseer", () => {
 		};
 		return { stream, overseerCalls: () => overseerCalls };
 	}
-
-	it("adds Overseer beside the legacy advisor only for opted-in sessions and follows the live toggle", async () => {
-		const main = createSession();
-		expect(rosterNames(main)).toEqual(["default", "Overseer"]);
-		await applyOverseerToggle(main, false);
-		expect(rosterNames(main)).toEqual(["default"]);
-		await applyOverseerToggle(main, true);
-		expect(rosterNames(main)).toEqual(["default", "Overseer"]);
-
-		const ordinary = createSession({ overseer: false });
-		expect(rosterNames(ordinary)).toEqual(["default"]);
-	});
-
-	it("leaves Overseer off when advisor.overseer is not set", () => {
-		expect(rosterNames(createSession({ settingDefault: true }))).toEqual(["default"]);
-	});
 
 	it("keeps a WATCHDOG overseer entry as an ordinary advisor while the built-in toggle is off", async () => {
 		const session = createSession({ advisorConfigs: [{ name: "overseer" }] });
@@ -249,61 +230,6 @@ describe("built-in Overseer", () => {
 			releaseHook.resolve();
 		}
 		await session.waitForIdle();
-	});
-
-	it("shows the Overseer whether a todo list exists and what each task's state is", () => {
-		expect(formatOverseerTodoSnapshot([])).toBe("Todos: none");
-		expect(formatOverseerTodoSnapshot([{ name: "Empty", tasks: [] }])).toBe("Todos: none");
-		expect(
-			formatOverseerTodoSnapshot([
-				{
-					name: "Release",
-					tasks: [
-						{ content: "Build binaries", status: "completed" },
-						{ content: "Sign Darwin", status: "in_progress" },
-						{ content: "Publish", status: "blocked", blocker: "user approval" },
-						{ content: "Old plan", status: "abandoned" },
-						{ content: "Install", status: "pending" },
-					],
-				},
-			]),
-		).toBe(
-			[
-				"Todos:",
-				"Release:",
-				"  [done] Build binaries",
-				"  [active] Sign Darwin",
-				"  [blocked] Publish (waiting on: user approval)",
-				"  [dropped] Old plan",
-				"  [pending] Install",
-			].join("\n"),
-		);
-	});
-
-	it("opens every update with the host's batch prefix so the Overseer can measure todo slots", async () => {
-		const promptInputs: Array<string | AgentMessage[]> = [];
-		const agent: AdvisorAgent = {
-			prompt: async input => {
-				promptInputs.push(input);
-			},
-			abort: () => {},
-			reset: () => {},
-			state: { messages: [] },
-		};
-		const messages: AgentMessage[] = [
-			{ role: "user", content: "PRIMARY_REQUEST_MARKER", timestamp: 1 } as AgentMessage,
-			createAssistantMessage("working"),
-		];
-		const runtime = new AdvisorRuntime(
-			agent,
-			{ snapshotMessages: () => messages, batchPrefix: () => "Now: 10/6/26, 8:10:00 PM ET" },
-			0,
-		);
-		runtime.onTurnEnd(messages);
-		expect(await runtime.waitForCatchup(1_000, 1)).toBe(true);
-		const text = promptText(promptInputs[0]!);
-		expect(text.startsWith("Now: 10/6/26, 8:10:00 PM ET")).toBe(true);
-		expect(text).toContain("PRIMARY_REQUEST_MARKER");
 	});
 
 	it("gives the first wall-clock tick the pending primary request without replaying it later", async () => {

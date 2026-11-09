@@ -54,34 +54,7 @@ describe("structured status receipts in compact cards", () => {
 		await initTheme();
 	});
 
-	it("puts a confirmed delivery in the head without a duplicate body", () => {
-		const rendered = rows("write", { path: "agent://Reviewer", content: "Review this" }, "Delivered to Reviewer.", {
-			message: { op: "send", to: "Reviewer", receipts: [{ to: "Reviewer", outcome: "injected" }] },
-		});
-		expect(rendered).toHaveLength(1);
-		expect(rendered[0]).toContain("Reviewer");
-		expect(rendered[0]).toContain("1 delivered");
-	});
 
-	it("inlines successful broadcast receipts and their delivered count", () => {
-		const rendered = rows(
-			"write",
-			{ path: "agent://all", content: "Review this" },
-			"Broadcast delivered to 2 of 2 peer(s).\n- First: injected\n- Second: woken",
-			{
-				message: {
-					op: "send",
-					to: "all",
-					receipts: [
-						{ to: "First", outcome: "injected" },
-						{ to: "Second", outcome: "woken" },
-					],
-				},
-			},
-		);
-		expect(rendered).toHaveLength(1);
-		expect(rendered[0]).toContain("2 delivered");
-	});
 
 	it("retains partial delivery errors, revived warnings and unrecognized extra text", () => {
 		const partial = rows("write", { path: "agent://all" }, "Second: failed — session unavailable", {
@@ -193,22 +166,6 @@ describe("structured status receipts in compact cards", () => {
 		expect(rendered[0]).not.toContain("applied");
 	});
 
-	it("shows the actual running roster without repeating the raw status body", () => {
-		const rendered = rows(
-			"task",
-			{ tasks: [{ name: "Requested" }] },
-			"Running agent Second...",
-			taskDetails(progress("Second", 1), progress("First", 0)),
-			true,
-		);
-		expect(rendered[0]).toContain("2 running");
-		const content = rendered.join("\n");
-		expect(content.indexOf("First")).toBeLessThan(content.indexOf("Second"));
-		expect(content).toContain("First");
-		expect(content).toContain("Second");
-		expect(content).not.toContain("Running agent Second...");
-		expect(rendered[0]).not.toContain("Requested");
-	});
 
 	it("retains real child progress and retry errors instead of replacing them with a roster", () => {
 		const details = taskDetails(

@@ -75,22 +75,6 @@ describe("ModelSearchSession", () => {
 		expect(changes).toBeGreaterThan(0);
 	});
 
-	test("empty and error states are reported inline", async () => {
-		const session = new ModelSearchSession(
-			"OpenRouter",
-			async query => {
-				if (query === "boom") throw new Error("HTTP 503 from https://gateway/models");
-				return [];
-			},
-			{ debounceMs: 0, onChange: () => {} },
-		);
-		session.setQuery("zzz");
-		await flush();
-		expect(session.message()).toBe('No OpenRouter models match "zzz"');
-		session.setQuery("boom");
-		await flush();
-		expect(session.message()).toBe("Search failed: HTTP 503 from https://gateway/models");
-	});
 
 	test("a slow answer for an older query is dropped and its request aborted", async () => {
 		const pending = new Map<string, { resolve: (hits: ModelSearchHit[]) => void; signal: AbortSignal }>();

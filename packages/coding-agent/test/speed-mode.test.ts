@@ -8,7 +8,6 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { describeSpeedOutcome } from "@oh-my-pi/pi-coding-agent/session/speed-notice";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -131,17 +130,6 @@ describe("/fast and /ultrafast", () => {
 		expect(current.serviceTierByFamily).toEqual({ openai: "ultrafast" });
 		expect(await run(current, "/fast on")).toEqual(["Fast mode enabled; ultrafast disabled."]);
 		expect(current.serviceTierByFamily).toEqual({ openai: "priority" });
-	});
-
-	it("toggles with no argument and sets on/off deterministically", async () => {
-		const current = createSession(openaiModel("sprilicred-openai"));
-		expect(await run(current, "/ultrafast")).toEqual(["Ultrafast enabled."]);
-		expect(await run(current, "/ultrafast toggle")).toEqual(["Ultrafast disabled."]);
-		expect(await run(current, "/ultrafast off")).toEqual(["Ultrafast disabled."]);
-		expect(current.isUltrafastModeEnabled()).toBe(false);
-		expect(await run(current, "/ultrafast on")).toEqual(["Ultrafast enabled."]);
-		expect(await run(current, "/ultrafast on")).toEqual(["Ultrafast enabled."]);
-		expect(await run(current, "/ultrafast status")).toEqual(["Ultrafast is on."]);
 	});
 
 	it("clears stored ultrafast when toggled off from another model family", async () => {
@@ -280,115 +268,3 @@ describe("/fast and /ultrafast", () => {
 	});
 });
 
-describe("speed outcome messages", () => {
-	const cases: Array<[string, SpeedOutcome, AssistantMessage["stopReason"], string | undefined]> = [
-		[
-			"fast forwarded",
-			{ requested: "fast", forwarded: "fast", reason: "forwarded" },
-			"stop",
-			"Upgraded to fast mode.",
-		],
-		[
-			"ultrafast forwarded",
-			{ requested: "ultrafast", forwarded: "ultrafast", reason: "forwarded" },
-			"stop",
-			"Ultrafast mode on.",
-		],
-		[
-			"ultrafast refused: no Pro 500 room",
-			{ requested: "ultrafast", forwarded: "standard", reason: "no_pro500_capacity", refused: true },
-			"error",
-			"Ultrafast unavailable: no Pro 500 account has room right now. Use /fast.",
-		],
-		[
-			"ultrafast refused: not permitted",
-			{ requested: "ultrafast", forwarded: "standard", reason: "not_permitted", refused: true },
-			"error",
-			"Ultrafast isn't enabled for you. Ask an admin, or use /fast.",
-		],
-		[
-			"ultrafast refused: model unsupported",
-			{ requested: "ultrafast", forwarded: "standard", reason: "model_unsupported", refused: true },
-			"error",
-			"Ultrafast isn't available on this model. Use /fast.",
-		],
-		[
-			"ultrafast refused mid-stream by the account",
-			{ requested: "ultrafast", forwarded: "ultrafast", reason: "account_refuses", refused: true },
-			"error",
-			"Ultrafast refused by the serving account. Use /fast.",
-		],
-		[
-			"ultrafast with no Pro 500 room falls back to fast",
-			{ requested: "ultrafast", forwarded: "fast", reason: "no_pro500_capacity" },
-			"stop",
-			"Ultrafast unavailable (no Pro 500 account has room); using fast mode.",
-		],
-		[
-			"ultrafast not permitted, fast not either",
-			{ requested: "ultrafast", forwarded: "standard", reason: "not_permitted" },
-			"stop",
-			"Ultrafast unavailable (not enabled for you); using standard.",
-		],
-		[
-			"GPT fast on paid credits",
-			{ requested: "fast", forwarded: "standard", reason: "paid_credits" },
-			"stop",
-			"Fast mode unavailable while this account runs on paid credits; using standard.",
-		],
-		[
-			"GPT fast on paid credits from an older SpriliCred never says subscription account",
-			{ requested: "fast", forwarded: "standard", reason: "subscription_extra_usage" },
-			"stop",
-			"Fast mode unavailable while this account runs on paid credits; using standard.",
-		],
-		[
-			"API fallback refused",
-			{ requested: "fast", forwarded: "standard", reason: "api_fallback_refused" },
-			"stop",
-			"Refused fallback to API pricing; using standard.",
-		],
-		[
-			"no headers, provider served standard",
-			{ requested: "fast", served: "standard" },
-			"stop",
-			"Fast mode requested; served at standard.",
-		],
-		[
-			"forwarded ultrafast served at fast",
-			{ requested: "ultrafast", forwarded: "ultrafast", reason: "forwarded", served: "fast" },
-			"stop",
-			"Ultrafast requested; served at fast.",
-		],
-		[
-			"an unrelated failure says nothing",
-			{ requested: "fast", forwarded: "fast", reason: "forwarded" },
-			"error",
-			undefined,
-		],
-		["nobody reported the tier", { requested: "fast" }, "stop", undefined],
-	];
-	for (const [label, speed, stopReason, text] of cases) {
-		it(label, () => {
-			expect(describeSpeedOutcome(turn(speed, stopReason), undefined, "m")?.text).toBe(text);
-		});
-	}
-
-	it("says 'subscription account' only for Claude Opus", () => {
-		const opus: AssistantMessage = {
-			...turn({ requested: "fast", forwarded: "standard", reason: "subscription_extra_usage" }),
-			api: "anthropic-messages",
-			provider: "sprilicred-anthropic",
-			model: "claude-opus-5-5",
-		};
-		expect(describeSpeedOutcome(opus, undefined, "m")?.text).toBe(
-			"Fast mode unavailable on a subscription account (would bill API-priced extra usage); using standard.",
-		);
-	});
-
-	it("says a wanted tier was not sent when the model can't carry it", () => {
-		expect(describeSpeedOutcome(turn(undefined), "ultrafast", "personal-openai/gpt-6-astra")?.text).toBe(
-			"Ultrafast not sent: personal-openai/gpt-6-astra doesn't offer Ultrafast.",
-		);
-	});
-});

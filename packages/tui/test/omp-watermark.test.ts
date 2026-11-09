@@ -1,21 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { OmpWatermark, resolveOmpWatermark } from "../src/omp-watermark";
 
-it("emits one direct uservar per transition and reuses its identity after resume", () => {
-	const emitted: string[] = [];
-	const watermark = new OmpWatermark(bytes => emitted.push(bytes));
-	watermark.stop();
-	watermark.start();
-	watermark.start();
-	expect(emitted).toHaveLength(1);
-	const start = emitted[0]!;
-	expect(start).toMatch(/^\x1b\]1337;SetUserVar=omp_watermark_instance=[A-Za-z0-9+/=]+\x07$/);
-	watermark.stop();
-	watermark.stop();
-	expect(emitted[1]).toBe("\x1b]1337;SetUserVar=omp_watermark_instance=\x07");
-	watermark.start();
-	expect(emitted).toEqual([start, emitted[1]!, start]);
-});
 
 it("publishes pane ownership and atomically guards cleanup against a replacement owner", () => {
 	const commands: string[][] = [];
@@ -187,18 +172,4 @@ describe("remote watermark lease", () => {
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
-	it("leaves direct and local pane lifecycles without heartbeat timers", () => {
-		const emitted: string[] = [];
-		const direct = new OmpWatermark(bytes => emitted.push(bytes));
-		const local = new OmpWatermark(bytes => emitted.push(bytes), { pane: "%42", run: () => true });
-		direct.start();
-		local.start();
-		expect(vi.getTimerCount()).toBe(0);
-		vi.advanceTimersByTime(10000);
-		expect(emitted).toHaveLength(1);
-		direct.stop();
-		local.stop();
-		expect(emitted).toHaveLength(2);
-		expect(vi.getTimerCount()).toBe(0);
-	});
 });

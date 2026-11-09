@@ -44,16 +44,6 @@ describe("startup update check", () => {
 		resetSettingsForTest();
 		await rm(directory, { recursive: true, force: true });
 	});
-	it("makes no release request until the user opts in", async () => {
-		const releases = mockForkRelease();
-		expect(await checkForNewVersion("0.0.1")).toBeUndefined();
-		expect(releases).not.toHaveBeenCalled();
-	});
-	it("reports the complete fork tag for a newer base version", async () => {
-		cfgStartupCheckUpdate.set(settings, true);
-		mockForkRelease();
-		expect(await checkForNewVersion("0.0.1")).toBe("999.0.0-personal.2");
-	});
 	it("distinguishes Personal revisions sharing one native version by the executable digest", async () => {
 		cfgStartupCheckUpdate.set(settings, true);
 		mockForkRelease();

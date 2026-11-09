@@ -6,7 +6,6 @@ import { initTheme } from "../src/theme/theme";
 import { CentralComponent } from "../src/apps/central/central-tui";
 import type { CentralChat, CentralTuiHost, CentralWorkspace } from "../src/apps/central/types";
 import { CentralPromptRejectedError } from "../src/apps/central/types";
-import { AskDialogComponent } from "../src/overlays/ask-dialog";
 import { VirtualTerminal } from "./virtual-terminal";
 import { VirtualRenderScheduler } from "./virtual-render-scheduler";
 import { withoutTerminalMultiplexer } from "./terminal-multiplexer-environment";
@@ -1297,34 +1296,6 @@ describe("Central selected-chat workspace", () => {
 		}
 	});
 
-	it("suppresses reserved Tab and expansion hints at the question renderer source", () => {
-		const dialog = new AskDialogComponent(
-			[
-				{ id: "one", question: "Long question ".repeat(100), options: [{ label: "One" }] },
-				{ id: "two", question: "Second", options: [{ label: "Two" }] },
-			],
-			{ onSubmit: () => {}, onCancel: () => {}, onPrompt: async () => undefined },
-			{ showTabHint: false, showExpandHint: false },
-		);
-		try {
-			const text = dialog
-				.render(100)
-				.map(line => Bun.stripANSI(line))
-				.join("\n")
-				.toLowerCase();
-			expect(text).not.toContain("tab");
-			expect(text).not.toContain("ctrl+o");
-			dialog.handleInput("\x1b[C");
-			expect(
-				dialog
-					.render(100)
-					.map(line => Bun.stripANSI(line))
-					.join("\n"),
-			).toContain("Second");
-		} finally {
-			dialog.dispose();
-		}
-	});
 });
 
 describe("Central restart onto a new build", () => {

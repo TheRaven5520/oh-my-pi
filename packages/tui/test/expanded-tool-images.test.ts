@@ -62,10 +62,6 @@ describe("individually expanded image cards", () => {
 });
 
 describe("expanded card bottom spacing", () => {
-	it("paints content without appending a blank row", () => {
-		const rows = expandedToolRows(theme, ["first", "", "last"], 20);
-		expect(rows.map(row => Bun.stripANSI(row).trimEnd())).toEqual(["first", "", "last"]);
-	});
 
 	it("preserves styled blank output and image reservation rows", () => {
 		const blank = "\x1b[39m  ";

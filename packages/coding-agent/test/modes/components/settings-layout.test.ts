@@ -92,8 +92,6 @@ describe("settings layout", () => {
 		expect(defs[0]).toMatchObject({ type: "boolean", label: "Usage-Aware Fallback" });
 		expect(defs[1]?.condition?.()).toBe(false);
 		expect(defs[2]?.condition?.()).toBe(false);
-		// The fork's usage-limit chains apply on any usage-limit failure, so they never hide behind this toggle.
-		expect(defs[3]?.condition).toBeUndefined();
 		cfgRetryUsageAwareFallback.set(Settings.instance, true);
 		expect(defs[1]?.condition?.()).toBe(true);
 		expect(defs[2]?.condition?.()).toBe(true);

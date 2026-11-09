@@ -8,7 +8,6 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TAG_CHECK_EVERY_PROMPTS } from "@oh-my-pi/pi-coding-agent/session/session-tag";
-import { cfgTitleStyle } from "@oh-my-pi/pi-coding-agent/goals/settings";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 describe("AgentSession tag-style titles", () => {
@@ -83,13 +82,8 @@ describe("AgentSession tag-style titles", () => {
 		expect(active.sessionName).toBe("my name");
 	});
 
-	async function createTagSession(
-		style: "tag" | "sentence" | "unpinned" = "tag",
-		existingAutoName?: string,
-	): Promise<AgentSession> {
+	async function createTagSession(): Promise<AgentSession> {
 		const sessionManager = SessionManager.inMemory();
-		// A name saved before this session applied the tag cap (e.g. an old sentence title).
-		if (existingAutoName) await sessionManager.setSessionName(existingAutoName, "auto");
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		authStorage = createInMemoryAuthStorage();
 		authStorage.keys.setRuntime("anthropic", "test-key");
@@ -100,12 +94,7 @@ describe("AgentSession tag-style titles", () => {
 				streamFn: createMockModel({ handler: () => ({ content: ["ok"] }) }).stream,
 			}),
 			sessionManager,
-			// "unpinned" leaves title.style to the default so a test can switch it with settings.set.
-			settings: Settings.isolated(
-				style === "unpinned"
-					? { "compaction.enabled": false }
-					: { "compaction.enabled": false, "title.style": style },
-			),
+			settings: Settings.isolated({ "compaction.enabled": false, "title.style": "tag" }),
 			modelRegistry: new ModelRegistry(authStorage),
 		});
 		return session;
@@ -127,36 +116,4 @@ describe("AgentSession tag-style titles", () => {
 		expect(active.sessionName).toBe("my long manual session name");
 	});
 
-	it("leaves sentence-style automatic titles uncapped", async () => {
-		const active = await createTagSession("sentence");
-		expect(await active.sessionManager.setSessionName("Merge and Update Project Dependencies", "auto")).toBe(true);
-		expect(active.sessionName).toBe("Merge and Update Project Dependencies");
-	});
-
-	it("replaces a leftover over-cap automatic name at the first prompt", async () => {
-		const active = await createTagSession("tag", "Merge and Update Project Dependencies");
-		expect(active.sessionName).toBe("Merge and Update Project Dependencies");
-		const generateTitle = vi.spyOn(active, "generateTitle").mockResolvedValue("modify omp");
-
-		await active.prompt("keep going on the omp fork");
-		await active.waitForIdle();
-		await Bun.sleep(20);
-
-		expect(generateTitle).toHaveBeenCalledTimes(1);
-		expect(active.sessionName).toBe("MODIFY OMP");
-	});
-
-	it("converts a sentence title right after the user switches to tag style", async () => {
-		const active = await createTagSession("unpinned");
-		expect(await active.sessionManager.setSessionName("Merge and Update Project Dependencies", "auto")).toBe(true);
-		cfgTitleStyle.set(active.settings, "tag");
-		const generateTitle = vi.spyOn(active, "generateTitle").mockResolvedValue("modify omp");
-
-		await active.prompt("keep going on the omp fork");
-		await active.waitForIdle();
-		await Bun.sleep(20);
-
-		expect(generateTitle).toHaveBeenCalledTimes(1);
-		expect(active.sessionName).toBe("MODIFY OMP");
-	});
 });

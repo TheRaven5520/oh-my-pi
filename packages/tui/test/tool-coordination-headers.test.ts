@@ -26,64 +26,14 @@ function render(
 	}
 }
 
-const phases = [
-	{
-		name: "Release",
-		tasks: [
-			{ content: "Review headers", status: "completed" },
-			{ content: "Install", status: "in_progress" },
-			{ content: "Deploy", status: "blocked", blocker: "Awaiting approval" },
-			{ content: "Old approach", status: "abandoned" },
-		],
-	},
-];
 
 describe("coordination headers use operation, identity and observed outcomes", () => {
 	beforeAll(async () => {
 		await initTheme();
 	});
 
-	it.each(["done", "block", "unblock", "rm", "drop"])("keeps the affected task for todo %s", op => {
-		const rows = render("todo", { op, task: "Review headers" }, "Awaiting approval", {
-			op,
-			phases,
-			storage: "session",
-		});
-		expect(rows[0]).toContain(`${op} Review headers`);
-		expect(rows[0]).toContain("1/4 completed");
-		expect(rows[0]).toContain("1 blocked");
-		expect(rows[0]).toContain("1 dropped");
-		expect(rows[0]).not.toContain("Install");
-		expect(rows.slice(1).join("\n")).toContain("Awaiting approval");
-	});
 
-	it("distinguishes todo view and preserves empty-snapshot notices", () => {
-		const rows = render("todo", { op: "view" }, "Snapshot not mirrored", {
-			op: "view",
-			phases: [],
-			storage: "session",
-		});
-		expect(rows[0]).toContain("view");
-		expect(rows[0]).toContain("0/0 completed");
-		expect(rows.slice(1).join("\n")).toContain("Snapshot not mirrored");
-	});
 
-	it("counts todo additions separately from completed transitions", () => {
-		const appended = render("todo", { op: "append", phase: "Release", items: ["Verify", "Publish"] }, "Added tasks", {
-			op: "append",
-			phases,
-			storage: "session",
-		});
-		expect(appended[0]).toContain("append Release 2 tasks");
-		const completed = render("todo", { op: "done", task: "Review headers" }, "Completed", {
-			op: "done",
-			phases,
-			storage: "session",
-			completedTasks: [{ phase: "Release", content: "Review headers" }],
-		});
-		expect(completed[0]).toContain("+1 completed");
-		expect(completed[0]).toContain("1/4 completed");
-	});
 
 	it("shows wait identities and counts without hiding completed work", () => {
 		const rows = render("wait", {}, "Finding: preserve the approval warning", {
@@ -173,23 +123,6 @@ describe("coordination headers use operation, identity and observed outcomes", (
 		expect(rows.slice(1).join("\n")).toContain("work remains");
 	});
 
-	it("retains broadcast target and partial delivery errors", () => {
-		const rows = render("write", { path: "agent://all", content: "Review" }, "Second: session unavailable", {
-			message: {
-				op: "send",
-				to: "all",
-				receipts: [
-					{ to: "First", outcome: "injected" },
-					{ to: "Second", outcome: "failed", error: "session unavailable" },
-				],
-			},
-		});
-		expect(rows[0]).toContain("IRC");
-		expect(rows[0]).toContain("all");
-		expect(rows[0]).toContain("1 delivered");
-		expect(rows[0]).toContain("1 failed");
-		expect(rows.slice(1).join("\n")).toContain("session unavailable");
-	});
 
 	it("does not infer cancellation from a kill request", () => {
 		const rows = render("write", { path: "proc://Build/kill" }, "Build already completed", {

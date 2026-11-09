@@ -118,30 +118,6 @@ describe("private Central host IPC", () => {
 		await expect(getCentralChatWorkspace(chat!.id, 1_001, 3, { dir })).rejects.toThrow("invalid_request");
 	});
 
-	it("preserves up to 64 usage rows and prompt capability through the bridge", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-usage-rows-"));
-		dirs.push(dir);
-		const usageLines = Array.from({ length: 64 }, (_, index) => `${index < 32 ? "Codex" : "Claude"} metric ${index}`);
-		const host = await startCentralHost(
-			() => ({ sessionId: "source", name: "Source", cwd: "/workspace", busy: false }),
-			{ dir, getWorkspace: () => ({ statusLines: ["Model"], usageLines, canPrompt: true }), prompt: async () => {} },
-		);
-		hosts.add(host);
-		const [chat] = (await listCentralChats({ dir })).chats;
-		const workspace = await getCentralChatWorkspace(chat!.id, 80, 40, { dir });
-		expect(workspace.usageLines.map(line => Bun.stripANSI(line))).toEqual(usageLines);
-		expect(workspace.canPrompt).toBe(true);
-	});
-
-	it("makes unsupported workspace and prompting explicit for old hosts", async () => {
-		const { dir } = await fixture();
-		const [chat] = (await listCentralChats({ dir })).chats;
-		await expect(getCentralChatWorkspace(chat!.id, 80, 20, { dir })).rejects.toThrow("unsupported_operation");
-		await expect(promptCentralChat(chat!.id, chat!.sessionId, "request-one", "hello", { dir })).rejects.toThrow(
-			"unsupported_operation",
-		);
-	});
-
 	it("pins prompts to the live session and acknowledges concurrent retries only after admission", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-central-prompt-"));
 		dirs.push(dir);

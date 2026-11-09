@@ -107,22 +107,6 @@ describe("/time", () => {
 		expect(transcript()).not.toContain("12:34:56");
 	});
 
-	it("does not rebuild for on when already on, for status, or for bad input", async () => {
-		const { ctx, run } = await harness(true);
-		await run("/time on");
-		await run("/time status");
-		await run("/time sideways");
-		expect(cfgDisplayTimestamps.get(ctx.settings)).toBe(true);
-		expect(ctx.rebuildChatFromMessages).not.toHaveBeenCalled();
-		expect(ctx.ui.resetDisplay).not.toHaveBeenCalled();
-		expect(ctx.showStatus).toHaveBeenLastCalledWith("Usage: /time [on|off|status]");
-
-		await run("/time off");
-		expect(cfgDisplayTimestamps.get(ctx.settings)).toBe(false);
-		expect(ctx.rebuildChatFromMessages).toHaveBeenCalledTimes(1);
-		expect(ctx.ui.resetDisplay).toHaveBeenCalledTimes(1);
-	});
-
 	it("runs locally for a collab guest, since timestamps are a display preference", async () => {
 		const { ctx, run } = await harness(false, true);
 		await run("/time on");

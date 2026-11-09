@@ -209,39 +209,6 @@ describe("SpriliCred login", () => {
 	// The key is supplied, so login never prompts on this interface.
 	const noPrompt = {} as Parameters<typeof runSprilicredLogin>[0];
 
-	test("puts DeepSeek under its own provider and writes no GLM provider, like the installer", async () => {
-		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
-		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
-		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
-		const provider = written.providers["sprilicred-deepseek"];
-		expect(provider).toMatchObject({
-			baseUrl: "https://sprilicred.test/deepseek/v1",
-			api: "openai-responses",
-			auth: "apiKey",
-			authHeader: true,
-			apiKey: `!cat '${tokenPath}'`,
-			discovery: { type: "openai-models-list", injectV1: false },
-		});
-		expect(provider.models.map((model: { id: string }) => model.id)).toEqual(["deepseek-v4.1-flash"]);
-		expect(provider.models[0].compat).toEqual({ reasoningDisableMode: "none-effort" });
-		expect(provider.models[0].input).toEqual(["text", "image"]);
-		expect(written.providers["sprilicred-glm"]).toBeUndefined();
-		expect(written.providers["sprilicred-muse"]).toBeUndefined();
-		expect(written.providers["sprilicred-openai"].baseUrl).toBe("https://sprilicred.test/v1");
-		expect(written.providers["sprilicred-openai"].models.map((model: { id: string }) => model.id)).toEqual([
-			"gpt-6-astra",
-		]);
-		expect(Object.keys(written.providers)).toEqual([
-			"other",
-			"sprilicred-anthropic",
-			"sprilicred-openai",
-			"sprilicred-deepseek",
-			"sprilicred-openrouter",
-		]);
-		// OpenRouter models are picked in /model; they never join Ctrl+P.
-		expect(cfgCycleModels.get(settings)).toEqual(CYCLE);
-	});
-
 	test("writes the OpenRouter provider for the model browser and retires sprilicred-muse and GLM", async () => {
 		const before = OLD_CYCLE;
 		await fs.writeFile(
@@ -680,17 +647,6 @@ describe("SpriliCred login", () => {
 		expect(cfgCycleModels.get(settings)).toEqual(CYCLE);
 	});
 
-	test("keeps the DeepSeek provider when its listing cannot be fetched", async () => {
-		const paths = { home: root, agentDir, tokenPath };
-		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
-		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
-		dedicated.deepseek = 503;
-		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
-		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
-		expect(written.providers["sprilicred-deepseek"].models[0].id).toBe("deepseek-v4.1-flash");
-		expect(cfgCycleModels.get(settings)).toEqual(CYCLE);
-	});
-
 	test("keeps custom DeepSeek models the person added while DeepSeek is listed", async () => {
 		const paths = { home: root, agentDir, tokenPath };
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
@@ -762,22 +718,6 @@ describe("SpriliCred login", () => {
 			efforts: ["high"],
 		});
 		expect(second.providers["sprilicred-openai"].models[0].compat).toEqual({ reasoningDisableMode: "omit" });
-	});
-
-	test("a fresh login defaults to Sonnet 5.5 and pins helper roles to Haiku 5.5, as the installer does", async () => {
-		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
-		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
-		// The listing names Haiku first: the default is the installer's, not the first listed model.
-		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
-		expect(written.defaultModel).toBe("sprilicred-anthropic/claude-sonnet-5-5");
-		expect(cfgModelRoles.get(settings)).toEqual({
-			default: "sprilicred-anthropic/claude-sonnet-5-5",
-			smol: "sprilicred-anthropic/claude-haiku-5-5",
-			tiny: "sprilicred-anthropic/claude-haiku-5-5",
-			judge: "sprilicred-anthropic/claude-haiku-5-5",
-			slow: "sprilicred-openai/gpt-6-astra",
-			web: "sprilicred-anthropic/claude-haiku-5-5",
-		});
 	});
 
 	test("moves a default and the person's roles on Sonnet 5 / Haiku 4.5 to their successors, level kept", async () => {

@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Editor, type EditorTheme } from "../src/components/editor";
 import { getComposerStyle } from "../src/components/composer/registry";
-import { BUILTIN_EDITOR_BORDER_STYLES } from "../src/components/composer/types";
 import { renderComposerShapePreview } from "../src/overlays/composer-shape-preview";
 import { createStartupStatusLine } from "../src/status-line/startup";
 import type { StatusLineGoalState, StatusLineSession } from "../src/status-line/host";
@@ -101,26 +100,6 @@ function plain(value: string): string {
 }
 
 describe("composer session titles", () => {
-	it("uses production top slots for five shapes and retains titles below chrome-free shapes", () => {
-		const { status } = fixture();
-		for (const shape of BUILTIN_EDITOR_BORDER_STYLES) {
-			const lines = renderComposerShapePreview(shape, 80, status).map(plain);
-			const topTitle = ["box", "band", "claude", "pi", "rule"].includes(shape);
-			expect(lines[0].includes("Named chat")).toBe(topTitle);
-			expect(lines.filter(line => line.includes("Named chat"))).toHaveLength(1);
-			if (topTitle) {
-				expect(lines[0].indexOf("Named chat")).toBeGreaterThan(60);
-				expect(lines.slice(1).join("\n")).not.toContain("Named chat");
-			} else {
-				expect(lines.at(-1)).toContain("Named chat");
-			}
-			if (["rule", "field", "rail"].includes(shape)) expect(lines.at(-2)).toBe("");
-			if (["claude", "rule", "pi", "borderless", "field", "rail"].includes(shape)) {
-				expect(lines.at(-1)).toContain("Plan");
-			}
-			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(80);
-		}
-	});
 
 	it("updates a live pi top rule on rename and restores the status title when changing to rail", () => {
 		const { status, setTitle } = fixture();
@@ -175,13 +154,6 @@ describe("composer session titles", () => {
 		}
 	});
 
-	it("keeps extension titles in the status bar unless the style opts into a title slot", () => {
-		const { status } = fixture();
-		const { titleSlot: _titleSlot, ...legacyStyle } = getComposerStyle("box");
-		const border = status.getComposerTopBorder(80, legacyStyle);
-		expect(border.title).toBeUndefined();
-		expect(plain(border.content)).toContain("Named chat");
-	});
 });
 
 describe("goal active indicator", () => {

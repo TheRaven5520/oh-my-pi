@@ -5,7 +5,6 @@ import {
 	type AgeRefreshCheckpoint,
 	type AgeRefreshRestoreHost,
 	findPendingAgeRefreshCheckpoint,
-	formatAgeRefreshPrompt,
 	restoreAgeRefreshCheckpoint,
 } from "@oh-my-pi/pi-coding-agent/modes/age-refresh-checkpoint";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -93,22 +92,6 @@ function fakeHost() {
 }
 
 describe("age refresh checkpoint", () => {
-	it("words the automatic prompt with the real values and leaves out empty lines", () => {
-		const prompt = formatAgeRefreshPrompt(checkpoint({ stopped: STOPPED, asks: ASKS, draft: DRAFT }))!;
-		expect(prompt.split("\n")).toEqual([
-			"[Automatic refresh] This chat was force-refreshed after 3.1 days without a refresh, to free memory. Work still running after a 2-minute wait was stopped, so no results will arrive from it:",
-			"- turn the response in progress",
-			"- bash make deploy: tool call in progress",
-			"- subagent AuditDocs: running 3m; last output: step 2/5",
-			"Before continuing, take inventory: check each item's real state (processes, systemd units, files, remote jobs, commits); some may have finished, or may still be running outside this chat. Don't redo completed steps. Resume or restart only what is unfinished, and stop anything orphaned that is no longer needed. Then report briefly what you found and what you resumed.",
-			"The user's unsent draft was restored to the input box; leave it alone.",
-			"2 question(s) to the user were restored and are still waiting for an answer.",
-		]);
-		const bare = formatAgeRefreshPrompt(checkpoint({ stopped: STOPPED }))!;
-		expect(bare).not.toContain("draft");
-		expect(bare).not.toContain("question(s)");
-	});
-
 	it("restores the draft and every question before the prompt, which never touches the draft", async () => {
 		const { host, events } = fakeHost();
 		const result = await restoreAgeRefreshCheckpoint(

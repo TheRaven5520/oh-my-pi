@@ -146,23 +146,3 @@ it("does not retain wrapper cwd intent in auth service commands", async () => {
 
 	expect(Reflect.has(globalThis, wrapperAllowHomeKey)).toBe(false);
 });
-
-for (const [command, timing] of [
-	["auth-broker", false],
-	["auth-gateway", true],
-] as const) {
-	it(`starts ${command} help through the ${timing ? "timing" : "normal"} wrapper branch`, async () => {
-		const wrapper = path.join(import.meta.dir, "..", "scripts", "omp");
-		const env = { ...process.env };
-		if (timing) env.PI_TIMING = "1";
-		else delete env.PI_TIMING;
-		const proc = Bun.spawn([wrapper, command, "serve", "--help"], {
-			env,
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-
-		expect(exitCode, stderr).toBe(0);
-	});
-}

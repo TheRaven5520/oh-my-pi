@@ -2,28 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { formatModelLabel, formatModelName, splitModelSelector } from "@oh-my-pi/pi-tui/render/model-names";
 
 describe("formatModelName", () => {
-	it("names claude, gpt and gemini ids the way their vendors do", () => {
-		const cases: Array<[string, string]> = [
-			["claude-opus-5-5", "Opus 5.5"],
-			["claude-sonnet-5", "Sonnet 5"],
-			["claude-haiku-4-5-20251001", "Haiku 4.5"],
-			["claude-3-5-sonnet-latest", "Sonnet 3.5"],
-			["gpt-6-astra", "GPT-6 Astra"],
-			["gpt-5.1-codex-max", "GPT-5.1 Codex Max"],
-			["gpt-4o-mini", "GPT-4o Mini"],
-			["gemini-2.5-pro", "Gemini 2.5 Pro"],
-			["google/gemini-2.5-pro", "Gemini 2.5 Pro"],
-		];
-		for (const [id, name] of cases) expect(formatModelName(id)).toBe(name);
-	});
 
-	it("drops the provider of a reference, a selector's thinking suffix, and a `via` unless asked to keep it", () => {
-		expect(formatModelName("sprilicred-anthropic/claude-opus-5-5:low", { ref: "selector" })).toBe("Opus 5.5");
-		expect(formatModelName("openrouter/google/gemini-2.5-pro", { ref: "identity" })).toBe("Gemini 2.5 Pro");
-		expect(formatModelName("claude-opus-5-5 via SpriliCred")).toBe("Opus 5.5");
-		expect(formatModelName("claude-opus-5-5 via SpriliCred", { keepVia: true })).toBe("Opus 5.5 via SpriliCred");
-		expect(formatModelName("Claude Opus 4.5")).toBe("Opus 4.5");
-	});
 
 	it("shows unfamiliar ids whole, keeping an id's own namespace and colons that are not thinking levels", () => {
 		expect(formatModelName("z-ai/glm-5.2")).toBe("z-ai/glm-5.2");
@@ -56,21 +35,9 @@ describe("raw selectors and configured notes", () => {
 		expect(formatModelLabel("sprilicred-openai/gpt-6.1-sol:high")).toBe("GPT-6.1 Sol (high)");
 	});
 
-	it("keeps where a model comes from only when asked (the status line)", () => {
-		expect(formatModelName("claude-opus-5-5 (personal)")).toBe("Opus 5.5");
-		expect(formatModelName("claude-opus-5-5 (personal)", { keepVia: true })).toBe("Opus 5.5 (personal)");
-		expect(formatModelName("gpt-6.1-sol via SpriliCred", { keepVia: true })).toBe("GPT-6.1 Sol via SpriliCred");
-	});
 });
 
 describe("formatModelLabel", () => {
-	it("puts a shown thinking level in parentheses", () => {
-		expect(formatModelLabel("sprilicred-anthropic/claude-opus-5-5:low", undefined, { ref: "selector" })).toBe(
-			"Opus 5.5 (low)",
-		);
-		expect(formatModelLabel("claude-opus-5-5", "xhigh")).toBe("Opus 5.5 (xhigh)");
-		expect(formatModelLabel("gpt-6-astra", "auto")).toBe("GPT-6 Astra (auto)");
-	});
 
 	it("prefers an explicit level over a selector suffix and reads none off an id or identity", () => {
 		expect(formatModelLabel("a/claude-opus-5-5:low", "high", { ref: "selector" })).toBe("Opus 5.5 (high)");

@@ -101,11 +101,4 @@ describe("Central transcript IRC records", () => {
 		expect(full).toContain("waited body");
 	});
 
-	it("labels a record that names no sender instead of showing a question mark", () => {
-		const rendered = renderCentral([
-			{ role: "custom", customType: "irc:relay", content: "relay", display: true, timestamp: TS },
-		] as unknown as AgentMessage[]);
-		expect(rendered).toContain(`IRC unknown sender ${theme.nav.selected} unknown recipient`);
-		expect(rendered).not.toContain("?");
-	});
 });

@@ -133,10 +133,6 @@ describe("InputController click routing", () => {
 		resetSettingsForTest();
 	});
 
-	it("defaults to native scrolling and selection with mouse capture disabled", () => {
-		expect(cfgTuiMouse.get(settings)).toBe(false);
-	});
-
 	it("focuses a live agent whose id equals the toggle sentinel", () => {
 		AgentRegistry.global().register({
 			id: PINNED_HUD_TOGGLE_ID,

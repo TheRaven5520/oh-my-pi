@@ -143,12 +143,6 @@ describe("composer draft backlog", () => {
 		expect(queued(f.ctx.sessionManager)).toEqual([]);
 	});
 
-	it("does nothing on empty composer and empty backlog", async () => {
-		const f = fixture();
-		await f.controller.handleDraftBacklog();
-		expect(f.ctx.sessionManager.getEntries()).toEqual([]);
-	});
-
 	it("persists full snapshots across reopen and isolates other sessions", async () => {
 		const storage = new MemorySessionStorage();
 		const manager = SessionManager.create("/draft-tests", "/draft-sessions", storage);

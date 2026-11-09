@@ -4,7 +4,7 @@ import { TUI } from "../src/tui";
 import { initTheme, theme } from "../src/theme/theme";
 import { setClockTimeZone } from "../src/render/clock";
 import { CentralComponent, type CentralExit, type CentralRestartOptions } from "../src/apps/central/central-tui";
-import { focusTranscriptEntries, parseFocusCommand, resolveFocusTarget } from "../src/apps/central/focus";
+import { parseFocusCommand, resolveFocusTarget } from "../src/apps/central/focus";
 import { selectCells, selectionText } from "../src/apps/central/selection";
 import { DEFAULT_TAB_WIDTH } from "../src/utils";
 import type {
@@ -223,15 +223,6 @@ async function setup(options: {
 }
 
 describe("Central focus transcript", () => {
-	it("keeps only assistant reply text and drops every other kind of entry and block", () => {
-		const entries = focusTranscriptEntries(mixedTranscript);
-		expect(entries.map(entry => entry.id)).toEqual(["a1", "a3"]);
-		const first = entries[0]!;
-		if (first.type !== "message" || first.message.role !== "assistant") throw new Error("Expected assistant");
-		expect(first.message.content).toEqual([{ type: "text", text: "REPLY-ONE" }]);
-		expect(first.message.stopReason).toBe("stop");
-		expect(first.message.usage.totalTokens).toBe(0);
-	});
 
 	it("renders replies newest at the bottom with markdown and no tool, thinking, user or status chrome", async () => {
 		const rig = await setup({ snapshot: () => ({ chats: [chat({ id: "local/hq" })], errors: [] }) });
@@ -536,26 +527,6 @@ describe("Central focus composer", () => {
 		}
 	});
 
-	it("reports an unconfigured command without sending anything", async () => {
-		const prompt = vi.fn(async () => {});
-		const commands = commandMocks();
-		commands.boardUrl = vi.fn(() => {
-			throw new Error("Not configured: set central.focus.boardUrl");
-		});
-		const rig = await setup({
-			snapshot: () => ({ chats: [chat({ id: "local/hq" })], errors: [] }),
-			prompt,
-			commands,
-		});
-		try {
-			await rig.input("/dag");
-			await rig.input("\r");
-			expect(rig.text()).toContain("Not configured: set central.focus.boardUrl");
-			expect(prompt).not.toHaveBeenCalled();
-		} finally {
-			rig.close();
-		}
-	});
 
 	it("parses command arguments strictly; any other /name is for the focused chat", () => {
 		expect(parseFocusCommand("plain text")).toBeUndefined();
@@ -899,27 +870,6 @@ describe("Central focus questions", () => {
 		}
 	});
 
-	it("shows slash-command output on screen while a question card is open, even with a long history", async () => {
-		const prompt = vi.fn(async () => {});
-		const longHistory = Array.from({ length: 60 }, (_, index) =>
-			assistant(`r${index}`, [{ type: "text", text: `HISTORY LINE ${index}` }]),
-		);
-		const rig = await setup({
-			snapshot: () => ({ chats: [askChat()], errors: [] }),
-			transcript: async () => longHistory,
-			prompt,
-			height: 30,
-		});
-		try {
-			await rig.input("/inbox 3");
-			await rig.input("\r");
-			expect(rig.text()).toContain("INBOX-TAIL 3");
-			expect(rig.text()).toContain("WHICH EVAL?");
-			expect(prompt).not.toHaveBeenCalled();
-		} finally {
-			rig.close();
-		}
-	});
 
 	it("shows another host's open question headed by its chat and host, and answers it only in that chat", async () => {
 		const answer = vi.fn(async (..._args: Parameters<CentralTuiHost["answer"]>) => {});

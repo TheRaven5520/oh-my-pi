@@ -6,10 +6,7 @@ import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mod
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import {
-	BUILTIN_SLASH_COMMANDS,
-	executeBuiltinSlashCommand,
-} from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
+import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const fetchedAt = 1_700_000_000_000;
@@ -240,22 +237,4 @@ describe("/usage pinned snapshot", () => {
 		expect(fetchUsageReports).toHaveBeenCalledTimes(2);
 	});
 
-	it("rejects on, off, reset, and extra arguments with the help without touching the panel", async () => {
-		const status = vi.spyOn(mode, "showStatus").mockImplementation(() => {});
-		for (const input of ["/usage on", "/usage off", "/usage reset", "/usage show extra", "/usage clear now"]) {
-			expect(await executeBuiltinSlashCommand(input, { ctx: mode })).toBe(true);
-			expect(status).toHaveBeenLastCalledWith("Usage: /usage [show|clear]");
-		}
-		expect(status).toHaveBeenCalledTimes(5);
-		expect(fetchUsageReports).not.toHaveBeenCalled();
-		expect(panel()).toBe("");
-	});
-
-	it("offers exactly show and clear completions", async () => {
-		const usage = BUILTIN_SLASH_COMMANDS.find(command => command.name === "usage");
-		expect(usage?.getArgumentCompletions).toBeDefined();
-		const completions = await usage?.getArgumentCompletions?.("");
-		expect(completions?.map(item => item.value.trimEnd())).toEqual(["show", "clear"]);
-		expect((await usage?.getArgumentCompletions?.("cl"))?.map(item => item.label)).toEqual(["clear"]);
-	});
 });

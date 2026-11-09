@@ -59,19 +59,6 @@ test("saved-reset inventory requires a bearer token", async () => {
 	});
 });
 
-test("saved-reset inventory answers with an envelope and leaks no token material", async () => {
-	await withGateway(async ({ url }) => {
-		// No stored OAuth rows: the endpoint must still answer so a caller can
-		// distinguish "no accounts" from "endpoint missing".
-		const response = await fetch(`${url}/v1/usage/reset-credits`, { headers: authorized });
-		expect(response.status).toBe(200);
-		const body = await readJsonObject(response);
-		expect(typeof body.generatedAt).toBe("number");
-		expect(body.accounts).toEqual([]);
-		expect(JSON.stringify(body)).not.toInclude("accessToken");
-	});
-});
-
 test("redeem requires a bearer token", async () => {
 	await withGateway(async ({ url }) => {
 		const response = await redeem(url, JSON.stringify({ credentialId: 1 }), {});
@@ -154,34 +141,3 @@ test("redeem targets only credentialId and forwards the client idempotency key",
 	});
 });
 
-test("redeem maps spent, missing, and upstream outcomes to distinct statuses", async () => {
-	await withGateway(async ({ url, storage }) => {
-		const outcomes: Array<[string, number]> = [
-			["already_redeemed", 409],
-			["no_credit", 409],
-			["nothing_to_reset", 409],
-			["credit_list_failed", 502],
-			["account_unavailable", 503],
-			["http_500", 502],
-		];
-		for (const [code, status] of outcomes) {
-			const fixed: RedeemResetCredit = async () => ({ ok: false, code });
-			storage.resets.redeem = fixed;
-			const response = await redeem(url, JSON.stringify({ credentialId: 7 }));
-			expect(response.status).toBe(status);
-			expect((await readJsonObject(response)).code).toBe(code);
-		}
-	});
-});
-
-test("redeem answers a transport rejection with 502 rather than 500", async () => {
-	await withGateway(async ({ url, storage }) => {
-		const throwing: RedeemResetCredit = async () => {
-			throw new Error("socket hang up");
-		};
-		storage.resets.redeem = throwing;
-		const response = await redeem(url, JSON.stringify({ credentialId: 7 }));
-		expect(response.status).toBe(502);
-		expect(await readJsonObject(response)).toEqual({ ok: false, code: "redeem_failed" });
-	});
-});

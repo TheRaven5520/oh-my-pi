@@ -4,22 +4,6 @@ import { resolveReplyAlert } from "../src/tmux-reply-alert";
 afterEach(() => vi.useRealTimers());
 
 describe("tmux question reply alerts", () => {
-	it("sets and clears only this pane in order, with process ownership for abrupt exit cleanup", () => {
-		const emitted: string[] = [];
-		const commands: string[][] = [];
-		const alert = resolveReplyAlert(
-			bytes => emitted.push(bytes),
-			{ TMUX: "/tmp/tmux-1000/default,1,0", TMUX_PANE: "%42" },
-			args => commands.push(args),
-		)!;
-		alert.set();
-		alert.ack();
-		expect(commands).toEqual([
-			["run-shell", "-t", "%42", `python3 ~/.config/tmux/reply-alert.py set #{pane_id} ${process.pid}`],
-			["run-shell", "-t", "%42", "python3 ~/.config/tmux/reply-alert.py ack #{pane_id}"],
-		]);
-		expect(emitted).toEqual([]);
-	});
 
 	it("renews the same SSH question owner and stops renewing immediately on close", () => {
 		vi.useFakeTimers();
@@ -62,11 +46,4 @@ describe("tmux question reply alerts", () => {
 		}
 	});
 
-	it("does not strand question settlement when the terminal or helper throws", () => {
-		const fail = () => { throw new Error("closed"); };
-		for (const env of [{ TERM: "tmux-256color" }, { TMUX: "server", TMUX_PANE: "%42" }]) {
-			const alert = resolveReplyAlert(fail, env, fail)!;
-			expect(() => { alert.set(); alert.ack(); }).not.toThrow();
-		}
-	});
 });

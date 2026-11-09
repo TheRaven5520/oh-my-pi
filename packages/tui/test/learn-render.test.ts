@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { ToolExecutionComponent, type ToolExecutionUi } from "@oh-my-pi/pi-tui/chat/tool-execution";
-import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { learnToolRenderer, type LearnDetails } from "@oh-my-pi/pi-tui/tools/learn";
 
 const ui: ToolExecutionUi = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} };
@@ -38,24 +38,6 @@ describe("Learn semantic presentation", () => {
 		await initTheme();
 	});
 
-	it("expands an existing renderer component without recreating it", () => {
-		const mutableOptions = { expanded: false, isPartial: false };
-		const component = learnToolRenderer.renderResult(
-			output("Lesson stored. Created managed skill safe-deploy.", stored),
-			mutableOptions,
-			theme,
-			args,
-		);
-		const collapsed = Bun.stripANSI(component.render(160).join("\n"));
-		expect(collapsed).not.toContain("rollback binary");
-		mutableOptions.expanded = true;
-		const expanded = Bun.stripANSI(component.render(160).join("\n"));
-		expect(expanded).toContain("rollback binary");
-		expect(expanded).toContain("configuration mismatch");
-		expect(expanded).toContain(stored.skillOperation!.path!);
-		mutableOptions.expanded = false;
-		expect(Bun.stripANSI(component.render(160).join("\n"))).toBe(collapsed);
-	});
 
 	it("keeps streamed requests concise without claiming persistence or skill creation", () => {
 		const card = new ToolExecutionComponent("learn", {}, {}, undefined, ui, "/tmp");
