@@ -12,6 +12,7 @@ import { $env } from "@oh-my-pi/pi-utils";
 
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { ServiceTierInheritSettingValue } from "../config/service-tier";
 
 const parseNumber = (value: string | undefined, defaultValue: number): number => {
 	if (value) {
@@ -44,6 +45,7 @@ export interface SubagentEventPayload {
 const outputSchemaInputSchema = type("object | boolean | string | null");
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
 const effortRule = '"lo" | "med" | "hi"' as const;
+const serviceTierRule = '"none" | "auto" | "default" | "flex" | "scale" | "priority" | "ultrafast"' as const;
 
 export const taskItemSchema = type({
 	"name?": "string",
@@ -51,6 +53,7 @@ export const taskItemSchema = type({
 	task: "string",
 	solutionSpace: "string",
 	"model?": "string | string[]",
+	"serviceTier?": serviceTierRule,
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -62,6 +65,7 @@ const taskItemSchemaIsolated = type({
 	task: "string",
 	solutionSpace: "string",
 	"model?": "string | string[]",
+	"serviceTier?": serviceTierRule,
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -75,6 +79,7 @@ export const taskSchema = type({
 	task: "string",
 	solutionSpace: "string",
 	"model?": "string | string[]",
+	"serviceTier?": serviceTierRule,
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -87,6 +92,7 @@ const taskSchemaNoIsolation = type({
 	task: "string",
 	solutionSpace: "string",
 	"model?": "string | string[]",
+	"serviceTier?": serviceTierRule,
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -141,6 +147,7 @@ function createTaskSchema(options: {
 				solutionSpace: "string",
 				...effortField,
 				"model?": "string | string[]",
+				"serviceTier?": serviceTierRule,
 				"outputSchema?": outputSchemaInputSchema,
 				"schemaMode?": '"permissive" | "strict"',
 				...toolsField,
@@ -161,6 +168,7 @@ function createTaskSchema(options: {
 			solutionSpace: "string",
 			...effortField,
 			"model?": "string | string[]",
+			"serviceTier?": serviceTierRule,
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
 			...toolsField,
@@ -181,6 +189,7 @@ function createTaskSchema(options: {
 			solutionSpace: "string",
 			...effortField,
 			"model?": "string | string[]",
+			"serviceTier?": serviceTierRule,
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
 			...toolsField,
@@ -195,6 +204,7 @@ function createTaskSchema(options: {
 		solutionSpace: "string",
 		...effortField,
 		"model?": "string | string[]",
+		"serviceTier?": serviceTierRule,
 		"outputSchema?": outputSchemaInputSchema,
 		"schemaMode?": '"permissive" | "strict"',
 		...toolsField,
@@ -244,6 +254,7 @@ export interface AgentDefinition {
 	spawns?: string[] | "*";
 	model?: string[];
 	thinkingLevel?: ConfiguredThinkingLevel;
+	serviceTier?: ServiceTierInheritSettingValue;
 	output?: unknown;
 	blocking?: boolean;
 	autoloadSkills?: string[];

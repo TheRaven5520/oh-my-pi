@@ -9,6 +9,7 @@ import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
+import { resolveModelServiceTier } from "@oh-my-pi/pi-ai";
 import { isRecord, logger, popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobError, AsyncJobManager, type AsyncJobRunResult } from "../async";
 import type { Rule } from "../capability/rule";
@@ -2011,6 +2012,14 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	};
 
 	const attach = (session: AgentSession): (() => void) => {
+		const publishServiceTier = (): void => {
+			const tier = session.model ? resolveModelServiceTier(session.serviceTierByFamily, session.model) : undefined;
+			if (progress.resolvedServiceTier !== tier) {
+				progress.resolvedServiceTier = tier;
+				scheduleProgress(true);
+			}
+		};
+		publishServiceTier();
 		// The session owns attribution: it knows which model produced its output
 		// and withholds an armed-but-unproven fallback. Re-deriving that here from
 		// the event stream got it wrong twice over — the stream also carries
@@ -2043,6 +2052,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			scheduleProgress(true);
 		};
 		return session.subscribe(event => {
+			publishServiceTier();
 			emitSubagentEvent(event);
 			publishAdvisorState(session);
 			publishServingModel();
@@ -2784,6 +2794,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		resolvedModel: progress.resolvedModel,
 		resolvedModelIdentity: progress.resolvedModelIdentity,
 		resolvedThinkingLevel: progress.resolvedThinkingLevel,
+		resolvedServiceTier: progress.resolvedServiceTier,
 		resolvedModelIsFallback: progress.resolvedModelIsFallback,
 		resolvedModelRoute: progress.resolvedModelRoute,
 		advisor: progress.advisor,

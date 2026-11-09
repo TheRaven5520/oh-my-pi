@@ -2316,6 +2316,7 @@ export interface TaskItem {
 	effort?: "lo" | "med" | "hi";
 	/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */
 	model?: string | string[];
+	serviceTier?: "none" | "auto" | "default" | "flex" | "scale" | "priority" | "ultrafast";
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
@@ -2345,6 +2346,7 @@ export interface TaskParams {
 	effort?: "lo" | "med" | "hi";
 	/** Per-spawn model selector or ordered selector array; overrides agent and settings preferences. */
 	model?: string | string[];
+	serviceTier?: TaskItem["serviceTier"];
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
@@ -2475,6 +2477,8 @@ export interface AgentProgress {
 	resolvedModelIdentity?: string;
 	/** Explicit thinking metadata; never inferred from the model identity. */
 	resolvedThinkingLevel?: ConfiguredThinkingLevel;
+	/** Effective service tier of the spawned session, absent when no tier is selected. */
+	resolvedServiceTier?: string;
 	/** True when {@link resolvedModel} is the target of an active retry fallback (not the originally configured model). Lets observer-only UIs (collab guests, Agent Hub rows with no live session) flag the fallback and keep the provider. */
 	resolvedModelIsFallback?: boolean;
 	/** Extension routing note (e.g. model-pools) explaining why {@link resolvedModel} was chosen. */
@@ -2556,6 +2560,7 @@ export interface SingleResult {
 	resolvedModelIdentity?: string;
 	/** Retains {@link AgentProgress.resolvedThinkingLevel} after settlement. */
 	resolvedThinkingLevel?: ConfiguredThinkingLevel;
+	resolvedServiceTier?: string;
 	/** True when {@link resolvedModel} is the target of an active retry fallback. Mirrors {@link AgentProgress.resolvedModelIsFallback} onto the settled result. */
 	resolvedModelIsFallback?: boolean;
 	/** Mirrors {@link AgentProgress.resolvedModelRoute} onto the settled result. */

@@ -304,6 +304,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if ("tools" in params) item.tools = params.tools;
 	if ("effort" in params) item.effort = params.effort;
 	if ("model" in params) item.model = params.model;
+	if ("serviceTier" in params) item.serviceTier = params.serviceTier;
 	if ("isolated" in params) item.isolated = params.isolated;
 	return [item];
 }
@@ -328,6 +329,7 @@ function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string
 	if ("tools" in item) spawn.tools = item.tools;
 	if ("effort" in item) spawn.effort = item.effort;
 	if ("model" in item) spawn.model = item.model;
+	if ("serviceTier" in item) spawn.serviceTier = item.serviceTier;
 	if (item.isolated !== undefined) {
 		spawn.isolated = item.isolated;
 	} else if ("isolated" in params) {
@@ -1324,6 +1326,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						progress.resolvedModel = nextProgress.resolvedModel;
 						progress.resolvedModelIdentity = nextProgress.resolvedModelIdentity;
 						progress.resolvedThinkingLevel = nextProgress.resolvedThinkingLevel;
+						progress.resolvedServiceTier = nextProgress.resolvedServiceTier;
 						progress.resolvedModelIsFallback = nextProgress.resolvedModel
 							? nextProgress.resolvedModelIsFallback
 							: undefined;
@@ -1417,6 +1420,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					progress.retryState = undefined;
 					progress.modelRole = singleResult?.modelRole ?? progress.modelRole;
 					progress.advisor = singleResult?.advisor ?? progress.advisor;
+					progress.resolvedServiceTier = singleResult?.resolvedServiceTier;
 					progress.resolvedModelRoute = singleResult?.resolvedModelRoute ?? progress.resolvedModelRoute;
 					if (singleResult?.resolvedModel) {
 						progress.resolvedModel = singleResult.resolvedModel;
@@ -1639,6 +1643,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...(params.effort !== undefined ? { effort: params.effort } : {}),
 				solutionSpace: params.solutionSpace,
 				...(params.model !== undefined ? { model: params.model } : {}),
+				...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}),
 				...(params.tools?.length
 					? {
 							customTools: createEvalCustomTools(

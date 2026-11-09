@@ -1,4 +1,5 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { resolveModelServiceTier } from "@oh-my-pi/pi-ai";
 import type { TspSpan, TspTone } from "@oh-my-pi/pi-wire";
 import { span } from "../native/describe";
 import { Ellipsis, visibleWidth } from "../utils";
@@ -182,6 +183,18 @@ function resolveSelectorBadge(
 	return { model: label, level: explicitLevel ?? fallbackLevel, fallback };
 }
 
+/** Keep the effective task service tier beside its model in both dock presentations. */
+function modelTierLabel(ref: AgentRecordLike, observed: ObservableSession | undefined, model: string): string {
+	if (ref.kind !== "sub") return model;
+	const live = ref.session;
+	const tier =
+		observed?.progress?.resolvedServiceTier ??
+		(live?.model && live.serviceTierByFamily
+			? resolveModelServiceTier(live.serviceTierByFamily, live.model)
+			: undefined);
+	return tier && tier !== "none" && tier !== "inherit" ? `${model} · ${tier}` : model;
+}
+
 /**
  * Resolved model + reasoning level for a hub row. Exact executor progress is
  * authoritative (and survives completion); direct live sessions are the
@@ -214,7 +227,7 @@ function resolveModelBadge(
 export function modelBadge(ref: AgentRecordLike, observed: ObservableSession | undefined): string | undefined {
 	const badge = resolveModelBadge(ref, observed);
 	if (!badge) return undefined;
-	const text = formatModelBadge(badge.model, badge.level);
+	const text = formatModelBadge(modelTierLabel(ref, observed, badge.model), badge.level);
 	return badge.fallback ? `${theme.fg("warning", "fallback →")} ${text}` : text;
 }
 
@@ -233,7 +246,7 @@ export function modelChip(ref: AgentRecordLike, observed: ObservableSession | un
 	const badge = resolveModelBadge(ref, observed);
 	if (!badge) return undefined;
 	return {
-		text: sanitizeDisplaySingleLine(badge.model),
+		text: sanitizeDisplaySingleLine(modelTierLabel(ref, observed, badge.model)),
 		level: showsThinkingLevel(badge.level) ? badge.level : undefined,
 		dot: showsThinkingLevel(badge.level) ? thinkingToken(badge.level) : undefined,
 		fallback: badge.fallback,

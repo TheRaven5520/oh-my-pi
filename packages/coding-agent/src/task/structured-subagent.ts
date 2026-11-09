@@ -113,6 +113,7 @@ export interface StructuredSubagentRequest {
 	context?: string;
 	agent?: string;
 	model?: string | string[];
+	serviceTier?: Exclude<ServiceTierInheritSettingValue, "inherit">;
 	/** Presence, rather than truthiness, makes this the highest-priority schema. */
 	outputSchema?: unknown;
 	schemaMode?: StructuredSubagentSchemaMode;
@@ -383,9 +384,10 @@ export async function resolveEffectiveSubagentPolicy(
 	const agentServiceTierOverrides = validateAgentServiceTierOverrides(
 		cfgTaskAgentServiceTierOverrides.get(request.session.settings),
 	);
-	const serviceTierOverride = Object.hasOwn(agentServiceTierOverrides, agentName)
-		? agentServiceTierOverrides[agentName]
-		: undefined;
+	const serviceTierOverride =
+		request.serviceTier ??
+		(Object.hasOwn(agentServiceTierOverrides, agentName) ? agentServiceTierOverrides[agentName] : undefined) ??
+		effectiveAgent.serviceTier;
 	const compactionThresholdOverrides = validateAgentCompactionThresholdOverrides(
 		cfgTaskAgentCompactionThresholdOverrides.get(request.session.settings),
 	);

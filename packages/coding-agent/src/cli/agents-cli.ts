@@ -62,6 +62,7 @@ function toFrontmatter(agent: AgentDefinition): Record<string, unknown> {
 	if (agent.spawns !== undefined) frontmatter.spawns = agent.spawns;
 	if (agent.model && agent.model.length > 0) frontmatter.model = agent.model;
 	if (agent.thinkingLevel) frontmatter.thinkingLevel = agent.thinkingLevel;
+	if (agent.serviceTier !== undefined) frontmatter.serviceTier = agent.serviceTier;
 	if (agent.output !== undefined) frontmatter.output = agent.output;
 	if (agent.blocking) frontmatter.blocking = true;
 

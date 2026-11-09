@@ -15,6 +15,7 @@ Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate v
 {{#if evalToolsEnabled}}`tools`: eval-defined, run in your kernel.
 {{/if}}{{#if effortEnabled}}`effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is.
 {{/if}}`model`: selector or ordered array overriding the agent's model for this spawn (`provider/model[:level]`, role alias like `@smol`, `@default` = parent's live model){{#if batchEnabled}}; set per `tasks[]` item, never top-level{{/if}}. Omit unless a specific model is needed. Requested model unavailable → stop and report; NEVER substitute another.
+`serviceTier`: optional per-spawn service tier (none|auto|default|flex|scale|priority|ultrafast), set per task, separate from the model's thinking suffix. Task serviceTier wins over user agent overrides, agent frontmatter, then tier.subagent; otherwise inherit the parent's live tier.
 `schemaMode`: default permissive warns after retries; strict fails.
 {{#if isolationEnabled}}{{#if applyIsolatedChanges}}`isolated`: worktree; successful changes apply to parent.
 {{else}}`isolated`: worktree; changes retained, not applied.

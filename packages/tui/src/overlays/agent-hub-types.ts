@@ -1,5 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { Model } from "@oh-my-pi/pi-ai";
+import type { Model, ServiceTierByFamily } from "@oh-my-pi/pi-ai";
 
 /** Identity of the ambient main session in the agent roster. */
 export const MAIN_AGENT_ID = "Main";
@@ -21,6 +21,7 @@ export interface AgentHubSession {
 	readonly thinkingLevel: ThinkingLevel | undefined;
 	readonly model: Model | undefined;
 	readonly servingModel?: { selector: string; isFallback: boolean };
+	readonly serviceTierByFamily?: ServiceTierByFamily;
 	readonly agent?: { state: { messages: AgentMessage[] } };
 	getSessionStats(): {
 		tokens: { input: number; output: number; cacheWrite: number };

@@ -27,6 +27,7 @@ import {
 import type { Skill, SkillFrontmatter } from "../capability/skill";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { resolveClaudePaths } from "../config/claude-paths";
+import { isServiceTierInheritSettingValue, type ServiceTierInheritSettingValue } from "../config/service-tier";
 import type { MCPRequestIdFormat } from "../mcp/types";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { normalizeToolNames } from "../tools/builtin-names";
@@ -296,6 +297,7 @@ export interface ParsedAgentFields {
 	model?: string[];
 	output?: unknown;
 	thinkingLevel?: ConfiguredThinkingLevel;
+	serviceTier?: ServiceTierInheritSettingValue;
 	autoloadSkills?: string[];
 	readSummarize?: boolean;
 	blocking?: boolean;
@@ -366,6 +368,10 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 
 	const thinkingLevel = parseConfiguredThinkingLevel(rawThinkingLevel);
 	const model = parseModelList(frontmatter.model);
+	if (frontmatter.serviceTier !== undefined && !isServiceTierInheritSettingValue(frontmatter.serviceTier)) {
+		throw new Error(`Invalid agent serviceTier: ${String(frontmatter.serviceTier)}`);
+	}
+	const serviceTier = frontmatter.serviceTier as ServiceTierInheritSettingValue | undefined;
 	const blocking = parseBoolean(frontmatter.blocking);
 	const readSummarize = parseBoolean(frontmatter.readSummarize);
 	// prewalk: true → hand off to the default prewalk target; "<pattern>" → custom target.
@@ -391,6 +397,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		model,
 		output,
 		thinkingLevel,
+		serviceTier,
 		blocking,
 		autoloadSkills,
 		readSummarize,

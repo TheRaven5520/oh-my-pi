@@ -6,6 +6,10 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { normalizeModelPatternList, resolveModelOverride } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentCompactionThresholdOverride } from "@oh-my-pi/pi-coding-agent/config/compaction-threshold";
+import {
+	resolveAgentServiceTierOverride,
+	type ServiceTierInheritSettingValue,
+} from "@oh-my-pi/pi-coding-agent/config/service-tier";
 import type { BeforeSubagentSpawnEvent } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import {
 	artifactsDirsFromRegistry,
@@ -29,7 +33,7 @@ import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
-import { cfgRetryModelFallback } from "@oh-my-pi/pi-coding-agent/session/settings";
+import { cfgRetryModelFallback, cfgTierOpenai } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cfgTaskAgentModelOverrides, cfgTaskEnableEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
 
 const AGENT: AgentDefinition = {
@@ -280,6 +284,40 @@ describe("structured subagent primitive", () => {
 			// `Settings.loadIsolated` opened `<agentDir>/agent.db`; Windows cannot delete it while open.
 			AgentStorage.close();
 			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("resolves task serviceTier precedence through policy and session tier resolution", async () => {
+		const model = buildModel({ ...MODEL, provider: "openai", api: "openai-responses" });
+		const inherited = { openai: "auto" } as const;
+		const cases: [
+			"ultrafast" | undefined,
+			ServiceTierInheritSettingValue | undefined,
+			ServiceTierInheritSettingValue | undefined,
+			ServiceTierInheritSettingValue,
+			Exclude<ServiceTierInheritSettingValue, "none" | "inherit"> | undefined,
+		][] = [
+			["ultrafast", "priority", "scale", "flex", "ultrafast"],
+			[undefined, "priority", "scale", "flex", "priority"],
+			[undefined, undefined, "scale", "flex", "scale"],
+			[undefined, undefined, undefined, "flex", "flex"],
+			[undefined, undefined, undefined, "inherit", "auto"],
+			["ultrafast", "inherit", "scale", "flex", "ultrafast"],
+			[undefined, "inherit", "scale", "flex", "auto"],
+			[undefined, undefined, "none", "flex", undefined],
+		];
+		for (const [serviceTier, override, definition, global, expected] of cases) {
+			mockDiscovery({ ...AGENT, serviceTier: definition });
+			const settings = Settings.isolated({
+				"tier.subagent": global,
+				"task.agentServiceTierOverrides": override ? { worker: override } : {},
+			});
+			const policy = await resolveEffectiveSubagentPolicy(request({ session: session({ settings }), serviceTier }));
+			const resolved =
+				policy.serviceTierOverride === undefined
+					? cfgTierOpenai.get(executorModule.createSubagentSettings(settings, undefined, inherited))
+					: resolveAgentServiceTierOverride(policy.serviceTierOverride, model, inherited).openai;
+			expect(resolved === "none" ? undefined : resolved).toBe(expected);
 		}
 	});
 

@@ -42,6 +42,7 @@ Parsing comes from frontmatter via `parseAgentFields()` (`src/discovery/helpers.
 - `read-summarize: false` (normalized to `readSummarize`) disables structural summaries for the subagent's `read` tool — `runSubprocess` applies a `read.summarize.enabled: false` override on the child's isolated settings (`src/task/executor.ts`). `scout` ships with it disabled. When absent, the child inherits the parent's read-summary setting.
 - `model` accepts one selector, CSV, or an array. Entries are tried in order after role aliases are expanded.
 - `thinking-level` / `thinking` selects the agent's configured effort. When `task.enableEffort` (default `false`) exposes it, a task item's coarse `effort` (`lo`, `med`, `hi`) takes precedence at launch. OMP maps that hint to the selected model's lowest, middle, or highest supported effort, then clamps it to `task.maxEffort` (default `max`). The ceiling is carried across retry-fallback model switches. If the selected model has no supported effort at or below the ceiling, the spawn fails; models without a controllable effort surface instead fall back to their normal selector.
+- `serviceTier` optionally selects `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`, or `ultrafast`. It is independent of `model` and thinking.
 - `blocking: true` makes the parent wait for that agent even when async task execution is enabled
 - `autoloadSkills` names skills from the parent session to inject before the first child prompt; unknown names are ignored
 - `prewalk: true` starts the subagent on its resolved model and hands off to the default prewalk target (the `smol` role) at its first edit/write, exactly like the session-level `--prewalk`; a string value (e.g. `prewalk: "@smol"` or `prewalk: "openai/gpt-5-mini"`) picks a custom target. The `task.agentPrewalk` settings record (agent name → `"on"` / `"off"` / pattern, configured per agent from the `/agents` hub via its prewalk strip) overrides the frontmatter. Resolution happens in `runSubprocess` (`src/task/executor.ts`). An unavailable target is skipped instead of failing the spawn. A resolved target is skipped only when both its model identity and its effective thinking mode/level match the starting selection after model clamping; a same-model effort downgrade is a real hand-off and still arms and switches at the first edit/write.
@@ -244,9 +245,9 @@ Compaction triggers are separate from model and service-tier selection: an exact
 `compaction.threshold*` settings for that agent only; agents without an entry, including agents it
 spawns, use the main session's thresholds. See [Settings](./settings.md#context-compaction-and-memory).
 
-Service-tier precedence is independent of model selection: an exact, case-sensitive
-`task.agentServiceTierOverrides[agentName]` entry overrides `tier.subagent`; an absent entry preserves
-the global behavior. `inherit` snapshots the parent session's live per-family tiers (including
+Service-tier precedence is independent of model selection: the task call's `serviceTier`, then an exact,
+case-sensitive `task.agentServiceTierOverrides[agentName]` entry, then the definition's `serviceTier`,
+then `tier.subagent`. An explicit `inherit` snapshots the parent session's live per-family tiers (including
 `/fast` changes) for the next spawn. The child session resolves a concrete value against the model
 it finally settles on — after auth fallback and after patterns only the session can resolve, such as
 extension-registered models — and populates only that model's provider family when the family
@@ -254,8 +255,8 @@ supports the value, so same-family retry fallbacks retain the tier and cross-fam
 inherit it. The resolved map is persisted with the child's session, even when it is empty, so a
 parked agent revived after a restart keeps its per-agent tier instead of re-deriving
 `tier.subagent`. The entry is looked up by task/eval dispatch only; Vibe workers launched through
-the same executor keep `tier.subagent`. Service tiers are configuration-only; agent frontmatter and
-the task/eval wire formats do not expose a tier field or automatic Fast policy.
+the same executor keep `tier.subagent`. Task calls expose `serviceTier`; eval calls use the user
+override and agent definition, without a per-call tier field.
 
 Runtime output schema precedence is:
 
