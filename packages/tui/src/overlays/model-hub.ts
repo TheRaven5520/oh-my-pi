@@ -488,9 +488,8 @@ export class ModelHubComponent implements Component {
 
 		// Reconcile catalogs in the background. This is online discovery only —
 		// it must not re-run `!command` credential helpers (F5 / `omp models
-		// refresh` pass refreshCommandCredentials for that). A --models scope is
-		// registry-independent, so the reload would only repeat the hydration
-		// above.
+		// refresh` pass refreshCommandCredentials for that). The host reconciles
+		// scoped views after mounting so it can also update their resolved scope.
 		if (this.#scopedModels.length === 0) {
 			this.#catalogRefreshing = true;
 			this.#registry
@@ -957,8 +956,10 @@ export class ModelHubComponent implements Component {
 		this.#requestRender();
 	}
 
-	/** Re-sync after an asynchronous callback finishes mutating settings. */
-	refreshAfterExternalMutation(): void {
+	/** Re-sync settings and, after discovery, the session's resolved model scope. */
+	refreshAfterExternalMutation(scopedModels?: ReadonlyArray<ScopedModelItem>): void {
+		if (this.#disposed) return;
+		if (scopedModels) this.#scopedModels = scopedModels;
 		this.#refreshAfterMutation();
 	}
 

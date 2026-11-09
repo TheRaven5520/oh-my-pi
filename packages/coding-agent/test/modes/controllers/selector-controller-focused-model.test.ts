@@ -18,6 +18,7 @@ function sessionStub(tokens: number) {
 	return {
 		model: BIG,
 		scopedModels: [],
+		modelRegistry: { onDidRefresh: () => () => {} },
 		getContextUsage: () => ({ tokens }),
 		getRoleModelCycle: () => undefined,
 		resolveTemporaryModelThinkingLevel: () => undefined,

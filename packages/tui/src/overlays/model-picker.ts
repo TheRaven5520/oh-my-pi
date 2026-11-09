@@ -39,7 +39,7 @@ export interface ResolvedRoleModel {
 
 /** Catalog refresh capability used by the session picker. */
 export interface ModelPickerRegistry extends ModelBrowserRegistry {
-	/** Bring the catalog up to date without rebuilding a current one; `true` when the picker must re-read it. */
+	/** Reconcile discovery in the background; `true` when the picker must re-read the catalog. */
 	refreshIfStale(): Promise<boolean>;
 }
 
@@ -194,9 +194,8 @@ export class ModelPickerComponent implements Component {
 			this.#browser.selectSelector(options.currentSelector);
 		}
 
-		// Re-read only if the catalog moves (startup discovery landing, a
-		// models.yml edit): rebuilding a current catalog on every open blocks
-		// the first paint for seconds. A --models scope is registry-independent.
+		// The host refreshes scoped pickers after mounting; unscoped pickers can
+		// reconcile directly. Both paint the cached list before network discovery.
 		if (this.#scopedModels.length === 0) {
 			this.#registry
 				.refreshIfStale()
@@ -211,6 +210,13 @@ export class ModelPickerComponent implements Component {
 	}
 
 	invalidate(): void {}
+
+	/** Re-sync a live catalog without changing the search or selected model. */
+	refreshAfterExternalMutation(scopedModels: ReadonlyArray<ScopedModelItem>): void {
+		this.#scopedModels = scopedModels;
+		this.#syncFromRegistryState();
+		this.#tui.requestRender();
+	}
 
 	/** Rebuild model items and role chips from the registry's in-memory state. */
 	#syncFromRegistryState(): void {

@@ -1050,76 +1050,42 @@ export interface ScopedModelSink {
 	setScopedModels(scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>): void;
 }
 
-/**
- * Startup resolves the `--models`/`enabledModels` scope from the model registry
- * before background provider discovery runs — `createSession` fires
- * `refreshInBackground()` only after the session is built — so a scoped selector
- * whose model first materializes through runtime discovery (e.g.
- * `opencode-go/ox-alpha-free` on a fresh launch with no cache row) is absent from
- * the frozen scoped `/models` list even though it is in `enabledModels`, invokable
- * via `--model`, and listed by `omp models find`. Once the initial refresh settles,
- * re-resolve the scope and, when the set changed, push the fuller list into the
- * session so the scoped picker and Ctrl+P cycle include it. A scope that resolved
- * to zero models may become active here when the startup discovery pass returned
- * no models but the background pass succeeded. Fire-and-forget — never blocks the
- * prompt on background discovery latency. Issue #9220.
- */
+/** Re-resolve configured patterns after discovery; never change the selected model. */
 export async function rebuildScopedModelsAfterDiscovery(
 	session: ScopedModelSink,
 	parsed: Args,
-	modelRegistry: Pick<ModelRegistry, "getAvailable" | "awaitBackgroundRefresh">,
+	modelRegistry: Pick<ModelRegistry, "getAvailable">,
 	activeSettings: Settings,
 ): Promise<void> {
 	const patterns = parsed.models ?? cfgEnabledModels.get(activeSettings);
-	if (!patterns || patterns.length === 0) return;
-	await modelRegistry.awaitBackgroundRefresh();
 	if (session.isDisposed) return;
-	const rebuilt = await resolveModelScope(
-		patterns,
-		modelRegistry,
-		getModelMatchPreferences(activeSettings),
-		activeSettings,
-	);
+	const rebuilt =
+		patterns.length === 0
+			? []
+			: await resolveModelScope(patterns, modelRegistry, getModelMatchPreferences(activeSettings), activeSettings);
 	const mapped = toSessionScopedModels(rebuilt, activeSettings);
-	if (mapped.length === 0 || sameScopedModelSet(session.scopedModels, mapped)) return;
+	if (session.isDisposed || sameScopedModelSet(session.scopedModels, mapped)) return;
 	session.setScopedModels(mapped);
 }
 
 /** Settings the scoped model list follows (see {@link watchScopedModelSettings}). */
 const cfgScopedModelInputs = combine({ enabledModels: cfgEnabledModels, disabledProviders: cfgDisabledProviders });
 
-/**
- * Keep the Ctrl+P / scoped `/models` list in step with live settings: an
- * `enabledModels` edit re-resolves a settings-derived scope (an explicit
- * `--models` scope stays pinned), and a `disabledProviders` edit re-resolves
- * after the catalog rebuild so re-enabled providers rejoin (disabled ones are
- * already filtered from `session.scopedModels` at read time).
- */
+/** Keep model scopes in step with settings and catalogs discovered after startup. */
 export function watchScopedModelSettings(
 	session: ScopedModelSink & Pick<AgentSession, "addDisposer">,
 	parsed: Args,
-	modelRegistry: Pick<ModelRegistry, "getAvailable" | "reapplyModelPolicies">,
+	modelRegistry: Pick<ModelRegistry, "getAvailable" | "reapplyModelPolicies" | "onDidRefresh">,
 	activeSettings: Settings,
 ): void {
+	const updateScope = () => rebuildScopedModelsAfterDiscovery(session, parsed, modelRegistry, activeSettings);
 	const stop = cfgScopedModelInputs.listen(activeSettings, async (next, previous) => {
 		const providersChanged = !Bun.deepEquals(next.disabledProviders, previous.disabledProviders);
 		if (parsed.models && !providersChanged) return;
 		if (providersChanged) await modelRegistry.reapplyModelPolicies();
-		if (session.isDisposed) return;
-		const patterns = parsed.models ?? cfgEnabledModels.get(activeSettings);
-		const rebuilt =
-			patterns.length === 0
-				? []
-				: await resolveModelScope(
-						patterns,
-						modelRegistry,
-						getModelMatchPreferences(activeSettings),
-						activeSettings,
-					);
-		const mapped = toSessionScopedModels(rebuilt, activeSettings);
-		if (sameScopedModelSet(session.scopedModels, mapped)) return;
-		session.setScopedModels(mapped);
+		await updateScope();
 	});
+	session.addDisposer(modelRegistry.onDidRefresh(updateScope));
 	session.addDisposer(stop);
 }
 
@@ -2457,13 +2423,6 @@ export async function runRootCommand(
 				authStorage.keys.setRuntime(session.model.provider, parsedArgs.apiKey);
 			}
 
-			// Runtime provider discovery (opencode-go, models.yml `discovery:`, proxies)
-			// populates the registry AFTER the scope was snapshotted at startup; re-resolve
-			// once it settles so newly-discovered configured models join the scoped
-			// /models list and Ctrl+P cycle, including scopes that initially resolved
-			// empty (issue #9220). Fire-and-forget: the prompt must never block on the
-			// background pass.
-			const configuredScope = parsedArgs.models ?? cfgEnabledModels.get(settingsInstance);
 			// Interactive-only work that must not delay the first session-bound frame:
 			// runInteractiveMode calls it once init has painted. Neither feeds the first
 			// prompt: fallback-chain validation only produces header warnings, and the
@@ -2471,12 +2430,6 @@ export async function runRootCommand(
 			const startDeferredStartupWork = (): void => {
 				session.validateRetryFallbackChains();
 				modelRegistry.refreshInBackground();
-				if (configuredScope.length > 0) {
-					// Must follow refreshInBackground: it waits on the in-flight refresh.
-					void rebuildScopedModelsAfterDiscovery(session, parsedArgs, modelRegistry, settingsInstance).catch(
-						error => logger.warn("Scoped model rebuild after discovery failed", { error: String(error) }),
-					);
-				}
 				void startBackgroundModelDiscovery?.();
 			};
 			watchScopedModelSettings(session, parsedArgs, modelRegistry, settingsInstance);

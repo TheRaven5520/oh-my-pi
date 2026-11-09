@@ -213,6 +213,53 @@ describe("ModelRegistry", () => {
 		};
 	}
 
+	test("a running registry discovers a newly listed model when the picker opens without blocking cached reads", async () => {
+		writeRawModelsJson({
+			"live-catalog": {
+				baseUrl: "https://catalog.example/v1",
+				api: "openai-completions",
+				auth: "none",
+				discovery: { type: "openai-models-list" },
+				models: [],
+			},
+		});
+		const nextListing = Promise.withResolvers<Response>();
+		let requests = 0;
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async () => {
+				requests++;
+				return requests === 1 ? Response.json({ data: [{ id: "old-model" }] }) : nextListing.promise;
+			},
+		});
+		await registry.refreshDiscoverableProviders(["live-catalog"], "online");
+		const selectedModel = registry.find("live-catalog", "old-model");
+		expect(selectedModel?.id).toBe("old-model");
+		expect(registry.getAvailable().some(model => model.id === "new-model")).toBe(false);
+		let displayedIds: string[] = [];
+		const stop = registry.onDidRefresh(() => {
+			displayedIds = registry
+				.getAvailable()
+				.filter(model => model.provider === "live-catalog")
+				.map(model => model.id);
+		});
+		try {
+			const refresh = registry.refreshIfStale();
+			expect(registry.refreshIfStale()).toBe(refresh);
+			// The pending network read leaves the cached picker and current model usable.
+			expect(registry.find("live-catalog", "old-model")).toBe(selectedModel);
+			expect(registry.find("live-catalog", "new-model")).toBeUndefined();
+			nextListing.resolve(Response.json({ data: [{ id: "new-model" }] }));
+			expect(await refresh).toBe(true);
+			expect(requests).toBe(2);
+			expect(registry.find("live-catalog", "new-model")?.id).toBe("new-model");
+			expect(displayedIds).toEqual(["new-model"]);
+			expect(registry.find("live-catalog", "old-model")).toBeUndefined();
+			expect(selectedModel?.id).toBe("old-model");
+		} finally {
+			stop();
+		}
+	});
+
 	/**
 	 * Write a models.json document under a fresh isolated dir and return its path.
 	 * `seedCache` may pre-populate that dir's `models.db` before the registry

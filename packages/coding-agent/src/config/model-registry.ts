@@ -144,6 +144,7 @@ setCodexAttestationProvider(generateCodexAttestation);
 
 /** One built-in discovery pass rewriting more payload rows than this is debug-logged. */
 const MODEL_CACHE_REWRITE_LOG_THRESHOLD = 5;
+const DISCOVERY_REFRESH_INTERVAL_MS = 5 * 60_000;
 const BUILT_IN_MODEL_MANAGER_PROVIDER_IDS: Readonly<Record<string, true>> = Object.freeze(
 	Object.fromEntries(
 		[...PROVIDER_DESCRIPTORS.map(descriptor => descriptor.providerId), ...SPECIAL_MODEL_MANAGER_PROVIDER_IDS].map(
@@ -297,6 +298,10 @@ export class ModelRegistry {
 	#cacheDbPath?: string;
 	#suppressedSelectors: Map<string, number> = new Map();
 	#backgroundRefresh?: Promise<void>;
+	#catalogRefresh?: Promise<boolean>;
+	#autoRefreshTimer?: Timer;
+	#autoRefreshUsers = 0;
+	#refreshListeners = new Set<() => void | Promise<void>>();
 	/** Whether the first background discovery has settled; latches once so a late-armed waiter still resolves. */
 	#initialRefreshSettled = false;
 	/** Waiter armed before the initial background refresh starts (CLI kicks it off after the session is built, #10048). */
@@ -569,14 +574,17 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Catch the catalog up for a view that just read it, rebuilding only when it
-	 * is actually stale: waits out an in-flight background refresh, then runs an
-	 * offline {@link refresh} if models.yml changed on disk since the last load.
-	 * Resolves `true` when either may have changed the catalog (the view should
-	 * re-read it), `false` without any rebuild when the in-memory catalog is
-	 * already current. Rejects when the offline rebuild fails.
+	 * Reconcile an open picker in the background, reusing the normal discovery
+	 * path without re-minting command credentials or rebuilding unchanged config.
 	 */
-	async refreshIfStale(): Promise<boolean> {
+	refreshIfStale(): Promise<boolean> {
+		this.#catalogRefresh ??= this.#refreshOpenCatalog().finally(() => {
+			this.#catalogRefresh = undefined;
+		});
+		return this.#catalogRefresh;
+	}
+
+	async #refreshOpenCatalog(): Promise<boolean> {
 		let changed = false;
 		if (this.#backgroundRefresh) {
 			await this.#backgroundRefresh;
@@ -586,7 +594,61 @@ export class ModelRegistry {
 			await this.refresh("offline");
 			changed = true;
 		}
+		const disabled = getDisabledProviderIdsFromSettings(this.#settings);
+		const providers = this.#discoverableProviders
+			.filter(
+				provider =>
+					!disabled.has(provider.provider) &&
+					(!provider.optional || (this.#providerDiscoveryStates.get(provider.provider)?.models.length ?? 0) > 0),
+			)
+			.map(provider => provider.provider);
+		for (const provider of this.#runtimeModelManagers.keys()) {
+			if (!disabled.has(provider) && !providers.includes(provider)) providers.push(provider);
+		}
+		if (providers.length > 0) {
+			await this.refreshDiscoverableProviders(providers, "online");
+			changed = true;
+		}
 		return changed;
+	}
+
+	/** One unref'd timer per registry, shared by parent and child sessions. */
+	startAutoRefresh(): () => void {
+		if (this.#autoRefreshUsers++ === 0) {
+			this.#autoRefreshTimer = setInterval(() => {
+				void this.refreshIfStale().catch(error => {
+					logger.warn("live-model-catalog-refresh-v1", { error: String(error) });
+				});
+			}, DISCOVERY_REFRESH_INTERVAL_MS);
+			this.#autoRefreshTimer.unref();
+		}
+		let stopped = false;
+		return () => {
+			if (stopped) return;
+			stopped = true;
+			if (--this.#autoRefreshUsers === 0) {
+				clearInterval(this.#autoRefreshTimer);
+				this.#autoRefreshTimer = undefined;
+			}
+		};
+	}
+
+	/** Scope subscribers register before views, so views see the rebuilt scope. */
+	onDidRefresh(listener: () => void | Promise<void>): () => void {
+		this.#refreshListeners.add(listener);
+		return () => {
+			this.#refreshListeners.delete(listener);
+		};
+	}
+
+	async #notifyRefresh(): Promise<void> {
+		for (const listener of this.#refreshListeners) {
+			try {
+				await listener();
+			} catch (error) {
+				logger.warn("Model catalog refresh listener failed", { error: String(error) });
+			}
+		}
 	}
 
 	/**
@@ -1407,7 +1469,7 @@ export class ModelRegistry {
 		const cachedModels: Model<Api>[] = [];
 		for (const providerConfig of this.#discoverableProviders) {
 			const cacheProviderId = this.#configuredDiscoveryCacheProviderId(providerConfig);
-			const cache = readModelCache<Api>(cacheProviderId, 24 * 60 * 60 * 1000, Date.now, this.#cacheDbPath);
+			const cache = readModelCache<Api>(cacheProviderId, DISCOVERY_REFRESH_INTERVAL_MS, Date.now, this.#cacheDbPath);
 			if (!cache) {
 				this.#providerDiscoveryStates.set(providerConfig.provider, {
 					provider: providerConfig.provider,
@@ -1833,7 +1895,10 @@ export class ModelRegistry {
 			}
 			this.#invalidateProviderModelCache(provider);
 		}
-		if (!this.#hasFullSnapshot) return;
+		if (!this.#hasFullSnapshot) {
+			await this.#notifyRefresh();
+			return;
+		}
 
 		let baseModels = this.#baseModels;
 		if (replacedProviderSet.size > 0) {
@@ -1848,6 +1913,7 @@ export class ModelRegistry {
 		this.#baseModels = this.#mergeResolvedModels(baseModels, discoveredModels);
 		this.#unprojectedModels = this.#projectBaseModels(this.#baseModels);
 		this.#models = this.#withCatalogMetrics(this.#applyRuntimeModelModifiers(this.#unprojectedModels));
+		await this.#notifyRefresh();
 	}
 
 	/**
@@ -1910,7 +1976,7 @@ export class ModelRegistry {
 		strategy: ModelRefreshStrategy,
 	): Promise<ConfiguredModelDiscoveryResult> {
 		const cacheProviderId = this.#configuredDiscoveryCacheProviderId(providerConfig);
-		const cached = readModelCache<Api>(cacheProviderId, 24 * 60 * 60 * 1000, Date.now, this.#cacheDbPath);
+		const cached = readModelCache<Api>(cacheProviderId, DISCOVERY_REFRESH_INTERVAL_MS, Date.now, this.#cacheDbPath);
 		const cacheOlderThanConfig = cached !== null && this.#isDiscoveryCacheOlderThanModelsConfig(cached.updatedAt);
 		const bypassFreshCache = providerConfig.discovery.type === "llama.cpp" && strategy === "online-if-uncached";
 		const effectiveStrategy =
@@ -1974,7 +2040,7 @@ export class ModelRegistry {
 			restoreCachedHeaders: cachedHeaderResolver ? () => ({ resolveHeaders: cachedHeaderResolver }) : undefined,
 			cacheDbPath: this.#cacheDbPath,
 			cacheProviderId,
-			cacheTtlMs: 24 * 60 * 60 * 1000,
+			cacheTtlMs: DISCOVERY_REFRESH_INTERVAL_MS,
 			fetchDynamicModels,
 		});
 		const result = await manager.refresh(effectiveStrategy);

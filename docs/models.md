@@ -259,6 +259,8 @@ Remote rows can supply current limits, pricing, modalities, and capability flags
 
 Fresh cached snapshots avoid a network request. If refresh fails, OMP keeps the last usable cached snapshot and marks it stale; without a cache, it falls back to the bundled catalog. Provider discovery state records `source` (`bundled`, `models.dev`, `provider`, or `cache`) and `fetchedAt` so callers can distinguish current remote data from an offline fallback.
 
+Configured discovery providers (including SpriliCred) use a five-minute cache TTL. Running sessions re-fetch discovery-backed catalogs every five minutes and when a model picker opens, using the same discovery/cache path as `omp models refresh` without re-running command credentials. Pickers show cached models immediately, then update in place, including `enabledModels`/`--models` scopes. New models become resolvable without restarting; refresh never changes the session's selected model. Failed discovery keeps the last usable catalog. SpriliCred currently exposes no model-catalog ETag, Last-Modified, or version signal, so these bounded refreshes fetch its listing.
+
 ## Provider and model identity
 
 The registry retains concrete `provider` + `id` identities. Use an exact

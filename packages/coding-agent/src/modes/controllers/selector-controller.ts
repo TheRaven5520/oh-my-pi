@@ -9,7 +9,7 @@ import type { Component, OverlayHandle } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/app-keybindings";
 import { appKey, editorKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
-import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
+import { getAgentDbPath, getAgentDir, getProjectDir, logger, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	discoverAdvisorConfigs,
@@ -732,6 +732,7 @@ export class SelectorController {
 		const done = () => {
 			if (closed) return;
 			closed = true;
+			stopCatalogUpdates();
 			overlayHandle?.hide();
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
@@ -797,6 +798,14 @@ export class SelectorController {
 		});
 		this.ctx.ui.setFocus(picker);
 		this.ctx.ui.requestRender();
+		const stopCatalogUpdates = target.modelRegistry.onDidRefresh(() => {
+			if (!closed) picker.refreshAfterExternalMutation(target.scopedModels);
+		});
+		if (target.scopedModels.length > 0) {
+			void target.modelRegistry.refreshIfStale().catch(error => {
+				logger.warn("Model picker catalog refresh failed", { error: String(error) });
+			});
+		}
 	}
 
 	/**
@@ -813,6 +822,7 @@ export class SelectorController {
 			// the overlay must hide exactly once.
 			if (closed) return;
 			closed = true;
+			stopCatalogUpdates();
 			hub?.dispose();
 			overlayHandle?.hide();
 			this.focusActiveEditorArea();
@@ -1055,6 +1065,14 @@ export class SelectorController {
 			},
 		);
 		const overlayHandle = this.#showFullscreenMenu(hub);
+		const stopCatalogUpdates = this.ctx.session.modelRegistry.onDidRefresh(() => {
+			if (!closed) hub.refreshAfterExternalMutation(this.ctx.session.scopedModels);
+		});
+		if (this.ctx.session.scopedModels.length > 0) {
+			void this.ctx.session.modelRegistry.refreshIfStale().catch(error => {
+				logger.warn("Model hub catalog refresh failed", { error: String(error) });
+			});
+		}
 	}
 
 	/** /login round-trip for a locked provider; reopen the hub on that provider only after a successful login. */
