@@ -386,8 +386,8 @@ export async function resolveEffectiveSubagentPolicy(
 	);
 	const serviceTierOverride =
 		request.serviceTier ??
-		(Object.hasOwn(agentServiceTierOverrides, agentName) ? agentServiceTierOverrides[agentName] : undefined) ??
-		effectiveAgent.serviceTier;
+		effectiveAgent.serviceTier ??
+		(Object.hasOwn(agentServiceTierOverrides, agentName) ? agentServiceTierOverrides[agentName] : undefined);
 	const compactionThresholdOverrides = validateAgentCompactionThresholdOverrides(
 		cfgTaskAgentCompactionThresholdOverrides.get(request.session.settings),
 	);

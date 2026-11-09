@@ -245,8 +245,8 @@ Compaction triggers are separate from model and service-tier selection: an exact
 `compaction.threshold*` settings for that agent only; agents without an entry, including agents it
 spawns, use the main session's thresholds. See [Settings](./settings.md#context-compaction-and-memory).
 
-Service-tier precedence is independent of model selection: the task call's `serviceTier`, then an exact,
-case-sensitive `task.agentServiceTierOverrides[agentName]` entry, then the definition's `serviceTier`,
+Service-tier precedence is independent of model selection: the task call's `serviceTier`, then the definition's
+`serviceTier`, then an exact, case-sensitive `task.agentServiceTierOverrides[agentName]` entry,
 then `tier.subagent`. An explicit `inherit` snapshots the parent session's live per-family tiers (including
 `/fast` changes) for the next spawn. The child session resolves a concrete value against the model
 it finally settles on — after auth fallback and after patterns only the session can resolve, such as

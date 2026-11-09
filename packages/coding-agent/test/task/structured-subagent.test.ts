@@ -298,21 +298,23 @@ describe("structured subagent primitive", () => {
 			Exclude<ServiceTierInheritSettingValue, "none" | "inherit"> | undefined,
 		][] = [
 			["ultrafast", "priority", "scale", "flex", "ultrafast"],
-			[undefined, "priority", "scale", "flex", "priority"],
-			[undefined, undefined, "scale", "flex", "scale"],
+			[undefined, "priority", "scale", "flex", "scale"],
+			[undefined, "priority", undefined, "flex", "priority"],
 			[undefined, undefined, undefined, "flex", "flex"],
 			[undefined, undefined, undefined, "inherit", "auto"],
 			["ultrafast", "inherit", "scale", "flex", "ultrafast"],
-			[undefined, "inherit", "scale", "flex", "auto"],
+			[undefined, "inherit", "ultrafast", "flex", "ultrafast"],
 			[undefined, undefined, "none", "flex", undefined],
 		];
 		for (const [serviceTier, override, definition, global, expected] of cases) {
-			mockDiscovery({ ...AGENT, serviceTier: definition });
+			mockDiscovery({ ...AGENT, name: "task", serviceTier: definition });
 			const settings = Settings.isolated({
 				"tier.subagent": global,
-				"task.agentServiceTierOverrides": override ? { worker: override } : {},
+				"task.agentServiceTierOverrides": override ? { task: override } : {},
 			});
-			const policy = await resolveEffectiveSubagentPolicy(request({ session: session({ settings }), serviceTier }));
+			const policy = await resolveEffectiveSubagentPolicy(
+				request({ agent: "task", session: session({ settings }), serviceTier }),
+			);
 			const resolved =
 				policy.serviceTierOverride === undefined
 					? cfgTierOpenai.get(executorModule.createSubagentSettings(settings, undefined, inherited))
