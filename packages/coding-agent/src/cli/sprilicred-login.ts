@@ -24,8 +24,9 @@ const DEFAULT_URL = "https://sprilicred.taila2d385.ts.net";
 // The installer's omp default (connect.py DEFAULT_MODELS["omp"]), used when it is listed.
 const DEFAULT_MODEL = "claude-sonnet-5-5";
 // A model SpriliCred replaced with a newer one of its kind (connect.py SUCCESSORS; SUPERSEDED in
-// pricing.rs: still admitted, no longer listed). A default, or a role of the person's own, on the
-// old one moves to its successor, level kept, when the listing names the successor.
+// pricing.rs: still admitted, no longer listed; Fable 5.1: withdrawn, no longer admitted). A default,
+// or a role of the person's own, on the old one moves to its successor, level kept, when the listing
+// names the successor.
 const SUCCESSORS: Record<string, string> = {
 	"gpt-6-sol": "gpt-6.1-sol",
 	"gpt-5.6-sol": "gpt-6.1-sol",
@@ -33,6 +34,7 @@ const SUCCESSORS: Record<string, string> = {
 	"gpt-5.6-luna": "gpt-6-luna",
 	"claude-sonnet-5": "claude-sonnet-5-5",
 	"claude-haiku-4-5": "claude-haiku-5-5",
+	"claude-fable-5-1": "claude-fable-5-2",
 };
 const MODEL_STATE = ".sprilicred/omp-models.json";
 const ROLES_STATE = ".sprilicred/omp-roles.json";
@@ -101,7 +103,7 @@ const NONE_EFFORT_MODELS: Record<string, true> = {
 };
 // Offline copy of pricing.rs CLAUDE_EFFORTS (connect.py), used when a listing names no efforts.
 const CLAUDE_EFFORTS: Record<string, string[]> = {
-	"claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
+	"claude-fable-5-2": ["low", "medium", "high", "xhigh", "max"],
 	"claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
 	"claude-sonnet-5-5": ["low", "medium", "high", "xhigh", "max"],
 	"claude-haiku-5-5": ["low", "medium", "high", "xhigh", "max"],

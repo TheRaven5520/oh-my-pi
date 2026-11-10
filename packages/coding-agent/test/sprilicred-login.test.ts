@@ -788,6 +788,34 @@ describe("SpriliCred login", () => {
 		expect(text).not.toContain("modelRoles.smol=");
 	});
 
+	test("moves a default and roles on withdrawn Fable 5.1 to Fable 5.2, which takes the effort ladder", async () => {
+		const listing = globalThis.fetch;
+		globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+			const response = await listing(input, init);
+			if (!String(input).includes("/anthropic/")) return response;
+			const body = (await response.json()) as { data: unknown[] };
+			// No `reasoning_efforts`: the offline ladder (CLAUDE_EFFORTS) applies.
+			body.data.push({ id: "claude-fable-5-2", context_window: 1000000, max_output_tokens: 128000, supports_reasoning: true });
+			return Response.json(body);
+		}) as typeof fetch;
+		await fs.writeFile(
+			path.join(agentDir, "models.yml"),
+			JSON.stringify({ defaultModel: "sprilicred-anthropic/claude-fable-5-1:high" }),
+		);
+		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
+		cfgModelRoles.set(settings, { plan: "sprilicred-anthropic/claude-fable-5-1:xhigh" });
+		await settings.flush();
+		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
+
+		const written = JSON.parse(await fs.readFile(path.join(agentDir, "models.yml"), "utf8"));
+		expect(written.defaultModel).toBe("sprilicred-anthropic/claude-fable-5-2:high");
+		expect(cfgModelRoles.get(settings).plan).toBe("sprilicred-anthropic/claude-fable-5-2:xhigh");
+		const fable = written.providers["sprilicred-anthropic"].models.find(
+			(model: { id: string }) => model.id === "claude-fable-5-2",
+		);
+		expect(fable.thinking).toEqual({ mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "xhigh", "max"] });
+	});
+
 	test("adds OpenRouter to lists the person set without the sprilicred-openai scope, never to a cycle", async () => {
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
 		cfgCycleModels.set(settings, ["other/keep"]);
