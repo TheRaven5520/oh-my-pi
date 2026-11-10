@@ -661,7 +661,7 @@ describe("SpriliCred login", () => {
 		expect(written.providers["sprilicred-deepseek"].models.at(-1)).toEqual(custom);
 	});
 
-	test("writes the Claude effort ladder and Codex none-effort like the installer, keeping user edits", async () => {
+	test("writes the Claude effort ladder and the GPT reasoning-off modes like the installer, keeping user edits", async () => {
 		const baseFetch = globalThis.fetch;
 		globalThis.fetch = (async (input, init) => {
 			const response = await baseFetch(input, init);
@@ -677,7 +677,9 @@ describe("SpriliCred login", () => {
 				data: [
 					...data,
 					{ id: "gpt-7-nova", context_window: 272000 },
+					{ id: "gpt-6.1-sol", context_window: 500000 },
 					{ id: "gpt-6.1-terra", context_window: 500000 },
+					{ id: "gpt-6-luna", context_window: 500000 },
 				],
 			});
 		}) as typeof fetch;
@@ -703,10 +705,35 @@ describe("SpriliCred login", () => {
 		const openai = Object.fromEntries(
 			first.providers["sprilicred-openai"].models.map((model: { id: string }) => [model.id, model]),
 		);
-		expect(openai["gpt-6-astra"].compat).toEqual({ reasoningDisableMode: "none-effort" });
+		// Astra and Sol reject the `none` tier: thinking off sends their lowest effort. Terra and Luna accept it.
+		expect(openai["gpt-6-astra"].compat).toEqual({ reasoningDisableMode: "lowest-effort" });
+		expect(openai["gpt-6.1-sol"].compat).toEqual({ reasoningDisableMode: "lowest-effort" });
 		expect(openai["gpt-6.1-terra"].compat).toEqual({ reasoningDisableMode: "none-effort" });
+		expect(openai["gpt-6-luna"].compat).toEqual({ reasoningDisableMode: "none-effort" });
 		// Never guessed for an id the installer does not know.
 		expect(openai["gpt-7-nova"].compat).toBeUndefined();
+
+		// An older login's owned `none-effort` moves to `lowest-effort`.
+		const statePath = path.join(root, ".sprilicred", "omp-models.json");
+		const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+		const stale = structuredClone(first);
+		for (const id of ["gpt-6-astra", "gpt-6.1-sol"]) {
+			const model = stale.providers["sprilicred-openai"].models.find((entry: { id: string }) => entry.id === id);
+			model.compat = { reasoningDisableMode: "none-effort" };
+			state[`sprilicred-openai/${id}.compat`].applied = { reasoningDisableMode: "none-effort" };
+		}
+		await fs.writeFile(modelsPath, JSON.stringify(stale));
+		await fs.writeFile(statePath, JSON.stringify(state));
+		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
+		const migrated = JSON.parse(await fs.readFile(modelsPath, "utf8"));
+		const migratedState = JSON.parse(await fs.readFile(statePath, "utf8"));
+		for (const id of ["gpt-6-astra", "gpt-6.1-sol"]) {
+			const model = migrated.providers["sprilicred-openai"].models.find((entry: { id: string }) => entry.id === id);
+			expect(model.compat).toEqual({ reasoningDisableMode: "lowest-effort" });
+			expect(migratedState[`sprilicred-openai/${id}.compat`].applied).toEqual({
+				reasoningDisableMode: "lowest-effort",
+			});
+		}
 
 		claude["claude-sonnet-5-5"].thinking = { mode: "anthropic-adaptive", efforts: ["high"] };
 		openai["gpt-6-astra"].compat = { reasoningDisableMode: "omit" };
@@ -936,7 +963,9 @@ describe("SpriliCred login", () => {
 	// release-111 a295882), written by install_omp from the same listings and the same
 	// before-files: catalog.json (listing bodies per route), models/config/state.before.json
 	// (migration cases), installer-{models,config,state}.json. `$HOME` is the scratch home and
-	// https://sprilicred.example the server.
+	// https://sprilicred.example the server. Astra's and Sol's `lowest-effort` compat is connect.py
+	// 9eb4ee3's: the listed-shape cases are its regenerated fixtures byte for byte, and the
+	// `*-deepseek-withheld` cases carry the same two-model change.
 	// The `*-deepseek-withheld` cases are the same installer (connect.py at release-111 a295882) with
 	// `/deepseek/v1/models` served empty to a granted key, as SpriliCred serves it while DeepSeek V4.1
 	// Flash is withheld (2026-10-16). SpriliCred keeps only the listed shape in its fixtures; to

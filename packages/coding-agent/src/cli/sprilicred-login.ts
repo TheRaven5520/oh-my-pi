@@ -95,12 +95,13 @@ const RETIRED_OPENAI_MODELS: Record<string, true> = { "abliterated-model-large-v
 // Models that accept the real `none` effort tier (connect.py model_fields): the Codex-backed
 // GPT models plus the dedicated ones. Do not guess for future IDs.
 const NONE_EFFORT_MODELS: Record<string, true> = {
-	"gpt-6-astra": true,
-	"gpt-6.1-sol": true,
 	"gpt-6.1-terra": true,
 	"gpt-6-luna": true,
 	...DEDICATED_MODELS,
 };
+// Models that reject the `none` tier: thinking off sends their lowest listed effort. Written
+// explicitly (not omitted) so an owned `none-effort` an older login wrote is replaced.
+const LOWEST_EFFORT_MODELS: Record<string, true> = { "gpt-6-astra": true, "gpt-6.1-sol": true };
 // Offline copy of pricing.rs CLAUDE_EFFORTS (connect.py), used when a listing names no efforts.
 const CLAUDE_EFFORTS: Record<string, string[]> = {
 	"claude-fable-5-2": ["low", "medium", "high", "xhigh", "max"],
@@ -371,6 +372,8 @@ function modelFields(model: CatalogModel, family: "anthropic" | "openai"): Recor
 	}
 	if (family !== "anthropic" && Object.hasOwn(NONE_EFFORT_MODELS, model.id)) {
 		fields.compat = { reasoningDisableMode: "none-effort" };
+	} else if (family !== "anthropic" && Object.hasOwn(LOWEST_EFFORT_MODELS, model.id)) {
+		fields.compat = { reasoningDisableMode: "lowest-effort" };
 	}
 	return fields;
 }

@@ -148,7 +148,7 @@
             "cacheWrite": 0
           },
           "compat": {
-            "reasoningDisableMode": "none-effort"
+            "reasoningDisableMode": "lowest-effort"
           }
         },
         {
@@ -168,7 +168,7 @@
             "cacheWrite": 0
           },
           "compat": {
-            "reasoningDisableMode": "none-effort"
+            "reasoningDisableMode": "lowest-effort"
           }
         },
         {

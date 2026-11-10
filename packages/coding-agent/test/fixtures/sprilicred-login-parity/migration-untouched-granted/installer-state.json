@@ -231,7 +231,7 @@
       "present": false,
       "before": null,
       "applied": {
-        "reasoningDisableMode": "none-effort"
+        "reasoningDisableMode": "lowest-effort"
       }
     },
     "sprilicred-openai/gpt-6-astra.listed": {
@@ -276,7 +276,7 @@
       "present": false,
       "before": null,
       "applied": {
-        "reasoningDisableMode": "none-effort"
+        "reasoningDisableMode": "lowest-effort"
       }
     },
     "sprilicred-openai/gpt-6.1-sol.listed": {
