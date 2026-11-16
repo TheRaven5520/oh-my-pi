@@ -21,6 +21,7 @@ import { InputController } from "../../../src/modes/controllers/input-controller
 import { getEditorTheme, getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../../../src/modes/types";
 import * as replyAlert from "@oh-my-pi/pi-tui/tmux-reply-alert";
+import { SessionManager } from "../../../src/session/session-manager";
 
 afterEach(() => {
 	setKeybindings(KeybindingsManager.inMemory());
@@ -654,6 +655,77 @@ describe("ExtensionUiController editor UI", () => {
 
 		expect(harness.editor.getText()).toBe("hello");
 		expect(harness.requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("saves and restores the composer backlog without changing an open question", async () => {
+		const harness = makeHarness();
+		const listeners: Array<(data: string) => { consume?: boolean } | undefined | void> = [];
+		Object.assign(harness.ctx, {
+			sessionManager: SessionManager.inMemory("/ask-drafts"),
+			keybindings: KeybindingsManager.inMemory(),
+			dictationSpaceHold: vi.fn(),
+			setHookWidget: vi.fn(),
+			showError: vi.fn(),
+			updateEditorBorderColor: vi.fn(),
+		});
+		Object.assign(harness.ctx.ui, {
+			hasOverlay: () => false,
+			addInputListener: (listener: (typeof listeners)[number]) => {
+				listeners.push(listener);
+				return () => {};
+			},
+			addStartListener: vi.fn(),
+		});
+		const input = new InputController(harness.ctx);
+		input.setupKeyHandlers();
+		harness.editor.setText("keep this draft");
+		const pending = harness.controller.showAskDialog([
+			{ id: "confirm", question: "Continue?", options: [{ label: "Yes" }, { label: "No" }] },
+		]);
+		const ask = harness.getFocused() as AskDialogComponent;
+		const state = ask.captureDraftState();
+		const press = async () => {
+			if (!listeners.some(listener => listener("\x0e")?.consume)) harness.handleInput("\x0e");
+			await harness.editor.awaitPendingPaste();
+		};
+		await press();
+		expect(harness.editor.getText()).toBe("");
+		expect(harness.getFocused()).toBe(ask);
+		expect(ask.captureDraftState()).toEqual(state);
+		expect(harness.ctx.setHookWidget).toHaveBeenCalledWith("composer-draft-backlog", [
+			expect.stringContaining("1 saved draft"),
+		]);
+		await press();
+		expect(harness.editor.getText()).toBe("keep this draft");
+		expect(ask.captureDraftState()).toEqual(state);
+		await press();
+		harness.handleInput("\x1b[B");
+		harness.handleInput("\x1b[B");
+		harness.handleInput("\r");
+		const custom = harness.getPrompt();
+		harness.handleInput("unfinished answer");
+		const customState = custom.currentValue();
+		const questionState = ask.captureDraftState(customState);
+		await press();
+		expect(harness.editor.getText()).toBe("keep this draft");
+		expect(harness.getFocused()).toBe(custom);
+		expect(custom.currentValue()).toEqual(customState);
+		expect(ask.captureDraftState(custom.currentValue())).toEqual(questionState);
+		await press();
+		expect(harness.editor.getText()).toBe("");
+		expect(custom.currentValue()).toEqual(customState);
+		harness.handleInput("\x1b");
+		await Promise.resolve();
+		await Promise.resolve();
+		harness.setFocus(harness.editor);
+		await press();
+		expect(harness.editor.getText()).toBe("keep this draft");
+		await press();
+		harness.setFocus(ask);
+		harness.handleInput("\x1b[A");
+		harness.handleInput("\x1b[A");
+		harness.handleInput("\r");
+		expect((await pending)?.kind).toBe("submit");
 	});
 
 	it("keeps a populated prompt visible and routes input to it until the draft is cleared", async () => {

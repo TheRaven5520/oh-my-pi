@@ -343,25 +343,24 @@ export class InputController {
 		}
 	}
 
+	#canUseDraftBacklog(): boolean {
+		const focused = this.ctx.ui.getFocused();
+		return (
+			!this.ctx.focusedAgentId &&
+			!this.ctx.ui.hasOverlay() &&
+			(focused === this.ctx.editor || (!!this.ctx.askDraftInput && focused === this.ctx.askDraftInput))
+		);
+	}
+
 	/** Never submits a prompt. Repeated keys during a disk write are coalesced. */
 	async handleDraftBacklog(): Promise<void> {
-		if (
-			this.#draftBacklogBusy ||
-			this.ctx.focusedAgentId ||
-			this.ctx.ui.hasOverlay() ||
-			this.ctx.ui.getFocused() !== this.ctx.editor
-		)
-			return;
+		if (this.#draftBacklogBusy || !this.#canUseDraftBacklog()) return;
 		this.#draftBacklogBusy = true;
 		const manager = this.ctx.sessionManager;
 		const sessionId = manager.getSessionId();
 		const editor = this.ctx.editor;
 		const isCurrent = (): boolean =>
-			this.ctx.sessionManager === manager &&
-			manager.getSessionId() === sessionId &&
-			!this.ctx.focusedAgentId &&
-			!this.ctx.ui.hasOverlay() &&
-			this.ctx.ui.getFocused() === editor;
+			this.ctx.sessionManager === manager && manager.getSessionId() === sessionId && this.#canUseDraftBacklog();
 		try {
 			await editor.enqueueInputAction(async () => {
 				if (!isCurrent()) return;
@@ -405,6 +404,16 @@ export class InputController {
 			this.ctx.showError(`Draft backlog was not saved; your draft was kept. ${String(error)}`);
 		} finally {
 			this.#draftBacklogBusy = false;
+			// A question opened with an empty composer did not mount it. Make a
+			// restored draft visible without touching the question or its focus.
+			if (
+				isCurrent() &&
+				this.ctx.askDraftInput &&
+				editor.hasDraftContent() &&
+				!this.ctx.editorContainer.children.includes(editor)
+			) {
+				this.ctx.editorContainer.addChild(editor);
+			}
 			this.syncDraftBacklogIndicator();
 			this.ctx.ui.requestRender();
 		}
@@ -573,12 +582,11 @@ export class InputController {
 		}
 		if (!this.#globalEditorActionsListenerInstalled) {
 			this.#globalEditorActionsListenerInstalled = true;
-			// These actions target the main transcript/editor rather than the
-			// focused prompt. Keep focused components' own bindings authoritative.
+			// Composer draft backlog remains available through an active ask, including
+			// its custom-answer editor. Other focused prompts retain their bindings.
 			this.ctx.ui.addInputListener(data => {
 				if (this.ctx.keybindings.matches(data, "app.draft.backlog")) {
-					if (this.ctx.focusedAgentId || this.ctx.ui.hasOverlay() || this.ctx.ui.getFocused() !== this.ctx.editor)
-						return undefined;
+					if (!this.#canUseDraftBacklog()) return undefined;
 					void this.handleDraftBacklog();
 					return { consume: true };
 				}

@@ -961,29 +961,21 @@ export class ExtensionUiController {
 				// Stepped aside for another dialog: the components stay alive, untouched.
 				let suspended = false;
 				const draftEditor = this.ctx.editor;
-				const inputGuard =
-					draftEditor.getText().length > 0
-						? {
-								isBlocked: () => draftEditor.getText().length > 0,
-								handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
-								hint: "Finish or clear the current prompt to answer",
-								// Show the draft's insertion cursor while it owns input; drop it
-								// once the draft clears and the ask controls take over.
-								syncPresentation: () => {
-									draftEditor.focused = draftEditor.getText().length > 0;
-								},
-							}
-						: undefined;
+				const inputGuard = {
+					isBlocked: () => draftEditor.getText().length > 0,
+					handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
+					hint: "Finish or save the current prompt to answer",
+					syncPresentation: () => {
+						draftEditor.focused = draftEditor.getText().length > 0;
+					},
+				};
 
 				const restoreAskDialog = (): void => {
 					if (closed || suspended || !askDialog) return;
 					this.ctx.editorContainer.clear();
 					this.ctx.editorContainer.addChild(askDialog);
-					// Keep the draft editor mounted beneath the restored ask, matching the
-					// initial presentation: the guard re-blocks whenever the draft is
-					// non-empty (e.g. a failed submit restored its text while a nested
-					// prompt was open), and routed input must land on a visible surface.
-					if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
+					if (draftEditor.hasDraftContent()) this.ctx.editorContainer.addChild(draftEditor);
+					this.ctx.askDraftInput = askDialog;
 					this.ctx.ui.setFocus(askDialog);
 					this.ctx.ui.requestRender();
 				};
@@ -1018,6 +1010,8 @@ export class ExtensionUiController {
 					);
 					this.ctx.editorContainer.clear();
 					this.ctx.editorContainer.addChild(promptEditor);
+					if (draftEditor.hasDraftContent()) this.ctx.editorContainer.addChild(draftEditor);
+					this.ctx.askDraftInput = promptEditor;
 					this.ctx.ui.setFocus(promptEditor);
 					this.ctx.ui.requestRender();
 				};
@@ -1068,7 +1062,8 @@ export class ExtensionUiController {
 				if (askDraft) askDraft.capture = capture;
 				this.ctx.editorContainer.clear();
 				this.ctx.editorContainer.addChild(askDialog);
-				if (inputGuard) this.ctx.editorContainer.addChild(this.ctx.editor);
+				if (draftEditor.hasDraftContent()) this.ctx.editorContainer.addChild(draftEditor);
+				this.ctx.askDraftInput = askDialog;
 				this.ctx.ui.setFocus(askDialog);
 				this.ctx.ui.requestRender();
 				dialogOptions?.onPresented?.();
@@ -1084,6 +1079,7 @@ export class ExtensionUiController {
 						promptEditor = undefined;
 						// A suspended dialog is off-screen; the surface belongs to another one.
 						if (suspended) return;
+						this.ctx.askDraftInput = undefined;
 						this.ctx.editorContainer.clear();
 						this.ctx.editorContainer.addChild(this.ctx.editor);
 						this.ctx.ui.setFocus(this.ctx.editor);
@@ -1091,6 +1087,7 @@ export class ExtensionUiController {
 					},
 					suspend: () => {
 						suspended = true;
+						this.ctx.askDraftInput = undefined;
 					},
 					resume: () => {
 						suspended = false;
@@ -1101,6 +1098,8 @@ export class ExtensionUiController {
 						// A half-typed custom answer or note comes back as it was.
 						this.ctx.editorContainer.clear();
 						this.ctx.editorContainer.addChild(promptEditor);
+						if (draftEditor.hasDraftContent()) this.ctx.editorContainer.addChild(draftEditor);
+						this.ctx.askDraftInput = promptEditor;
 						this.ctx.ui.setFocus(promptEditor);
 						this.ctx.ui.requestRender();
 					},

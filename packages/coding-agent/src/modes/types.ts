@@ -130,6 +130,8 @@ export interface InteractiveModeContext {
 	reportContainer: Container;
 	editor: CustomEditor;
 	editorContainer: Container;
+	/** Presented ask or its nested answer editor; draft backlog still targets the composer. */
+	askDraftInput?: Component;
 	hookWidgetContainerAbove: Container;
 	hookWidgetContainerBelow: Container;
 	statusLine: StatusLineComponent;

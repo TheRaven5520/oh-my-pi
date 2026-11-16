@@ -82,6 +82,8 @@ This is a display toggle, separate from the model's thinking effort (`Shift+Tab`
 
 In the main composer, `Ctrl+N` saves a nonempty draft to this session's FIFO backlog and clears it only after persistence succeeds. With an empty composer it restores the oldest saved draft for editing; it never sends anything. An empty backlog is a no-op. Whitespace and attachment-only drafts count as nonempty. A count above the prompt shows saved drafts.
 
+`Ctrl+N` also saves/restores the main composer while an ask question is open (including continued or Central-relayed questions and its custom-answer editor). The question stays open and unanswered; its selection, cursor and custom answer are unchanged. It does not navigate the question.
+
 Saved drafts retain text, cursor, attachments, and collapsed-paste expansions across `/refresh` and resume. The backlog belongs to its session, stays out of provider messages, and is distinct from queued follow-up messages. Focused subagents, overlays, and other input dialogs keep ownership of their input. Repeated presses while a save is pending are coalesced. If persistence fails, the draft is kept; a failed restore commit can leave both the restored editor and the original saved copy rather than risk losing either.
 
 Backlog snapshots preserve full pasted text and image bytes, including payloads larger than the transcript persistence limit.
