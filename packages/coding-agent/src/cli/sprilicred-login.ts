@@ -101,7 +101,12 @@ const NONE_EFFORT_MODELS: Record<string, true> = {
 };
 // Models that reject the `none` tier: thinking off sends their lowest listed effort. Written
 // explicitly (not omitted) so an owned `none-effort` an older login wrote is replaced.
-const LOWEST_EFFORT_MODELS: Record<string, true> = { "gpt-6-astra": true, "gpt-6.1-sol": true };
+const LOWEST_EFFORT_MODELS: Record<string, true> = {
+	"gpt-6.2-astra": true,
+	"gpt-6.2-sol": true,
+	"gpt-6-astra": true,
+	"gpt-6.1-sol": true,
+};
 // Offline copy of pricing.rs CLAUDE_EFFORTS (connect.py), used when a listing names no efforts.
 const CLAUDE_EFFORTS: Record<string, string[]> = {
 	"claude-fable-5-2": ["low", "medium", "high", "xhigh", "max"],
