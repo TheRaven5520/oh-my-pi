@@ -480,6 +480,15 @@ export interface OpenAICompat {
 	/** Whether the Responses API accepts the `detail: "original"` image hint. Default: auto-detected (false for GitHub Copilot, which rejects it with a 400). */
 	supportsImageDetailOriginal?: boolean;
 	/**
+	 * Send `strict: false` on every Responses function tool omp does not send
+	 * strict, even when `supportsStrictMode` is off: the endpoint understands
+	 * `strict` and, like OpenAI's Responses API, treats an omitted one as
+	 * `true`, so an absent flag makes a non-strict tool strict upstream. Never
+	 * turns `strict: true` on. Default: true for SpriliCred (`sprilicred-*`)
+	 * providers, false otherwise.
+	 */
+	explicitNonStrictTools?: boolean;
+	/**
 	 * Whether the Responses endpoint accepts `configuration_update` input items
 	 * that change `reasoning.effort` mid-conversation while the request-level
 	 * effort stays pinned for prompt caching (GPT-6 Astra). Default:
@@ -959,6 +968,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "thinkingKeep"
 			| "strictResponsesPairing"
 			| "supportsImageDetailOriginal"
+			| "explicitNonStrictTools"
 			| "supportsConfigurationUpdate"
 			| "supportsSteering"
 			| "stripImageInput"
@@ -986,6 +996,8 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	supportsLongPromptCacheRetention: boolean;
 	strictResponsesPairing: boolean;
 	supportsImageDetailOriginal: boolean;
+	/** See {@link OpenAICompat.explicitNonStrictTools}. */
+	explicitNonStrictTools: boolean;
 	supportsObfuscationOptOut: boolean;
 	/**
 	 * Whether `reasoning.context: "all_turns"` (full cross-turn reasoning

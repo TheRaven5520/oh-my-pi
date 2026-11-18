@@ -141,6 +141,12 @@ export interface OpenAIStrictToolsScope {
 export interface OpenAIStrictToolsState {
 	strictTools: {
 		disabledModelScopes: Set<string>;
+		/**
+		 * Scopes whose endpoint compiled a tool sent without `strict` as strict
+		 * (OpenAI Responses reads an omitted flag as `true`) and rejected it: every
+		 * non-strict function tool there carries an explicit `strict: false`.
+		 */
+		explicitNonStrictModelScopes: Set<string>;
 	};
 }
 
@@ -543,12 +549,14 @@ export function createOpenAIStrictToolsState(): OpenAIStrictToolsState {
 	return {
 		strictTools: {
 			disabledModelScopes: new Set<string>(),
+			explicitNonStrictModelScopes: new Set<string>(),
 		},
 	};
 }
 
 export function clearOpenAIStrictToolsState(state: OpenAIStrictToolsState): void {
 	state.strictTools.disabledModelScopes.clear();
+	state.strictTools.explicitNonStrictModelScopes.clear();
 }
 
 export function getOpenAIStrictToolsScope(
@@ -562,14 +570,16 @@ export function getOpenAIStrictToolsScope(
 	};
 }
 
+function strictToolsScopeKey(scope: OpenAIStrictToolsScope): string {
+	return `${scope.provider}:${scope.baseUrl ?? ""}:${scope.modelId}`;
+}
+
 export function isStrictToolsDisabledForScope(
 	state: OpenAIStrictToolsState | undefined,
 	scope: OpenAIStrictToolsScope | undefined,
 ): boolean {
 	if (!scope) return false;
-	return (
-		state?.strictTools.disabledModelScopes.has(`${scope.provider}:${scope.baseUrl ?? ""}:${scope.modelId}`) ?? false
-	);
+	return state?.strictTools.disabledModelScopes.has(strictToolsScopeKey(scope)) ?? false;
 }
 
 export function disableStrictToolsForScope(
@@ -577,7 +587,23 @@ export function disableStrictToolsForScope(
 	scope: OpenAIStrictToolsScope | undefined,
 ): void {
 	if (!scope) return;
-	state?.strictTools.disabledModelScopes.add(`${scope.provider}:${scope.baseUrl ?? ""}:${scope.modelId}`);
+	state?.strictTools.disabledModelScopes.add(strictToolsScopeKey(scope));
+}
+
+export function isExplicitNonStrictToolsRequiredForScope(
+	state: OpenAIStrictToolsState | undefined,
+	scope: OpenAIStrictToolsScope | undefined,
+): boolean {
+	if (!scope) return false;
+	return state?.strictTools.explicitNonStrictModelScopes.has(strictToolsScopeKey(scope)) ?? false;
+}
+
+export function requireExplicitNonStrictToolsForScope(
+	state: OpenAIStrictToolsState | undefined,
+	scope: OpenAIStrictToolsScope | undefined,
+): void {
+	if (!scope) return;
+	state?.strictTools.explicitNonStrictModelScopes.add(strictToolsScopeKey(scope));
 }
 
 /**
@@ -1365,7 +1391,32 @@ export function isCompiledGrammarTooLargeStrictError(
 interface StrictToolsRetryContext {
 	model: OpenAIModelIdentity;
 	strictToolsApplied: boolean;
+	/** True when at least one wire function tool carried no `strict` field. */
+	strictFlagOmitted?: boolean;
 	tools: Tool[] | undefined;
+}
+
+// OpenAI's Responses strict-schema compiler rejecting a tool, e.g. "Invalid
+// schema for 'tools[6].parameters': Unimplemented keys: ["not"]. Compilation
+// limits apply to all strict schemas in the request."
+const STRICT_SCHEMA_COMPILATION_REJECTION_PATTERN =
+	/invalid schema for '?tools\[\d+\]\.parameters|compilation limits apply to all strict schemas/i;
+
+/**
+ * A 400 from the strict-schema compiler. When the request sent a function tool
+ * without `strict`, the endpoint applied its `strict: true` default to it: the
+ * recovery is an explicit `strict: false`, not dropping the field.
+ */
+export function isStrictSchemaCompilationRejection(
+	error: unknown,
+	capturedErrorResponse: CapturedHttpErrorResponse | undefined,
+): boolean {
+	const status = extractHttpStatusFromError(error) ?? capturedErrorResponse?.status;
+	if (status !== 400) return false;
+	const messageParts = [error instanceof Error ? error.message : undefined, capturedErrorResponse?.bodyText]
+		.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+		.join("\n");
+	return STRICT_SCHEMA_COMPILATION_REJECTION_PATTERN.test(messageParts);
 }
 
 /** Decide whether an OpenAI-family request should retry once with non-strict tools. */
@@ -1374,8 +1425,13 @@ export function shouldRetryWithoutStrictTools(
 	capturedErrorResponse: CapturedHttpErrorResponse | undefined,
 	context: StrictToolsRetryContext,
 ): boolean {
-	const { model, strictToolsApplied, tools } = context;
-	if (!tools || tools.length === 0 || !strictToolsApplied) return false;
+	const { model, strictToolsApplied, strictFlagOmitted, tools } = context;
+	if (!tools || tools.length === 0) return false;
+	if (!strictToolsApplied) {
+		// No tool asked for strict, yet the endpoint compiled one as strict: its
+		// `strict` default applied to a tool sent without the field.
+		return strictFlagOmitted === true && isStrictSchemaCompilationRejection(error, capturedErrorResponse);
+	}
 	const status = extractHttpStatusFromError(error) ?? capturedErrorResponse?.status;
 	if (status !== 400 && status !== 422) return false;
 	const errorMessage = error instanceof Error ? error.message.trim() : "";

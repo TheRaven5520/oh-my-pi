@@ -73,6 +73,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"alwaysSendMaxTokens?": "boolean",
 		"strictResponsesPairing?": "boolean",
 		"supportsImageDetailOriginal?": "boolean",
+		"explicitNonStrictTools?": "boolean",
 		"supportsConfigurationUpdate?": "boolean",
 		"supportsSteering?": "boolean",
 		"stripImageInput?": "boolean",

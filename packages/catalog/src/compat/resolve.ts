@@ -741,6 +741,10 @@ function resolveOpenAIResponsesPolicy(
 		promptCacheBreakpointTtl: supportsPromptCacheBreakpoints ? "30m" : undefined,
 		strictResponsesPairing: isAzure || provider === "github-copilot",
 		supportsImageDetailOriginal: !isXaiHost && !modelMatchesHost(hostModel, "githubCopilot"),
+		// SpriliCred forwards to OpenAI/Codex Responses backends, which read an
+		// omitted tool `strict` as `true`; the auto-detected `supportsStrictMode`
+		// is false there, so non-strict tools must carry an explicit `false`.
+		explicitNonStrictTools: modelMatchesHost(hostModel, "sprilicred"),
 		supportsReasoningSummary: !isXaiHost,
 		supportsAllTurnsReasoningContext: false,
 		supportsConfigurationUpdate: false,
@@ -850,6 +854,7 @@ function pickResponsesOnly(compat: ResolvedOpenAIResponsesCompat): ResponsesOnly
 		supportsLongPromptCacheRetention: compat.supportsLongPromptCacheRetention,
 		strictResponsesPairing: compat.strictResponsesPairing,
 		supportsImageDetailOriginal: compat.supportsImageDetailOriginal,
+		explicitNonStrictTools: compat.explicitNonStrictTools,
 		supportsObfuscationOptOut: compat.supportsObfuscationOptOut,
 		supportsAllTurnsReasoningContext: compat.supportsAllTurnsReasoningContext,
 		supportsConfigurationUpdate: compat.supportsConfigurationUpdate,

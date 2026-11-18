@@ -5151,7 +5151,12 @@ export function convertOpenAICodexResponsesTools(
 			name: tool.name,
 			description: tool.description || "",
 			parameters,
-			...(effectiveStrict ? { strict: true } : !NO_STRICT && tool.strict === false ? { strict: false } : {}),
+			// The Codex backend reads an omitted `strict` as `true` (GPT-6.2 400s
+			// a `not` schema under it), so every tool not sent strict — unset,
+			// author opt-out, or a schema the strict adapter cannot enforce —
+			// carries an explicit `false`, as Codex CLI sends. `PI_NO_STRICT`
+			// keeps the field off the wire.
+			...(effectiveStrict ? { strict: true } : !NO_STRICT ? { strict: false } : {}),
 		});
 	}
 	return payloads;

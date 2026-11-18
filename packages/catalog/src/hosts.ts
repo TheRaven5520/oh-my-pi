@@ -36,6 +36,8 @@ export const KNOWN_HOSTS = {
 	 * Routing applies; no other OpenRouter wire behavior does.
 	 */
 	openrouterRelay: { providers: ["sprilicred-openrouter"], urlMarkers: [] },
+	/** SpriliCred's own providers (`sprilicred-openai`, … as `omp login sprilicred` installs them), matched by provider id only. */
+	sprilicred: { providerPrefixes: ["sprilicred-"], urlMarkers: [] },
 	vercelAIGateway: { providers: ["vercel-ai-gateway"], urlMarkers: ["ai-gateway.vercel.sh"] },
 	githubCopilot: { providers: ["github-copilot"], urlMarkers: ["githubcopilot.com", "copilot-api."] },
 	anthropic: { providers: ["anthropic"], urlMarkers: ["api.anthropic.com"] },

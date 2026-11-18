@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
+import * as AIError from "@oh-my-pi/pi-ai/error";
+import { convertOpenAICodexResponsesTools } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
-import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
+import { convertTools, streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
 import type {
 	Context,
 	FetchImpl,
@@ -60,6 +62,53 @@ const testContext: Context = {
 	],
 	tools: [testTool],
 };
+
+// omp's `task` tool declares `"model?": "never"`, emitted as `{ not: true }`.
+// The strict adapter cannot enforce `not`, so the tool falls back to
+// non-strict; GPT-6.2 on the Codex backend compiled it strictly anyway when
+// `strict` was omitted and 400'd every turn.
+const notSchemaTool: Tool = {
+	name: "task",
+	description: "Spawn agents",
+	parameters: {
+		type: "object",
+		properties: { prompt: { type: "string" }, model: { not: true } },
+		required: ["prompt"],
+	},
+};
+
+const STRICT_COMPILATION_REJECTION =
+	"Invalid schema for 'tools[6].parameters': Unimplemented keys: [\"not\"]. Compilation limits apply to all strict schemas in the request.";
+
+function sprilicredResponsesModel(): Model<"openai-responses"> {
+	return buildModel({
+		id: "gpt-6.2-astra",
+		name: "GPT-6.2 Astra",
+		api: "openai-responses",
+		provider: "sprilicred-openai",
+		baseUrl: "https://sprilicred.example/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 500_000,
+		maxTokens: 128_000,
+	} satisfies ModelSpec<"openai-responses">);
+}
+
+function customResponsesModel(): Model<"openai-responses"> {
+	return buildModel({
+		id: "gpt-6.2-astra",
+		name: "GPT-6.2 Astra via a custom gateway",
+		api: "openai-responses",
+		provider: "my-gateway",
+		baseUrl: "https://gateway.example/v1",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 500_000,
+		maxTokens: 128_000,
+	} satisfies ModelSpec<"openai-responses">);
+}
 
 function createAbortedSignal(): AbortSignal {
 	const controller = new AbortController();
@@ -887,5 +936,102 @@ describe("OpenAI tool strict mode", () => {
 			tools?: Array<{ strict?: boolean }>;
 		};
 		expect(payload.tools?.[0]?.strict).toBe(true);
+	});
+
+	it("sends strict:false, not an omitted flag, when a strict-mode schema falls back (openai-responses)", () => {
+		const model = getBundledModel("openai", "gpt-5-mini") as Model<"openai-responses">;
+		const [tool] = convertTools([notSchemaTool], true, model).map(toRecord);
+		expect(tool).toHaveProperty("strict", false);
+	});
+
+	it("sends strict:false, not an omitted flag, when a strict schema falls back (openai-codex-responses)", () => {
+		const model = buildModel({
+			id: "gpt-6.2-astra",
+			name: "GPT-6.2 Astra",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 272_000,
+			maxTokens: 128_000,
+		} satisfies ModelSpec<"openai-codex-responses">);
+		const [tool] = convertOpenAICodexResponsesTools([{ ...notSchemaTool, strict: true }], model);
+		expect(tool).toHaveProperty("strict", false);
+	});
+
+	it("sends strict:false on every function tool for SpriliCred providers despite supportsStrictMode=false", () => {
+		const model = sprilicredResponsesModel();
+		expect(model.compat.supportsStrictMode).toBe(false);
+		expect(model.compat.explicitNonStrictTools).toBe(true);
+		const tools = convertTools([testTool, notSchemaTool, looseYieldTool], false, model).map(toRecord);
+		// Never turns strict on; only makes the non-strict default explicit.
+		expect(tools.map(tool => tool.strict)).toEqual([false, false, false]);
+	});
+
+	it("keeps strict off the wire for unknown providers without explicitNonStrictTools", () => {
+		const model = customResponsesModel();
+		expect(model.compat.explicitNonStrictTools).toBe(false);
+		const tools = convertTools([testTool, notSchemaTool], false, model).map(toRecord);
+		expect(tools.every(tool => !("strict" in tool))).toBe(true);
+	});
+
+	it("classifies the OpenAI strict-schema compilation 400 as a strict-tool rejection", () => {
+		const error = Object.assign(new Error(`400 ${STRICT_COMPILATION_REJECTION}`), { status: 400 });
+		expect(AIError.isGrammarError(error)).toBe(true);
+	});
+
+	it("retries once with explicit strict:false after a backend-defaulted strict rejection, and remembers it", async () => {
+		const model = customResponsesModel();
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const strictFlags: unknown[][] = [];
+		let attempt = 0;
+		const fetchMock: FetchImpl = Object.assign(
+			async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+				attempt += 1;
+				const bodyText = typeof init?.body === "string" ? init.body : "";
+				const tools = toRecord(JSON.parse(bodyText)).tools;
+				strictFlags.push(Array.isArray(tools) ? tools.map(tool => toRecord(tool).strict) : []);
+				if (attempt === 1) {
+					return new Response(
+						JSON.stringify({
+							error: {
+								message: STRICT_COMPILATION_REJECTION,
+								type: "invalid_request_error",
+								param: "tools[6].parameters",
+								code: "invalid_function_parameters",
+							},
+						}),
+						{ status: 400, headers: { "content-type": "application/json" } },
+					);
+				}
+				return createResponsesTextSseResponse(attempt === 2 ? "Recovered" : "Later");
+			},
+			{ preconnect: fetch.preconnect },
+		);
+		const context: Context = { ...testContext, tools: [testTool, notSchemaTool] };
+
+		const result = await streamOpenAIResponses(model, context, {
+			apiKey: "test-key",
+			providerSessionState,
+			fetch: fetchMock,
+		}).result();
+		expect(result.stopReason).toBe("stop");
+		expect(result.errorMessage).toBeUndefined();
+
+		const nextResult = await streamOpenAIResponses(model, context, {
+			apiKey: "test-key",
+			providerSessionState,
+			fetch: fetchMock,
+		}).result();
+		expect(nextResult.stopReason).toBe("stop");
+		// First request omits `strict` (unknown provider); the retry and every
+		// later turn in the session send an explicit `false`.
+		expect(strictFlags).toEqual([
+			[undefined, undefined],
+			[false, false],
+			[false, false],
+		]);
 	});
 });

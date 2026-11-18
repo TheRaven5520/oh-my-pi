@@ -63,6 +63,7 @@ describe("openai-codex tool schemas", () => {
 			name: "list_outgoing_messages",
 			description: "List outgoing messages",
 			parameters: { type: "object", properties: {} },
+			strict: false,
 		});
 	});
 	it("strips MCP regex lookaround patterns from function parameters", () => {
@@ -93,6 +94,7 @@ describe("openai-codex tool schemas", () => {
 				},
 				propertyNames: true,
 			},
+			strict: false,
 		});
 	});
 	it("strips MCP regex lookaround patternProperties from function parameters", () => {
@@ -126,6 +128,7 @@ describe("openai-codex tool schemas", () => {
 				additionalProperties: false,
 				properties: {},
 			},
+			strict: false,
 		});
 	});
 
@@ -154,7 +157,7 @@ describe("openai-codex tool schemas", () => {
 		expect(converted[0]).toMatchObject({ type: "function", name: "search", strict: false });
 	});
 
-	it("omits strict when the tool leaves it unset (#4336)", () => {
+	it("sends explicit strict:false when the tool leaves it unset", () => {
 		const tools: Tool[] = [
 			{
 				name: "search",
@@ -169,11 +172,32 @@ describe("openai-codex tool schemas", () => {
 		];
 
 		const converted = convertOpenAICodexResponsesTools(tools, createCodexModel("gpt-5.5"));
-		const payload = converted[0] as { strict?: boolean };
 
-		// Codex responses only enforces strict when the tool opts in; leaving
-		// `strict` unset MUST NOT synthesize the field either way.
-		expect(payload.strict).toBeUndefined();
+		// The Codex backend reads an omitted `strict` as `true`; a tool that did
+		// not opt in MUST say `false` rather than leave it to that default.
+		expect(converted[0]).toMatchObject({ type: "function", name: "search", strict: false });
+	});
+
+	it("sends strict:false, not an omitted flag, when a strict tool's schema cannot be enforced", () => {
+		// The GPT-6.2 400: `{ not: true }` (omp's `"model?": "never"`) cannot be
+		// made strict; with `strict` omitted the backend compiled it strictly and
+		// rejected it ("Unimplemented keys: [\"not\"]").
+		const tools: Tool[] = [
+			{
+				name: "task",
+				description: "Spawn agents",
+				strict: true,
+				parameters: {
+					type: "object",
+					properties: { prompt: { type: "string" }, model: { not: true } },
+					required: ["prompt"],
+				},
+			},
+		];
+
+		const converted = convertOpenAICodexResponsesTools(tools, createCodexModel("gpt-5.5"));
+
+		expect(converted[0]).toMatchObject({ type: "function", name: "task", strict: false });
 	});
 });
 

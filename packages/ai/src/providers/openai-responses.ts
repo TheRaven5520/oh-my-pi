@@ -92,12 +92,15 @@ import {
 	getOpenAIStrictToolsScope,
 	getOpenRouterResponsesSessionId,
 	isCompiledGrammarTooLargeStrictError,
+	isExplicitNonStrictToolsRequiredForScope,
 	isOpenAIResponsesProgressEvent,
+	isStrictSchemaCompilationRejection,
 	isStrictToolsDisabledForScope,
 	type OpenAIPromptCacheOptions,
 	type OpenAIStrictToolsScope,
 	type OpenAIStrictToolsState,
 	processResponsesStream,
+	requireExplicitNonStrictToolsForScope,
 	resolveOpenAICompatPolicy,
 	resolveOpenAIOutputTokenParam,
 	resolveOpenAIRequestSetup,
@@ -630,7 +633,9 @@ const streamOpenAIResponsesOnce = (
 			};
 			let strictRetryAvailable = true;
 			let activeStrictToolsApplied = builtParams.strictToolsApplied;
+			let activeStrictFlagOmitted = builtParams.strictFlagOmitted;
 			let forceDisableStrictTools = false;
+			let forceExplicitNonStrictTools = false;
 			const openResponsesStreamWithFallbacks = async (): Promise<AsyncIterable<ResponseStreamEvent>> => {
 				let openaiStream: AsyncIterable<ResponseStreamEvent>;
 				while (true) {
@@ -688,12 +693,26 @@ const streamOpenAIResponsesOnce = (
 								shouldRetryWithoutStrictTools(error, capturedErrorResponse, {
 									model,
 									strictToolsApplied: activeStrictToolsApplied,
+									strictFlagOmitted: activeStrictFlagOmitted,
 									tools: context.tools,
 								}));
 						if (canRetryWithoutStrictTools) {
 							strictRetryAvailable = false;
 							forceDisableStrictTools = true;
 							disableStrictToolsForScope(providerSessionState, strictToolsScope);
+							if (activeStrictFlagOmitted && isStrictSchemaCompilationRejection(error, capturedErrorResponse)) {
+								// The endpoint applied its `strict: true` default to a tool sent
+								// without the field: retry with an explicit `false` on every
+								// function tool, and keep sending it for this model scope.
+								forceExplicitNonStrictTools = true;
+								if (!isExplicitNonStrictToolsRequiredForScope(providerSessionState, strictToolsScope)) {
+									logger.warn(
+										`${model.provider}/${model.id} compiled tools sent without \`strict\` as strict and rejected the request; retrying with explicit \`strict: false\` on every function tool for this session.`,
+										{ error: error instanceof Error ? error.message : String(error) },
+									);
+								}
+								requireExplicitNonStrictToolsForScope(providerSessionState, strictToolsScope);
+							}
 							const fallbackBuilt = buildParams(
 								model,
 								context,
@@ -702,6 +721,7 @@ const streamOpenAIResponsesOnce = (
 								strictToolsScope,
 								true,
 								chainState?.canAppend ? chainState.lastParams?.input : undefined,
+								forceExplicitNonStrictTools,
 							);
 							const fallbackParams = fallbackBuilt.params;
 							if (chainState && !chainState.disabled) fallbackParams.store = true;
@@ -722,6 +742,8 @@ const streamOpenAIResponsesOnce = (
 							activeRawRequestDump.body = chained.params;
 							activeParams = fallbackParams;
 							activeTrailingScaffoldingItems = fallbackBuilt.trailingScaffoldingItems;
+							activeStrictToolsApplied = fallbackBuilt.strictToolsApplied;
+							activeStrictFlagOmitted = fallbackBuilt.strictFlagOmitted;
 							continue;
 						}
 						if (!chainState || !sentPreviousResponseId || requestSignal.aborted) {
@@ -756,6 +778,8 @@ const streamOpenAIResponsesOnce = (
 							providerSessionState,
 							strictToolsScope,
 							forceDisableStrictTools,
+							undefined,
+							forceExplicitNonStrictTools,
 						);
 						const currentParams = currentBuilt.params;
 						// Only ZDR forces `store: false` (the org never persists responses). A
@@ -769,6 +793,7 @@ const streamOpenAIResponsesOnce = (
 						activeParams = currentParams;
 						activeTrailingScaffoldingItems = currentBuilt.trailingScaffoldingItems;
 						activeStrictToolsApplied = currentBuilt.strictToolsApplied;
+						activeStrictFlagOmitted = currentBuilt.strictFlagOmitted;
 					}
 				}
 				return openaiStream;
@@ -1186,7 +1211,13 @@ export function buildParams(
 	strictToolsScope?: OpenAIStrictToolsScope,
 	disableStrictToolsOverride = false,
 	statefulCacheBaseline?: ResponseInput,
-): { params: OpenAIResponsesSamplingParams; trailingScaffoldingItems: number; strictToolsApplied: boolean } {
+	explicitNonStrictToolsOverride = false,
+): {
+	params: OpenAIResponsesSamplingParams;
+	trailingScaffoldingItems: number;
+	strictToolsApplied: boolean;
+	strictFlagOmitted: boolean;
+} {
 	const policy = resolveOpenAICompatPolicy(model, {
 		endpoint: "responses",
 		reasoning: options?.reasoning,
@@ -1290,12 +1321,17 @@ export function buildParams(
 	// `StreamOptions.frequencyPenalty` is intentionally dropped for this provider.
 
 	let strictToolsApplied = false;
+	let strictFlagOmitted = false;
 	if (context.tools) {
 		const disableStrictTools =
 			disableStrictToolsOverride || isStrictToolsDisabledForScope(providerSessionState, strictToolsScope);
 		const strictMode = !disableStrictTools && model.compat.supportsStrictMode !== false;
-		params.tools = convertTools(context.tools, strictMode, model);
+		const explicitNonStrict =
+			explicitNonStrictToolsOverride ||
+			isExplicitNonStrictToolsRequiredForScope(providerSessionState, strictToolsScope);
+		params.tools = convertTools(context.tools, strictMode, model, undefined, explicitNonStrict);
 		strictToolsApplied = params.tools.some(t => (t as { strict?: boolean }).strict === true);
+		strictFlagOmitted = params.tools.some(t => t.type === "function" && !("strict" in t));
 		if (options?.toolChoice) {
 			// Map tool_choice against the tools that survived quarantine, not the
 			// original list: a forced choice for a dropped tool — or "required" when
@@ -1382,7 +1418,7 @@ export function buildParams(
 		trailingScaffoldingItems = 1;
 	}
 
-	return { params, trailingScaffoldingItems, strictToolsApplied };
+	return { params, trailingScaffoldingItems, strictToolsApplied, strictFlagOmitted };
 }
 
 /**
@@ -1459,7 +1495,13 @@ export function mapOpenAIResponsesToolChoiceForTools(
 	return customTool ? { type: "custom", name: customTool.customWireName ?? customTool.name } : mapped;
 }
 
-/** @internal Exported for tests. */
+/**
+ * @internal Exported for tests.
+ *
+ * `forceExplicitNonStrict` sends `strict: false` on every non-strict function
+ * tool even where compat leaves the field off: set after the endpoint rejected
+ * a tool under strict-schema compilation it applied to an omitted `strict`.
+ */
 export function convertTools(
 	tools: Tool[],
 	strictMode: boolean,
@@ -1468,7 +1510,17 @@ export function convertTools(
 		logger.warn(
 			`Tool "${toolName}" omitted from the openai-responses request: its parameter schema is invalid for this provider at ${schemaPath} (an enum/const value cannot match its declared type). Other tools are unaffected.`,
 		),
+	forceExplicitNonStrict = false,
 ): OpenAITool[] {
+	// The Responses API reads an omitted `strict` as `true`, so a tool omp does
+	// not send strict (author opt-out, or a schema the strict adapter cannot
+	// enforce) carries an explicit `false` while `strictMode` lets the field on
+	// the wire. Endpoints that understand `strict` but resolve
+	// `supportsStrictMode: false` (`explicitNonStrictTools`, or a scope whose
+	// strict compiler rejected an omitted flag) get it too. `PI_NO_STRICT`, and
+	// the generic drop-strict retry on other endpoints, keep it uniformly absent.
+	const sendNonStrictFlag =
+		!NO_STRICT && (strictMode || model.compat.explicitNonStrictTools || forceExplicitNonStrict);
 	const allowFreeform = supportsFreeformApplyPatch(model);
 	const rejectRootObjectUnion = model.compat.rejectRootObjectUnion;
 	const out: OpenAITool[] = [];
@@ -1524,19 +1576,10 @@ export function convertTools(
 			name: tool.name,
 			description: tool.description || "",
 			parameters,
-			// `strict: false` and an omitted `strict` are NOT equivalent for every
-			// OpenAI-compat backend — some over-fill optional args when the flag is
-			// absent (#4336). Preserve the author's explicit `false` unless the
-			// provider is explicitly known not to understand the field
-			// (`supportsStrictMode: false`) or the strict-schema fallback is
-			// active — both paths rely on a uniformly absent wire flag. Mirrors the
-			// `supportsStrictMode !== false` gate used by openai-completions
-			// (#4527).
-			...(effectiveStrict
-				? { strict: true }
-				: !NO_STRICT && strictMode && tool.strict === false
-					? { strict: false }
-					: {}),
+			// Explicit `false` whenever strict is not effective (see
+			// `sendNonStrictFlag`): omitting it would make the tool strict upstream
+			// and 400 the turn on a schema the strict compiler rejects (`not`, …).
+			...(effectiveStrict ? { strict: true } : sendNonStrictFlag ? { strict: false } : {}),
 		} as OpenAITool);
 	}
 	return out;

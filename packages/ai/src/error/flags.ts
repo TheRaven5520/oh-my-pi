@@ -283,9 +283,14 @@ const EXTRA_INPUTS_NOT_PERMITTED_PATTERN = /extra inputs? (?:are|is) not permitt
 // function tool. OpenAI strict mode additionally demands every `properties`
 // key in `required`, which Anthropic's strict subset does not, so a
 // legally-optional parameter is rejected only after translation and the sole
-// recovery is dropping `strict`. Mirrors the phrasings
-// `shouldRetryWithoutStrictTools` already recognizes on the OpenAI-family path.
-const STRICT_TOOL_SCHEMA_REJECTION_PATTERN = /invalid schema for function|invalid tool parameters schema/i;
+// recovery is dropping `strict`. Also OpenAI's Responses strict compiler,
+// which applies to a function tool sent without `strict` (the API default is
+// `true`): "Invalid schema for 'tools[6].parameters': Unimplemented keys:
+// ["not"]. Compilation limits apply to all strict schemas in the request."
+// Mirrors `STRICT_SCHEMA_COMPILATION_REJECTION_PATTERN` and the phrasings
+// `shouldRetryWithoutStrictTools` recognizes on the OpenAI-family path.
+const STRICT_TOOL_SCHEMA_REJECTION_PATTERN =
+	/invalid schema for (?:function|'?tools\[\d+\]\.parameters)|invalid tool parameters schema|compilation limits apply to all strict schemas/i;
 // Anthropic fast-mode unsupported: 400 rejecting `speed`, or 429 rate_limit_error
 // because the account lacks the extra-usage entitlement fast mode requires.
 const FAST_MODE_SPEED_PARAM_PATTERN = /\bspeed\b/i;
