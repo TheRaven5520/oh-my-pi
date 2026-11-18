@@ -109,6 +109,13 @@ const LOWEST_EFFORT_MODELS: Record<string, true> = {
 	"gpt-6-astra": true,
 	"gpt-6.1-sol": true,
 };
+// From GPT-6.2 the Responses API appends top-level `instructions` after `input` and bills them
+// uncached on every request, so these send the system prompt as a leading `developer` message
+// (connect.py model_fields, SpriliCred release-147). Do not guess for future IDs.
+const DEVELOPER_ROLE_MODELS: Record<string, true> = {
+	"gpt-6.2-astra": true,
+	"gpt-6.2-sol": true,
+};
 // Offline copy of pricing.rs CLAUDE_EFFORTS (connect.py), used when a listing names no efforts.
 const CLAUDE_EFFORTS: Record<string, string[]> = {
 	"claude-fable-5-2": ["low", "medium", "high", "xhigh", "max"],
@@ -381,6 +388,9 @@ function modelFields(model: CatalogModel, family: "anthropic" | "openai"): Recor
 		fields.compat = { reasoningDisableMode: "none-effort" };
 	} else if (family !== "anthropic" && Object.hasOwn(LOWEST_EFFORT_MODELS, model.id)) {
 		fields.compat = { reasoningDisableMode: "lowest-effort" };
+	}
+	if (family === "openai" && Object.hasOwn(DEVELOPER_ROLE_MODELS, model.id)) {
+		fields.compat = { ...(fields.compat as Record<string, unknown> | undefined), supportsDeveloperRole: true };
 	}
 	return fields;
 }

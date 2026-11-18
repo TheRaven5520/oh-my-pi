@@ -677,6 +677,7 @@ describe("SpriliCred login", () => {
 				data: [
 					...data,
 					{ id: "gpt-7-nova", context_window: 272000 },
+					{ id: "gpt-6.2-sol", context_window: 500000 },
 					{ id: "gpt-6.1-sol", context_window: 500000 },
 					{ id: "gpt-6.1-terra", context_window: 500000 },
 					{ id: "gpt-6-luna", context_window: 500000 },
@@ -710,6 +711,11 @@ describe("SpriliCred login", () => {
 		expect(openai["gpt-6.1-sol"].compat).toEqual({ reasoningDisableMode: "lowest-effort" });
 		expect(openai["gpt-6.1-terra"].compat).toEqual({ reasoningDisableMode: "none-effort" });
 		expect(openai["gpt-6-luna"].compat).toEqual({ reasoningDisableMode: "none-effort" });
+		// GPT-6.2 bills top-level `instructions` uncached every turn: the system prompt goes as a developer message.
+		expect(openai["gpt-6.2-sol"].compat).toEqual({
+			reasoningDisableMode: "lowest-effort",
+			supportsDeveloperRole: true,
+		});
 		// Never guessed for an id the installer does not know.
 		expect(openai["gpt-7-nova"].compat).toBeUndefined();
 
