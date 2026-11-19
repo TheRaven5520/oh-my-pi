@@ -39,6 +39,8 @@ const NEW_COMPAT_FIELDS = new Set([
 	"supportsFastMode",
 	// Fork: OpenRouter routing through relays (baked rows predate it; unset reads as `isOpenRouterHost`).
 	"forwardsOpenRouterRouting",
+	// Fork: explicit `strict: false` on SpriliCred's Responses tools (baked rows predate it; resolved `false` off SpriliCred).
+	"explicitNonStrictTools",
 ]);
 
 /** APIs whose compat record is new with the engine (no baked baseline). */
