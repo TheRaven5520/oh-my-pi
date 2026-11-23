@@ -20,8 +20,7 @@ import { $env, isTerminalHeadless, isWsl, logger, prompt } from "@oh-my-pi/pi-ut
 import type { ModelRegistry } from "../config/model-registry";
 
 import { roleCandidatePool } from "../config/model-roles";
-import { formatModelStringWithRouting } from "../config/model-resolver";
-import { collectOnlineTinyCandidates, expandOnlineTinyModelFallbacks } from "../tiny/online-candidates";
+import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import titleMarkerInstruction from "../prompts/system/title-marker-instruction.md" with { type: "text" };
 import titleSystemPrompt from "../prompts/system/title-system.md" with { type: "text" };
@@ -30,8 +29,6 @@ import { buildSideAgentHeaders, type SideAgentRole } from "../session/side-agent
 import { formatTitleUserMessage } from "../tiny/message-preproc";
 import { isLowSignalTitleInput, isNoTitleAnswer, NO_TITLE_SENTINEL, normalizeGeneratedTitle } from "../tiny/text";
 import { tinyTitleClient } from "../tiny/title-client";
-
-import { cfgRetryModelFallback } from "../session/settings";
 
 const TITLE_SYSTEM_PROMPT = prompt.render(titleSystemPrompt);
 const TITLE_MARKER_INSTRUCTION = prompt.render(titleMarkerInstruction);
@@ -116,29 +113,10 @@ const LEADING_THINKING_FENCE_RE = /^\s*```(?:thinking|reasoning)\b[\s\S]*?```\s*
 const LEADING_PROSE_THINKING_PREAMBLE_RE =
 	/^[ \t]*(?:(?:here(?:['’]s| is)[ \t]+(?:a|the|my)[ \t]+)|my[ \t]+)?(?:thinking|thought|reasoning)[ \t]+process[ \t]*:?[ \t]*(?:\r?\n|$)/i;
 
-function getTitleModels(registry: ModelRegistry, settings: Settings, currentModel?: Model<Api>): Model<Api>[] {
+function getTitleModel(registry: ModelRegistry, settings: Settings, currentModel?: Model<Api>): Model<Api> | undefined {
 	const availableModels = roleCandidatePool("tiny", settings, registry);
-	if (availableModels.length === 0) return [];
-
-	const models = collectOnlineTinyCandidates(["tiny", "commit", "smol"], settings, availableModels).map(
-		candidate => candidate.model,
-	);
-	if (
-		currentModel &&
-		(models.length === 0 || cfgRetryModelFallback.get(settings) !== false) &&
-		!models.some(model => formatModelStringWithRouting(model) === formatModelStringWithRouting(currentModel))
-	) {
-		// Append currentModel and expand its own chain separately — never merge it
-		// into the tiny/commit/smol role collection (that would apply role defaults).
-		const seen = new Set(models.map(formatModelStringWithRouting));
-		for (const model of expandOnlineTinyModelFallbacks(currentModel, settings, availableModels)) {
-			const key = formatModelStringWithRouting(model);
-			if (seen.has(key)) continue;
-			seen.add(key);
-			models.push(model);
-		}
-	}
-	return models;
+	if (availableModels.length === 0) return undefined;
+	return resolveRoleSelection(["tiny", "commit", "smol"], settings, availableModels)?.model ?? currentModel;
 }
 
 /**
@@ -185,18 +163,17 @@ export async function generateSessionTitle(
 		return null;
 	}
 
-	const models = getTitleModels(registry, settings, currentModel);
-	const firstModel = models[0];
-	if (!firstModel) {
+	const model = getTitleModel(registry, settings, currentModel);
+	if (!model) {
 		logger.warn("title-generator: no title model found", { sessionId, reason: "no-title-model" });
 		return null;
 	}
 
 	const titleSystemPrompt = customSystemPrompt?.trim() || undefined;
-	if (firstModel.api !== "local-inference") {
-		return generateTitleOnlineWithModels(
+	if (model.api !== "local-inference") {
+		return generateTitleWithModel(
 			firstMessage,
-			models,
+			model,
 			registry,
 			sessionId,
 			metadataResolver,
@@ -210,26 +187,26 @@ export async function generateSessionTitle(
 
 	// A local role selection is an explicit no-billing boundary. If the worker
 	// fails (download missing, runtime crash, abort, or no output), leave the
-	// session untitled rather than advancing into a paid fallback candidate.
+	// session untitled.
 	try {
 		let localTitle: string | null;
 		if (signal) {
 			localTitle = await tinyTitleClient.generate(
-				firstModel.id,
+				model.id,
 				firstMessage,
 				titleSystemPrompt ? { signal, systemPrompt: titleSystemPrompt } : { signal },
 			);
 		} else if (titleSystemPrompt) {
-			localTitle = await tinyTitleClient.generate(firstModel.id, firstMessage, {
+			localTitle = await tinyTitleClient.generate(model.id, firstMessage, {
 				systemPrompt: titleSystemPrompt,
 			});
 		} else {
-			localTitle = await tinyTitleClient.generate(firstModel.id, firstMessage);
+			localTitle = await tinyTitleClient.generate(model.id, firstMessage);
 		}
 		if (!localTitle) {
 			logger.warn("title-generator: local tiny model produced no title; skipping (no online fallback)", {
 				sessionId,
-				model: firstModel.id,
+				model: model.id,
 				reason: "local-no-output",
 			});
 			return null;
@@ -238,7 +215,7 @@ export async function generateSessionTitle(
 	} catch (err) {
 		logger.warn("title-generator: local tiny model errored; skipping (no online fallback)", {
 			sessionId,
-			model: firstModel.id,
+			model: model.id,
 			error: err instanceof Error ? err.message : String(err),
 		});
 		return null;
@@ -258,14 +235,14 @@ export async function generateTitleOnline(
 	parentSessionId: string | undefined = credentialSourceSessionId,
 	role: SideAgentRole = "title",
 ): Promise<string | null> {
-	const models = getTitleModels(registry, settings, currentModel);
-	if (models.length === 0) {
+	const model = getTitleModel(registry, settings, currentModel);
+	if (!model) {
 		logger.warn("title-generator: no title model found", { sessionId, reason: "no-title-model" });
 		return null;
 	}
-	return generateTitleOnlineWithModels(
+	return generateTitleWithModel(
 		firstMessage,
-		models,
+		model,
 		registry,
 		sessionId,
 		metadataResolver,
@@ -277,9 +254,9 @@ export async function generateTitleOnline(
 	);
 }
 
-async function generateTitleOnlineWithModels(
+async function generateTitleWithModel(
 	firstMessage: string,
-	models: Model<Api>[],
+	model: Model<Api>,
 	registry: ModelRegistry,
 	sessionId?: string,
 	metadataResolver?: (provider: string) => Record<string, unknown> | undefined,
@@ -301,142 +278,136 @@ async function generateTitleOnlineWithModels(
 	const systemPrompt = titleSystemPrompt ? [titleSystemPrompt, TITLE_MARKER_INSTRUCTION] : [TITLE_SYSTEM_PROMPT];
 	const userMessage = formatTitleUserMessage(firstMessage);
 
-	for (const model of models) {
-		const modelName = `${model.provider}/${model.id}`;
-		const modelContext = {
-			sessionId,
-			provider: model.provider,
-			id: model.id,
-			model: modelName,
-		};
-		logger.debug("title-generator: start", modelContext);
+	const modelName = `${model.provider}/${model.id}`;
+	const modelContext = {
+		sessionId,
+		provider: model.provider,
+		id: model.id,
+		model: modelName,
+	};
+	logger.debug("title-generator: start", modelContext);
 
+	if (signal?.aborted) {
+		logger.debug("title-generator: aborted before attempt", {
+			...modelContext,
+			reason: "aborted",
+		});
+		return null;
+	}
+
+	try {
+		if (credentialSourceSessionId && sessionId && credentialSourceSessionId !== sessionId) {
+			const foregroundCredential = registry.authStorage.oauth
+				.accounts(model.provider, credentialSourceSessionId)
+				.find(account => account.active);
+			if (foregroundCredential) {
+				registry.authStorage.sessions.pin(model.provider, sessionId, foregroundCredential.credentialId);
+			}
+		}
+		const apiKey = await registry.getApiKey(model, sessionId);
+		if (!apiKey) {
+			logger.warn("title-generator: no API key", { ...modelContext, reason: "missing-api-key" });
+			return null;
+		}
 		if (signal?.aborted) {
-			logger.debug("title-generator: aborted before attempt", {
+			logger.debug("title-generator: aborted after credential", {
 				...modelContext,
 				reason: "aborted",
 			});
 			return null;
 		}
+		// Resolve metadata after getApiKey so the session-sticky credential for this
+		// request is already recorded; metadataResolver can then return the correct
+		// account_uuid rather than the snapshot-at-call-site value.
+		const metadata = metadataResolver?.(model.provider);
 
-		try {
-			if (credentialSourceSessionId && sessionId && credentialSourceSessionId !== sessionId) {
-				const foregroundCredential = registry.authStorage.oauth
-					.accounts(model.provider, credentialSourceSessionId)
-					.find(account => account.active);
-				if (foregroundCredential) {
-					registry.authStorage.sessions.pin(model.provider, sessionId, foregroundCredential.credentialId);
-				}
-			}
-			const apiKey = await registry.getApiKey(model, sessionId);
-			if (!apiKey) {
-				logger.warn("title-generator: no API key", { ...modelContext, reason: "missing-api-key" });
-				continue;
-			}
-			if (signal?.aborted) {
-				logger.debug("title-generator: aborted after credential", {
-					...modelContext,
-					reason: "aborted",
-				});
-				return null;
-			}
-			// Resolve metadata after getApiKey so the session-sticky credential for this
-			// request is already recorded; metadataResolver can then return the correct
-			// account_uuid rather than the snapshot-at-call-site value.
-			const metadata = metadataResolver?.(model.provider);
+		// Title generation is a 3-7 word task, but the ceiling has to survive
+		// backends that ignore `disableReasoning` (see TITLE_MAX_TOKENS above).
+		const maxTokens = TITLE_MAX_TOKENS;
+		logger.debug("title-generator: request", { ...modelContext, maxTokens });
 
-			// Title generation is a 3-7 word task, but the ceiling has to survive
-			// backends that ignore `disableReasoning` (see TITLE_MAX_TOKENS above).
-			const maxTokens = TITLE_MAX_TOKENS;
-			logger.debug("title-generator: request", { ...modelContext, maxTokens });
+		const messages: Message[] = [{ role: "user", content: userMessage, timestamp: Date.now() }];
+		if (model.supportsAssistantPrefill) messages.push(titlePrefill(model));
 
-			const messages: Message[] = [{ role: "user", content: userMessage, timestamp: Date.now() }];
-			if (model.supportsAssistantPrefill) messages.push(titlePrefill(model));
+		const requestOptions = await privateSideCall(
+			model,
+			{
+				apiKey: registry.resolver(model, sessionId),
+				sessionId,
+				maxTokens,
+				disableReasoning: true,
+				// Greedy decode: titling is extraction, not generation. Backends that
+				// default temperature high (e.g. Ollama's 0.8) otherwise garble names
+				// from the message ("hashline" → "HasHroshi"). Providers whose models
+				// reject sampling params drop this via `supportsSamplingParams`.
+				temperature: 0,
+				metadata,
+				headers,
+				signal,
+			},
+			role,
+		);
+		const response = await retryTransientCompletion(
+			() => completeSimple(model, { systemPrompt, messages }, requestOptions),
+			{ signal, provider: model.provider },
+		);
 
-			const requestOptions = await privateSideCall(
-				model,
-				{
-					apiKey: registry.resolver(model, sessionId),
-					sessionId,
-					maxTokens,
-					disableReasoning: true,
-					// Greedy decode: titling is extraction, not generation. Backends that
-					// default temperature high (e.g. Ollama's 0.8) otherwise garble names
-					// from the message ("hashline" → "HasHroshi"). Providers whose models
-					// reject sampling params drop this via `supportsSamplingParams`.
-					temperature: 0,
-					metadata,
-					headers,
-					signal,
-				},
-				role,
-			);
-			const response = await retryTransientCompletion(
-				() => completeSimple(model, { systemPrompt, messages }, requestOptions),
-				{ signal, provider: model.provider },
-			);
-
-			if (response.stopReason === "aborted" || signal?.aborted) {
-				logger.debug("title-generator: aborted", {
-					...modelContext,
-					reason: "aborted",
-					stopReason: response.stopReason,
-				});
-				return null;
-			}
-
-			if (response.stopReason === "error") {
-				logger.warn("title-generator: response error", {
-					...modelContext,
-					reason: "provider-response-error",
-					stopReason: response.stopReason,
-					errorMessage: response.errorMessage,
-				});
-				continue;
-			}
-
-			const answer = extractGeneratedTitle(response.content);
-			const title = normalizeGeneratedTitle(answer, firstMessage);
-
-			if (!title) {
-				// `none` / `<title/>` is a deliberate answer ("no title yet", or a tag
-				// check keeping its tag): asking the next model would only let it invent one.
-				const declined = isNoTitleAnswer(answer);
-				logger.debug("title-generator: no title returned", {
-					...modelContext,
-					reason: declined ? "model-declined" : "model-returned-none",
-					usage: response.usage,
-					stopReason: response.stopReason,
-				});
-				if (declined) return null;
-				continue;
-			}
-
-			logger.debug("title-generator: success", {
+		if (response.stopReason === "aborted" || signal?.aborted) {
+			logger.debug("title-generator: aborted", {
 				...modelContext,
-				title,
+				reason: "aborted",
+				stopReason: response.stopReason,
+			});
+			return null;
+		}
+
+		if (response.stopReason === "error") {
+			logger.warn("title-generator: response error", {
+				...modelContext,
+				reason: "provider-response-error",
+				stopReason: response.stopReason,
+				errorMessage: response.errorMessage,
+			});
+			return null;
+		}
+
+		const answer = extractGeneratedTitle(response.content);
+		const title = normalizeGeneratedTitle(answer, firstMessage);
+
+		if (!title) {
+			logger.debug("title-generator: no title returned", {
+				...modelContext,
+				reason: isNoTitleAnswer(answer) ? "model-declined" : "model-returned-none",
 				usage: response.usage,
 				stopReason: response.stopReason,
 			});
+			return null;
+		}
 
-			return title;
-		} catch (err) {
-			if (signal?.aborted || (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError"))) {
-				logger.debug("title-generator: aborted", {
-					...modelContext,
-					reason: "aborted",
-					error: err instanceof Error ? err.message : String(err),
-				});
-				return null;
-			}
-			logger.warn("title-generator: error", {
+		logger.debug("title-generator: success", {
+			...modelContext,
+			title,
+			usage: response.usage,
+			stopReason: response.stopReason,
+		});
+
+		return title;
+	} catch (err) {
+		if (signal?.aborted || (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError"))) {
+			logger.debug("title-generator: aborted", {
 				...modelContext,
-				reason: "exception",
+				reason: "aborted",
 				error: err instanceof Error ? err.message : String(err),
 			});
+			return null;
 		}
+		logger.warn("title-generator: error", {
+			...modelContext,
+			reason: "exception",
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return null;
 	}
-	return null;
 }
 
 /**

@@ -116,9 +116,17 @@ const DIALECT_HEADERS = new Set([
  *   preserving prompt-cache hits; droid never sends it.
  * - Tool deferral (`defer_loading`, `execution`, the mid-conversation
  *   tool-changes beta) follows each client's own tool set.
+ * - Droid asks the server to swap Fable for another model on a refusal
+ *   (`fallbacks` with the server-side-fallback and fallback-credit betas);
+ *   OMP never requests a cross-model substitution.
  */
-const CLIENT_OWNED_BODY_KEYS = new Set(["context_management"]);
-const CLIENT_OWNED_BETAS = new Set(["context-management-2025-06-27", "mid-conversation-tool-changes-2026-07-01"]);
+const CLIENT_OWNED_BODY_KEYS: Record<string, true> = { context_management: true, fallbacks: true };
+const CLIENT_OWNED_BETAS: Record<string, true> = {
+	"context-management-2025-06-27": true,
+	"mid-conversation-tool-changes-2026-07-01": true,
+	"server-side-fallback-2026-06-01": true,
+	"fallback-credit-2026-06-01": true,
+};
 
 /**
  * Tool-schema structure plus the client-owned deferral markers; any other
@@ -169,13 +177,13 @@ export function projectNativeRequest(
 		const betas = value
 			.split(",")
 			.map(beta => beta.trim())
-			.filter(beta => !CLIENT_OWNED_BETAS.has(beta))
+			.filter(beta => CLIENT_OWNED_BETAS[beta] !== true)
 			.sort();
 		if (betas.length > 0) projectedHeaders[name] = betas.join(",");
 	}
 	const projectedBody: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(body)) {
-		if (CONVERSATION_KEYS.has(key) || CLIENT_OWNED_BODY_KEYS.has(key)) continue;
+		if (CONVERSATION_KEYS.has(key) || CLIENT_OWNED_BODY_KEYS[key] === true) continue;
 		projectedBody[key] = SESSION_KEYS.has(key) ? "<session>" : value;
 	}
 	const toolKeys = toolDialectKeys(body.tools);

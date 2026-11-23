@@ -15,7 +15,7 @@ export interface StandaloneJudge {
 }
 
 /**
- * Resolve the `judge` role chain for `cwd`'s project settings and extensions.
+ * Resolve the `judge` role judge for `cwd`'s project settings and extensions.
  * No session ledger exists here, so `purpose` only labels telemetry; native
  * answers still go through the shared answer cache.
  */

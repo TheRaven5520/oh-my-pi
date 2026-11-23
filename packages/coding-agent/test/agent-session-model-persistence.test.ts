@@ -8,7 +8,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { type CreateAgentSessionResult, createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { getRestorableSessionModels } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import { getRestorableSessionModel } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
@@ -318,7 +318,7 @@ describe("AgentSession model persistence", () => {
 		expect(result.session.model?.id).toBe(smolModel.id);
 	});
 
-	it("falls back to the saved default model when switch-session role restore is unavailable", async () => {
+	it("rejects switching sessions when the saved role model is unavailable, leaving the current session untouched", async () => {
 		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
 		const previousModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
 		const defaultRoleValue = modelValue(defaultModel);
@@ -329,9 +329,11 @@ describe("AgentSession model persistence", () => {
 			modelRoles: { default: defaultRoleValue },
 			persist: true,
 		});
+		const previousSessionFile = created.session.sessionFile;
 
-		await expect(created.session.switchSession(targetSessionFile)).resolves.toBe(true);
-		expect(created.session.model?.id).toBe(defaultModel.id);
+		await expect(created.session.switchSession(targetSessionFile)).rejects.toThrow("anthropic/not-loaded-anymore");
+		expect(created.session.model?.id).toBe(previousModel.id);
+		expect(created.session.sessionFile).toBe(previousSessionFile);
 	});
 
 	it("restores the saved default model when switch-session last role is fallback", async () => {
@@ -354,17 +356,18 @@ describe("AgentSession model persistence", () => {
 		expect(created.session.model?.id).toBe(defaultModel.id);
 	});
 
-	it("falls back to the saved default model when startup role restore is unavailable", async () => {
+	it("starts without a model and reports an error when the startup role restore is unavailable", async () => {
 		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
-		const settingsFallbackModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
+		const settingsDefaultModel = getAnthropicModelOrThrow("claude-sonnet-4-6");
 		const defaultRoleValue = modelValue(defaultModel);
 		const targetSessionFile = await writeRoleModelSession(defaultRoleValue, "anthropic/not-loaded-anymore");
 		const settings = Settings.isolated();
-		settings.setModelRole("default", modelValue(settingsFallbackModel));
+		settings.setModelRole("default", modelValue(settingsDefaultModel));
 
 		const result = await createStartupResumeSession(targetSessionFile, settings);
 
-		expect(result.session.model?.id).toBe(defaultModel.id);
+		expect(result.session.model).toBeUndefined();
+		expect(result.modelSelectionError).toContain("anthropic/not-loaded-anymore");
 	});
 
 	it("restores the saved default model when startup last role is fallback", async () => {
@@ -580,27 +583,27 @@ describe("AgentSession model persistence", () => {
 		});
 	});
 
-	it("lists restorable temporary model before the default fallback", () => {
+	it("restores only the last-changed role's model, never a different one", () => {
 		expect(
-			getRestorableSessionModels(
+			getRestorableSessionModel(
 				{
 					default: "anthropic/claude-sonnet-4-5",
 					temporary: "anthropic/claude-sonnet-4-6",
 				},
 				"temporary",
 			),
-		).toEqual(["anthropic/claude-sonnet-4-6", "anthropic/claude-sonnet-4-5"]);
+		).toBe("anthropic/claude-sonnet-4-6");
 	});
 
-	it("lists only the default model for ephemeral fallback restores", () => {
+	it("restores the default model for ephemeral model changes", () => {
 		expect(
-			getRestorableSessionModels(
+			getRestorableSessionModel(
 				{
 					default: "anthropic/claude-sonnet-4-5",
 					[EPHEMERAL_MODEL_CHANGE_ROLE]: "anthropic/claude-sonnet-4-6",
 				},
 				EPHEMERAL_MODEL_CHANGE_ROLE,
 			),
-		).toEqual(["anthropic/claude-sonnet-4-5"]);
+		).toBe("anthropic/claude-sonnet-4-5");
 	});
 });

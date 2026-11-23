@@ -5,7 +5,6 @@ import {
 	applyGeneratedModelPolicies,
 	applyOllamaCloudOutputCap,
 	applyPricingPeerFallback,
-	linkOpenAIPromotionTargets,
 } from "../scripts/generated-policies";
 import { buildModel } from "../src/build";
 import { resolveProviderModels } from "../src/model-manager";
@@ -707,51 +706,6 @@ describe("generated model policies", () => {
 		].map(model => buildGenerated(model));
 
 		expect(models[0]?.compat?.supportsForcedToolChoice).toBe(false);
-	});
-
-	it("links spark variants and gpt-5.5 to their context promotion targets", () => {
-		const models = [
-			createSpec({ id: "gpt-5.3-codex-spark", api: "openai-codex-responses", provider: "openai-codex" }),
-			createSpec({ id: "gpt-5.5", api: "openai-codex-responses", provider: "openai-codex" }),
-			createSpec({ id: "gpt-5.4", api: "openai-codex-responses", provider: "openai-codex" }),
-		];
-
-		linkOpenAIPromotionTargets(models);
-
-		expect(models[0]?.contextPromotionTarget).toBe("openai-codex/gpt-5.5");
-		expect(models[1]?.contextPromotionTarget).toBe("openai-codex/gpt-5.4");
-	});
-
-	it("links every gpt-5.5 flavor to its gpt-5.4 sibling across namespaced and dated provider ids", () => {
-		const models = [
-			// Namespaced provider ids (id carries an `openai/` prefix).
-			createSpec({ id: "openai/gpt-5.5", api: "openai-responses", provider: "openrouter" }),
-			createSpec({ id: "openai/gpt-5.5-pro", api: "openai-responses", provider: "openrouter" }),
-			createSpec({ id: "openai/gpt-5.4", api: "openai-responses", provider: "openrouter" }),
-			createSpec({ id: "openai/gpt-5.4-pro", api: "openai-responses", provider: "openrouter" }),
-			createSpec({ id: "openai/gpt-5.4-mini", api: "openai-responses", provider: "openrouter" }),
-			// Dated snapshot ids on a provider with no plain `gpt-5.4`.
-			createSpec({ id: "gpt-5.5-2026-04-23", api: "openai-responses", provider: "aimlapi" }),
-			createSpec({ id: "gpt-5.4-2026-03-05", api: "openai-responses", provider: "aimlapi" }),
-			// Dotted namespace (amazon-bedrock `openai.gpt-5.x`).
-			createSpec({ id: "openai.gpt-5.5", api: "openai-responses", provider: "amazon-bedrock" }),
-			createSpec({ id: "openai.gpt-5.4", api: "openai-responses", provider: "amazon-bedrock" }),
-		];
-
-		linkOpenAIPromotionTargets(models);
-
-		// Base and pro both promote to the plainest same-provider gpt-5.4 (base wins
-		// over `-pro`/`-mini`), and the namespaced target round-trips through
-		// parseModelString (first-slash split → provider `openrouter`, id `openai/gpt-5.4`).
-		expect(models[0]?.contextPromotionTarget).toBe("openrouter/openai/gpt-5.4");
-		expect(models[1]?.contextPromotionTarget).toBe("openrouter/openai/gpt-5.4");
-		// A gpt-5.4 model itself is never given a promotion target.
-		expect(models[2]?.contextPromotionTarget).toBeUndefined();
-		expect(models[3]?.contextPromotionTarget).toBeUndefined();
-		expect(models[4]?.contextPromotionTarget).toBeUndefined();
-		// Dated and dotted siblings resolve by parsed version, not literal id.
-		expect(models[5]?.contextPromotionTarget).toBe("aimlapi/gpt-5.4-2026-03-05");
-		expect(models[7]?.contextPromotionTarget).toBe("amazon-bedrock/openai.gpt-5.4");
 	});
 
 	it("sets freeform apply_patch metadata for first-party GPT-5 Responses models", () => {

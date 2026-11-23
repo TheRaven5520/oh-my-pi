@@ -227,9 +227,8 @@ initiating session/branch and rejects stale session ownership.
 ```
 
 `role` is optional; missing is treated as `default` in context reconstruction.
-`resolvedModelIsFallback` optionally marks a retry-fallback transition. The
-reserved role `fallback` is ephemeral: model restoration prefers the configured
-default instead of restoring that role's temporary model.
+The reserved role `fallback` marks an ephemeral model change: model restoration prefers the configured
+default instead of restoring that role's temporary model. Older sessions that recorded automatic model switches under this role replay the same way.
 
 ### `service_tier_change`
 
@@ -370,7 +369,7 @@ Extension-provided message that does participate in LLM context. `content` can b
 
 Append-only audit entry for a session rename. It records `title`, `source` (`auto` or `user`), and optionally `previousTitle` and `trigger`. The current title is also updated in the fixed-width title slot so listing does not require a full-file rewrite.
 
-`/rename <title>` sets an explicit title. `/rename` without a title generates one from recent conversation using the title-generation candidates (`tiny`, `commit`, `smol`, then eligible current-model fallbacks). Both are user-requested renames (`source: "user"`), so later automatic titling cannot replace them. Empty conversation or failed generation leaves the current title unchanged. A session switch or newer rename while generation runs discards the stale result. Local tiny-model failures never fall back to an online provider.
+`/rename <title>` sets an explicit title. `/rename` without a title generates one from recent conversation using the first resolvable title-generation candidate (`tiny`, `commit`, `smol`, then the current model). Both are user-requested renames (`source: "user"`), so later automatic titling cannot replace them. Empty conversation or failed generation leaves the current title unchanged. A session switch or newer rename while generation runs discards the stale result. Local tiny-model failures never fall back to an online provider.
 
 ### `ttsr_injection`
 
@@ -408,7 +407,7 @@ Records the provider and a pseudonymous SHA-256 account/scope hash used to re-pi
 ```
 
 The latest `session_init` is also the cold-subagent revival contract. Optional
-fields include `agent`, `modelRole`, `resolvedModel`, `retryFallback`, `readOnly`,
+fields include `agent`, `modelRole`, `resolvedModel`, `readOnly`,
 `advisor`, and `compactionThreshold` (`thresholdPercent`/`thresholdTokens`).
 `isolated: true` marks an isolation-worktree child that cannot be cold-revived.
 `extractSessionInit()` and read-only `peekSessionInit()` expose this contract.

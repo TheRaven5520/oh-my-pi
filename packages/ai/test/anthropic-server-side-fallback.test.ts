@@ -1,18 +1,15 @@
 /**
- * Focused regression coverage for the Anthropic server-side-fallback beta chain
- * (`server-side-fallback-2026-06-01`). The provider treats `options.fallbacks`
- * as an opt-in: without it, the request never sends the beta and the response
- * parser stays inert on `fallback` content blocks and `usage.iterations`.
+ * Focused regression coverage for server-initiated Anthropic model handoffs.
+ * The client never requests a fallback chain (no `fallbacks` field, no
+ * `server-side-fallback` beta), but when the server hands a turn to another
+ * model on its own the provider still records it.
  *
  * Verifies:
- *   • Opt-in path — request carries `fallbacks`; response promotes the served
- *     model, persists the fallback content block, and prices the turn per the
- *     cookbook (cache-read for the served attempt's input).
- *   • Opt-out path — a stray `fallback` content block or `usage.iterations`
- *     leave the message untouched: `output.model` stays the requested id, no
- *     fallback block is persisted, cost uses the requested model.
- *   • `convertAnthropicMessages` replays a persisted `fallback` block only when
- *     the current request also opts in AND the target is official Anthropic.
+ *   • Requests carry no fallback chain, credit token, or related betas.
+ *   • A mid-stream `fallback` content block and `usage.iterations` promote the
+ *     served model, persist the fallback block in history, and price the turn
+ *     per the cookbook (cache-read for the served attempt's input).
+ *   • `convertAnthropicMessages` never serializes a persisted `fallback` block.
  */
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { convertAnthropicMessages, streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
@@ -131,24 +128,28 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("anthropic server-side fallback opt-in", () => {
-	it("forwards fallbacks + attaches the server-side-fallback beta when opted in", async () => {
+describe("anthropic server-initiated model handoff", () => {
+	it("never requests a fallback chain or the server-side-fallback beta", async () => {
 		let capturedParams: Record<string, unknown> | undefined;
-		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation((params: unknown) => {
-			capturedParams = params as Record<string, unknown>;
-			return createMockRequest(createFallbackServedEvents("continued", "claude-opus-4-8")) as never;
-		});
+		let capturedRequestOptions: { headers?: Record<string, string> } | undefined;
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
+			(params: unknown, requestOptions?: unknown) => {
+				capturedParams = params as Record<string, unknown>;
+				capturedRequestOptions = requestOptions as { headers?: Record<string, string> } | undefined;
+				return createMockRequest(createFallbackServedEvents("continued", "claude-opus-4-8")) as never;
+			},
+		);
 
-		const s = streamAnthropic(fableModel, context, {
-			apiKey: "sk-ant-test",
-			fallbacks: [{ model: "claude-opus-4-8" }],
-		});
+		const s = streamAnthropic(fableModel, context, { apiKey: "sk-ant-test" });
 		for await (const _ of s) {
 			// drain
 		}
 		await s.result();
 
-		expect(capturedParams?.fallbacks).toEqual([{ model: "claude-opus-4-8" }]);
+		expect(capturedParams?.fallbacks).toBeUndefined();
+		expect(capturedParams?.fallback_credit_token).toBeUndefined();
+		expect(capturedRequestOptions?.headers?.["anthropic-beta"] ?? "").not.toContain("server-side-fallback");
+		expect(capturedRequestOptions?.headers?.["anthropic-beta"] ?? "").not.toContain("fallback-credit");
 	});
 
 	it("promotes the served model, persists the fallback block, and prices per iteration", async () => {
@@ -156,10 +157,7 @@ describe("anthropic server-side fallback opt-in", () => {
 			() => createMockRequest(createFallbackServedEvents("continued", "claude-opus-4-8")) as never,
 		);
 
-		const s = streamAnthropic(fableModel, context, {
-			apiKey: "sk-ant-test",
-			fallbacks: [{ model: "claude-opus-4-8" }],
-		});
+		const s = streamAnthropic(fableModel, context, { apiKey: "sk-ant-test" });
 		for await (const _ of s) {
 			// drain
 		}
@@ -182,10 +180,7 @@ describe("anthropic server-side fallback opt-in", () => {
 			() => createMockRequest(createFallbackServedEvents("continued", "claude-opus-4-8-20260615")) as never,
 		);
 
-		const s = streamAnthropic(fableModel, context, {
-			apiKey: "sk-ant-test",
-			fallbacks: [{ model: "claude-opus-4-8" }],
-		});
+		const s = streamAnthropic(fableModel, context, { apiKey: "sk-ant-test" });
 		for await (const _ of s) {
 			// drain
 		}
@@ -199,79 +194,12 @@ describe("anthropic server-side fallback opt-in", () => {
 		expect(result.usage.cost.output).toBeCloseTo(0.0002, 10);
 		expect(result.usage.cost.cacheRead).toBeCloseTo(0.000012, 10);
 	});
-
-	it("stays inert when opted out: fallback content_block is dropped, model stays requested id", async () => {
-		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
-			() => createMockRequest(createFallbackServedEvents("continued", "claude-opus-4-8")) as never,
-		);
-
-		const s = streamAnthropic(fableModel, context, { apiKey: "sk-ant-test" });
-		for await (const _ of s) {
-			// drain
-		}
-		const result = await s.result();
-
-		expect(result.model).toBe(fableModel.id);
-		// The fallback content_block is dropped; only the continuation text
-		// survives.
-		expect(JSON.parse(JSON.stringify(result.content))).toEqual([{ type: "text", text: "continued" }]);
-		// Without opt-in, usage.iterations is ignored and cost uses the
-		// request model at normal input rates. Top-level `input_tokens: 12`
-		// bills at Fable's $10/M input = $0.00012 (i.e. NOT the fallback
-		// cache-read rebilling).
-		expect(result.usage.cost.input).toBeCloseTo(0.00012, 10);
-		expect(result.usage.cost.output).toBeCloseTo(0.0002, 10);
-	});
-
-	it("does not attach the server-side-fallback beta when opted out", async () => {
-		let capturedParams: Record<string, unknown> | undefined;
-		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation((params: unknown) => {
-			capturedParams = params as Record<string, unknown>;
-			return createMockRequest([
-				{
-					type: "message_start",
-					message: {
-						id: "m",
-						usage: {
-							input_tokens: 1,
-							output_tokens: 0,
-							cache_read_input_tokens: 0,
-							cache_creation_input_tokens: 0,
-						},
-					},
-				},
-				{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-				{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } },
-				{ type: "content_block_stop", index: 0 },
-				{
-					type: "message_delta",
-					delta: { stop_reason: "end_turn" },
-					usage: {
-						input_tokens: 1,
-						output_tokens: 1,
-						cache_read_input_tokens: 0,
-						cache_creation_input_tokens: 0,
-					},
-				},
-				{ type: "message_stop" },
-			]) as never;
-		});
-
-		const s = streamAnthropic(fableModel, context, { apiKey: "sk-ant-test" });
-		for await (const _ of s) {
-			// drain
-		}
-		await s.result();
-
-		expect(capturedParams?.fallbacks).toBeUndefined();
-	});
 });
 
 describe("anthropic fallback content-block replay policy", () => {
-	// A prior assistant turn that took a fallback carries a persisted `fallback`
-	// content block. On the next request the outgoing wire body must strip it
-	// UNLESS the current request also opts into the beta chain AND the target
-	// is official Anthropic.
+	// A prior assistant turn that the server handed to another model carries a
+	// persisted `fallback` content block. Requests never send the
+	// server-side-fallback beta, so the block is never replayed on the wire.
 
 	function priorFallbackAssistant(): AssistantMessage {
 		return {
@@ -296,35 +224,20 @@ describe("anthropic fallback content-block replay policy", () => {
 		};
 	}
 
-	it("keeps the fallback block on the wire when replayed to official Anthropic with fallbacks opted in", () => {
+	it("never serializes the fallback block when replaying to official Anthropic", () => {
 		const params = convertAnthropicMessages(
 			[priorFallbackAssistant(), { role: "user", content: "next", timestamp: 0 }],
 			fableModel,
 			false,
-			{ serverSideFallbackEnabled: true },
-		);
-		expect(params[0]?.content).toEqual([
-			{ type: "fallback", from: { model: "claude-fable-5" }, to: { model: "claude-opus-4-8" } },
-			{ type: "text", text: "continued" },
-		]);
-	});
-
-	it("drops the fallback block when the current request does not opt in (official target)", () => {
-		const params = convertAnthropicMessages(
-			[priorFallbackAssistant(), { role: "user", content: "next", timestamp: 0 }],
-			fableModel,
-			false,
-			// serverSideFallbackEnabled omitted → default false
 		);
 		expect(params[0]?.content).toEqual([{ type: "text", text: "continued" }]);
 	});
 
-	it("drops the fallback block on non-official Anthropic targets even when opted in", () => {
+	it("drops the fallback block on non-official Anthropic targets", () => {
 		const params = convertAnthropicMessages(
 			[priorFallbackAssistant(), { role: "user", content: "next", timestamp: 0 }],
 			umansModel,
 			false,
-			{ serverSideFallbackEnabled: true },
 		);
 		expect(params[0]?.content).toEqual([{ type: "text", text: "continued" }]);
 	});
@@ -334,8 +247,8 @@ describe("anthropic assistant replay block ordering (tool_use partition)", () =>
 	// Anthropic's replay validator rejects any assistant turn that carries a
 	// non-`tool_use` content block AFTER a `tool_use` block
 	// (`messages.N: tool_use ids were found without tool_result blocks
-	// immediately after`). This bites when a mid-turn server-side fallback
-	// (`server-side-fallback-2026-06-01`) lands AFTER the primary model already
+	// immediately after`). This bites when a mid-turn server handoff to another
+	// model lands AFTER the primary model already
 	// emitted a tool_use, leaving persisted content shaped like
 	// [thinking, text, tool_use, fallback, text, tool_use]. The same validator
 	// rejects the older cross-provider [text, tool_use, text] shape (issue
@@ -383,7 +296,7 @@ describe("anthropic assistant replay block ordering (tool_use partition)", () =>
 		return asst[0];
 	}
 
-	it("mid-turn fallback repro: defers trailing tool_use, keeps the fallback marker in place", () => {
+	it("drops the fallback marker and still defers tool_use to the tail", () => {
 		const params = convertAnthropicMessages(
 			[
 				assistant([
@@ -402,39 +315,6 @@ describe("anthropic assistant replay block ordering (tool_use partition)", () =>
 			],
 			fableModel,
 			false,
-			{ serverSideFallbackEnabled: true },
-		);
-		expect(assistantParam(params).content).toEqual([
-			{ type: "thinking", thinking: "plan", signature: "sig-1" },
-			{ type: "text", text: "before" },
-			{ type: "fallback", from: { model: "claude-fable-5" }, to: { model: "claude-opus-4-8" } },
-			{ type: "text", text: "after" },
-			{ type: "tool_use", id: "call_a", name: "read", input: {} },
-			{ type: "tool_use", id: "call_b", name: "grep", input: {} },
-			{ type: "tool_use", id: "call_c", name: "glob", input: {} },
-		]);
-	});
-
-	it("opt-out drops the fallback marker but still defers tool_use to the tail", () => {
-		const params = convertAnthropicMessages(
-			[
-				assistant([
-					{ type: "thinking", thinking: "plan", thinkingSignature: "sig-1" },
-					{ type: "text", text: "before" },
-					{ type: "toolCall", id: "call_a", name: "read", arguments: {} },
-					{ type: "fallback", from: { model: "claude-fable-5" }, to: { model: "claude-opus-4-8" } },
-					{ type: "text", text: "after" },
-					{ type: "toolCall", id: "call_b", name: "grep", arguments: {} },
-					{ type: "toolCall", id: "call_c", name: "glob", arguments: {} },
-				]),
-				toolResult("call_a", "read"),
-				toolResult("call_b", "grep"),
-				toolResult("call_c", "glob"),
-				{ role: "user", content: "next", timestamp: 0 },
-			],
-			fableModel,
-			false,
-			// serverSideFallbackEnabled omitted → fallback block dropped
 		);
 		expect(assistantParam(params).content).toEqual([
 			{ type: "thinking", thinking: "plan", signature: "sig-1" },
@@ -459,7 +339,6 @@ describe("anthropic assistant replay block ordering (tool_use partition)", () =>
 			],
 			fableModel,
 			false,
-			{ serverSideFallbackEnabled: true },
 		);
 		expect(assistantParam(params).content).toEqual([
 			{ type: "text", text: "before" },
@@ -481,7 +360,6 @@ describe("anthropic assistant replay block ordering (tool_use partition)", () =>
 			],
 			fableModel,
 			false,
-			{ serverSideFallbackEnabled: true },
 		);
 		expect(assistantParam(params).content).toEqual([
 			{ type: "thinking", thinking: "plan", signature: "sig-1" },
@@ -505,7 +383,6 @@ describe("anthropic assistant replay block ordering (tool_use partition)", () =>
 			],
 			fableModel,
 			false,
-			{ serverSideFallbackEnabled: true },
 		);
 		expect(assistantParam(params).content).toEqual([
 			{ type: "thinking", thinking: "first", signature: "sig-1" },
@@ -558,12 +435,8 @@ describe("anthropic assistant replay block ordering (tool_use partition)", () =>
 			{ role: "user", content: "next", timestamp: 0 } as const,
 		];
 
-		const a = convertAnthropicMessages(history(poisonedContent), fableModel, false, {
-			serverSideFallbackEnabled: true,
-		});
-		const b = convertAnthropicMessages(history(preOrderedContent), fableModel, false, {
-			serverSideFallbackEnabled: true,
-		});
+		const a = convertAnthropicMessages(history(poisonedContent), fableModel, false);
+		const b = convertAnthropicMessages(history(preOrderedContent), fableModel, false);
 
 		expect(a.length).toBe(b.length);
 		const poisonedIdx = a.findIndex(

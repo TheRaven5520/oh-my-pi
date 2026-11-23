@@ -70,7 +70,7 @@ describe("issue #1022 — path-scoped enabledModels respected by default fallbac
 		const modelRegistry = new ModelRegistry(authStorage, path.join(testDir, "models.yml"));
 
 		try {
-			const { session, modelFallbackMessage } = await createAgentSession({
+			const { session, modelSelectionError } = await createAgentSession({
 				cwd,
 				agentDir,
 				authStorage,
@@ -93,9 +93,9 @@ describe("issue #1022 — path-scoped enabledModels respected by default fallbac
 				expect(session.model?.provider).not.toBe("anthropic");
 				expect(session.model?.provider).not.toBe("github-copilot");
 				// No openai-codex creds set → nothing in the allow-list is
-				// usable. Expect no model and a fallback message.
+				// usable. Expect no model and a selection error.
 				expect(session.model).toBeUndefined();
-				expect(modelFallbackMessage).toBeDefined();
+				expect(modelSelectionError).toBeDefined();
 			} finally {
 				await session.dispose();
 			}

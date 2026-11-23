@@ -1807,14 +1807,13 @@ type ModelInfo struct {
 	// Null when the provider does not report a limit.
 	ContextWindow *int64 `json:"contextWindow"`
 	// Null when the provider does not report a limit.
-	MaxTokens              *int64                     `json:"maxTokens"`
-	Headers                map[string]string          `json:"headers,omitempty"`
-	PremiumMultiplier      *float64                   `json:"premiumMultiplier,omitempty"`
-	PreferWebsockets       *bool                      `json:"preferWebsockets,omitempty"`
-	ContextPromotionTarget *string                    `json:"contextPromotionTarget,omitempty"`
-	Priority               *int64                     `json:"priority,omitempty"`
-	Thinking               *ThinkingConfig            `json:"thinking,omitempty"`
-	Compat                 map[string]json.RawMessage `json:"compat,omitempty"`
+	MaxTokens         *int64                     `json:"maxTokens"`
+	Headers           map[string]string          `json:"headers,omitempty"`
+	PremiumMultiplier *float64                   `json:"premiumMultiplier,omitempty"`
+	PreferWebsockets  *bool                      `json:"preferWebsockets,omitempty"`
+	Priority          *int64                     `json:"priority,omitempty"`
+	Thinking          *ThinkingConfig            `json:"thinking,omitempty"`
+	Compat            map[string]json.RawMessage `json:"compat,omitempty"`
 }
 
 func (v *ModelInfo) UnmarshalJSON(data []byte) error {
@@ -1837,7 +1836,6 @@ func (v *ModelInfo) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("headers", &out.Headers)
 	d.optional("premiumMultiplier", &out.PremiumMultiplier)
 	d.optional("preferWebsockets", &out.PreferWebsockets)
-	d.optional("contextPromotionTarget", &out.ContextPromotionTarget)
 	d.optional("priority", &out.Priority)
 	d.optional("thinking", &out.Thinking)
 	d.optional("compat", &out.Compat)
@@ -3721,64 +3719,6 @@ func (v CacheWarmingEndEvent) MarshalJSON() ([]byte, error) {
 	return encodeObject(plain(v), `"type":"cache_warming_end"`, nil)
 }
 
-type RetryFallbackAppliedEvent struct {
-	From   string  `json:"from"`
-	To     string  `json:"to"`
-	Role   string  `json:"role"`
-	Reason *string `json:"reason,omitempty"`
-}
-
-func (v *RetryFallbackAppliedEvent) UnmarshalJSON(data []byte) error {
-	return decodeWith(data, "RetryFallbackAppliedEvent", v.decodeFrom)
-}
-
-func (v *RetryFallbackAppliedEvent) decodeFrom(raw map[string]json.RawMessage) error {
-	var out RetryFallbackAppliedEvent
-	d := fieldDecoder{raw: raw, owner: "RetryFallbackAppliedEvent"}
-	d.constant("type", "retry_fallback_applied")
-	d.required("from", &out.From)
-	d.required("to", &out.To)
-	d.required("role", &out.Role)
-	d.optional("reason", &out.Reason)
-	if d.err != nil {
-		return d.err
-	}
-	*v = out
-	return nil
-}
-
-func (v RetryFallbackAppliedEvent) MarshalJSON() ([]byte, error) {
-	type plain RetryFallbackAppliedEvent
-	return encodeObject(plain(v), `"type":"retry_fallback_applied"`, nil)
-}
-
-type RetryFallbackSucceededEvent struct {
-	Model string `json:"model"`
-	Role  string `json:"role"`
-}
-
-func (v *RetryFallbackSucceededEvent) UnmarshalJSON(data []byte) error {
-	return decodeWith(data, "RetryFallbackSucceededEvent", v.decodeFrom)
-}
-
-func (v *RetryFallbackSucceededEvent) decodeFrom(raw map[string]json.RawMessage) error {
-	var out RetryFallbackSucceededEvent
-	d := fieldDecoder{raw: raw, owner: "RetryFallbackSucceededEvent"}
-	d.constant("type", "retry_fallback_succeeded")
-	d.required("model", &out.Model)
-	d.required("role", &out.Role)
-	if d.err != nil {
-		return d.err
-	}
-	*v = out
-	return nil
-}
-
-func (v RetryFallbackSucceededEvent) MarshalJSON() ([]byte, error) {
-	type plain RetryFallbackSucceededEvent
-	return encodeObject(plain(v), `"type":"retry_fallback_succeeded"`, nil)
-}
-
 type ModelChangedEvent struct{}
 
 func (v *ModelChangedEvent) UnmarshalJSON(data []byte) error {
@@ -4097,39 +4037,37 @@ type RpcAgentEventVariant interface {
 	isRpcAgentEvent()
 }
 
-func (AgentStartEvent) isRpcAgentEvent()             {}
-func (RequestAcceptedEvent) isRpcAgentEvent()        {}
-func (AgentEndEvent) isRpcAgentEvent()               {}
-func (TurnStartEvent) isRpcAgentEvent()              {}
-func (TurnEndEvent) isRpcAgentEvent()                {}
-func (MessageStartEvent) isRpcAgentEvent()           {}
-func (MessageUpdateEvent) isRpcAgentEvent()          {}
-func (MessageEndEvent) isRpcAgentEvent()             {}
-func (ToolExecutionStartEvent) isRpcAgentEvent()     {}
-func (ToolExecutionUpdateEvent) isRpcAgentEvent()    {}
-func (ToolStreamUpdateEvent) isRpcAgentEvent()       {}
-func (ToolExecutionEndEvent) isRpcAgentEvent()       {}
-func (AutoCompactionStartEvent) isRpcAgentEvent()    {}
-func (AutoCompactionEndEvent) isRpcAgentEvent()      {}
-func (AutoRetryStartEvent) isRpcAgentEvent()         {}
-func (AutoRetryEndEvent) isRpcAgentEvent()           {}
-func (CacheWarmingStartEvent) isRpcAgentEvent()      {}
-func (CacheWarmingEndEvent) isRpcAgentEvent()        {}
-func (RetryFallbackAppliedEvent) isRpcAgentEvent()   {}
-func (RetryFallbackSucceededEvent) isRpcAgentEvent() {}
-func (ModelChangedEvent) isRpcAgentEvent()           {}
-func (ConfigWarningsChangedEvent) isRpcAgentEvent()  {}
-func (AdvisorCostChangedEvent) isRpcAgentEvent()     {}
-func (AdvisorYieldedEvent) isRpcAgentEvent()         {}
-func (TtsrTriggeredEvent) isRpcAgentEvent()          {}
-func (TodoReminderEvent) isRpcAgentEvent()           {}
-func (TodoAutoClearEvent) isRpcAgentEvent()          {}
-func (IrcMessageEvent) isRpcAgentEvent()             {}
-func (NoticeEvent) isRpcAgentEvent()                 {}
-func (ThinkingLevelChangedEvent) isRpcAgentEvent()   {}
-func (GoalUpdatedEvent) isRpcAgentEvent()            {}
-func (QueueUpdateEvent) isRpcAgentEvent()            {}
-func (UnknownNotification) isRpcAgentEvent()         {}
+func (AgentStartEvent) isRpcAgentEvent()            {}
+func (RequestAcceptedEvent) isRpcAgentEvent()       {}
+func (AgentEndEvent) isRpcAgentEvent()              {}
+func (TurnStartEvent) isRpcAgentEvent()             {}
+func (TurnEndEvent) isRpcAgentEvent()               {}
+func (MessageStartEvent) isRpcAgentEvent()          {}
+func (MessageUpdateEvent) isRpcAgentEvent()         {}
+func (MessageEndEvent) isRpcAgentEvent()            {}
+func (ToolExecutionStartEvent) isRpcAgentEvent()    {}
+func (ToolExecutionUpdateEvent) isRpcAgentEvent()   {}
+func (ToolStreamUpdateEvent) isRpcAgentEvent()      {}
+func (ToolExecutionEndEvent) isRpcAgentEvent()      {}
+func (AutoCompactionStartEvent) isRpcAgentEvent()   {}
+func (AutoCompactionEndEvent) isRpcAgentEvent()     {}
+func (AutoRetryStartEvent) isRpcAgentEvent()        {}
+func (AutoRetryEndEvent) isRpcAgentEvent()          {}
+func (CacheWarmingStartEvent) isRpcAgentEvent()     {}
+func (CacheWarmingEndEvent) isRpcAgentEvent()       {}
+func (ModelChangedEvent) isRpcAgentEvent()          {}
+func (ConfigWarningsChangedEvent) isRpcAgentEvent() {}
+func (AdvisorCostChangedEvent) isRpcAgentEvent()    {}
+func (AdvisorYieldedEvent) isRpcAgentEvent()        {}
+func (TtsrTriggeredEvent) isRpcAgentEvent()         {}
+func (TodoReminderEvent) isRpcAgentEvent()          {}
+func (TodoAutoClearEvent) isRpcAgentEvent()         {}
+func (IrcMessageEvent) isRpcAgentEvent()            {}
+func (NoticeEvent) isRpcAgentEvent()                {}
+func (ThinkingLevelChangedEvent) isRpcAgentEvent()  {}
+func (GoalUpdatedEvent) isRpcAgentEvent()           {}
+func (QueueUpdateEvent) isRpcAgentEvent()           {}
+func (UnknownNotification) isRpcAgentEvent()        {}
 
 func (v RpcAgentEvent) MarshalJSON() ([]byte, error) {
 	return encodeVariant("RpcAgentEvent", v.Value)
@@ -4186,10 +4124,6 @@ func (v *RpcAgentEvent) decodeFrom(raw map[string]json.RawMessage) error {
 		value, err = decodeVariant[CacheWarmingStartEvent](raw)
 	case "cache_warming_end":
 		value, err = decodeVariant[CacheWarmingEndEvent](raw)
-	case "retry_fallback_applied":
-		value, err = decodeVariant[RetryFallbackAppliedEvent](raw)
-	case "retry_fallback_succeeded":
-		value, err = decodeVariant[RetryFallbackSucceededEvent](raw)
 	case "model_changed":
 		value, err = decodeVariant[ModelChangedEvent](raw)
 	case "config_warnings_changed":
@@ -6098,8 +6032,6 @@ func (AutoRetryStartEvent) isRpcNotification()          {}
 func (AutoRetryEndEvent) isRpcNotification()            {}
 func (CacheWarmingStartEvent) isRpcNotification()       {}
 func (CacheWarmingEndEvent) isRpcNotification()         {}
-func (RetryFallbackAppliedEvent) isRpcNotification()    {}
-func (RetryFallbackSucceededEvent) isRpcNotification()  {}
 func (ModelChangedEvent) isRpcNotification()            {}
 func (ConfigWarningsChangedEvent) isRpcNotification()   {}
 func (AdvisorCostChangedEvent) isRpcNotification()      {}
@@ -6196,10 +6128,6 @@ func (v *RpcNotification) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[CacheWarmingStartEvent](raw)
 	case "cache_warming_end":
 		value, err = decodeVariant[CacheWarmingEndEvent](raw)
-	case "retry_fallback_applied":
-		value, err = decodeVariant[RetryFallbackAppliedEvent](raw)
-	case "retry_fallback_succeeded":
-		value, err = decodeVariant[RetryFallbackSucceededEvent](raw)
 	case "model_changed":
 		value, err = decodeVariant[ModelChangedEvent](raw)
 	case "config_warnings_changed":
@@ -6285,8 +6213,6 @@ func (AutoRetryStartEvent) isRpcServerFrame()          {}
 func (AutoRetryEndEvent) isRpcServerFrame()            {}
 func (CacheWarmingStartEvent) isRpcServerFrame()       {}
 func (CacheWarmingEndEvent) isRpcServerFrame()         {}
-func (RetryFallbackAppliedEvent) isRpcServerFrame()    {}
-func (RetryFallbackSucceededEvent) isRpcServerFrame()  {}
 func (ModelChangedEvent) isRpcServerFrame()            {}
 func (ConfigWarningsChangedEvent) isRpcServerFrame()   {}
 func (AdvisorCostChangedEvent) isRpcServerFrame()      {}
@@ -6393,10 +6319,6 @@ func (v *RpcServerFrame) UnmarshalJSON(data []byte) error {
 		value, err = decodeVariant[CacheWarmingStartEvent](raw)
 	case "cache_warming_end":
 		value, err = decodeVariant[CacheWarmingEndEvent](raw)
-	case "retry_fallback_applied":
-		value, err = decodeVariant[RetryFallbackAppliedEvent](raw)
-	case "retry_fallback_succeeded":
-		value, err = decodeVariant[RetryFallbackSucceededEvent](raw)
 	case "model_changed":
 		value, err = decodeVariant[ModelChangedEvent](raw)
 	case "config_warnings_changed":

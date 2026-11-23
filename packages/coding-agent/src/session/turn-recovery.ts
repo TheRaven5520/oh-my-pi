@@ -10,24 +10,20 @@ import type {
 	AssistantRetryRecovery,
 	AssistantRetryRecoveryKind,
 	CodexCompactionContext,
-	Effort,
 	Model,
 	ModelUsageHealth,
 	TextContent,
 	ThinkingContent,
 	ToolChoice,
-	AnthropicFallbackCreditHandle,
 } from "@oh-my-pi/pi-ai";
 import { calculateRateLimitBackoffMs, parseRateLimitReason } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
-import { fallbackCreditTargets } from "@oh-my-pi/pi-catalog/compat/fallback-credit";
-import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
-import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
+import { formatModelStringWithRouting } from "../config/model-resolver";
+import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
 
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
@@ -36,41 +32,11 @@ import malformedFunctionCallRetryTemplate from "../prompts/system/malformed-func
 import streamStallContinueTemplate from "../prompts/system/stream-stall-continue.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
-import {
-	AUTO_THINKING,
-	type ConfiguredThinkingLevel,
-	clampThinkingLevelToCeiling,
-	modelSupportsEffortCeiling,
-	resolveThinkingLevelForModel,
-} from "@oh-my-pi/pi-tui/thinking";
-import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ResetRecoveryResult } from "./codex-auto-reset";
-import type {
-	InitialRetryFallbackState,
-	UsageFallbackConfirmation,
-	UsageFallbackConfirmer,
-} from "./agent-session-types";
 import { assistantTurnProducedOutput, isEmptyAssistantStop, isEmptyErrorTurn } from "./messages";
-import {
-	type ActiveRetryFallbackState,
-	calculateRetryBackoffDelayMs,
-	findRetryFallbackCandidates,
-	formatRetryFallbackSelector,
-	getRetryFallbackChains,
-	getRetryFallbackRevertPolicy,
-	parseRetryFallbackSelector,
-	type RetryFallbackChains,
-	type RetryFallbackResolutionContext,
-	type RetryFallbackRevertPolicy,
-	type RetryFallbackSelector,
-	resolveRetryFallbackChainKey,
-	type ServingModel,
-	validateRetryFallbackChains,
-} from "./retry-fallback-chains";
-import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
-import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
+import type { SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import { sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { journalJudgmentUsage } from "../judgment";
@@ -80,15 +46,10 @@ import {
 	cfgFeaturesUnexpectedStopDetection,
 	cfgModelLoopGuardEnabled,
 	cfgRetry,
-	cfgRetryCompactForFallback,
 	cfgRetryEnabled,
-	cfgRetryFallbackAfterMs,
-	cfgRetryFallbackMinHoldMs,
-	cfgRetryModelFallback,
 	cfgRetryUsageAwareFallback,
 	cfgRetryUsageReservePct,
 	cfgRetryUsageReservePolicy,
-	cfgRetryUsageLimitFallbackChains,
 } from "./settings";
 
 const THINKING_LOOP_REDIRECT_TYPE = "thinking-loop-redirect";
@@ -98,9 +59,18 @@ const EMPTY_STOP_MAX_RETRIES = 3;
 const MALFORMED_FUNCTION_CALL_MAX_RETRIES = 3;
 const STREAM_STALL_CONTINUE_MAX_RETRIES = 3;
 const SIBLING_UNBLOCK_BUFFER_MS = 1_000;
-// Brief provider-stated throttles get one same-model retry before spending a fallback.
+// Brief provider-stated throttles retry after the stated delay instead of the heavier exponential backoff.
 // Also bounded by retry.maxDelayMs when that user-configured cap is positive.
 const SHORT_BUSY_RETRY_MAX_DELAY_MS = 10_000;
+const RETRY_BACKOFF_MAX_DELAY_MS = 8_000;
+const RETRY_BACKOFF_JITTER_RATIO = 0.25;
+
+/** Calculates capped exponential retry delay with downward jitter. */
+export function calculateRetryBackoffDelayMs(baseDelayMs: number, attempt: number): number {
+	const cappedDelayMs = Math.min(Math.max(0, baseDelayMs) * 2 ** Math.max(0, attempt - 1), RETRY_BACKOFF_MAX_DELAY_MS);
+	const jitter = 1 - Math.random() * RETRY_BACKOFF_JITTER_RATIO;
+	return cappedDelayMs * jitter;
+}
 const NON_WHITESPACE_RE = /\S/;
 const USAGE_PREFLIGHT_BLOCKED_PREFIX = "Usage preflight blocked:";
 const STREAM_STALL_ERROR_RE = /stream stall/i;
@@ -219,22 +189,10 @@ export interface TurnRecoveryHost {
 	sessionManager: SessionManager;
 	settings: Settings;
 	modelRegistry: ModelRegistry;
-	configWarnings: string[];
 	model(): Model | undefined;
-	/**
-	 * Whether the live context fits `model`'s usable window. `excludedMessage`
-	 * identifies a failed assistant turn that will be removed before retrying, so
-	 * selection judges the request that will actually be sent. See
-	 * `SessionMaintenance.contextFitsModel`.
-	 */
-	contextFitsModel(model: Model, excludedMessage?: AssistantMessage): boolean;
 	/** Whether streamed text has already been committed to the active output sink. */
 	textOutputCommitted(): boolean;
 	thinkingLevel(): ThinkingLevel | undefined;
-	configuredThinkingLevel(): ConfiguredThinkingLevel | undefined;
-	setThinkingLevel(level: ConfiguredThinkingLevel | undefined): void;
-	/** Hard per-session effort ceiling; fallback recovery must never raise thinking above it. */
-	thinkingLevelCeiling(): Effort | undefined;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
 	isCompacting(): boolean;
@@ -255,11 +213,6 @@ export interface TurnRecoveryHost {
 	appendSessionMessage(message: AssistantMessage): void;
 	persistedAssistantEntryId(message: AssistantMessage): string | undefined;
 	sessionMessageAlreadyPersisted(message: AssistantMessage): boolean;
-	setModelWithProviderSessionReset(model: Model): Promise<void>;
-	/** Edit mode resolved for the active model and settings, captured before a fallback swap. */
-	resolveActiveEditMode(): EditMode;
-	/** Rebuilds the model-dependent base system prompt when a swap changed the edit mode or model policy. */
-	syncAfterModelChange(previousEditMode: EditMode): Promise<void>;
 	resetCurrentResponsesProviderSession(reason: string): void;
 	/**
 	 * Spend an eligible saved reset for the blocked provider pool.
@@ -286,13 +239,6 @@ export interface TurnRecoveryHost {
 	withBashBranchTransition<T>(operation: () => T): T;
 }
 
-/** Construction-time retry state restored from model selection. */
-export interface TurnRecoveryOptions {
-	initialRetryFallback?: InitialRetryFallbackState;
-	/** Skip construction-time fallback-chain validation; the owner runs {@link TurnRecovery.validateRetryFallbackChains}. */
-	deferFallbackChainValidation?: boolean;
-}
-
 type PendingRetryError = {
 	entryId: string;
 	persistenceKey: string;
@@ -311,21 +257,7 @@ type UsageLimitOutcome = {
 	reportResetAtMs: number | undefined;
 };
 
-/** Routing state to put back when compaction cannot fit the context into a fallback's window. */
-type FallbackCompactionRestore = {
-	model: Model;
-	thinkingLevel: ConfiguredThinkingLevel | undefined;
-	activeRetryFallback: ActiveRetryFallbackState | undefined;
-	fallbackRoutedFor: string | undefined;
-};
-
-type RetryModelFallbackResult = {
-	switched: boolean;
-	/** Set when the switch landed on a fallback whose window must first be fitted by compaction. */
-	compactionRestore?: FallbackCompactionRestore;
-};
-
-/** Owns terminal-stop recovery, automatic retries, and fallback routing. */
+/** Owns terminal-stop recovery and automatic same-model retries. */
 export class TurnRecovery {
 	readonly #host: TurnRecoveryHost;
 	#retryAbortController: AbortController | undefined;
@@ -333,12 +265,6 @@ export class TurnRecovery {
 	#requestBodyReadTimeoutRecoveryPromptSequence: number | undefined;
 	#retryPromise: Promise<void> | undefined;
 	#retryResolve: (() => void) | undefined;
-	#activeRetryFallback: ActiveRetryFallbackState | undefined;
-	#activeFallbackCreditRedemption?: {
-		targetSelector: string;
-		handle: AnthropicFallbackCreditHandle;
-	};
-	#usageReserveApprovedSelector: string | undefined;
 	#pendingRetryErrors: PendingRetryError[] = [];
 	#usageLimitOutcomes = new WeakMap<AssistantMessage, Promise<UsageLimitOutcome>>();
 	#emptyStopRetryCount = 0;
@@ -346,61 +272,9 @@ export class TurnRecovery {
 	#malformedFunctionCallRetryCount = 0;
 	#streamStallContinueCount = 0;
 	#acceptTerminalEmptyStopForPrompt = false;
-	// Three fields sit near the word "serve" and are deliberately distinct:
-	// `#activeRetryFallback.served` gates the one-shot `retry_fallback_succeeded`
-	// event for the current arm, `#fallbackRouted` says how the CURRENT model was
-	// reached, and `#lastServed` is the session's attribution. A fallback flipping
-	// to served does not by itself move attribution — only a settled turn does.
-	/**
-	 * Attribution of the newest turn that produced output, tagged with the
-	 * session it belongs to. Anchoring rather than resetting follows
-	 * `#ensurePersistedMessageKeys`: every real switch mints a new session id, so
-	 * stale attribution drops itself and no mutation call site has to remember to
-	 * clear it. The id — not the file — is the anchor because an unpersisted
-	 * session has no file, and comparing two `undefined`s would never invalidate.
-	 */
-	#lastServed: { attribution: ServingModel; sessionId: string } | undefined;
-	/**
-	 * Session whose current model was reached by fallback routing rather than by
-	 * the configured primary, or `undefined` when it was not. Tracked separately
-	 * from {@link #activeRetryFallback} because the Fireworks Fast degrade swaps
-	 * models without arming a chain, and anchored like {@link #lastServed}:
-	 * switching transcripts in place must not describe a fresh session's model
-	 * with how the previous one was routed.
-	 */
-	#fallbackRoutedFor: string | undefined;
-	/** Memoized bootstrap answer, for the window before anything has served. */
-	#bootstrapCache:
-		| { model: Model; level: ThinkingLevel | undefined; routed: boolean; value: ServingModel }
-		| undefined;
-	/**
-	 * Fallback-chain warnings pushed to `configWarnings` by startup validation,
-	 * tracked so a post-discovery re-check can retract the ones discovery
-	 * resolved (#10048).
-	 */
-	#fallbackChainWarnings = new Set<string>();
-	/** Whether startup validation deferred any warning pending in-flight discovery (#10048). */
-	#pendingDiscoveryDeferredValidation = false;
-	/** Whether startup fallback-chain validation has run; later checks go through the post-discovery reconcile. */
-	#fallbackChainsValidated = false;
-	/**
-	 * Start of the current retry saga's `retry.fallbackAfterMs` window: while it
-	 * is open, an unavailable primary is retried instead of handed to a fallback.
-	 */
-	#primaryRetryWindow: { selector: string; startedAtMs: number } | undefined;
-	#blockedFallbackError: string | undefined;
 
-	constructor(host: TurnRecoveryHost, options: TurnRecoveryOptions = {}) {
+	constructor(host: TurnRecoveryHost) {
 		this.#host = host;
-		if (options.initialRetryFallback) {
-			this.#activeRetryFallback = {
-				...options.initialRetryFallback,
-				lastAppliedFallbackThinkingLevel: host.configuredThinkingLevel(),
-				pinned: options.initialRetryFallback.pinned ?? false,
-			};
-			this.#markFallbackRouted();
-		}
-		if (!options.deferFallbackChainValidation) this.validateRetryFallbackChains();
 	}
 
 	/** Current automatic retry attempt. */
@@ -413,84 +287,13 @@ export class TurnRecovery {
 		return this.#retryPromise;
 	}
 
-	/** Whether the CURRENT session's model was reached by fallback routing. */
-	get #fallbackRouted(): boolean {
-		return (
-			this.#fallbackRoutedFor !== undefined && this.#fallbackRoutedFor === this.#host.sessionManager.getSessionId()
-		);
-	}
-
-	#markFallbackRouted(): void {
-		this.#fallbackRoutedFor = this.#host.sessionManager.getSessionId();
-	}
-
-	/**
-	 * Model this session's produced work is attributed to.
-	 *
-	 * A model switch is a routing decision, not evidence the target can produce
-	 * anything: a candidate that errors on its first request produced none of the
-	 * turns already in this session. So attribution only ever names a model that
-	 * has settled a turn here, and a switch — into a fallback, back to a restored
-	 * primary, or anywhere else — moves it only once the new model answers.
-	 *
-	 * Before anything has served there is no earlier work to miscredit, so the
-	 * configured model is both the only available answer and a safe one.
-	 */
-	get servingModel(): ServingModel | undefined {
-		const served = this.#lastServed;
-		if (served && served.sessionId === this.#host.sessionManager.getSessionId()) return served.attribution;
-		const model = this.#host.model();
-		if (!model) return undefined;
-		// Polled per streaming event and per render, so the pre-first-turn window
-		// must not format a selector on every call.
-		const level = this.#host.thinkingLevel();
-		const cached = this.#bootstrapCache;
-		if (cached && cached.model === model && cached.level === level && cached.routed === this.#fallbackRouted) {
-			return cached.value;
-		}
-		const value: ServingModel = {
-			selector: formatRetryFallbackSelector(model, level),
-			modelIdentity: formatModelStringWithRouting(model),
-			thinkingLevel: level,
-			isFallback: this.#fallbackRouted,
-			contextWindow: model.contextWindow,
-		};
-		this.#bootstrapCache = { model, level, routed: this.#fallbackRouted, value };
-		return value;
-	}
-
-	/**
-	 * Carries attribution onto a new session id that continues this conversation.
-	 *
-	 * The session-id anchor assumes a new id means an unrelated transcript, which
-	 * holds for `/new` and for resuming something else. A fork breaks that
-	 * assumption on purpose: it clones the transcript and keeps running the same
-	 * recovery state under a fresh id. Dropping attribution there would bootstrap
-	 * an unproven fallback as the primary and re-credit it with the work the
-	 * previous model did — the very bug the anchor exists to prevent.
-	 *
-	 * Only state belonging to `previousSessionId` moves, so an id left behind by
-	 * an earlier switch stays expired.
-	 */
-	reanchorServedAttribution(previousSessionId: string): void {
-		const sessionId = this.#host.sessionManager.getSessionId();
-		if (this.#lastServed?.sessionId === previousSessionId) {
-			this.#lastServed = { ...this.#lastServed, sessionId };
-		}
-		if (this.#fallbackRoutedFor === previousSessionId) {
-			this.#fallbackRoutedFor = sessionId;
-		}
-	}
-
 	/** Resets per-prompt recovery counters and terminal-stop acceptance. */
 	resetForNewPrompt(): void {
-		this.#primaryRetryWindow = undefined;
 		this.#emptyStopRetryCount = 0;
 		this.#unexpectedStopRetryCount = 0;
 		this.#malformedFunctionCallRetryCount = 0;
 		this.#streamStallContinueCount = 0;
 		this.#acceptTerminalEmptyStopForPrompt = false;
-		this.#activeFallbackCreditRedemption = undefined;
 	}
 
 	/** Sets whether one terminal empty stop is accepted for the current prompt. */
@@ -498,56 +301,10 @@ export class TurnRecovery {
 		this.#acceptTerminalEmptyStopForPrompt = accept;
 	}
 
-	/** Consumes any queued Anthropic fallback credit handle for the retry turn. */
-	consumeActiveFallbackCreditRedemption(targetModel?: Model): AnthropicFallbackCreditHandle | undefined {
-		const active = this.#activeFallbackCreditRedemption;
-		if (!active) return undefined;
-		if (targetModel && `${targetModel.provider}/${targetModel.id}` !== active.targetSelector) {
-			return undefined;
-		}
-		this.#activeFallbackCreditRedemption = undefined;
-		if (Date.now() >= active.handle.expiresAt) {
-			return undefined;
-		}
-		return active.handle;
-	}
-
-	/**
-	 * Records which model produced this turn, marks an active fallback as having
-	 * served, then closes a successful retry saga and annotates recovered
-	 * persisted errors.
-	 */
+	/** Closes a successful retry saga and annotates recovered persisted errors. */
 	async onAssistantSettledSuccessfully(message: AssistantMessage): Promise<void> {
 		if (!assistantTurnProducedOutput(message)) {
 			return;
-		}
-		this.#primaryRetryWindow = undefined;
-		const model = this.#host.model();
-		if (model) {
-			const level = this.#host.thinkingLevel();
-			this.#lastServed = {
-				attribution: {
-					selector: formatRetryFallbackSelector(model, level),
-					modelIdentity: formatModelStringWithRouting(model),
-					thinkingLevel: level,
-					isFallback: this.#fallbackRouted,
-					contextWindow: model.contextWindow,
-				},
-				sessionId: this.#host.sessionManager.getSessionId(),
-			};
-		}
-		// Independent of the retry saga below: a usage-aware fallback is applied
-		// before a request without ever incrementing `#retryAttempt`, and it still
-		// owns every turn it serves. Gating this on the saga left such a fallback
-		// permanently unproven, hiding it from observers for the whole session.
-		if (this.#activeRetryFallback && !this.#activeRetryFallback.served && model) {
-			this.#activeRetryFallback.served = true;
-			await this.#host.emitSessionEvent({
-				type: "retry_fallback_succeeded",
-				model:
-					this.#lastServed?.attribution.selector ?? formatRetryFallbackSelector(model, this.#host.thinkingLevel()),
-				role: this.#activeRetryFallback.role,
-			});
 		}
 		if (this.#retryAttempt === 0) {
 			return;
@@ -733,33 +490,60 @@ export class TurnRecovery {
 	}
 
 	/**
-	 * Restores the configured primary after fallback cooldown expiry.
-	 * @returns true when the active model was actually switched back to the
-	 * primary, so callers can re-run the pre-send context-fit check against the
-	 * reverted (possibly smaller) window before issuing the next request.
+	 * Reads live usage health for the active model before a turn starts. Never
+	 * changes the model: a depleted or reserve-level pool either continues on the
+	 * same model or, under the `fail-closed` reserve policy, blocks the turn.
+	 * @throws when the fail-closed reserve policy blocks the turn
 	 */
-	maybeRestoreRetryFallbackPrimary(options?: {
-		requestMessages?: readonly AgentMessage[];
-		signal?: AbortSignal;
-	}): Promise<boolean> {
-		return this.#maybeRestoreRetryFallbackPrimary(options);
+	async checkUsageHealth(signal: AbortSignal): Promise<void> {
+		if (!cfgRetryUsageAwareFallback.get(this.#host.settings)) return;
+		const currentModel = this.#host.model();
+		if (!currentModel) return;
+		let health: ModelUsageHealth;
+		try {
+			health = await this.#host.modelRegistry.authStorage.health.model(currentModel.provider, {
+				modelId: currentModel.id,
+				sessionId: this.#host.sessionId(),
+				baseUrl: currentModel.baseUrl,
+				reserveFraction: cfgRetryUsageReservePct.get(this.#host.settings) / 100,
+				signal,
+			});
+		} catch (error) {
+			if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return;
+			logger.debug("Usage-aware runtime preflight failed open", {
+				provider: currentModel.provider,
+				model: currentModel.id,
+				error: String(error),
+			});
+			return;
+		}
+		if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return;
+		if (health.state === "healthy") {
+			const selectedAccount = health.accounts.find(account => account.selected);
+			if (
+				selectedAccount &&
+				selectedAccount.state !== "healthy" &&
+				health.accounts.some(account => account.state === "healthy")
+			) {
+				this.#host.modelRegistry.authStorage.sessions.release(currentModel.provider, this.#host.sessionId());
+			}
+			return;
+		}
+		if (health.state === "unknown") return;
+		if (cfgRetryUsageReservePolicy.get(this.#host.settings) === "fail-closed") {
+			const condition = health.state === "reserve" ? "reserve reached" : "usage depleted";
+			const currentSelector = formatModelSelectorValue(
+				formatModelStringWithRouting(currentModel),
+				this.#host.thinkingLevel(),
+			);
+			throw new Error(
+				`${USAGE_PREFLIGHT_BLOCKED_PREFIX} ${condition} for ${currentSelector}; reserve policy is fail-closed.`,
+			);
+		}
 	}
 
-	/** Applies model fallback policy from live usage health before a turn starts. */
-	maybeApplyUsageAwareFallback(signal: AbortSignal, confirmer?: UsageFallbackConfirmer): Promise<boolean> {
-		return this.#maybeApplyUsageAwareFallback(signal, confirmer);
-	}
-
-	/** Applies automatic retry, credential rotation, and model fallback policy. */
-	handleRetryableError(
-		message: AssistantMessage,
-		options?: {
-			allowModelFallback?: boolean;
-			fireworksFastFallback?: boolean;
-			hardErrorFallback?: boolean;
-			preserveFailedTurn?: boolean;
-		},
-	): Promise<boolean> {
+	/** Applies automatic same-model retry and credential rotation policy. */
+	handleRetryableError(message: AssistantMessage, options?: { preserveFailedTurn?: boolean }): Promise<boolean> {
 		return this.#handleRetryableError(message, options);
 	}
 
@@ -773,9 +557,6 @@ export class TurnRecovery {
 		const id = this.#classifyRetryMessage(message);
 		const activeModel = this.#host.model();
 		if (!activeModel || !AIError.is(id, AIError.Flag.UsageLimit)) return false;
-		// Do not park the primary credential for a heuristic half-hour while a
-		// bounded availability-retry window is still probing that same primary.
-		if (this.#primaryRetryWindowRemaining(message) > 0) return false;
 
 		let recorded = this.#usageLimitOutcomes.get(message);
 		if (!recorded) {
@@ -850,14 +631,8 @@ export class TurnRecovery {
 		this.#host.appendSessionMessage(message);
 	}
 
-	#retryRecoveryKind(
-		id: number,
-		switchedCredential: boolean,
-		switchedModel: boolean,
-		delayMs: number,
-	): AssistantRetryRecoveryKind {
+	#retryRecoveryKind(id: number, switchedCredential: boolean, delayMs: number): AssistantRetryRecoveryKind {
 		if (switchedCredential) return "credential";
-		if (switchedModel) return "model";
 		if (AIError.is(id, AIError.Flag.UsageLimit) && delayMs > 0) return "wait";
 		return "plain";
 	}
@@ -871,8 +646,6 @@ export class TurnRecovery {
 		}
 		if (recovery === "credential") {
 			parts.push("switched account");
-		} else if (recovery === "model") {
-			parts.push("switched model");
 		} else if (recovery === "wait") {
 			parts.push("waited");
 		}
@@ -883,7 +656,7 @@ export class TurnRecovery {
 	async #recordPendingRetryError(
 		message: AssistantMessage,
 		id: number,
-		options: { switchedCredential: boolean; switchedModel: boolean; delayMs: number },
+		options: { switchedCredential: boolean; delayMs: number },
 	): Promise<void> {
 		await this.persistTerminalEmptyErrorTurn(message);
 		const persistenceKey = sessionMessagePersistenceKey(message);
@@ -901,7 +674,7 @@ export class TurnRecovery {
 		if (!branchEntry) return;
 		if (this.#pendingRetryErrors.some(error => error.entryId === branchEntry.id)) return;
 		const rateLimited = AIError.is(id, AIError.Flag.UsageLimit);
-		const recovery = this.#retryRecoveryKind(id, options.switchedCredential, options.switchedModel, options.delayMs);
+		const recovery = this.#retryRecoveryKind(id, options.switchedCredential, options.delayMs);
 		const note = this.#retryRecoveryNote(recovery, rateLimited);
 		this.#pendingRetryErrors.push({
 			entryId: branchEntry.id,
@@ -1183,7 +956,7 @@ export class TurnRecovery {
 
 	/**
 	 * Drop a recoverable assistant turn from the persisted session branch once a
-	 * recovery path (context promotion or compaction) is committed. Waits for the
+	 * recovery path (compaction) is committed. Waits for the
 	 * in-flight `message_end` persistence slot first so the branch entry exists
 	 * before we reparent past it. Active context removal is the caller's
 	 * responsibility — recovery paths clear it eagerly so the retry never
@@ -1438,7 +1211,7 @@ export class TurnRecovery {
 		) {
 			return terminal();
 		}
-		return (await this.#handleRetryableError(message, { allowModelFallback: false })) ? "handled-retry" : terminal();
+		return (await this.#handleRetryableError(message)) ? "handled-retry" : terminal();
 	}
 
 	/**
@@ -1651,839 +1424,11 @@ export class TurnRecovery {
 				/OpenAI responses stream closed before a terminal response event was received/i.test(errorMessage))
 		);
 	}
-	/**
-	 * First-attempt mid-stream socket drop with streamed progress: the transport
-	 * died after the model had already emitted reasoning or tool calls, so the
-	 * failure says nothing about model health — retry the same model once before
-	 * consulting the fallback chain. A drop with no streamed content keeps the
-	 * immediate fallback (a different route may genuinely help), as do later
-	 * attempts. Never applies once the retry budget is spent (e.g.
-	 * `retry.maxRetries: 0`): there is no same-model retry left, so the
-	 * fallback-chain consult is the only recovery. Mirrors the stall handler's
-	 * socket check, extended to turns with tool calls.
-	 */
-	#isFirstAttemptMidStreamSocketDrop(message: AssistantMessage, id: number, retryBudgetExhausted: boolean): boolean {
-		if (this.#retryAttempt !== 1 || retryBudgetExhausted) return false;
-		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
-		if (this.#host.streamingEditAbortTriggered()) return false;
-		if (!isUnexpectedSocketCloseMessage(message.errorMessage ?? "")) return false;
-		return message.content.some(
-			block =>
-				(block.type === "thinking" && block.thinking.trim().length > 0) ||
-				block.type === "toolCall" ||
-				(block.type === "text" && block.text.trim().length > 0),
-		);
-	}
-
 	/** Checks whether a provider error represents a classifier refusal. */
 	isClassifierRefusal(message: AssistantMessage): boolean {
 		if (message.stopReason !== "error") return false;
 		const stopType = message.stopDetails?.type;
 		return stopType === "refusal" || stopType === "sensitive";
-	}
-
-	#getRetryFallbackResolutionContext(): RetryFallbackResolutionContext {
-		return {
-			chains: this.#getRetryFallbackChains(),
-			getModelRole: role => this.#host.settings.getModelRole(role),
-			modelLookup: this.#host.modelRegistry,
-		};
-	}
-	#getRetryFallbackChains(): RetryFallbackChains {
-		return getRetryFallbackChains(this.#host.settings);
-	}
-
-	/**
-	 * Validate configured fallback chains, logging each warning and appending it
-	 * to `configWarnings`. Runs once: at construction unless deferred by the owner.
-	 */
-	validateRetryFallbackChains(): void {
-		if (this.#fallbackChainsValidated) return;
-		this.#fallbackChainsValidated = true;
-		let deferred = false;
-		validateRetryFallbackChains(
-			this.#host.settings,
-			this.#host.modelRegistry,
-			message => {
-				logger.warn(message);
-				this.#fallbackChainWarnings.add(message);
-				this.#host.configWarnings.push(message);
-			},
-			{
-				isDiscoveryPending: provider => {
-					const pending = this.#host.modelRegistry.isProviderDiscoveryPending(provider);
-					if (pending) deferred = true;
-					return pending;
-				},
-			},
-		);
-		this.#pendingDiscoveryDeferredValidation = deferred;
-	}
-
-	/** Whether startup fallback-chain validation deferred any warning pending in-flight discovery (#10048). */
-	hasPendingDiscoveryDeferredFallbackValidation(): boolean {
-		return this.#pendingDiscoveryDeferredValidation;
-	}
-
-	/**
-	 * Re-run fallback-chain validation once background discovery has settled and
-	 * reconcile `configWarnings`. Startup validation suppresses "unknown model"
-	 * warnings for selectors whose config-declared discovery provider had not yet
-	 * populated the registry (a cold cache after `omp update` bumps the discovery
-	 * namespace, #10048). With discovery done, drop any startup warning discovery
-	 * resolved and surface warnings for selectors that stayed unknown.
-	 *
-	 * @returns true when `configWarnings` changed and the header must rebuild.
-	 */
-	revalidateRetryFallbackChainsAfterDiscovery(): boolean {
-		const definitive = new Set<string>();
-		validateRetryFallbackChains(this.#host.settings, this.#host.modelRegistry, message => definitive.add(message));
-		this.#pendingDiscoveryDeferredValidation = false;
-		let changed = false;
-		for (const message of Array.from(this.#fallbackChainWarnings)) {
-			if (definitive.has(message)) continue;
-			const index = this.#host.configWarnings.indexOf(message);
-			if (index !== -1) {
-				this.#host.configWarnings.splice(index, 1);
-				changed = true;
-			}
-			this.#fallbackChainWarnings.delete(message);
-		}
-		for (const message of definitive) {
-			if (this.#fallbackChainWarnings.has(message)) continue;
-			logger.warn(message);
-			this.#fallbackChainWarnings.add(message);
-			this.#host.configWarnings.push(message);
-			changed = true;
-		}
-		return changed;
-	}
-
-	#getRetryFallbackRevertPolicy(): RetryFallbackRevertPolicy {
-		return getRetryFallbackRevertPolicy(this.#host.settings);
-	}
-
-	/** Clears fallback ownership after an explicit model change or a restore. */
-	clearActiveRetryFallback(): void {
-		this.#primaryRetryWindow = undefined;
-		this.#blockedFallbackError = undefined;
-		this.#activeRetryFallback = undefined;
-		this.#fallbackRoutedFor = undefined;
-	}
-
-	/** Checks whether a fallback selector remains in cooldown. */
-	isRetryFallbackSelectorSuppressed(selector: RetryFallbackSelector): boolean {
-		return this.#host.modelRegistry.isSelectorSuppressed(selector.raw);
-	}
-
-	/** Records the cooldown that should suppress a failing selector. */
-	noteRetryFallbackCooldown(currentSelector: string, retryAfterMs: number | undefined, errorMessage: string): void {
-		let cooldownMs = retryAfterMs;
-		if (!cooldownMs || cooldownMs <= 0) {
-			const reason = parseRateLimitReason(errorMessage);
-			cooldownMs = reason === "UNKNOWN" ? 5 * 60 * 1000 : calculateRateLimitBackoffMs(reason);
-		}
-		this.#host.modelRegistry.suppressSelector(currentSelector, Date.now() + cooldownMs);
-	}
-
-	/**
-	 * Map the failing model selector to the chain key that owns it, by
-	 * specificity: an exact model-selector key, then a `provider/*` wildcard,
-	 * then a model role whose current assignment matches, then `default`.
-	 * Model-oriented keys win over roles so a chain follows the model across
-	 * role reassignments.
-	 */
-	resolveRetryFallbackRole(
-		currentSelector: string,
-		currentModel: Model | null | undefined = this.#host.model(),
-		roleHint?: string,
-	): string | undefined {
-		return resolveRetryFallbackChainKey(
-			this.#getRetryFallbackResolutionContext(),
-			currentSelector,
-			currentModel,
-			roleHint ?? this.#liveRetryRoleHint(currentModel),
-		);
-	}
-
-	/**
-	 * Chain keys to consult for the active model, most specific walk first: the
-	 * chain that owns the current fallback walk, then the chain the CURRENT model
-	 * owns when that is a different key.
-	 *
-	 * The second key is what makes a chain reachable from the end of another one.
-	 * `#activeRetryFallback.role` is pinned at the first hop and never
-	 * re-resolved, so a session that lands on the last entry of one chain has no
-	 * candidate left and retries the same model until the budget is gone — even
-	 * when that entry is itself a chain key with its own fallbacks configured
-	 * (`anthropic/claude-opus-5 -> … -> runinfra/deepseek-v4-pro`, whose own
-	 * `runinfra/deepseek-v4-pro -> openrouter/deepseek/…` chain was unreachable).
-	 *
-	 * Two keys is the whole walk per attempt. Chains that point at each other
-	 * alternate models instead of looping in place, and every hop still spends a
-	 * retry attempt, so the budget terminates either way.
-	 */
-	retryFallbackChainKeys(
-		currentSelector: string,
-		currentModel: Model | null | undefined = this.#host.model(),
-		options?: { pinnedRole?: string; roleHint?: string },
-	): string[] {
-		const pinned = options?.pinnedRole ?? this.#activeRetryFallback?.role;
-		const current = this.resolveRetryFallbackRole(currentSelector, currentModel, options?.roleHint);
-		if (!pinned) return current ? [current] : [];
-		return current && current !== pinned ? [pinned, current] : [pinned];
-	}
-
-	/** Live session role for chain lookup, provided its assignment still matches the active model. */
-	#liveRetryRoleHint(currentModel: Model | null | undefined): string | undefined {
-		const role = this.#host.sessionManager?.getLastModelChangeRole?.();
-		if (!role || role === EPHEMERAL_MODEL_CHANGE_ROLE || !currentModel) return undefined;
-		const configured = this.#host.settings.getModelRole(role);
-		if (!configured) return undefined;
-		const resolved = resolveModelOverride([configured], this.#host.modelRegistry, this.#host.settings);
-		return resolved.model && modelsAreEqual(resolved.model, currentModel) ? role : undefined;
-	}
-
-	/** Finds fallback candidates that follow the active selector. */
-	findRetryFallbackCandidates(
-		role: string,
-		currentSelector: string,
-		currentModel: Model | null | undefined = this.#host.model(),
-		options?: { wrapAround?: boolean },
-	): RetryFallbackSelector[] {
-		return findRetryFallbackCandidates(
-			this.#getRetryFallbackResolutionContext(),
-			role,
-			currentSelector,
-			currentModel,
-			options,
-		);
-	}
-
-	/**
-	 * Candidates from `retry.usageLimitFallbackChains` for the active model,
-	 * each tagged with its chain key. Callers consult these only for a
-	 * usage-limit failure, ahead of the ordinary chains, so a reserve account is
-	 * never reached by transient errors or any other chain consumer.
-	 */
-	usageLimitFallbackCandidates(
-		currentSelector: string,
-		currentModel: Model | null | undefined = this.#host.model(),
-	): Array<{ role: string; selector: RetryFallbackSelector }> {
-		const chains = cfgRetryUsageLimitFallbackChains.get(this.#host.settings);
-		if (!chains || typeof chains !== "object" || Object.keys(chains).length === 0) return [];
-		const context: RetryFallbackResolutionContext = {
-			chains,
-			getModelRole: role => this.#host.settings.getModelRole(role),
-			modelLookup: this.#host.modelRegistry,
-		};
-		const key = resolveRetryFallbackChainKey(context, currentSelector, currentModel);
-		if (!key) return [];
-		return findRetryFallbackCandidates(context, key, currentSelector, currentModel).map(selector => ({
-			role: key,
-			selector,
-		}));
-	}
-
-	async #maybeApplyUsageAwareFallback(signal: AbortSignal, confirmer?: UsageFallbackConfirmer): Promise<boolean> {
-		if (!cfgRetryUsageAwareFallback.get(this.#host.settings)) return false;
-		const currentModel = this.#host.model();
-		if (!currentModel) return false;
-		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
-		let health: ModelUsageHealth;
-		try {
-			health = await this.#host.modelRegistry.authStorage.health.model(currentModel.provider, {
-				modelId: currentModel.id,
-				sessionId: this.#host.sessionId(),
-				baseUrl: currentModel.baseUrl,
-				reserveFraction: cfgRetryUsageReservePct.get(this.#host.settings) / 100,
-				signal,
-			});
-		} catch (error) {
-			if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
-			logger.debug("Usage-aware runtime preflight failed open", {
-				provider: currentModel.provider,
-				model: currentModel.id,
-				error: String(error),
-			});
-			return false;
-		}
-		if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
-		const selectedAccount = health.accounts.find(account => account.selected);
-		if (health.state === "healthy") {
-			this.#usageReserveApprovedSelector = undefined;
-			if (
-				selectedAccount &&
-				selectedAccount.state !== "healthy" &&
-				health.accounts.some(account => account.state === "healthy")
-			) {
-				this.#host.modelRegistry.authStorage.sessions.release(currentModel.provider, this.#host.sessionId());
-			}
-			return false;
-		}
-		if (health.state === "unknown") {
-			this.#usageReserveApprovedSelector = undefined;
-			return false;
-		}
-		if (health.state !== "reserve") this.#usageReserveApprovedSelector = undefined;
-
-		const reservePolicy = cfgRetryUsageReservePolicy.get(this.#host.settings);
-		if (reservePolicy === "fail-closed") {
-			const condition = health.state === "reserve" ? "reserve reached" : "usage depleted";
-			throw new Error(
-				`${USAGE_PREFLIGHT_BLOCKED_PREFIX} ${condition} for ${currentSelector}; reserve policy is fail-closed.`,
-			);
-		}
-		if (
-			reservePolicy === "confirm" &&
-			health.state === "reserve" &&
-			this.#usageReserveApprovedSelector === currentSelector
-		) {
-			return false;
-		}
-		if (!cfgRetryModelFallback.get(this.#host.settings)) return false;
-
-		let fallback: { role: string; selector: RetryFallbackSelector; apiKey: string } | undefined;
-		const ceiling = this.#host.thinkingLevelCeiling();
-		const chainKeys = this.retryFallbackChainKeys(currentSelector, currentModel);
-		for (const role of chainKeys) {
-			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
-				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
-				const resolved = resolveModelOverride([candidate.raw], this.#host.modelRegistry, this.#host.settings);
-				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
-				if (!candidateModel || !this.#host.modelRegistry.hasConfiguredAuth(candidateModel)) continue;
-				if (ceiling !== undefined && !modelSupportsEffortCeiling(candidateModel, ceiling)) continue;
-				// A usage fallback must also fit: skip a candidate whose window cannot
-				// hold the live context so we never switch onto an oversized request
-				// (issue #8065).
-				if (!this.#host.contextFitsModel(candidateModel)) continue;
-				try {
-					const candidateHealth = await this.#host.modelRegistry.authStorage.health.model(
-						candidateModel.provider,
-						{
-							modelId: candidateModel.id,
-							sessionId: this.#host.sessionId(),
-							baseUrl: candidateModel.baseUrl,
-							reserveFraction: cfgRetryUsageReservePct.get(this.#host.settings) / 100,
-							signal,
-						},
-					);
-					if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
-					if (candidateHealth.state === "depleted" || candidateHealth.state === "reserve") continue;
-					if (candidateHealth.state === "healthy") {
-						const selected = candidateHealth.accounts.find(account => account.selected);
-						if (
-							selected &&
-							selected.state !== "healthy" &&
-							candidateHealth.accounts.some(account => account.state === "healthy")
-						) {
-							this.#host.modelRegistry.authStorage.sessions.release(
-								candidateModel.provider,
-								this.#host.sessionId(),
-							);
-						}
-					}
-				} catch {
-					if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
-					// Unknown usage fails open for an otherwise valid fallback.
-				}
-				if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
-				let apiKey: string | undefined;
-				try {
-					apiKey = await this.#host.modelRegistry.getApiKey(candidateModel, this.#host.sessionId(), { signal });
-				} catch {
-					if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
-					continue;
-				}
-				if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
-				if (!apiKey) continue;
-				fallback = { role, selector: candidate, apiKey };
-				break;
-			}
-			if (fallback) break;
-		}
-		if (!fallback) return false;
-
-		let shouldFallback = health.state === "depleted" || reservePolicy === "auto" || !confirmer;
-		if (!shouldFallback && health.state === "reserve" && confirmer) {
-			const remainingFraction =
-				selectedAccount?.remainingFraction ??
-				health.accounts.reduce<number | undefined>((minimum, account) => {
-					if (account.remainingFraction === undefined) return minimum;
-					return minimum === undefined ? account.remainingFraction : Math.min(minimum, account.remainingFraction);
-				}, undefined);
-			shouldFallback = await this.#confirmUsageFallback(
-				confirmer,
-				{
-					from: currentSelector,
-					to: fallback.selector.raw,
-					remainingPercent: remainingFraction === undefined ? undefined : Math.max(0, remainingFraction * 100),
-				},
-				signal,
-			);
-			if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
-		}
-		if (!shouldFallback) {
-			this.#usageReserveApprovedSelector = currentSelector;
-			return false;
-		}
-		this.#usageReserveApprovedSelector = undefined;
-		return this.applyRetryFallbackCandidate(fallback.role, fallback.selector, currentSelector, {
-			pinFallback: true,
-			apiKey: fallback.apiKey,
-			signal,
-			reason: describeUsageFallback(health, cfgRetryUsageReservePct.get(this.#host.settings)),
-		});
-	}
-
-	async #confirmUsageFallback(
-		confirmer: UsageFallbackConfirmer,
-		confirmation: UsageFallbackConfirmation,
-		signal: AbortSignal,
-	): Promise<boolean> {
-		if (signal.aborted) return false;
-		const aborted = Promise.withResolvers<boolean>();
-		const onAbort = () => aborted.resolve(false);
-		signal.addEventListener("abort", onAbort, { once: true });
-		try {
-			return await Promise.race([confirmer(confirmation, signal), aborted.promise]);
-		} finally {
-			signal.removeEventListener("abort", onAbort);
-		}
-	}
-
-	/**
-	 * Whether applying `candidate` at `selector`'s thinking level would leave the
-	 * request unchanged: the same routed model identity (provider, id AND the
-	 * `@upstream` route `formatModelStringWithRouting` preserves) and the same
-	 * effective thinking level after the ceiling clamp in
-	 * {@link applyRetryFallbackCandidate} and the per-model clamp in
-	 * `setThinkingLevel`. A different route or a different effective level is a
-	 * real change of request and stays eligible.
-	 */
-	#isNoOpRetryFallback(candidate: Model, selector: RetryFallbackSelector): boolean {
-		const active = this.#host.model();
-		if (!active || formatModelStringWithRouting(candidate) !== formatModelStringWithRouting(active)) return false;
-		const configured = this.#host.configuredThinkingLevel();
-		const requested = selector.thinkingLevel ?? configured;
-		if (requested === AUTO_THINKING || configured === AUTO_THINKING) return requested === configured;
-		const effective = resolveThinkingLevelForModel(
-			candidate,
-			clampThinkingLevelToCeiling(candidate, requested, this.#host.thinkingLevelCeiling()),
-		);
-		return effective === configured;
-	}
-
-	async applyRetryFallbackCandidate(
-		role: string,
-		selector: RetryFallbackSelector,
-		currentSelector: string,
-		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal; reason?: string },
-	): Promise<boolean> {
-		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
-		const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-		if (!candidate) {
-			throw new Error(`Retry fallback model not found: ${selector.raw}`);
-		}
-		const apiKey =
-			options?.apiKey ??
-			(await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId(), { signal: options?.signal }));
-		if (!apiKey) {
-			throw new Error(`No API key for retry fallback ${selector.raw}`);
-		}
-		if (options?.signal?.aborted) return false;
-
-		// Capture the configured selector (auto-aware) so a fallback chain preserves
-		// `auto` instead of collapsing it to the level it resolved to this turn.
-		const currentThinkingLevel = this.#host.configuredThinkingLevel();
-		const requestedThinkingLevel = selector.thinkingLevel ?? currentThinkingLevel;
-		// A fallback selector's explicit level (or the carried level after the
-		// replacement model's floor clamp) must never exceed the session's
-		// per-spawn effort ceiling.
-		const nextThinkingLevel =
-			requestedThinkingLevel === AUTO_THINKING
-				? requestedThinkingLevel
-				: clampThinkingLevelToCeiling(candidate, requestedThinkingLevel, this.#host.thinkingLevelCeiling());
-		const candidateSelector = formatModelStringWithRouting(candidate);
-		const previousModel = this.#host.model();
-		// Capture the edit mode under the outgoing model so the base system prompt
-		// can be re-synced once the swap commits — `edit.modelVariants` and other
-		// model-dependent prompt policy would otherwise stay pinned to the
-		// chain-head model after an auto-fallback (issue #11983).
-		const previousEditMode = this.#host.resolveActiveEditMode();
-		// Mark routing BEFORE the swap: `setModelWithProviderSessionReset` moves the
-		// model and fans `model_changed` out to subscribers synchronously, and a
-		// listener reading attribution in that window must already see the incoming
-		// candidate as fallback-routed. Attribution itself is safe regardless — it
-		// names the last model that served, which this swap has not changed.
-		const routedBeforeSwap = this.#fallbackRoutedFor;
-		const servedBeforeSwap = this.#activeRetryFallback?.served;
-		this.#markFallbackRouted();
-		if (this.#activeRetryFallback) this.#activeRetryFallback.served = false;
-		await this.#host.setModelWithProviderSessionReset(candidate);
-		if (options?.signal?.aborted) {
-			this.#fallbackRoutedFor = routedBeforeSwap;
-			if (this.#activeRetryFallback) this.#activeRetryFallback.served = servedBeforeSwap;
-			if (previousModel && this.#host.model() === candidate) {
-				await this.#host.setModelWithProviderSessionReset(previousModel);
-			}
-			return false;
-		}
-		if (this.#host.model() !== candidate) {
-			this.#fallbackRoutedFor = routedBeforeSwap;
-			if (this.#activeRetryFallback) this.#activeRetryFallback.served = servedBeforeSwap;
-			return false;
-		}
-		this.#host.sessionManager.appendModelChange(candidateSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true);
-		this.#host.settings.getStorage()?.recordModelUsage(candidateSelector);
-		this.#host.setThinkingLevel(nextThinkingLevel);
-		if (!this.#activeRetryFallback) {
-			this.#activeRetryFallback = {
-				role,
-				originalSelector: currentSelector,
-				originalThinkingLevel: currentThinkingLevel,
-				lastAppliedFallbackThinkingLevel: nextThinkingLevel,
-				pinned: options?.pinFallback === true,
-			};
-		} else {
-			this.#activeRetryFallback.lastAppliedFallbackThinkingLevel = nextThinkingLevel;
-			this.#activeRetryFallback.pinned = this.#activeRetryFallback.pinned || options?.pinFallback === true;
-		}
-		await this.#host.syncAfterModelChange(previousEditMode);
-		await this.#host.emitSessionEvent({
-			type: "retry_fallback_applied",
-			from: currentSelector,
-			to: selector.raw,
-			role,
-			reason: options?.reason,
-		});
-		return true;
-	}
-
-	async #tryRetryModelFallback(
-		currentSelector: string,
-		failedMessage: AssistantMessage,
-		options?: {
-			excludeProvider?: string;
-			pinFallback?: boolean;
-			preserveFailedTurn?: boolean;
-			wrapAround?: boolean;
-			/** The failure is a usage limit: try `retry.usageLimitFallbackChains` first. */
-			usageLimit?: boolean;
-			/** `retry.compactForFallback`: switch onto the first candidate that only fails the context fit. */
-			compactToFit?: boolean;
-		},
-	): Promise<RetryModelFallbackResult> {
-		const ceiling = this.#host.thinkingLevelCeiling();
-		const latestAssistant = options?.preserveFailedTurn
-			? failedMessage
-			: this.#host.agent.state.messages.findLast(
-					(message): message is AssistantMessage => message.role === "assistant" && message !== failedMessage,
-				);
-		const candidates = options?.usageLimit ? this.usageLimitFallbackCandidates(currentSelector) : [];
-		// Permitted redemption targets are catalog policy on the refused model.
-		const failedModel = failedMessage.fallbackCreditHandle
-			? this.#host.modelRegistry.find(failedMessage.provider, failedMessage.model)
-			: undefined;
-		const creditTargets = failedModel ? fallbackCreditTargets(failedModel) : [];
-		for (const role of this.retryFallbackChainKeys(currentSelector)) {
-			for (const selector of this.findRetryFallbackCandidates(role, currentSelector, undefined, options)) {
-				candidates.push({ role, selector });
-			}
-		}
-		// First candidate rejected only because its window cannot hold the context.
-		let oversized: { role: string; selector: RetryFallbackSelector } | undefined;
-		for (const { role, selector } of candidates) {
-			if (this.isRetryFallbackSelectorSuppressed(selector)) continue;
-			const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
-			const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-			if (!candidate) continue;
-			// A candidate that resolves to the currently active model and effective effort
-			// is not a fallback switch, even when its selector spelling differs.
-			if (this.#isNoOpRetryFallback(candidate, selector)) continue;
-			if (options?.excludeProvider === candidate.provider) continue;
-			// Anthropic fallback credit permits a same-provider model switch while the
-			// server validates the preserved thinking blocks with the credit token.
-			const canRedeemFallbackCredit =
-				failedMessage.fallbackCreditHandle !== undefined &&
-				candidate.api === "anthropic-messages" &&
-				candidate.provider === failedMessage.provider &&
-				creditTargets.includes(candidate.id) &&
-				Date.now() < failedMessage.fallbackCreditHandle.expiresAt;
-			// Anthropic signatures and redacted blocks are model-bound, while the latest
-			// assistant response must remain byte-identical. A same-provider model switch
-			// can satisfy neither constraint unless redeeming fallback credit.
-			if (
-				!canRedeemFallbackCredit &&
-				candidate.api === "anthropic-messages" &&
-				latestAssistant?.api === "anthropic-messages" &&
-				latestAssistant.provider === candidate.provider &&
-				latestAssistant.model !== candidate.id &&
-				latestAssistant.content.some(
-					block =>
-						(block.type === "thinking" && Boolean(block.thinkingSignature?.trim())) ||
-						block.type === "redactedThinking",
-				)
-			) {
-				continue;
-			}
-			// A candidate whose effort floor exceeds the per-spawn ceiling would be
-			// clamped UP past the cap by its model floor — skip it entirely.
-			if (ceiling !== undefined && !modelSupportsEffortCeiling(candidate, ceiling)) continue;
-			// Skip a candidate whose window cannot hold the retry context. The failed
-			// assistant is excluded only when retry removes it; preserved unexecuted-tool
-			// turns remain part of the request (issue #8065).
-			if (!this.#host.contextFitsModel(candidate, options?.preserveFailedTurn ? undefined : failedMessage)) {
-				if (
-					options?.compactToFit &&
-					!oversized &&
-					(await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId()))
-				) {
-					oversized = { role, selector };
-				}
-				continue;
-			}
-			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
-			if (!apiKey) continue;
-			const previousEditMode = this.#host.resolveActiveEditMode();
-			const applied = await this.applyRetryFallbackCandidate(role, selector, currentSelector, {
-				...options,
-				reason: `Request failed: ${failedMessage.errorMessage ?? "provider returned an error without details"}`,
-			});
-			const editModeChanged = this.#host.resolveActiveEditMode() !== previousEditMode;
-			if (applied && options?.pinFallback === true && canRedeemFallbackCredit && !editModeChanged) {
-				this.#activeFallbackCreditRedemption = {
-					targetSelector: `${candidate.provider}/${candidate.id}`,
-					handle: failedMessage.fallbackCreditHandle!,
-				};
-			}
-			return { switched: applied };
-		}
-		if (!oversized) return { switched: false };
-
-		const previousModel = this.#host.model();
-		if (!previousModel) return { switched: false };
-		const restore: FallbackCompactionRestore = {
-			model: previousModel,
-			thinkingLevel: this.#host.configuredThinkingLevel(),
-			activeRetryFallback: this.#activeRetryFallback && { ...this.#activeRetryFallback },
-			fallbackRoutedFor: this.#fallbackRoutedFor,
-		};
-		const applied = await this.applyRetryFallbackCandidate(oversized.role, oversized.selector, currentSelector, {
-			...options,
-			reason: `Request failed: ${failedMessage.errorMessage ?? "provider returned an error without details"}`,
-		});
-		return applied ? { switched: true, compactionRestore: restore } : { switched: false };
-	}
-
-	/** The active model when it is a Fireworks Fast (`-fast`) variant, else undefined. */
-	#activeFireworksFastModel(): Model | undefined {
-		const model = this.#host.model();
-		return model?.provider === "fireworks" && isFireworksFastModelId(model.id) ? model : undefined;
-	}
-
-	/**
-	 * True when the current turn failed on a Fireworks Fast (`-fast`) model in a
-	 * way that should degrade to the reliable base (Standard) model. Fast is a
-	 * speed-optimized router with no SLA, so any *pre-content* failure — a
-	 * transient overload/5xx or a hard "router/model not found / unsupported" —
-	 * is worth retrying on the base id. Skips failures the base model shares:
-	 * context overflow (compaction's job), usage limits and auth errors (same
-	 * account/key), and turns that already emitted any replay-unsafe output.
-	 * Requires the base model to exist in the registry.
-	 */
-	isFireworksFastFallbackEligible(message: AssistantMessage): boolean {
-		const model = this.#activeFireworksFastModel();
-		if (!model) return false;
-		if (message.stopReason !== "error") return false;
-		if (this.#isUsagePreflightBlocked(message)) return false;
-		if (this.#hasReplayUnsafeOutput(message)) return false;
-		// A content refusal/sensitivity stop is the model's decision, not a route
-		// failure — switching to the base model would just re-trigger it.
-		if (this.isClassifierRefusal(message)) return false;
-		const id = this.#classifyRetryMessage(message);
-		if (AIError.isContextOverflow(message, model.contextWindow ?? 0)) return false;
-		if (AIError.is(id, AIError.Flag.UsageLimit)) return false;
-		if (AIError.is(id, AIError.Flag.AuthFailed)) return false;
-		// A thinking loop is a same-model resample signal, not a router fault, so a
-		// base-model swap would abandon the loop-guard redirect (issue #8760).
-		if (AIError.is(id, AIError.Flag.ThinkingLoop)) return false;
-		// Byte/media budget 413s fail identically on the base model — swapping cannot fix them (#9235).
-		if (AIError.isPayloadRejection(message)) return false;
-		return this.#host.modelRegistry.find("fireworks", toFireworksBaseModelId(model.id)) !== undefined;
-	}
-
-	/**
-	 * True when a turn failed with a hard (non-retryable) provider error but a
-	 * configured `retry.fallbackChains` entry covers the active model: the same
-	 * model is not worth retrying, yet a DIFFERENT model is a fresh chance, so
-	 * the chain is consulted before the error becomes final. Skips failures a
-	 * model switch cannot fix or must not replay: cancellations (abort-flavored
-	 * errors are not model faults), context overflow (compaction's job),
-	 * classifier refusals (chain consult is handled on the retryable path with
-	 * `pinFallback`), and turns that already emitted replay-unsafe output.
-	 */
-	isHardErrorFallbackEligible(message: AssistantMessage): boolean {
-		if (message.stopReason !== "error") return false;
-		if (this.#isUsagePreflightBlocked(message)) return false;
-		const model = this.#host.model();
-		if (!model) return false;
-		const immutableAnthropicThinkingError =
-			model.api === "anthropic-messages" &&
-			(message.errorStatus === 400 ||
-				message.errorId === 400 ||
-				message.errorMessage?.startsWith("400 ") === true) &&
-			IMMUTABLE_ANTHROPIC_THINKING_ERROR_PATTERN.test(message.errorMessage ?? "");
-		if (immutableAnthropicThinkingError) return false;
-		const retrySettings = cfgRetry.get(this.#host.settings);
-		if (!retrySettings.enabled || !retrySettings.modelFallback) return false;
-		if (this.isClassifierRefusal(message)) return false;
-		const id = this.#classifyRetryMessage(message);
-		if (AIError.is(id, AIError.Flag.Abort) || AIError.is(id, AIError.Flag.UserInterrupt)) return false;
-		// Text-ambiguous overflows waive the veto; usage-backed do not — see AIError.isTextAmbiguousContextOverflow (#9235).
-		const contextWindow = model.contextWindow ?? 0;
-		const textAmbiguousOverflow = AIError.isTextAmbiguousContextOverflow(id, message, contextWindow);
-		if (!textAmbiguousOverflow && AIError.isContextOverflow(message, contextWindow)) {
-			return false;
-		}
-		if (this.#hasReplayUnsafeOutput(message)) return false;
-		const currentSelector = formatRetryFallbackSelector(model, this.#host.thinkingLevel());
-		return this.retryFallbackChainKeys(currentSelector).some(
-			role => this.findRetryFallbackCandidates(role, currentSelector).length > 0,
-		);
-	}
-
-	/**
-	 * Switch the active model from a Fireworks Fast (`-fast`) variant to its base
-	 * (Standard) id and stick there for the rest of the session — the auto
-	 * fallback that makes Fast a safe default. Returns false when the current
-	 * model is not a fast variant, the base id is missing, or it has no key.
-	 */
-	async #tryFireworksFastFallback(currentSelector: string): Promise<boolean> {
-		const model = this.#activeFireworksFastModel();
-		if (!model) return false;
-		const baseModel = this.#host.modelRegistry.find("fireworks", toFireworksBaseModelId(model.id));
-		if (!baseModel) return false;
-		const apiKey = await this.#host.modelRegistry.getApiKey(baseModel, this.#host.sessionId());
-		if (!apiKey) return false;
-		const baseSelector = formatModelStringWithRouting(baseModel);
-		const previousEditMode = this.#host.resolveActiveEditMode();
-		// A capability degrade is fallback routing too, even though it arms no
-		// chain: the base model must not be reported as the configured primary.
-		this.#markFallbackRouted();
-		await this.#host.setModelWithProviderSessionReset(baseModel);
-		this.#host.sessionManager.appendModelChange(baseSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true);
-		this.#host.settings.getStorage()?.recordModelUsage(baseSelector);
-		await this.#host.syncAfterModelChange(previousEditMode);
-		await this.#host.emitSessionEvent({
-			type: "retry_fallback_applied",
-			from: currentSelector,
-			to: baseSelector,
-			role: "fireworks-fast",
-			reason: "Request rejected by the Fast tier. Retrying on the Standard tier.",
-		});
-		return true;
-	}
-
-	async #maybeRestoreRetryFallbackPrimary(options?: {
-		requestMessages?: readonly AgentMessage[];
-		signal?: AbortSignal;
-	}): Promise<boolean> {
-		if (!this.#activeRetryFallback) return false;
-		if (this.#activeRetryFallback.pinned) return false;
-		if (this.#getRetryFallbackRevertPolicy() !== "cooldown-expiry") return false;
-
-		const active = this.#activeRetryFallback;
-		const originalSelector = parseRetryFallbackSelector(active.originalSelector, this.#host.modelRegistry);
-		if (!originalSelector) {
-			// Defensive: the stored selector is always produced by
-			// `formatRetryFallbackSelector`, so it should never fail to parse. If it
-			// somehow does, nothing is restored and the session keeps running on the
-			// fallback — so drop the chain record but NOT `#fallbackRouted`, whose
-			// clearing would report the fallback's remaining turns as the primary.
-			this.#activeRetryFallback = undefined;
-			return false;
-		}
-
-		const currentModel = this.#host.model();
-		if (!currentModel) return false;
-		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
-		if (currentSelector === originalSelector.raw) {
-			if (!this.isRetryFallbackSelectorSuppressed(originalSelector)) {
-				this.clearActiveRetryFallback();
-			}
-			return false;
-		}
-		if (this.isRetryFallbackSelectorSuppressed(originalSelector)) {
-			// Both models are unavailable. Do not resend to the blocked fallback on
-			// every new turn, or probe the primary before its provider deadline.
-			if (this.#blockedFallbackError && this.#host.modelRegistry.isSelectorSuppressed(currentSelector)) {
-				throw new Error(this.#blockedFallbackError);
-			}
-			return false;
-		}
-
-		const primaryModel = this.#resolveRetryFallbackPrimaryModel(originalSelector);
-		if (!primaryModel) return false;
-		// A running loop owns its own array, including pending steering whose events
-		// have not reached session state. Don't restore using a stale fit estimate,
-		// or compact underneath that loop. The idle prompt path can restore/compact.
-		if (options?.requestMessages) {
-			const stored = this.#host.agent.state.messages;
-			if (options.requestMessages.length !== stored.length || !this.#host.contextFitsModel(primaryModel)) {
-				return false;
-			}
-		}
-		const apiKey = await this.#host.modelRegistry.getApiKey(primaryModel, this.#host.sessionId());
-		if (
-			!apiKey ||
-			options?.signal?.aborted ||
-			this.#activeRetryFallback !== active ||
-			this.#host.model() !== currentModel
-		) {
-			return false;
-		}
-
-		const thinkingToApply = this.#retryFallbackPrimaryThinkingLevel(active);
-		const primarySelector = formatModelStringWithRouting(primaryModel);
-		const previousEditMode = this.#host.resolveActiveEditMode();
-		// Clear before the swap: `setModelWithProviderSessionReset` and
-		// `setThinkingLevel` both notify subscribers, and an observer reading
-		// attribution in that window would see the restored primary still tagged
-		// as fallback-served.
-		this.clearActiveRetryFallback();
-		await this.#host.setModelWithProviderSessionReset(primaryModel);
-		this.#host.sessionManager.appendModelChange(primarySelector, EPHEMERAL_MODEL_CHANGE_ROLE);
-		this.#host.settings.getStorage()?.recordModelUsage(primarySelector);
-		this.#host.setThinkingLevel(thinkingToApply);
-		await this.#host.syncAfterModelChange(previousEditMode);
-		return true;
-	}
-
-	/**
-	 * The configured primary an active retry fallback displaced, with the thinking
-	 * level a restore would re-apply; `undefined` when no fallback is active.
-	 * Session clones (`/tan`, `/fork`) start here rather than on the fallback.
-	 */
-	retryFallbackPrimary(): { model: Model; thinkingLevel: ConfiguredThinkingLevel | undefined } | undefined {
-		const active = this.#activeRetryFallback;
-		if (!active) return undefined;
-		const selector = parseRetryFallbackSelector(active.originalSelector, this.#host.modelRegistry);
-		if (!selector) return undefined;
-		const model = this.#resolveRetryFallbackPrimaryModel(selector);
-		if (!model) return undefined;
-		return { model, thinkingLevel: this.#retryFallbackPrimaryThinkingLevel(active) };
-	}
-
-	#resolveRetryFallbackPrimaryModel(selector: RetryFallbackSelector): Model | undefined {
-		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
-		return resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
-	}
-
-	/** The fallback overwrote the configured level; a level the user set since then wins. */
-	#retryFallbackPrimaryThinkingLevel(active: ActiveRetryFallbackState): ConfiguredThinkingLevel | undefined {
-		const current = this.#host.configuredThinkingLevel();
-		return current === active.lastAppliedFallbackThinkingLevel ? active.originalThinkingLevel : current;
 	}
 
 	#parseRetryAfterMsFromError(errorMessage: string): number | undefined {
@@ -2494,58 +1439,17 @@ export class TurnRecovery {
 		return extractProviderRetryHint(this.#host.model()?.provider, errorMessage);
 	}
 
-	/** Remaining time in an opted-in primary availability retry saga. */
-	#primaryRetryWindowRemaining(message: AssistantMessage): number {
-		const duration = cfgRetryFallbackAfterMs.get(this.#host.settings);
-		if (!(duration > 0) || !Number.isFinite(duration) || this.#activeRetryFallback) return 0;
-		const settings = cfgRetry.get(this.#host.settings);
-		if (!settings.enabled || !settings.modelFallback) return 0;
-		const id = this.#classifyRetryMessage(message);
-		const reason = parseRateLimitReason(message.errorMessage ?? "");
-		if (
-			!AIError.is(id, AIError.Flag.UsageLimit) &&
-			message.errorStatus !== 429 &&
-			reason !== "RATE_LIMIT_EXCEEDED" &&
-			reason !== "CONCURRENT_LIMIT" &&
-			reason !== "MODEL_CAPACITY_EXHAUSTED"
-		)
-			return 0;
-		const model = this.#host.model();
-		if (!model) return 0;
-		const selector = formatRetryFallbackSelector(model, this.#host.thinkingLevel());
-		if (
-			!this.usageLimitFallbackCandidates(selector).length &&
-			!this.retryFallbackChainKeys(selector).some(role => this.findRetryFallbackCandidates(role, selector).length)
-		)
-			return 0;
-		if (this.#primaryRetryWindow?.selector !== selector) {
-			this.#primaryRetryWindow = { selector, startedAtMs: Date.now() };
-		}
-		return Math.max(0, duration - (Date.now() - this.#primaryRetryWindow.startedAtMs));
-	}
-
 	/**
-	 * Handle retryable errors with exponential backoff, credential rotation, and
-	 * model-fallback chains. Also entered for NON-retryable errors when a switch
-	 * is the recovery (`fireworksFastFallback`, `hardErrorFallback`): then a
-	 * successful model switch retries immediately, and a failed switch surfaces
-	 * the error without a same-model backoff retry.
+	 * Handle retryable errors with exponential backoff and credential rotation.
+	 * Retries always stay on the active model; the user switches models manually.
 	 * @returns true if retry was initiated, false if max retries exceeded or disabled
 	 */
 	async #handleRetryableError(
 		message: AssistantMessage,
-		options?: {
-			allowModelFallback?: boolean;
-			fireworksFastFallback?: boolean;
-			hardErrorFallback?: boolean;
-			preserveFailedTurn?: boolean;
-		},
+		options?: { preserveFailedTurn?: boolean },
 	): Promise<boolean> {
 		const retrySettings = cfgRetry.get(this.#host.settings);
-		// The Fireworks Fast→base degrade is an intrinsic model-selection safety net,
-		// not a retry loop, so it runs even when the user disabled retries: it switches
-		// the model once and lets the base turn proceed.
-		if (!retrySettings.enabled && !options?.fireworksFastFallback) return false;
+		if (!retrySettings.enabled) return false;
 		const classifierRefusal = this.isClassifierRefusal(message);
 		const id = this.#classifyRetryMessage(message);
 		const preserveFailedTurn =
@@ -2564,62 +1468,6 @@ export class TurnRecovery {
 			this.#retryResolve = resolve;
 		}
 
-		const primaryWindowRemaining =
-			options?.allowModelFallback === false ? 0 : this.#primaryRetryWindowRemaining(message);
-		if (primaryWindowRemaining > 0 && !classifierRefusal) {
-			const retryAfter = this.#parseRetryAfterMsFromError(message.errorMessage ?? "");
-			const requestedDelay =
-				retryAfter ?? Math.max(1_000, calculateRetryBackoffDelayMs(retrySettings.baseDelayMs, this.#retryAttempt));
-			const delay = Math.min(primaryWindowRemaining, requestedDelay);
-			await this.#recordPendingRetryError(message, this.#classifyRetryMessage(message), {
-				switchedCredential: false,
-				switchedModel: false,
-				delayMs: delay,
-			});
-			await this.#host.emitSessionEvent({
-				type: "auto_retry_start",
-				attempt: this.#retryAttempt,
-				maxAttempts: retrySettings.maxRetries,
-				delayMs: delay,
-				errorMessage: message.errorMessage ?? "Unknown error",
-				errorId: message.errorId,
-			});
-			const controller = new AbortController();
-			this.#retryAbortController?.abort();
-			this.#retryAbortController = controller;
-			try {
-				await sleepLong(delay, controller.signal);
-			} catch {
-				if (this.#retryAbortController !== controller) return false;
-				return this.#endCancelledRetry();
-			} finally {
-				if (this.#retryAbortController === controller) this.#retryAbortController = undefined;
-			}
-			if (this.#host.promptGeneration() !== generation || this.#host.isDisposed()) return this.#endCancelledRetry();
-			if (delay < primaryWindowRemaining) {
-				if (!preserveFailedTurn) {
-					this.removeAssistantMessageFromActiveContext(message, "primary-window-retry");
-					this.#stripFailedAssistantTail();
-				}
-				this.#host.scheduleAgentContinue({
-					source: "primary-window-retry",
-					delayMs: 1,
-					generation,
-					shouldContinue: () => this.#retryAttempt > 0,
-					onError: error => void this.#failRetryAfterLocalContinueError(message, error),
-				});
-				return true;
-			}
-			// The deadline won the race with Retry-After. Switch now without sending
-			// another request to a primary whose provider wait has not elapsed.
-		}
-
-		// All attempts on the current model are spent. Don't fail yet: the
-		// fallback chain below gets one last consult. Credential rotation can
-		// consume the entire budget without the fallback branch ever running
-		// (every rotation sets switchedCredential and skips it), so without
-		// this last resort a provider-wide usage cap never fails over to the
-		// configured chain.
 		const maxRetries = this.#isBoundedThinkingStreamClose(message)
 			? Math.min(retrySettings.maxRetries, 1)
 			: retrySettings.maxRetries;
@@ -2650,7 +1498,6 @@ export class TurnRecovery {
 			if (reasonBackoffMs > delayMs) delayMs = reasonBackoffMs;
 		}
 		let switchedCredential = false;
-		let switchedModel = false;
 		// Set when a usage-limit error pinned the wait to credential
 		// availability — suppresses the generic retry-after bump below.
 		let usageLimitWaitMs: number | undefined;
@@ -2771,11 +1618,7 @@ export class TurnRecovery {
 			}
 		}
 
-		const allowModelFallback = options?.allowModelFallback !== false;
 		const currentModel = this.#host.model();
-		const currentSelector = currentModel
-			? formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel())
-			: undefined;
 		if (accountPolicyDenial && currentModel) {
 			// `rotate` may sleep out a sibling's short block; register its signal
 			// as the retry controller so `abortRetry()` cancels that wait exactly
@@ -2800,14 +1643,6 @@ export class TurnRecovery {
 			}
 			if (switchedCredential) delayMs = 0;
 		}
-		// A thinking-loop abort is not a provider failure — it is the loop guard
-		// asking for a same-model resample, paired with a hidden
-		// `thinking-loop-redirect` notice that only makes sense on the model that
-		// looped. Walking `fallbackChains` (or parking the selector on a cooldown)
-		// would swap a healthy planning turn to another family based on chain
-		// contents, not model health (issue #8760). Keep it on the same model; the
-		// retry budget still bounds a genuinely stuck stream.
-		const thinkingLoop = AIError.is(id, AIError.Flag.ThinkingLoop);
 		const effectiveUsageLimitWaitMs =
 			usageLimitWaitMs ??
 			(siblingAvailabilityWaitMs === undefined
@@ -2816,10 +1651,6 @@ export class TurnRecovery {
 						recordedUsageLimitOutcome?.retryAfterMs ?? parsedRetryAfterMs ?? Infinity,
 						siblingAvailabilityWaitMs,
 					));
-		const waitForSiblingCredential =
-			siblingAvailabilityWaitMs !== undefined &&
-			effectiveUsageLimitWaitMs !== undefined &&
-			effectiveUsageLimitWaitMs <= retrySettings.maxDelayMs;
 		const retryShortBusyOnSameModel =
 			this.#retryAttempt === 1 &&
 			!retryBudgetExhausted &&
@@ -2832,110 +1663,8 @@ export class TurnRecovery {
 			parsedRetryAfterMs !== undefined &&
 			parsedRetryAfterMs <= SHORT_BUSY_RETRY_MAX_DELAY_MS &&
 			(retrySettings.maxDelayMs <= 0 || parsedRetryAfterMs <= retrySettings.maxDelayMs);
-		const longUsageLimitFallback =
-			currentModel !== undefined &&
-			resolveModelPolicy(currentModel).catalog.longUsageLimitFallback === true &&
-			retrySettings.maxDelayMs > 0 &&
-			effectiveUsageLimitWaitMs !== undefined &&
-			effectiveUsageLimitWaitMs > retrySettings.maxDelayMs &&
-			/\bGoUsageLimitError\b/.test(errorMessage) &&
-			(!this.#hasReplayUnsafeOutput(message) || this.#unexecutedToolCallsReplaySafe(message));
-
-		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
-			// A refusal chain stops at the retry budget: the exhausted-attempt
-			// last resort is for provider failures, not classifier decisions.
-			if (
-				allowModelFallback &&
-				retrySettings.modelFallback &&
-				!thinkingLoop &&
-				(!waitForSiblingCredential || this.#primaryRetryWindow !== undefined) &&
-				(!retryShortBusyOnSameModel || this.#primaryRetryWindow !== undefined) &&
-				!(retryBudgetExhausted && classifierRefusal) &&
-				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
-			) {
-				const wasPrimary = !this.#activeRetryFallback;
-				if (!classifierRefusal) {
-					const holdMs = wasPrimary ? cfgRetryFallbackMinHoldMs.get(this.#host.settings) : 0;
-					this.noteRetryFallbackCooldown(currentSelector, Math.max(parsedRetryAfterMs ?? 0, holdMs), errorMessage);
-					if (
-						!wasPrimary &&
-						cfgRetryFallbackMinHoldMs.get(this.#host.settings) > 0 &&
-						AIError.is(id, AIError.Flag.UsageLimit)
-					) {
-						this.#blockedFallbackError = errorMessage;
-					}
-				}
-				const fallback = await this.#tryRetryModelFallback(currentSelector, message, {
-					excludeProvider: longUsageLimitFallback ? currentModel.provider : undefined,
-					pinFallback: classifierRefusal,
-					preserveFailedTurn,
-					wrapAround: longUsageLimitFallback,
-					usageLimit: AIError.is(id, AIError.Flag.UsageLimit) || this.#primaryRetryWindow !== undefined,
-					compactToFit: cfgRetryCompactForFallback.get(this.#host.settings) && !preserveFailedTurn,
-				});
-				switchedModel = fallback.switched;
-				if (fallback.compactionRestore) {
-					const restore = fallback.compactionRestore;
-					const candidate = this.#host.model();
-					const activeFallback = this.#activeRetryFallback;
-					await this.dropPersistedAssistantTurn(message);
-					this.removeAssistantMessageFromActiveContext(message, "fallback-compaction");
-					try {
-						await this.#host.runAutoCompaction("overflow", false, {
-							autoContinue: false,
-							suppressContinuation: true,
-							phase: "pre_turn",
-							excludeMediaMethods: true,
-						});
-					} catch (error) {
-						logger.debug("Fallback compaction failed", { error: String(error) });
-					}
-					if (
-						this.#host.promptGeneration() !== generation ||
-						this.#host.isDisposed() ||
-						this.#host.abortInProgress() ||
-						this.#host.model() !== candidate ||
-						this.#activeRetryFallback !== activeFallback
-					) {
-						return this.#endCancelledRetry();
-					}
-					if (!candidate || !this.#host.contextFitsModel(candidate)) {
-						const previousEditMode = this.#host.resolveActiveEditMode();
-						await this.#host.setModelWithProviderSessionReset(restore.model);
-						this.#host.setThinkingLevel(restore.thinkingLevel);
-						this.#activeRetryFallback = restore.activeRetryFallback;
-						this.#fallbackRoutedFor = restore.fallbackRoutedFor;
-						this.#host.sessionManager.appendModelChange(
-							formatModelStringWithRouting(restore.model),
-							EPHEMERAL_MODEL_CHANGE_ROLE,
-							true,
-						);
-						await this.#host.syncAfterModelChange(previousEditMode);
-						this.#restoreFailedAssistantTurn(message);
-						await this.persistTerminalEmptyErrorTurn(message);
-						await this.#host.emitSessionEvent({
-							type: "auto_retry_end",
-							success: false,
-							attempt: this.#retryAttempt,
-							finalError: errorMessage,
-						});
-						this.#retryAttempt = 0;
-						this.#clearPendingRetryErrors();
-						this.resolveRetry();
-						return false;
-					}
-				}
-			}
-			// Auto fallback from a Fireworks Fast variant to its base model. Independent
-			// of the role-fallback setting: it's intrinsic to the Fast contract (speed
-			// best-effort, degrade to Standard on failure) and triggers on hard router
-			// errors the generic retry classifier would otherwise reject.
-			if (!switchedModel && !retryShortBusyOnSameModel && allowModelFallback && options?.fireworksFastFallback) {
-				switchedModel = await this.#tryFireworksFastFallback(currentSelector);
-			}
-			if (switchedModel) {
-				delayMs = 0;
-			} else if (retryShortBusyOnSameModel) {
+		if (!staleOpenAIResponsesReplayError && !switchedCredential) {
+			if (retryShortBusyOnSameModel) {
 				// Provider timing is authoritative even when shorter than our base backoff.
 				delayMs = parsedRetryAfterMs!;
 			} else if (usageLimitWaitMs === undefined && parsedRetryAfterMs && parsedRetryAfterMs > delayMs) {
@@ -2943,44 +1672,24 @@ export class TurnRecovery {
 			}
 		}
 
-		if (this.#blockedFallbackError === errorMessage && !switchedModel && !switchedCredential) {
+		if (retryBudgetExhausted && !switchedCredential) {
+			const attempt = this.#retryAttempt - 1;
+			message.errorMessage = `Retry budget exhausted after ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${errorMessage}`;
 			await this.persistTerminalEmptyErrorTurn(message);
+			const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
 			await this.#host.emitSessionEvent({
 				type: "auto_retry_end",
 				success: false,
-				attempt: this.#retryAttempt,
+				attempt,
 				finalError: errorMessage,
+				retryErrors,
 			});
-			this.#retryAttempt = 0;
 			this.#clearPendingRetryErrors();
-			this.resolveRetry();
+			this.#retryAttempt = 0;
+			this.resolveRetry(); // Resolve so waitForRetry() completes
 			return false;
 		}
-
-		if (retryBudgetExhausted) {
-			if (!switchedModel && !switchedCredential) {
-				const attempt = this.#retryAttempt - 1;
-				message.errorMessage = `Retry budget exhausted after ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${errorMessage}`;
-				await this.persistTerminalEmptyErrorTurn(message);
-				const retryErrors = await this.#markPendingRetryErrors({ status: "superseded" });
-				await this.#host.emitSessionEvent({
-					type: "auto_retry_end",
-					success: false,
-					attempt,
-					finalError: errorMessage,
-					retryErrors,
-				});
-				this.#clearPendingRetryErrors();
-				this.#retryAttempt = 0;
-				this.resolveRetry(); // Resolve so waitForRetry() completes
-				return false;
-			}
-			// A fallback model gets a fresh retry budget. Credential rotation
-			// instead keeps the cumulative attempt count while bypassing the
-			// same-route budget: every distinct account must be tried first.
-			if (switchedModel) this.#retryAttempt = 1;
-		}
-		if ((classifierRefusal || accountPolicyDenial) && !switchedCredential && !switchedModel) {
+		if ((classifierRefusal || accountPolicyDenial) && !switchedCredential) {
 			// A prior attempt in this saga already announced `auto_retry_start`
 			// (retryAttempt was incremented for each call to this method, so > 1
 			// means at least one earlier attempt started the loop) but this
@@ -3002,36 +1711,10 @@ export class TurnRecovery {
 			this.resolveRetry();
 			return false;
 		}
-		// A fallback switch was the whole reason we entered (Fast→base degrade or
-		// a hard-error chain consult) but it could not happen (e.g. no candidate
-		// has a credential). Don't fall through to backing-off and retrying the
-		// failing model for an error the generic classifier wouldn't retry —
-		// surface it instead.
-		if (
-			(options?.fireworksFastFallback || options?.hardErrorFallback) &&
-			!switchedModel &&
-			!this.isRetryableError(message)
-		) {
-			// Same auto_retry_end backstop as the classifier-refusal branch above.
-			if (this.#retryAttempt > 1) {
-				await this.persistTerminalEmptyErrorTurn(message);
-				await this.#host.emitSessionEvent({
-					type: "auto_retry_end",
-					success: false,
-					attempt: this.#retryAttempt - 1,
-					finalError: errorMessage,
-				});
-				this.#clearPendingRetryErrors();
-			}
-			this.#retryAttempt = 0;
-			this.resolveRetry();
-			return false;
-		}
-
 		// Fail-fast cap: if the provider asks us to wait longer than
-		// retry.maxDelayMs and we have no fallback credential or model to
-		// switch to, surface the error instead of sleeping. Defends against
-		// 3-hour Anthropic rate-limit windows that would otherwise leave a
+		// retry.maxDelayMs and no credential switch is available, surface the
+		// error instead of sleeping. Defends against 3-hour Anthropic rate-limit
+		// windows that would otherwise leave a
 		// subagent (or interactive session) silently hung. The original
 		// assistant error message is preserved in agent state so the caller
 		// can act on it.
@@ -3053,7 +1736,7 @@ export class TurnRecovery {
 			(parsedRetryAfterMs !== undefined || recordedUsageLimitOutcome.reportResetAtMs !== undefined) &&
 			effectiveUsageLimitWaitMs !== undefined &&
 			delayMs <= effectiveUsageLimitWaitMs;
-		if (maxDelayMs > 0 && delayMs > maxDelayMs && !switchedCredential && !switchedModel && !waitForUsageReset) {
+		if (maxDelayMs > 0 && delayMs > maxDelayMs && !switchedCredential && !waitForUsageReset) {
 			await this.persistTerminalEmptyErrorTurn(message);
 			const attempt = this.#retryAttempt;
 			this.#retryAttempt = 0;
@@ -3068,7 +1751,7 @@ export class TurnRecovery {
 			return false;
 		}
 
-		await this.#recordPendingRetryError(message, id, { switchedCredential, switchedModel, delayMs });
+		await this.#recordPendingRetryError(message, id, { switchedCredential, delayMs });
 
 		await this.#host.emitSessionEvent({
 			type: "auto_retry_start",

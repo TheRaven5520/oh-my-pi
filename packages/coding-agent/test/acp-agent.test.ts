@@ -14,11 +14,7 @@ import {
 	createAcpExtensionUiContext,
 } from "@oh-my-pi/pi-coding-agent/modes/acp/acp-agent";
 import type { PlanModeState } from "@oh-my-pi/pi-coding-agent/plan-mode/state";
-import type {
-	AgentSession,
-	AgentSessionEvent,
-	UsageFallbackConfirmation,
-} from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { resetSessionIndexForTests } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -145,7 +141,6 @@ class FakeAgentSession {
 	waitForIdleCalls = 0;
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
 	asyncJobDrain: ((options?: { timeoutMs?: number }) => Promise<boolean>) | undefined;
-	usageFallbackConfirmer: ((confirmation: UsageFallbackConfirmation) => Promise<boolean>) | undefined;
 	retryResult = false;
 	retryCalls = 0;
 	#listeners = new Set<(event: AgentSessionEvent) => void>();
@@ -202,11 +197,6 @@ class FakeAgentSession {
 
 	setSlashCommands(_commands: unknown[]): void {
 		// no-op for tests
-	}
-	setUsageFallbackConfirmer(
-		confirmer: ((confirmation: UsageFallbackConfirmation) => Promise<boolean>) | undefined,
-	): void {
-		this.usageFallbackConfirmer = confirmer;
 	}
 
 	async setModel(model: Model): Promise<void> {
@@ -1132,7 +1122,7 @@ describe("ACP agent", () => {
 	});
 
 	it("pushes config_option_update when the model changes internally", async () => {
-		// Internal callers (prewalk hand-offs, retry-fallback, model cycling)
+		// Internal callers (prewalk hand-offs, model cycling)
 		// change AgentSession's model directly without going through the ACP
 		// setSessionConfigOption surface. Once the session-lifetime subscription
 		// is installed, those changes must surface to clients as

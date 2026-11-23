@@ -56,14 +56,12 @@ function source(roles: Record<string, string>, mru: string[]): ModelHubSource {
 		mruOrder: mru,
 		modelPerf: new Map(),
 		getRoleInfo: role => ({ tag: role, name: `${role} role`, section: "chat", accepts: () => true }),
-		defaultRoleChain: () => [],
 		resolveRoleValue: (value, models) => ({
 			model: models.find(candidate => `${candidate.provider}/${candidate.id}` === value),
 			explicitThinkingLevel: false,
 		}),
 		getModelRole: role => roles[role],
 		disabledProviders: [],
-		fallbackChains: { default: ["openai/gpt-5.6"] },
 		modelRoleStorage: "global",
 		cycleOrder: [],
 		getProjectModelRole: () => undefined,
@@ -267,16 +265,12 @@ test("pointer events drive the hub through the same paths as its keys", () => {
 	expect(p.order?.filter(entry => typeof entry === "string")).toEqual(["openai/gpt-5.6", "openai/gpt-5.6-mini"]);
 	expect(p.actions?.map(action => action.id)).toContain("refresh");
 
-	// Roles scope: roles with their fallback chain one level deep.
+	// Roles scope: the configured roles plus the "New role…" row.
 	act("scope", "roles");
 	p = props(hub.describe(withPicker));
-	expect(p.items?.find(entry => entry.id === "fallback:default:0")).toMatchObject({
-		label: "openai/gpt-5.6",
-		depth: 1,
-	});
 	expect(p.items?.find(entry => entry.id === "role:default")?.facts).toEqual({ model: "demo/demo", thinking: "off" });
-	expect(groups(p)).toContain("Model fallback chains");
-	// The head's total counts the rows Tern counts as shown (fallbacks, chains, "New …" rows), so All reads no "N of M".
+	expect(groups(p)).not.toContain("Model fallback chains");
+	// The head's total counts the rows Tern counts as shown (roles and the "New role…" row), so All reads no "N of M".
 	expect(p.total).toBe(p.order?.filter(entry => typeof entry === "string").length);
 
 	// Esc ladder: close leaves the hub only when nothing else is open.

@@ -4,7 +4,6 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgThemeDark } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
-import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "../helpers/settings-test-state";
@@ -43,12 +42,11 @@ describe("Settings no-op saves", () => {
 		return { text: fs.readFileSync(configPath(), "utf8"), mtimeMs: fs.statSync(configPath()).mtimeMs };
 	}
 
-	it("re-setting persisted values, entries, and model roles leaves config.yml untouched", async () => {
+	it("re-setting persisted values and model roles leaves config.yml untouched", async () => {
 		await Bun.write(
 			configPath(),
 			YAML.stringify({
 				theme: { dark: "titanium" },
-				retry: { fallbackChains: { slow: ["user/slow"] } },
 				modelRoles: { default: "openai/gpt-5" },
 			}),
 		);
@@ -56,7 +54,6 @@ describe("Settings no-op saves", () => {
 		const before = snapshotConfig();
 
 		cfgThemeDark.set(settings, "titanium");
-		cfgRetryFallbackChains.setEntry(settings, "slow", ["user/slow"]);
 		settings.setModelRole("default", "openai/gpt-5");
 		settings.setModelRole("absent-role", undefined);
 		await settings.flush();

@@ -39,10 +39,10 @@ describe("Factory Droid anthropic wire (Claude)", () => {
 		expect(captured[0].headers["x-api-key"]).toBe("placeholder");
 	});
 
-	it("withholds refusal fallbacks on vertex/bedrock rotations, which gate the beta themselves", async () => {
+	it("never requests a cross-model refusal fallback chain", async () => {
 		const captured: CapturedRequest[] = [];
 		const model = factoryModel("claude-fable-5");
-		model.factoryDroidApiProviders = ["vertex_anthropic"];
+		model.factoryDroidApiProviders = ["anthropic"];
 		await streamFactoryDroid(
 			model,
 			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
@@ -54,7 +54,7 @@ describe("Factory Droid anthropic wire (Claude)", () => {
 		).result();
 
 		const request = captured[0]!;
-		expect(request.headers["x-api-provider"]).toBe("vertex_anthropic");
+		expect(request.headers["x-api-provider"]).toBe("anthropic");
 		expect(request.body.fallbacks).toBeUndefined();
 		expect(request.headers["anthropic-beta"] ?? "").not.toContain("server-side-fallback-2026-06-01");
 		expect(request.headers["anthropic-beta"] ?? "").not.toContain("fallback-credit-2026-06-01");

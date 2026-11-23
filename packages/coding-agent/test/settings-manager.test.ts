@@ -39,14 +39,13 @@ import {
 	cfgProvidersMaxInFlightRequests,
 	cfgPowerSleepPrevention,
 	cfgFeaturesUnexpectedStopDetection,
-	cfgRetryFallbackChains,
 	cfgProviderAppendOnlyContext,
 	cfgCodeModeInputs,
 	cfgDefaultThinkingLevel,
 	cfgInlineToolDescriptors,
 	cfgProvidersOpenaiCodexCodeMode,
 	cfgProvidersOpenaiCodexCodeModeDirectTools,
-	cfgRetryModelFallback,
+	cfgRetryEnabled,
 } from "@oh-my-pi/pi-coding-agent/session/settings";
 import {
 	cfgToolsXdev,
@@ -1156,7 +1155,7 @@ describe("Settings", () => {
 		it("refreshes native project settings without changing overlay or runtime precedence", async () => {
 			await writeSettings({
 				task: { enableEffort: true, maxConcurrency: 2 },
-				retry: { modelFallback: true },
+				retry: { enabled: true },
 			});
 			const overlayPath = tempDir.join("reload-overlay.yml");
 			await Bun.write(overlayPath, YAML.stringify({ task: { enableEffort: false } }, null, 2));
@@ -1180,7 +1179,7 @@ describe("Settings", () => {
 							enableEffort: true,
 							maxConcurrency: 3,
 						},
-						retry: { modelFallback: false },
+						retry: { enabled: false },
 					},
 					null,
 					2,
@@ -1191,7 +1190,7 @@ describe("Settings", () => {
 			expect(cfgTaskAgentModelOverrides.get(settings)).toEqual({
 				task: "xai-oauth/grok-4.6:medium",
 			});
-			expect(cfgRetryModelFallback.get(settings)).toBe(false);
+			expect(cfgRetryEnabled.get(settings)).toBe(false);
 			expect(cfgTaskEnableEffort.get(settings)).toBe(false);
 			expect(cfgTaskMaxConcurrency.get(settings)).toBe(7);
 
@@ -1204,7 +1203,7 @@ describe("Settings", () => {
 							enableEffort: true,
 							maxConcurrency: 4,
 						},
-						retry: { modelFallback: true },
+						retry: { enabled: true },
 					},
 					null,
 					2,
@@ -1213,7 +1212,7 @@ describe("Settings", () => {
 			await settings.reloadFromDisk();
 
 			expect(cfgTaskAgentModelOverrides.get(settings)).toEqual({ task: "openai/gpt-4o" });
-			expect(cfgRetryModelFallback.get(settings)).toBe(true);
+			expect(cfgRetryEnabled.get(settings)).toBe(true);
 			expect(cfgTaskEnableEffort.get(settings)).toBe(false);
 			expect(cfgTaskMaxConcurrency.get(settings)).toBe(7);
 
@@ -1224,13 +1223,13 @@ describe("Settings", () => {
 			await settings.reloadFromDisk();
 
 			expect(cfgTaskAgentModelOverrides.get(settings)).toEqual({});
-			expect(cfgRetryModelFallback.get(settings)).toBe(true);
+			expect(cfgRetryEnabled.get(settings)).toBe(true);
 
 			await fsp.rm(projectConfigPath);
 			await settings.reloadFromDisk();
 
 			expect(cfgTaskAgentModelOverrides.get(settings)).toEqual({});
-			expect(cfgRetryModelFallback.get(settings)).toBe(true);
+			expect(cfgRetryEnabled.get(settings)).toBe(true);
 			expect(cfgTaskEnableEffort.get(settings)).toBe(false);
 			expect(cfgTaskMaxConcurrency.get(settings)).toBe(7);
 		});
@@ -1377,14 +1376,11 @@ describe("Settings", () => {
 		});
 
 		it("treats a config key written without a value as unset", async () => {
-			// YAML parses a valueless key as null. `get()` returned it verbatim, so
-			// `resolveRoleChain` crashed the process at startup on
-			// `settings.get("retry.fallbackChains")[role]` (#13183).
-			await Bun.write(getConfigPath(), "retry:\n  fallbackChains:\ninlineToolDescriptors:\n");
+			await Bun.write(getConfigPath(), "modelRoles:\ninlineToolDescriptors:\n");
 
 			const settings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
 
-			expect(cfgRetryFallbackChains.get(settings)).toEqual({});
+			expect(cfgModelRoles.get(settings)).toEqual({});
 			expect(cfgInlineToolDescriptors.get(settings)).toBe("auto");
 		});
 
@@ -1891,142 +1887,63 @@ describe("Settings", () => {
 			path: string,
 			value: unknown,
 			expectedRoles: Record<string, string>,
-			expectedChains: Record<string, string[]>,
 		];
 
-		const webExaCandidates = ["web/exa", ...MODEL_PRIO.web.filter(selector => selector !== "web/exa")];
-		const webOrderedHead = [
-			"google-gemini-cli/gemini-2.5-flash",
-			"google-antigravity/gemini-2.5-flash",
-			"google/gemini-2.5-flash",
-			"anthropic/claude-haiku-4-5",
-			"openai-codex/gpt-5.6-luna",
-			"xai/grok-4.5",
-			"web/exa",
-			"web/tavily",
-		];
-		const webOrderedCandidates = [
-			...webOrderedHead,
-			...MODEL_PRIO.web.filter(selector => !webOrderedHead.includes(selector)),
-		];
-		const webExcludedCandidates = MODEL_PRIO.web.filter(selector => selector !== "web/public");
-		const imageOrderedHead = [
-			"openai/gpt-image-2",
-			"openai-codex/gpt-image-2",
-			"google-antigravity/gemini-3-pro-image",
-			"xai/grok-imagine-image",
-			"openrouter/google/gemini-3-pro-image",
-			"google/gemini-3-pro-image",
-			"deepinfra/black-forest-labs/FLUX-2-pro",
-		];
-		const imageOrderedCandidates = [
-			...imageOrderedHead,
-			...MODEL_PRIO.image.filter(selector => !imageOrderedHead.includes(selector)),
-		];
-		const imageXaiCandidates = [
-			"xai/grok-imagine-image",
-			...MODEL_PRIO.image.filter(selector => selector !== "xai/grok-imagine-image"),
-		];
 		const cases: LegacyMigrationCase[] = [
 			[
 				"web search order",
 				"providers.webSearchOrder",
 				["gemini", "anthropic", "codex", "xai", "exa", "tavily"],
-				{ web: webOrderedCandidates[0] },
-				{ web: webOrderedCandidates.slice(1) },
+				{ web: "google-gemini-cli/gemini-2.5-flash" },
 			],
 			[
 				"web search exclusions",
 				"providers.webSearchExclude",
 				["xai", "public"],
-				{ web: webExcludedCandidates[0] },
-				{ web: webExcludedCandidates.slice(1) },
+				{ web: MODEL_PRIO.web.find(selector => selector !== "web/public")! },
 			],
-			["Gemini web model override", "providers.webSearchGeminiModel", "gemini-custom", {}, {}],
+			["Gemini web model override", "providers.webSearchGeminiModel", "gemini-custom", {}],
 			[
 				"image order",
 				"providers.imageOrder",
 				["openai", "openai-codex", "antigravity", "xai", "openrouter", "gemini", "deepinfra"],
-				{ image: imageOrderedCandidates[0] },
-				{ image: imageOrderedCandidates.slice(1) },
+				{ image: "openai/gpt-image-2" },
 			],
-			["local speech provider", "providers.tts", "local", { speech: "local/kokoro" }, { speech: [] }],
-			["xAI speech provider", "providers.tts", "xai", { speech: "xai/grok-tts" }, { speech: [] }],
-			[
-				"DeepInfra speech provider",
-				"providers.tts",
-				"deepinfra",
-				{ speech: "deepinfra/hexgrad/Kokoro-82M" },
-				{ speech: [] },
-			],
-			[
-				"judgment provider",
-				"providers.judgmentProvider",
-				"llm",
-				{ judge: "@tiny" },
-				{ judge: ["@smol", "@default"] },
-			],
-			[
-				"auto-thinking model",
-				"providers.autoThinkingModel",
-				"qwen3-1.7b",
-				{ judge: "typesafe/jev-latest" },
-				{ judge: ["local/qwen3-1.7b", "@tiny", "@smol", "@default"] },
-			],
-			[
-				"unexpected-stop model",
-				"providers.unexpectedStopModel",
-				"gemma-3-1b",
-				{ judge: "typesafe/jev-latest" },
-				{ judge: ["local/gemma-3-1b", "@tiny", "@smol", "@default"] },
-			],
-			["tiny model", "providers.tinyModel", "lfm2.5-230m", { tiny: "local/lfm2.5-230m" }, {}],
-			["memory model", "providers.memoryModel", "lfm2-1.2b", { memory: "local/lfm2-1.2b" }, {}],
-			["local speech model", "tts.localModel", "kokoro", {}, {}],
-			["fast dictation model", "stt.modelName", "fast", { dictation: "local/whisper-base" }, {}],
-			["balanced dictation model", "stt.modelName", "balanced", { dictation: "local/whisper-small" }, {}],
-			["turbo dictation model", "stt.modelName", "turbo", { dictation: "local/whisper-large-v3-turbo" }, {}],
-			[
-				"older web search preference",
-				"providers.webSearch",
-				"exa",
-				{ web: webExaCandidates[0] },
-				{ web: webExaCandidates.slice(1) },
-			],
-			[
-				"older image preference",
-				"providers.image",
-				"xai",
-				{ image: imageXaiCandidates[0] },
-				{ image: imageXaiCandidates.slice(1) },
-			],
+			["local speech provider", "providers.tts", "local", { speech: "local/kokoro" }],
+			["xAI speech provider", "providers.tts", "xai", { speech: "xai/grok-tts" }],
+			["DeepInfra speech provider", "providers.tts", "deepinfra", { speech: "deepinfra/hexgrad/Kokoro-82M" }],
+			["judgment provider", "providers.judgmentProvider", "llm", { judge: "@tiny" }],
+			["auto-thinking model", "providers.autoThinkingModel", "qwen3-1.7b", { judge: "typesafe/jev-latest" }],
+			["unexpected-stop model", "providers.unexpectedStopModel", "gemma-3-1b", { judge: "typesafe/jev-latest" }],
+			["tiny model", "providers.tinyModel", "lfm2.5-230m", { tiny: "local/lfm2.5-230m" }],
+			["memory model", "providers.memoryModel", "lfm2-1.2b", { memory: "local/lfm2-1.2b" }],
+			["local speech model", "tts.localModel", "kokoro", {}],
+			["fast dictation model", "stt.modelName", "fast", { dictation: "local/whisper-base" }],
+			["balanced dictation model", "stt.modelName", "balanced", { dictation: "local/whisper-small" }],
+			["turbo dictation model", "stt.modelName", "turbo", { dictation: "local/whisper-large-v3-turbo" }],
+			["older web search preference", "providers.webSearch", "exa", { web: "web/exa" }],
+			["older image preference", "providers.image", "xai", { image: "xai/grok-imagine-image" }],
 		];
 
-		it.each(cases)(
-			"migrates nested and flat %s settings",
-			async (_name, legacyPath, value, expectedRoles, expectedChains) => {
-				const [root, key] = legacyPath.split(".");
-				for (const input of [{ [root]: { [key]: value } }, { [legacyPath]: value }]) {
-					await writeSettings(input);
-					const settings = await Settings.init({ cwd: projectDir, agentDir });
+		it.each(cases)("migrates nested and flat %s settings", async (_name, legacyPath, value, expectedRoles) => {
+			const [root, key] = legacyPath.split(".");
+			for (const input of [{ [root]: { [key]: value } }, { [legacyPath]: value }]) {
+				await writeSettings(input);
+				const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-					expect(cfgModelRoles.get(settings)).toEqual(expectedRoles);
-					expect(cfgRetryFallbackChains.get(settings)).toEqual(expectedChains);
+				expect(cfgModelRoles.get(settings)).toEqual(expectedRoles);
 
-					cfgDisplayShowTokenUsage.set(settings, true);
-					await settings.flush();
-					const saved = await readSettings();
-					expect(saved.modelRoles ?? {}).toEqual(expectedRoles);
-					expect((saved.retry as Record<string, unknown> | undefined)?.fallbackChains ?? {}).toEqual(
-						expectedChains,
-					);
-					expect(Object.hasOwn(saved, legacyPath)).toBe(false);
-					expect(Object.hasOwn((saved[root] as Record<string, unknown> | undefined) ?? {}, key)).toBe(false);
-				}
-			},
-		);
+				cfgDisplayShowTokenUsage.set(settings, true);
+				await settings.flush();
+				const saved = await readSettings();
+				expect(saved.modelRoles ?? {}).toEqual(expectedRoles);
+				expect(saved.retry).toBeUndefined();
+				expect(Object.hasOwn(saved, legacyPath)).toBe(false);
+				expect(Object.hasOwn((saved[root] as Record<string, unknown> | undefined) ?? {}, key)).toBe(false);
+			}
+		});
 
-		it("keeps a legacy Gemini wire tier ahead of non-Gemini fallbacks", async () => {
+		it("keeps the legacy Gemini model selection", async () => {
 			await writeSettings({
 				providers: {
 					webSearch: "gemini",
@@ -2036,11 +1953,7 @@ describe("Settings", () => {
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect([settings.getModelRole("web"), ...cfgRetryFallbackChains.get(settings).web.slice(0, 2)]).toEqual([
-				"google-gemini-cli/gemini-3.8-flash-high",
-				"google-antigravity/gemini-3.8-flash-high",
-				"google/gemini-3.8-flash-high",
-			]);
+			expect(settings.getModelRole("web")).toBe("google-gemini-cli/gemini-3.8-flash-high");
 		});
 
 		it("drops legacy defaults without materializing kind roles", async () => {
@@ -2065,7 +1978,6 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
 			expect(cfgModelRoles.get(settings)).toEqual({});
-			expect(cfgRetryFallbackChains.get(settings)).toEqual({});
 			cfgDisplayShowTokenUsage.set(settings, true);
 			await settings.flush();
 			const saved = await readSettings();
@@ -2083,11 +1995,10 @@ describe("Settings", () => {
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(settings.getModelRole("web")).toBe(webExaCandidates[0]);
-			expect(cfgRetryFallbackChains.get(settings).web).toEqual(webExaCandidates.slice(1));
+			expect(settings.getModelRole("web")).toBe("web/exa");
 		});
 
-		it("preserves explicit roles and empty chains while prepending local tiny and memory models", async () => {
+		it("preserves explicit roles when migrating legacy settings", async () => {
 			await writeSettings({
 				modelRoles: {
 					web: "custom/web",
@@ -2097,9 +2008,6 @@ describe("Settings", () => {
 					judge: "custom/judge",
 					tiny: "custom/tiny,@smol",
 					memory: "custom/memory",
-				},
-				retry: {
-					fallbackChains: { web: [], image: [], speech: [], dictation: [], judge: [] },
 				},
 				providers: {
 					webSearchOrder: ["exa"],
@@ -2122,15 +2030,8 @@ describe("Settings", () => {
 				speech: "custom/speech",
 				dictation: "custom/dictation",
 				judge: "custom/judge",
-				tiny: "local/lfm2.5-230m,custom/tiny,@smol",
-				memory: "local/lfm2-1.2b,custom/memory",
-			});
-			expect(cfgRetryFallbackChains.get(settings)).toEqual({
-				web: [],
-				image: [],
-				speech: [],
-				dictation: [],
-				judge: [],
+				tiny: "custom/tiny,@smol",
+				memory: "custom/memory",
 			});
 		});
 	});

@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { type Api, type FetchImpl, type Model } from "@oh-my-pi/pi-ai";
+import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { modelKind } from "@oh-my-pi/pi-catalog/types";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -119,7 +120,6 @@ describe("imageGenTool catalog routing", () => {
 		};
 		const settings = Settings.isolated({
 			modelRoles: { image: "deepinfra/configured-image" },
-			"retry.fallbackChains": { image: ["openrouter/requested-image"] },
 		});
 		const ctx = createContext({ models: [configured, requested], settings, fetch: fetchMock });
 
@@ -135,7 +135,7 @@ describe("imageGenTool catalog routing", () => {
 		expect(result.details?.model).toBe("requested-image");
 	});
 
-	it("tries the session model's same-provider image swap before the default image chain", async () => {
+	it("prefers the session model's same-provider image swap over the built-in default", async () => {
 		const openai = catalogModel("openai", "gpt-image-2", "openai-responses");
 		const xai = catalogModel("xai", "grok-imagine-image", "openai-images");
 		const active = catalogModel("xai", "grok-4.5", "openai-responses", "chat");
@@ -159,9 +159,9 @@ describe("imageGenTool catalog routing", () => {
 		expect(result.details?.provider).toBe("xai");
 	});
 
-	it("skips a candidate whose configured authentication is unavailable", async () => {
+	it("rejects when the configured model's authentication is unavailable", async () => {
 		const unavailable = catalogModel("deepinfra", "first-image", "openai-images");
-		const fallback = catalogModel("openrouter", "fallback-image", "openrouter-images");
+		const other = catalogModel("openrouter", "other-image", "openrouter-images");
 		const urls: string[] = [];
 		const fetchMock: FetchImpl = async input => {
 			urls.push(input.toString());
@@ -169,75 +169,64 @@ describe("imageGenTool catalog routing", () => {
 		};
 		const settings = Settings.isolated({
 			modelRoles: { image: "deepinfra/first-image" },
-			"retry.fallbackChains": { image: ["openrouter/fallback-image"] },
 		});
 		const ctx = createContext({
-			models: [unavailable, fallback],
+			models: [unavailable, other],
 			settings,
 			fetch: fetchMock,
 			credentials: { deepinfra: undefined },
 		});
 
-		const result = await imageGenTool.execute("auth-skip", { subject: "fallback" }, undefined, ctx);
-		collectPaths(result);
-
-		expect(urls).toEqual(["https://openrouter.example/v1/images"]);
-		expect(result.details?.model).toBe("fallback-image");
+		await expect(imageGenTool.execute("auth-missing", { subject: "no auth" }, undefined, ctx)).rejects.toThrow(
+			"deepinfra/first-image has no credentials available",
+		);
+		expect(urls).toEqual([]);
 	});
 
-	it("skips unsupported image APIs and continues the resolved chain", async () => {
+	it("rejects an unsupported image API without trying another model", async () => {
 		const unsupported = catalogModel("custom", "unsupported-image", "openai-completions");
-		const fallback = catalogModel("openrouter", "fallback-image", "openrouter-images");
+		const other = catalogModel("openrouter", "other-image", "openrouter-images");
 		const settings = Settings.isolated({
 			modelRoles: { image: "custom/unsupported-image" },
-			"retry.fallbackChains": { image: ["openrouter/fallback-image"] },
 		});
 		const urls: string[] = [];
 		const fetchMock: FetchImpl = async input => {
 			urls.push(input.toString());
 			return imageResponse();
 		};
-		const ctx = createContext({ models: [unsupported, fallback], settings, fetch: fetchMock });
+		const ctx = createContext({ models: [unsupported, other], settings, fetch: fetchMock });
 
-		const result = await imageGenTool.execute("unsupported", { subject: "fallback" }, undefined, ctx);
-		collectPaths(result);
-
-		expect(urls).toEqual(["https://openrouter.example/v1/images"]);
-		expect(result.details?.model).toBe("fallback-image");
+		await expect(imageGenTool.execute("unsupported", { subject: "unsupported" }, undefined, ctx)).rejects.toThrow(
+			"unsupported API",
+		);
+		expect(urls).toEqual([]);
 	});
 
-	it("advances after provider HTTP failures and aggregates an exhausted chain", async () => {
+	it("surfaces a provider HTTP failure without trying another model", async () => {
 		const first = catalogModel("deepinfra", "first-image", "openai-images");
 		const second = catalogModel("openrouter", "second-image", "openrouter-images");
 		const settings = Settings.isolated({
 			modelRoles: { image: "deepinfra/first-image" },
-			"retry.fallbackChains": { image: ["openrouter/second-image"] },
 		});
-		let calls = 0;
-		const succeedingFetch: FetchImpl = async () => {
-			calls++;
-			if (calls === 1) return new Response(JSON.stringify({ error: { message: "first failed" } }), { status: 503 });
-			return imageResponse();
+		const urls: string[] = [];
+		const failingFetch: FetchImpl = async input => {
+			urls.push(input.toString());
+			return new Response(JSON.stringify({ error: { message: "first failed" } }), { status: 503 });
 		};
-		const successContext = createContext({ models: [first, second], settings, fetch: succeedingFetch });
-		const result = await imageGenTool.execute("http-fallback", { subject: "fallback" }, undefined, successContext);
-		collectPaths(result);
-		expect(result.details?.model).toBe("second-image");
+		const ctx = createContext({ models: [first, second], settings, fetch: failingFetch });
 
-		const failingFetch: FetchImpl = async () =>
-			new Response(JSON.stringify({ error: { message: "failed" } }), { status: 503 });
-		const failingContext = createContext({ models: [first, second], settings, fetch: failingFetch });
-		await expect(
-			imageGenTool.execute("aggregate", { subject: "fails" }, undefined, failingContext),
-		).rejects.toBeInstanceOf(AggregateError);
+		await expect(imageGenTool.execute("http-failure", { subject: "fails" }, undefined, ctx)).rejects.toBeInstanceOf(
+			ProviderHttpError,
+		);
+		expect(urls).toHaveLength(1);
+		expect(urls[0]).not.toContain("openrouter");
 	});
 
-	it("propagates transport I/O failures without trying the next model", async () => {
+	it("propagates transport I/O failures without trying another model", async () => {
 		const first = catalogModel("deepinfra", "first-image", "openai-images");
 		const second = catalogModel("openrouter", "second-image", "openrouter-images");
 		const settings = Settings.isolated({
 			modelRoles: { image: "deepinfra/first-image" },
-			"retry.fallbackChains": { image: ["openrouter/second-image"] },
 		});
 		let calls = 0;
 		const fetchMock: FetchImpl = async () => {

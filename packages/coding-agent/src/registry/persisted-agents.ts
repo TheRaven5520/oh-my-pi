@@ -151,7 +151,7 @@ async function readPersistedAgentHistory(
 ): Promise<AgentHistorySummary> {
 	const parents = new Map<string, string | undefined>();
 	const assistantById = new Map<string, AssistantMetrics>();
-	const modelChangeById = new Map<string, { model: string; role?: string; resolvedModelIsFallback: boolean }>();
+	const modelChangeById = new Map<string, { model: string; role?: string }>();
 	let leafId: string | undefined;
 	let leafTimestamp: number | undefined;
 	try {
@@ -171,7 +171,6 @@ async function readPersistedAgentHistory(
 					modelChangeById.set(id, {
 						model: record.model,
 						role: typeof record.role === "string" ? record.role : undefined,
-						resolvedModelIsFallback: record.resolvedModelIsFallback === true,
 					});
 					return;
 				}
@@ -214,14 +213,13 @@ async function readPersistedAgentHistory(
 	};
 	// Attribution walks leaf → root and stops at the newest turn that actually
 	// produced output: that model did this run's work. A `model_change` newer
-	// than it was never served (a fallback the session died on), so crediting the
-	// run to it would report work the previous model did.
+	// than it was never served, so crediting the run to it would report work the
+	// previous model did.
 	let resolvedModel: string | undefined;
-	let resolvedModelIsFallback: boolean | undefined;
 	let modelRole: string | undefined;
 	let contextTokens: number | undefined;
 	let servedModel: string | undefined;
-	let latestModelChange: { model: string; resolvedModelIsFallback: boolean } | undefined;
+	let latestModelChange: { model: string } | undefined;
 	const visited = new Set<string>();
 	for (let id = leafId; id && !visited.has(id); id = parents.get(id)) {
 		visited.add(id);
@@ -231,17 +229,15 @@ async function readPersistedAgentHistory(
 			if (modelChange.role && modelChange.role !== EPHEMERAL_MODEL_CHANGE_ROLE) {
 				modelRole ??= modelChange.role;
 			}
-			// The transition that installed the serving model: it carries the
-			// fallback flag the raw message lacks. Every writer records the selector
-			// through `formatModelStringWithRouting`, which appends an `@upstream`
-			// gateway route the message's bare `provider/model` never has.
+			// The transition that installed the serving model: every writer records
+			// the selector through `formatModelStringWithRouting`, which appends an
+			// `@upstream` gateway route the message's bare `provider/model` never has.
 			if (
 				servedModel !== undefined &&
 				resolvedModel === undefined &&
 				(modelChange.model === servedModel || modelChange.model.startsWith(`${servedModel}@`))
 			) {
 				resolvedModel = modelChange.model;
-				resolvedModelIsFallback = modelChange.resolvedModelIsFallback;
 			}
 		}
 		const assistant = assistantById.get(id);
@@ -261,12 +257,11 @@ async function readPersistedAgentHistory(
 	// transition to report.
 	if (resolvedModel === undefined) {
 		resolvedModel = servedModel ?? latestModelChange?.model;
-		resolvedModelIsFallback = servedModel !== undefined ? false : latestModelChange?.resolvedModelIsFallback;
 	}
 	if (contextTokens !== undefined) metrics.contextTokens = contextTokens;
 	return {
 		...(metrics.requests > 0 ? { metrics } : {}),
-		...(resolvedModel ? { resolvedModel, resolvedModelIsFallback } : {}),
+		...(resolvedModel ? { resolvedModel } : {}),
 		...(modelRole ? { modelRole } : {}),
 	};
 }
@@ -328,9 +323,6 @@ async function readPersistedAgentMetadata(
 					if (typeof record.model === "string") history.resolvedModel = record.model;
 					if (typeof record.role === "string" && record.role !== EPHEMERAL_MODEL_CHANGE_ROLE) {
 						history.modelRole = record.role;
-					}
-					if (typeof record.resolvedModelIsFallback === "boolean") {
-						history.resolvedModelIsFallback = record.resolvedModelIsFallback;
 					}
 					return;
 				}

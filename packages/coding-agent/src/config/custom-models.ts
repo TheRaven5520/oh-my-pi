@@ -1,6 +1,6 @@
 import type { Api, Model, ModelSpec, RemoteCompactionConfig } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { getVariantAliasSources, resolveVariantSelector } from "@oh-my-pi/pi-catalog/compat/collapse";
+import { getVariantAliasSources } from "@oh-my-pi/pi-catalog/compat/collapse";
 import {
 	getBundledModelReferenceIndex,
 	inheritReferenceThinking,
@@ -9,7 +9,6 @@ import {
 import { logger } from "@oh-my-pi/pi-utils";
 import { type ConfigHeaderResolver, type ConfigHeaderSource, createConfigHeaderResolver } from "./resolve-config-value";
 import { type ModelPatch, mergeCompat, mergeRemoteCompactionConfig } from "./model-patch";
-import { parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import type { ModelOverride, ProviderAuthMode } from "./models-config-schema";
 export interface CustomModelDefinitionLike extends ModelPatch {
 	id: string;
@@ -97,7 +96,6 @@ export function buildCustomModelOverlay(
 		preferWebsockets: modelDef.preferWebsockets,
 		resolveHeaders: mergeCustomModelHeaders(providerHeaders, modelDef.headers, authHeader, providerApiKey),
 		compat: mergeCompat(providerCompat, modelDef.compat),
-		contextPromotionTarget: modelDef.contextPromotionTarget,
 		compactionModel: modelDef.compactionModel,
 		remoteCompaction: mergeRemoteCompactionConfig(providerRemoteCompaction, modelDef.remoteCompaction),
 		premiumMultiplier: modelDef.premiumMultiplier,
@@ -145,7 +143,6 @@ export function finalizeCustomModel(model: CustomModelOverlay, options: CustomMo
 		preferWebsockets: resolvedModel.preferWebsockets,
 		compat: mergeCompat(reference?.compatConfig, resolvedModel.compat),
 		tokenizer: resolvedModel.tokenizer,
-		contextPromotionTarget: resolvedModel.contextPromotionTarget,
 		compactionModel: resolvedModel.compactionModel,
 		remoteCompaction: resolvedModel.remoteCompaction,
 		premiumMultiplier: resolvedModel.premiumMultiplier,
@@ -158,24 +155,6 @@ export function finalizeCustomModel(model: CustomModelOverlay, options: CustomMo
 		delete built.cost.timeBased;
 	}
 	return built;
-}
-
-export function normalizeSuppressedSelector(
-	selector: string,
-	hasLiveModel?: (provider: string, id: string) => boolean,
-): string {
-	const trimmed = selector.trim();
-	if (!trimmed) return trimmed;
-	const parsed = parseModelString(trimmed, {
-		allowMaxSuffix: true,
-		allowAutoAlias: true,
-		isLiteralModelId: (provider, id) => hasLiveModel?.(provider, id) === true,
-	});
-	if (!parsed) return trimmed;
-	// Retired effort-tier variant ids normalize to their collapsed logical id
-	// so persisted suppressions keyed by raw member ids still bind.
-	const aliasId = resolveVariantSelector(parsed.provider, parsed.id);
-	return `${parsed.provider}/${aliasId ?? parsed.id}`;
 }
 
 /**

@@ -1327,9 +1327,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						progress.resolvedModelIdentity = nextProgress.resolvedModelIdentity;
 						progress.resolvedThinkingLevel = nextProgress.resolvedThinkingLevel;
 						progress.resolvedServiceTier = nextProgress.resolvedServiceTier;
-						progress.resolvedModelIsFallback = nextProgress.resolvedModel
-							? nextProgress.resolvedModelIsFallback
-							: undefined;
 						progress.advisor = nextProgress.advisor ?? progress.advisor;
 						progress.completionPercent = nextProgress.completionPercent ?? progress.completionPercent;
 						progress.resolvedModelRoute = nextProgress.resolvedModelRoute ?? progress.resolvedModelRoute;
@@ -1426,12 +1423,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						progress.resolvedModel = singleResult.resolvedModel;
 						progress.resolvedModelIdentity = singleResult.resolvedModelIdentity;
 						progress.resolvedThinkingLevel = singleResult.resolvedThinkingLevel;
-						progress.resolvedModelIsFallback = singleResult.resolvedModelIsFallback;
 					} else {
 						delete progress.resolvedModel;
 						delete progress.resolvedModelIdentity;
 						delete progress.resolvedThinkingLevel;
-						delete progress.resolvedModelIsFallback;
 					}
 					onSettled?.(resultFailed);
 					const statusText = resultFailed

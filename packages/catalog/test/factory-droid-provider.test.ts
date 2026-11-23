@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { buildModel } from "../src/build";
 import { quotaTierFor } from "../src/compat/behavior";
 import {
 	type FactoryDroidModelPolicy,
@@ -13,7 +12,6 @@ import {
 } from "../src/compat/factory-droid";
 import { resolveModelPolicy } from "../src/compat/resolve";
 import rules from "../src/compat/rules.json";
-import { serverSideFallbackModels } from "../src/compat/server-side-fallback";
 import {
 	buildFactoryDroidModel,
 	type FactoryDroidModelDiscoveryOptions,
@@ -218,11 +216,6 @@ describe("Factory Droid route policy scoping", () => {
 
 		const fable = buildFactoryDroidModel(registryModel("claude-fable-5.1"));
 		const messages = { ...fable, api: "anthropic-messages" as const };
-		// Refusal fallbacks ride only the first-party Anthropic upstream, never the user-facing setting.
-		expect(
-			resolveModelPolicy(messages, { upstream: "bedrock_anthropic" }).catalog.serverSideFallbackModels,
-		).toBeUndefined();
-		expect(serverSideFallbackModels(buildModel(fable))).toEqual([]);
 		// Direct Anthropic keeps its own thinking contract.
 		const direct = resolveModelPolicy({ ...messages, provider: "anthropic" }, { upstream: "snowflake" }).compat;
 		expect(direct?.stripThinkingHistory).toBeUndefined();

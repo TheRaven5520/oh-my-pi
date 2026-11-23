@@ -9,7 +9,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { CustomToolContext } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { resolveSpeechCandidates, ttsTool } from "@oh-my-pi/pi-coding-agent/tools/tts";
+import { resolveSpeechModel, ttsTool } from "@oh-my-pi/pi-coding-agent/tools/tts";
 import { ttsClient } from "@oh-my-pi/pi-coding-agent/tts/tts-client";
 
 function requireModel(provider: GeneratedProvider, id: string): Model {
@@ -54,31 +54,25 @@ afterEach(() => {
 	fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-describe("speech role candidate ordering", () => {
-	test("hoists available default cloud candidates ahead of local for MP3 only", async () => {
+describe("speech role model selection", () => {
+	test("resolves the default local model with cloud credentials available", async () => {
 		await authStorage.credentials.set("xai", [{ type: "api_key", key: "xai-test-key" }]);
 		const settings = Settings.isolated();
 		const registry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), { settings });
 
-		expect(resolveSpeechCandidates(settings, registry, false).map(candidate => candidate.model)).toEqual([
-			local,
-			xai,
-		]);
-		expect(resolveSpeechCandidates(settings, registry, true).map(candidate => candidate.model)).toEqual([xai, local]);
+		expect(resolveSpeechModel(settings, registry)).toEqual(local);
 	});
 
-	test("keeps an explicitly configured local candidate ahead of paid MP3 candidates", async () => {
+	test("resolves an explicitly configured cloud model", async () => {
 		await authStorage.credentials.set("xai", [{ type: "api_key", key: "xai-test-key" }]);
-		const settings = Settings.isolated({ modelRoles: { speech: "local/kokoro" } });
+		const settings = Settings.isolated({ modelRoles: { speech: `${xai.provider}/${xai.id}` } });
 		const registry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), { settings });
 
-		const candidates = resolveSpeechCandidates(settings, registry, true);
-		expect(candidates.map(candidate => candidate.model)).toEqual([local, xai]);
-		expect(candidates.map(candidate => candidate.explicit)).toEqual([true, false]);
+		expect(resolveSpeechModel(settings, registry)).toEqual(xai);
 	});
 });
 
-describe("tts speech chain execution", () => {
+describe("tts speech execution", () => {
 	test("uses the default local model for WAV output", async () => {
 		const settings = Settings.isolated();
 		const registry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), { settings });
@@ -110,7 +104,6 @@ describe("tts speech chain execution", () => {
 		await authStorage.credentials.set("deepinfra", [{ type: "api_key", key: "deepinfra-test-key" }]);
 		const settings = Settings.isolated({
 			modelRoles: { speech: `${deepInfra.provider}/${deepInfra.id}` },
-			"retry.fallbackChains": { speech: [] },
 		});
 		const registry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), { settings });
 		let requestedUrl = "";
@@ -137,11 +130,10 @@ describe("tts speech chain execution", () => {
 		expect(result.details).toMatchObject({ backend: "openai-speech", codec: "mp3" });
 	});
 
-	test("does not fall back when the explicit speech fallback chain is empty", async () => {
+	test("reports a cloud HTTP error without switching models", async () => {
 		await authStorage.credentials.set("xai", [{ type: "api_key", key: "xai-test-key" }]);
 		const settings = Settings.isolated({
 			modelRoles: { speech: `${xai.provider}/${xai.id}` },
-			"retry.fallbackChains": { speech: [] },
 		});
 		const registry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), { settings });
 		const localSynthesis = spyOn(ttsClient, "synthesize").mockResolvedValue({
@@ -159,32 +151,5 @@ describe("tts speech chain execution", () => {
 
 		expect(result.isError).toBe(true);
 		expect(localSynthesis).not.toHaveBeenCalled();
-	});
-
-	test("advances from a cloud HTTP error to the next local candidate", async () => {
-		await authStorage.credentials.set("xai", [{ type: "api_key", key: "xai-test-key" }]);
-		const settings = Settings.isolated();
-		const registry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), { settings });
-		const localSynthesis = spyOn(ttsClient, "synthesize").mockResolvedValue({
-			pcm: new Float32Array([0, 0.5, -0.5]),
-			sampleRate: 24_000,
-		});
-		const fetchImpl: FetchImpl = async () => new Response("rate limited", { status: 429 });
-
-		const result = await ttsTool.execute(
-			"tts-fallback",
-			{ text: "Fall back locally", language: "en", output_path: "voice.mp3" },
-			undefined,
-			createContext(settings, registry, tempDir, fetchImpl),
-		);
-
-		expect(result.isError).not.toBe(true);
-		expect(result.details).toMatchObject({ backend: "local-inference", codec: "wav" });
-		expect(localSynthesis).toHaveBeenCalledWith("kokoro", "Fall back locally", {
-			voice: "af_heart",
-			signal: undefined,
-		});
-		expect(fs.existsSync(path.join(tempDir, "voice.wav"))).toBe(true);
-		expect(fs.existsSync(path.join(tempDir, "voice.mp3"))).toBe(false);
 	});
 });

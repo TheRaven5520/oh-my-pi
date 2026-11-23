@@ -124,7 +124,7 @@ override matching model tags. These fields do not configure the Anthropic Messag
 
 ### Compaction options
 
-- `compactionModel` (per model, including `modelOverrides`) — preferred compaction model, tried before the active model, chat-role candidates, and a largest-context fallback. It does not switch the active conversation model.
+- `compactionModel` (per model, including `modelOverrides`) — preferred compaction model, used instead of the active model when set. It does not switch the active conversation model.
 - `remoteCompaction` (provider level or per model) — opts eligible models into provider-native compaction. Supported keys: `enabled`, `api`, `endpoint`, `model`, `v2StreamingEnabled`, `v2Endpoint`, `streamingEndpoint`. Provider-level settings are the baseline; per-model keys override them.
 
 ### Allowed provider/model `api` values
@@ -203,7 +203,7 @@ the V1 `/responses/compact` request. See [compaction](./compaction.md).
 
 ### Model value checks
 
-- `id` is required and non-empty; optional `name`, model `baseUrl`, `contextPromotionTarget`, and `compactionModel` must also be non-empty
+- `id` is required and non-empty; optional `name`, model `baseUrl`, and `compactionModel` must also be non-empty
 - custom `models` entries require positive `contextWindow` and `maxTokens` when provided; the current auxiliary positivity check does not cover `modelOverrides`
 - on both custom models and overrides, `maxContextWindow` must be a positive safe integer no smaller than `contextWindow` when both are set
 
@@ -273,7 +273,7 @@ Provider defaults vs per-model overrides:
 - Model `headers` override provider header keys.
 - `modelOverrides` can override model metadata (`name`, `reasoning`, `thinking`, `input`, `imageInputDecoder`,
   `tokenizer`, `supportsTools`, `cost`, `promptCache`, `premiumMultiplier`, `contextWindow`, `maxContextWindow`, `maxTokens`,
-  `omitMaxOutputTokens`, `preferWebsockets`, `headers`, `compat`, `contextPromotionTarget`, `compactionModel`, and
+  `omitMaxOutputTokens`, `preferWebsockets`, `headers`, `compat`, `compactionModel`, and
   `remoteCompaction`).
 - `compat` is deep-merged for nested routing blocks (`openRouterRouting`, `vercelGatewayRouting`,
   `extraBody`, and `whenThinking`).
@@ -611,15 +611,15 @@ Built-in roles are grouped in the model picker:
 
 `vision` and `image` are different workloads: `vision` selects a chat model for image analysis, such as `read screenshot.png?q=...`; `image` selects a model with catalog kind `image` for `generate_image`. Assigning a model to `vision` does not give it image-input support: image questions additionally check that the model can send image input to its provider.
 
-The `tiny` role selects lightweight models for background work such as session titles; when unset, it resolves through `@smol`. The `memory` role resolves through `@tiny` when unset. See [model settings](./settings.md#models) for configuration and fallback-chain examples.
+The `tiny` role selects lightweight models for background work such as session titles; when unset, it resolves through `@smol`. The `memory` role resolves through `@tiny` when unset. See [model settings](./settings.md#models) for configuration examples.
 
 Assigning a non-default role in `/models` normally saves its selector without switching the active conversation model. A workload uses the role when invoked; assigning `plan` does not itself enter plan mode, and calling `todo` does not itself select the plan model. While plan mode is active, changing the `plan` role reapplies its model. Assigning `default` normally also switches the active model, unless a higher-priority settings layer overrides the edited assignment. The session-only model picker changes the active model without rewriting role assignments.
 
 Role aliases like `@smol` expand through `settings.modelRoles`; `*` selects `@default`. Quote `@` aliases in YAML values (`plan: "@slow"`). Chat-role values can append a thinking selector such as `:minimal`, `:low`, `:medium`, or `:high`; model-kind roles do not use chat thinking suffixes.
 
-Role values can contain comma-separated selectors; selection uses the first available match,
-not a per-request retry chain. Request-failure fallbacks are configured separately under
-`retry.fallbackChains` (role, exact model, or provider-wildcard keys; see [Settings](./settings.md)).
+Role values can contain comma-separated selectors; selection uses the first available match
+when the role is resolved. There is no per-request retry chain: after a request fails, OMP
+never picks another model on its own; use `/model` to switch manually.
 Custom role names
 can be introduced through `modelRoles`, `modelTags`, or `cycleOrder`; they use chat models.
 Unset `smol` and `slow` inherit an explicitly configured `default` before their built-in priority
@@ -704,60 +704,6 @@ Selecting a provider row stores its explicit `provider/modelId`.
 The table's `images` column reports what the transport will actually send, so a model whose images are
 stripped (`compat.stripImageInput`, see [Image handling](#compatibility-and-routing-fields)) shows `no`
 even when its spec declares `input: [text, image]`; `--json` keeps the declared `input`.
-
-## Context promotion (model-level fallback chains)
-
-Context promotion switches to an explicitly configured larger-context model before compaction.
-It is attempted on context overflow errors and at pre-prompt or post-turn compaction thresholds.
-
-### Trigger and order
-
-When a turn fails with a context overflow error (e.g. `context_length_exceeded`), `AgentSession` attempts promotion **before** falling back to compaction:
-
-1. If `contextPromotion.enabled` is true, resolve a promotion target (see below).
-2. If a target is found, switch to it and retry the request — no compaction needed.
-3. If no target is available, fall through to auto-compaction on the current model.
-
-### Target selection
-
-Selection is explicit and model-driven:
-
-1. `currentModel.contextPromotionTarget` (if configured)
-
-Only the configured target is considered; context promotion does not automatically choose a larger same-provider/API sibling. The target must be available, differ from the current model, have a strictly larger known context window, and resolve a usable credential (`ModelRegistry.getApiKey(...)`).
-
-### OpenAI Codex websocket handoff
-
-If switching from/to `openai-codex-responses`, session provider state key `openai-codex-responses` is closed before model switch. This drops websocket transport state so the next turn starts clean on the promoted model.
-
-### Persistence behavior
-
-Promotion uses temporary switching (`setModelTemporary`):
-
-- recorded as a `model_change` with the ephemeral role `"fallback"` (not a durable user model selection)
-- does not rewrite saved role mapping
-
-### Configuring explicit fallback chains
-
-Configure fallback directly in model metadata via `contextPromotionTarget`.
-
-`contextPromotionTarget` accepts either:
-
-- `provider/model-id` (explicit)
-- `model-id` (resolved within current provider)
-
-Example (`models.yml`) for an explicit OpenAI fallback:
-
-```yaml
-providers:
-  openai-codex:
-    modelOverrides:
-      gpt-5.5:
-        contextPromotionTarget: openai-codex/gpt-5.4
-```
-
-Do not rely on a model-name-derived chain: configure the target explicitly or use a target supplied
-by the provider's discovered metadata.
 
 ## Compatibility and routing fields
 

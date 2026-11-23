@@ -929,9 +929,7 @@ export class AgentHubOverlayComponent<TRecord extends AgentRecordLike = AgentRec
 			mono: true,
 			dot: statusDot(ref.status),
 			detail: task ? taskSummary(task) : undefined,
-			chips: model
-				? [{ text: model.fallback ? `fallback → ${model.text}` : model.text, dot: model.dot }]
-				: undefined,
+			chips: model ? [{ text: model.text, dot: model.dot }] : undefined,
 			badges: badges.length > 0 ? badges.slice(0, 3) : undefined,
 		};
 		if (this.#viewMode === "tree") {
@@ -985,7 +983,6 @@ export class AgentHubOverlayComponent<TRecord extends AgentRecordLike = AgentRec
 		const chip = modelChip(ref, observed);
 		if (chip) {
 			const model: TspSpan[] = [];
-			if (chip.fallback) model.push(span("fallback → ", "warning"));
 			model.push(span(chip.text, "mono"));
 			if (chip.level && chip.dot) model.push(span(theme.sep.dot, "dim"), span(chip.level, chip.dot));
 			const modelRole = observed?.progress?.modelRole ?? ref.history?.modelRole;

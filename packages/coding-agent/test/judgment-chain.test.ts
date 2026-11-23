@@ -87,54 +87,35 @@ afterEach(() => {
 });
 
 describe("ChainJudge", () => {
-	it("falls from a coarse local question to a tiered online question", async () => {
+	it("routes a local judge role model to the coarse local question", async () => {
 		const settings = Settings.isolated({
 			modelRoles: { judge: `${LOCAL.provider}/${LOCAL.id}` },
-			"retry.fallbackChains": { judge: [`${ONLINE.provider}/${ONLINE.id}`] },
 		});
 		const registry = makeRegistry([LOCAL, ONLINE], { [ONLINE.provider]: "online-key" });
 		const kinds: string[] = [];
 		let localPrompt = "";
-		let onlinePrompt = "";
 		vi.spyOn(tinyModelClient, "complete").mockImplementation(async (_model, promptText) => {
 			localPrompt = promptText;
-			return "not a bucket";
+			return "hard";
 		});
-		vi.spyOn(ai, "completeSimple").mockImplementation(async (model, context, options) => {
-			onlinePrompt = context.systemPrompt?.join("\n") ?? "";
-			const response = reply(model, "level: high");
-			options?.onAttempt?.(response);
-			return response;
-		});
-		const onUsage = vi.fn();
-		const judge = new ChainJudge({ settings, registry, purpose: "test", onUsage });
+		const online = vi.spyOn(ai, "completeSimple");
+		const judge = new ChainJudge({ settings, registry, purpose: "test" });
 
 		const answer = await judge.withCandidate(async (candidate, kind) => {
 			kinds.push(kind);
-			if (kind === "local") {
-				const result = await candidate.judge({
-					state: "refactor the scheduler",
-					questions: { bucket: BUCKET_QUESTION },
-				});
-				return result.answers.bucket.choice;
-			}
 			const result = await candidate.judge({
 				state: "refactor the scheduler",
-				questions: { level: TIER_QUESTION },
+				questions: { bucket: BUCKET_QUESTION },
 			});
-			return result.answers.level.choice;
+			return result.answers.bucket.choice;
 		});
 
-		expect(answer).toBe("high");
-		expect(kinds).toEqual(["local", "online"]);
+		expect(answer).toBe("hard");
+		expect(kinds).toEqual(["local"]);
 		expect(localPrompt).toContain("trivial");
 		expect(localPrompt).toContain("moderate");
 		expect(localPrompt).toContain("hard");
-		expect(onlinePrompt).toContain("low");
-		expect(onlinePrompt).toContain("high");
-		expect(onUsage).toHaveBeenCalledWith(
-			expect.objectContaining({ role: "judge", provider: ONLINE.provider, model: ONLINE.id }),
-		);
+		expect(online).not.toHaveBeenCalled();
 	});
 
 	it("sends the selected TypeSafe model and base URL and attributes its usage", async () => {
@@ -205,16 +186,9 @@ describe("ChainJudge", () => {
 		expect(manager.getBranch().filter(entry => entry.type === "model_usage")).toHaveLength(0);
 	});
 
-	it("falls back from a failed native judge only to another native judge", async () => {
+	it("does not switch to another judge model after a native judge fails", async () => {
 		const settings = Settings.isolated({
 			modelRoles: { judge: "typesafe/jev-preview" },
-			"retry.fallbackChains": {
-				judge: [
-					`${LOCAL.provider}/${LOCAL.id}`,
-					`${DECISIONS.provider}/${DECISIONS.id}`,
-					`${ONLINE.provider}/${ONLINE.id}`,
-				],
-			},
 		});
 		const registry = makeRegistry([JEV_PREVIEW, LOCAL, DECISIONS, ONLINE], {
 			typesafe: "ts-key",
@@ -225,32 +199,27 @@ describe("ChainJudge", () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(
 			asGlobalFetch(async url => {
 				urls.push(String(url));
-				if (String(url).endsWith("/v1/systemone")) return new Response("rejected", { status: 400 });
-				return Response.json({
-					model: "jev-1.13.0",
-					answers: { level: { type: "choice", choice: "high" } },
-					usage: { input_tokens: 8, output_tokens: 2 },
-				});
+				return new Response("rejected", { status: 400 });
 			}),
 		);
 		const local = vi.spyOn(tinyModelClient, "complete");
 		const online = vi.spyOn(ai, "completeSimple");
 
-		const result = await new ChainJudge({ settings, registry, purpose: "test", sessionModel: ONLINE_BACKUP }).judge({
-			state: "redesign the scheduler",
-			questions: { level: TIER_QUESTION },
-		});
+		await expect(
+			new ChainJudge({ settings, registry, purpose: "test", sessionModel: ONLINE_BACKUP }).judge({
+				state: "redesign the scheduler",
+				questions: { level: TIER_QUESTION },
+			}),
+		).rejects.toThrow();
 
-		expect(result.answers.level.choice).toBe("high");
-		expect(urls).toEqual(["https://judge.example.test/v1/systemone", "https://decisions.example.test/decisions"]);
+		expect(urls).toEqual(["https://judge.example.test/v1/systemone"]);
 		expect(local).not.toHaveBeenCalled();
 		expect(online).not.toHaveBeenCalled();
 	});
 
-	it("fails instead of degrading to a prompted model, and skips a rejected account on later calls", async () => {
+	it("fails instead of degrading to a prompted model when the native judge rejects the account", async () => {
 		const settings = Settings.isolated({
 			modelRoles: { judge: "typesafe/jev-preview" },
-			"retry.fallbackChains": { judge: [`${ONLINE.provider}/${ONLINE.id}`] },
 		});
 		const registry = makeRegistry([JEV_PREVIEW, ONLINE], { typesafe: "ts-key", [ONLINE.provider]: "online-key" });
 		const typesafeCalls = vi
@@ -265,9 +234,6 @@ describe("ChainJudge", () => {
 		await expect(
 			new ChainJudge({ settings, registry, purpose: "test", sessionModel: ONLINE, onUsage }).judge(request),
 		).rejects.toThrow("402");
-		await expect(new ChainJudge({ settings, registry, purpose: "test", onUsage }).judge(request)).rejects.toThrow(
-			"rejected the account recently",
-		);
 
 		expect(typesafeCalls).toHaveBeenCalledTimes(1);
 		expect(online).not.toHaveBeenCalled();
@@ -277,10 +243,9 @@ describe("ChainJudge", () => {
 		);
 	});
 
-	it("propagates caller abort without attempting a fallback", async () => {
+	it("propagates caller abort", async () => {
 		const settings = Settings.isolated({
 			modelRoles: { judge: `${ONLINE.provider}/${ONLINE.id}` },
-			"retry.fallbackChains": { judge: [`${LOCAL.provider}/${LOCAL.id}`] },
 		});
 		const registry = makeRegistry([ONLINE, LOCAL], { [ONLINE.provider]: "online-key" });
 		const controller = new AbortController();
@@ -299,16 +264,12 @@ describe("ChainJudge", () => {
 		expect(local).not.toHaveBeenCalled();
 	});
 
-	it("does not append a session model already present in the configured chain", async () => {
-		const settings = Settings.isolated({
-			modelRoles: { judge: `${ONLINE.provider}/${ONLINE.id}` },
-			"retry.fallbackChains": { judge: [`${ONLINE_BACKUP.provider}/${ONLINE_BACKUP.id}`] },
-		});
-		const registry = makeRegistry([ONLINE, ONLINE_BACKUP], { [ONLINE.provider]: "online-key" });
+	it("uses the session model only when the judge role resolves to no model", async () => {
+		const settings = Settings.isolated();
+		const registry = makeRegistry([], { [ONLINE.provider]: "online-key" });
 		const attempted: string[] = [];
 		vi.spyOn(ai, "completeSimple").mockImplementation(async model => {
 			attempted.push(model.id);
-			if (model.id === ONLINE.id) return reply(model, "unparseable");
 			return reply(model, "level: low");
 		});
 
@@ -318,9 +279,7 @@ describe("ChainJudge", () => {
 		});
 
 		expect(result.answers.level.choice).toBe("low");
-		// The primary's three entries are its initial completion plus two format
-		// corrections. A duplicated session fallback would add another three.
-		expect(attempted).toEqual([ONLINE.id, ONLINE.id, ONLINE.id, ONLINE_BACKUP.id]);
+		expect(attempted).toEqual([ONLINE.id]);
 	});
 
 	it("resolves and forwards configured headers to native judgment models", async () => {

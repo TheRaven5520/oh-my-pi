@@ -1,7 +1,7 @@
 /**
  * Smart unexpected-stop detection: asks one {@link NoulQuestion} whether a
  * text-only assistant turn promised to act and then ended. The judge comes
- * from the live `judge` role chain resolved by {@link resolveJudge}.
+ * from the live `judge` role model resolved by {@link resolveJudge}.
  */
 import type { AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model, NoulQuestion } from "@oh-my-pi/pi-ai";
@@ -33,7 +33,7 @@ export interface ClassifyUnexpectedStopDeps {
 	settings: Settings;
 	registry: ModelRegistry;
 	sessionId: string;
-	/** Active session model; last resort of the judge role chain. */
+	/** Active session model; used when the judge role resolves to no model. */
 	model?: Model;
 	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
 	/** Session ledger for the classification's billed attempts. */

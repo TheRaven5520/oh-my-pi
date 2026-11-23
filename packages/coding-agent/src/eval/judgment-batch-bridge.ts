@@ -4,7 +4,7 @@
  * Bulk classification does not fit one cell: cells time out, and a thousand
  * `judge()` calls means a thousand bridge round-trips and a thousand opaque
  * handles. `judge_batch(states, questions)` instead hands the whole batch to the
- * host in one call. The host owns the run — one resolved judge chain, fan-out
+ * host in one call. The host owns the run — one resolved judge, fan-out
  * bounded by the shared eval request semaphore, one retry per item — and the
  * cell pulls settled items through a cursor (`drain`) in bounded slices across
  * as many cells as it needs. Item failures are recorded per key, never raised;
@@ -32,7 +32,7 @@ import { type CellAnswer, parseQuestions, parseState, sessionJudge, toEvalJudgme
 /** Synthetic bridge name reserved for the `judge_batch()` helper across both runtimes. */
 export const EVAL_JUDGMENT_BATCH_BRIDGE_NAME = "__judge_batch__";
 
-/** Default per-item retry budget; a retry re-walks the whole judge chain. */
+/** Default per-item retry budget; a retry re-runs the item on the same judge model. */
 const DEFAULT_RETRIES = 1;
 /** Progress is reported to the async job at most this often. */
 const PROGRESS_INTERVAL_MS = 1_000;

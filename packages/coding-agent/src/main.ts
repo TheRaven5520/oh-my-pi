@@ -572,10 +572,9 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 			authStorage: args.authStorage,
 			modelRegistry: args.modelRegistry,
 			agentId,
-			// ACP defers the `ask` capability and reserve-policy confirmation until
-			// client capabilities are known, without enabling other UI-only behavior.
+			// ACP defers the `ask` capability until client capabilities are known,
+			// without enabling other UI-only behavior.
 			interactivePrompts: factoryOptions?.interactivePrompts,
-			deferUsageReserveConfirmation: true,
 			enableMCP: false,
 			titleSystemPrompt,
 			eventBus,
@@ -1530,7 +1529,7 @@ export async function buildSessionOptions(
 			{ deferUnregistered: true },
 		);
 		if (selection.deferred) {
-			// Preserve role fallback order until extensions have registered their providers.
+			// Preserve role pattern order until extensions have registered their providers.
 			options.deferredPrewalk = { target, patterns: targetPatterns };
 		} else {
 			options.prewalk = selection.prewalk;
@@ -2376,7 +2375,7 @@ export async function runRootCommand(
 			const {
 				session,
 				setToolUIContext,
-				modelFallbackMessage,
+				modelSelectionError,
 				lspServers,
 				mcpManager,
 				startBackgroundModelDiscovery,
@@ -2385,8 +2384,6 @@ export async function runRootCommand(
 				eventBus,
 				subagentEventBus,
 				preloadedExtensions: extensionsResult,
-				// runInteractiveMode validates once init has painted the first frame.
-				deferRetryFallbackValidation: isInteractive,
 			});
 
 			const sessionToolNames = session.getAllToolNames();
@@ -2427,18 +2424,16 @@ export async function runRootCommand(
 			}
 
 			// Interactive-only work that must not delay the first session-bound frame:
-			// runInteractiveMode calls it once init has painted. Neither feeds the first
-			// prompt: fallback-chain validation only produces header warnings, and the
-			// background refresh already raced the first prompt when it ran earlier.
+			// runInteractiveMode calls it once init has painted. The background
+			// refresh already raced the first prompt when it ran earlier.
 			const startDeferredStartupWork = (): void => {
-				session.validateRetryFallbackChains();
 				modelRegistry.refreshInBackground();
 				void startBackgroundModelDiscovery?.();
 			};
 			watchScopedModelSettings(session, parsedArgs, modelRegistry, settingsInstance);
 
-			if (modelFallbackMessage) {
-				notifs.push({ kind: "warn", message: modelFallbackMessage });
+			if (modelSelectionError) {
+				notifs.push({ kind: "error", message: modelSelectionError });
 			}
 
 			const modelRegistryError = modelRegistry.getError();
@@ -2450,8 +2445,8 @@ export async function runRootCommand(
 				if (modelRegistryError) {
 					process.stderr.write(`${chalk.red(modelRegistryError.message)}\n\n`);
 				}
-				if (modelFallbackMessage) {
-					process.stderr.write(`${chalk.red(modelFallbackMessage)}\n`);
+				if (modelSelectionError) {
+					process.stderr.write(`${chalk.red(modelSelectionError)}\n`);
 				} else {
 					process.stderr.write(`${chalk.red("No models available.")}\n`);
 				}

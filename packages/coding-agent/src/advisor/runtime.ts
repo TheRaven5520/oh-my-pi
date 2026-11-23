@@ -71,8 +71,8 @@ export interface AdvisorRuntimeHost {
 	/**
 	 * Called with the error of every failed advisor turn, before the retry sleep
 	 * or the dropped-after-3 path. Lets the host apply credential-level remedies
-	 * and configured model fallback that the advisor loop cannot perform itself.
-	 * Return `true` after switching models so the same clean batch is retried
+	 * that the advisor loop cannot perform itself.
+	 * Return `true` after rotating credentials so the same clean batch is retried
 	 * immediately with a fresh failure budget. `failedMessages` contains the
 	 * failed prompt's appended turns before rollback. Errors thrown here are
 	 * logged and swallowed.
@@ -82,14 +82,14 @@ export interface AdvisorRuntimeHost {
 		failedMessages: readonly AgentMessage[],
 		signal: AbortSignal,
 	): Promise<boolean | undefined> | boolean | undefined;
-	/** Called after a successful advisor turn so the host can finish fallback lifecycle reporting. */
+	/** Called after a successful advisor turn so the host can finish turn bookkeeping. */
 	onTurnSuccess?(): Promise<void> | void;
 	/** Called when a failed batch is permanently dropped so replay-only state can be discarded. */
 	onTurnAbandoned?(): void;
 	/** Surface a non-recovering advisor failure to the host UI without adding model-visible context. */
 	notifyFailure?(error: unknown): void;
 	/** Signal that the advisor paused on a quota/rate-limit after host-level
-	 *  recovery (credential switch, fallback chain) declined. Cleared only by
+	 *  recovery (credential switch) declined. Cleared only by
 	 *  an explicit reset (`/new`, config rebuild, session restart). */
 	notifyQuotaExhausted?(): void;
 	/** Stable identity for the live advisor model. Used to restore full transcript rendering after a model switch. */
@@ -245,7 +245,7 @@ export interface AdvisorHeldUpdates {
 
 interface CatchupWaiter {
 	threshold: number;
-	/** Stay parked while a failed turn is retried or recovered via the host's fallback chain. */
+	/** Stay parked while a failed turn is retried or recovered by the host. */
 	waitThroughRecovery: boolean;
 	finish: (caughtUp: boolean) => void;
 	timer?: NodeJS.Timeout;
@@ -306,13 +306,11 @@ export class AdvisorRuntime {
 	/** Consecutive quarantined turns since the last success/reset (issue #6661). */
 	#consecutiveQuarantines = 0;
 	/**
-	 * Model identities this refusal cascade has already tried. The cascade walks
-	 * the fallback chain to exhaustion — that is what the chain is for — but
-	 * visits each model at most once, so a chain whose keys point back at each
-	 * other (A→B, B→A) cannot ping-pong forever. Cleared when a successful or
-	 * terminal turn ends the cascade, or on reset, so a later refusal starts fresh.
+	 * Whether the current refusal episode was already handed to host recovery.
+	 * Recovery is offered once so a persistent refusal cannot loop. Cleared when a
+	 * successful or terminal turn ends the episode, or on reset.
 	 */
-	readonly #refusalModelsTried = new Set<string>();
+	#refusalRecoveryTried = false;
 	/** Whether primary reasoning is included in advisor deltas for the current model. */
 	#includeThinking = true;
 	#modelIdentity: string | undefined;
@@ -540,7 +538,7 @@ export class AdvisorRuntime {
 	 * agent never parks on a broken advisor. `waitThroughRecovery` is for callers
 	 * that must observe the outcome of that failure — a headless shutdown drain
 	 * about to dispose the session: the waiter stays parked while the runtime
-	 * retries or the host switches to a fallback model, and is released only by
+	 * retries or the host recovers a credential, and is released only by
 	 * catch-up, the deadline, the signal, or a terminal stop (halt, quota pause,
 	 * reset, session transition, dispose).
 	 */
@@ -713,7 +711,7 @@ export class AdvisorRuntime {
 		this.#failing = false;
 		this.#droppedBacklogs = 0;
 		this.#consecutiveQuarantines = 0;
-		this.#refusalModelsTried.clear();
+		this.#refusalRecoveryTried = false;
 		this.#failureNotified = false;
 		this.#resetAdvisorContext(true, true, reason);
 	}
@@ -1411,7 +1409,7 @@ export class AdvisorRuntime {
 					this.#failureNotified = false;
 					this.#droppedBacklogs = 0;
 					this.#consecutiveQuarantines = 0;
-					this.#refusalModelsTried.clear();
+					this.#refusalRecoveryTried = false;
 					if (this.host.onTurnSuccess) {
 						try {
 							await raceWithSignal(Promise.resolve(this.host.onTurnSuccess()), iterationAbort.signal);
@@ -1433,7 +1431,7 @@ export class AdvisorRuntime {
 					// parks until a turn succeeds. A failing advisor must never hold
 					// the primary on the catch-up gate. Recovery-aware waiters (the
 					// headless shutdown drain) stay parked so disposal cannot abort
-					// the fallback switch below.
+					// the recovery below.
 					this.#failing = true;
 					this.#releaseFailureWaiters();
 					const failedMessages = this.agent.state.messages.slice(messageSnapshot);
@@ -1480,23 +1478,19 @@ export class AdvisorRuntime {
 							}
 						}
 						// A refusal that outlives the strip is this model's policy call, not
-						// a malformed request, so hand it to the host's model fallback before
-						// declaring the advisor dead. The cascade walks the chain to
-						// exhaustion (the host returns false once candidates run out); the
-						// tried-set only stops a cyclic chain from revisiting a model. The
-						// primary turn-recovery path already allows fallback on refusals.
-						const refusalModel = this.host.getModelIdentity?.() ?? this.#modelIdentity ?? "";
+						// a malformed request, so hand it to host recovery (credential
+						// rotation) once per model before declaring the advisor dead.
 						let refusalRecovered = false;
 						try {
-							if (!this.#refusalModelsTried.has(refusalModel)) {
-								this.#refusalModelsTried.add(refusalModel);
+							if (!this.#refusalRecoveryTried) {
+								this.#refusalRecoveryTried = true;
 								refusalRecovered =
 									(await raceWithSignal(
 										Promise.resolve(this.host.onTurnError?.(err, failedMessages, iterationAbort.signal)),
 										iterationAbort.signal,
 									)) === true;
 							} else {
-								logger.debug("advisor refusal chain exhausted", { model: refusalModel });
+								logger.debug("advisor refusal recovery already tried");
 							}
 						} catch (hookErr) {
 							logger.debug("advisor onTurnError hook failed after refusal", { err: String(hookErr) });
@@ -1517,12 +1511,12 @@ export class AdvisorRuntime {
 								wip,
 								overflowRecovery: recoveringOverflow || undefined,
 							});
-							logger.debug("advisor refusal recovered by model fallback");
+							logger.debug("advisor refusal recovered by host recovery");
 							continue;
 						}
 						// The batch is terminal, so the next primary update is a new
-						// refusal cascade and must be allowed to try the chain again.
-						this.#refusalModelsTried.clear();
+						// refusal episode and may try host recovery again.
+						this.#refusalRecoveryTried = false;
 						this.#notifyFailureOnce(err);
 						this.#notifyTurnAbandoned();
 						this.#clearSeenContext();
@@ -1582,7 +1576,7 @@ export class AdvisorRuntime {
 						continue;
 					}
 					if (AIError.isUsageLimit(err)) {
-						// Host recovery (credential switch / fallback chain) declined:
+						// Host recovery (credential switch) declined:
 						// pause on the quota latch instead of burning retries — provider
 						// quota windows (5h/7d) outlast any retry budget. The batch is
 						// requeued and the backlog stays visible so reset() replays it.

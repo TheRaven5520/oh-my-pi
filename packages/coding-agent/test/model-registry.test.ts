@@ -17,7 +17,7 @@ import { modelKind } from "@oh-my-pi/pi-catalog/types";
 import { finalizeCustomModel } from "@oh-my-pi/pi-coding-agent/config/custom-models";
 import { applyModelPatch, mergeDiscoveredModel } from "@oh-my-pi/pi-coding-agent/config/model-patch";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { resolveCliModel, resolveRoleChain } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { resolveCliModel, resolveRoleModel } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { accountDbPath, withAccountStore } from "@oh-my-pi/pi-coding-agent/config/personal-accounts";
 import { roleCandidatePool } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -389,13 +389,12 @@ describe("ModelRegistry", () => {
 			);
 		});
 
-		test("keeps image and speech fallback runners across authoritative chat cache and refresh", async () => {
+		test("keeps image and speech runners across authoritative chat cache and refresh", async () => {
 			authStorage.keys.setRuntime("deepinfra", "deepinfra-test-key");
 			const settings = Settings.isolated({
-				modelRoles: { image: "deepinfra/missing-image", speech: "deepinfra/missing-speech" },
-				"retry.fallbackChains": {
-					image: ["deepinfra/black-forest-labs/FLUX-2-pro"],
-					speech: ["deepinfra/hexgrad/Kokoro-82M"],
+				modelRoles: {
+					image: "deepinfra/black-forest-labs/FLUX-2-pro",
+					speech: "deepinfra/hexgrad/Kokoro-82M",
 				},
 			});
 			const cachedChat = buildModel({
@@ -423,11 +422,10 @@ describe("ModelRegistry", () => {
 				fetch: async () => Response.json({ data: [] }),
 			});
 			const runnerRoutes = () =>
-				["image", "speech"].flatMap(role =>
-					resolveRoleChain(role, settings, roleCandidatePool(role, settings, registry)).map(
-						({ model }) => `${model.provider}/${model.id}`,
-					),
-				);
+				["image", "speech"].flatMap(role => {
+					const selection = resolveRoleModel(role, settings, roleCandidatePool(role, settings, registry));
+					return selection ? [`${selection.model.provider}/${selection.model.id}`] : [];
+				});
 			const expectedRoutes = ["deepinfra/black-forest-labs/FLUX-2-pro", "deepinfra/hexgrad/Kokoro-82M"];
 
 			expect(runnerRoutes()).toEqual(expectedRoutes);
@@ -2436,8 +2434,8 @@ describe("ModelRegistry", () => {
 		});
 
 		test("a disabled provider's model neither resolves by name nor gets a key", async () => {
-			// Every `resolved.model ?? find(...)` fallback (retry fallback candidates, advisors,
-			// restored and CLI models) and every request path goes through find() and getApiKey():
+			// Every `resolved.model ?? find(...)` fallback (advisors, restored and CLI models)
+			// and every request path goes through find() and getApiKey():
 			// a disabled provider reached through either would answer despite disabledProviders.
 			await authStorage.credentials.set("github-copilot", [
 				{
@@ -3535,7 +3533,6 @@ describe("ModelRegistry", () => {
 	describe("effort-tier variant collapsing", () => {
 		let kiroTwins: ModelRegistry;
 		let antigravityOverride: ModelRegistry;
-		let suppressible: ModelRegistry;
 		beforeAll(() => {
 			kiroTwins = readonlyRegistry({
 				providers: {
@@ -3550,8 +3547,6 @@ describe("ModelRegistry", () => {
 					"google-antigravity": { modelOverrides: { "gemini-3-pro-high": { contextWindow: 222_222 } } },
 				},
 			});
-			// Dedicated instance: the suppression test mutates it via suppressSelector.
-			suppressible = readonlyRegistry({ providers: {} });
 		});
 
 		test("collapses X/X-thinking twins from custom providers", () => {
@@ -3603,13 +3598,6 @@ describe("ModelRegistry", () => {
 			expect(registry.getError()).toBeUndefined();
 			expect(registry.find("google-antigravity", "gemini-3-pro")?.contextWindow).toBe(512_000);
 			expect(registry.find("google-antigravity", "gemini-3-pro-high")?.contextWindow).toBe(512_000);
-		});
-
-		test("suppressed selectors keyed by retired variant ids bind to the collapsed id", () => {
-			suppressible.suppressSelector("google-antigravity/gemini-3-pro-high", Date.now() + 60_000);
-			expect(suppressible.isSelectorSuppressed("google-antigravity/gemini-3-pro")).toBe(true);
-			expect(suppressible.isSelectorSuppressed("google-antigravity/gemini-3-pro-low")).toBe(true);
-			expect(suppressible.isSelectorSuppressed("google-antigravity/gemini-2.5-pro")).toBe(false);
 		});
 	});
 });

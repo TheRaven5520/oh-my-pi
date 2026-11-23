@@ -17,7 +17,6 @@ import {
 	tokenizerEncodingForModel,
 } from "@oh-my-pi/pi-agent-core";
 import { type Model, type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
-import { serverSideFallbackModels } from "@oh-my-pi/pi-catalog/compat/server-side-fallback";
 import type { Encoding } from "@oh-my-pi/pi-natives";
 import type { Settings } from "../config/settings";
 import { type AnthropicSlowModeLanes, anthropicSlowModeLanes } from "./anthropic-slow-mode";
@@ -26,7 +25,6 @@ import {
 	cfgModelLoopGuardCheckAssistantContent,
 	cfgModelLoopGuardEnabled,
 	cfgOmitThinking,
-	cfgProvidersAnthropicServerSideFallback,
 	cfgProvidersAnthropicSlowMode,
 	cfgProvidersAntigravityEndpoint,
 	cfgProvidersCacheRetention,
@@ -103,18 +101,6 @@ export function createSettingsAwareStreamFn(
 		const cacheRetention = cacheRetentionSetting === "auto" ? undefined : cacheRetentionSetting;
 		const streamFirstEventTimeoutMs = timeoutSecondsToMs(cfgProvidersStreamFirstEventTimeoutSeconds.get(settings));
 		const streamIdleTimeoutMs = timeoutSecondsToMs(cfgProvidersStreamIdleTimeoutSeconds.get(settings));
-		// Server-side fallback (opt-in): when the user enables it, inject the
-		// catalog-owned `fallbacks` chain (`server-side-fallback-models` axis,
-		// authored for Fable/Mythos on first-party Anthropic). The provider
-		// layer picks it up, sends the beta header, and honors the response
-		// signals. Models without a rule-assigned chain are untouched.
-		const serverSideFallbackChain =
-			streamOptions?.fallbacks === undefined && cfgProvidersAnthropicServerSideFallback.get(settings)
-				? serverSideFallbackModels(model)
-				: [];
-		const fallbacks =
-			streamOptions?.fallbacks ??
-			(serverSideFallbackChain.length > 0 ? serverSideFallbackChain.map(id => ({ model: id })) : undefined);
 		// Anthropic usage-limit stages: the provider consults these hooks only for
 		// first-party OAuth requests, so attaching them per anthropic call is safe.
 		// Wrap-up tracking runs for everyone; the setting (`/slow`) gates only the
@@ -158,7 +144,6 @@ export function createSettingsAwareStreamFn(
 			hideThinkingSummary: streamOptions?.hideThinkingSummary ?? cfgOmitThinking.get(settings),
 			// An off switch, not a default: the agent loop always offers its queue.
 			liveSteering: cfgProvidersOpenaiLiveSteering.get(settings) ? streamOptions?.liveSteering : undefined,
-			...(fallbacks !== undefined ? { fallbacks } : {}),
 			...(slowModeHooks !== undefined ? { anthropicSlowMode: slowModeHooks } : {}),
 		};
 		return base(model, context, merged);

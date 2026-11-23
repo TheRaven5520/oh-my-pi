@@ -24,19 +24,17 @@ import {
 
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ModelRoleLookup } from "@oh-my-pi/pi-tui/overlays/model-browser";
-import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
+import type { Api, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resolveBareVariantSelector, resolveVariantSelector } from "@oh-my-pi/pi-catalog/compat/collapse";
 import { collapseVariantId, stripThinkingVariantSuffix } from "@oh-my-pi/pi-catalog/compat/taxonomy";
 import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
-import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { type GeneratedProvider, getBundledModels, modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { modelKind } from "@oh-my-pi/pi-catalog/types";
 import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
 import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
-import chalk from "@oh-my-pi/pi-utils/chalk";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import {
 	AUTO_THINKING,
@@ -59,7 +57,6 @@ import {
 import type { Settings } from "./settings";
 
 import { cfgDisabledProviders, cfgEnabledModels, cfgModelProviderOrder } from "./model-settings";
-import { cfgRetryFallbackChains } from "../session/settings";
 
 function isKnownProvider(provider: string): provider is KnownProvider {
 	return provider in DEFAULT_MODEL_PER_PROVIDER;
@@ -517,8 +514,6 @@ export interface ModelMatchPreferences {
 export type ModelLookupRegistry = Pick<ModelRegistry, "getAvailable">;
 type CliModelRegistry = Pick<ModelRegistry, "getAll" | "getAvailable"> &
 	Partial<Pick<ModelRegistry, "getManualAccountModels">>;
-type InitialModelRegistry = Pick<ModelRegistry, "getAvailable" | "find" | "hasConcreteAuth">;
-type RestorableModelRegistry = Pick<ModelRegistry, "getAvailable" | "find" | "getApiKey" | "hasConcreteAuth">;
 
 const kModelOrderIndex = Symbol("model-resolver.modelOrderIndex");
 type ModelsWithOrderIndex = readonly Model<Api>[] & {
@@ -1395,9 +1390,9 @@ export interface AgentModelSelection {
 
 /**
  * Resolve an agent's model patterns together with the role identity they were
- * expanded from. Spawn paths MUST take both from this single call: the child's
- * inherited retry-fallback chain is keyed off the role, which the expansion
- * discards, and deriving the two halves separately is how they drift apart.
+ * expanded from. Spawn paths MUST take both from this single call: the expansion
+ * discards the role alias, and deriving the two halves separately is how they
+ * drift apart.
  */
 export function resolveAgentModelSelection(options: AgentModelPatternResolutionOptions): AgentModelSelection {
 	const { source, patterns, inheritsLiveThinkingLevel } = resolveEffectiveAgentModelSelection(options);
@@ -1632,42 +1627,27 @@ export function resolveModelFromSettings(options: {
 	return sawConfiguredProviderQualifiedRole ? undefined : availableModels[0];
 }
 
-/** A resolved role-chain attempt and whether configuration explicitly admitted it. */
-export interface RoleChainCandidate {
+/** A role's resolved model and whether configuration explicitly admitted it. */
+export interface RoleModelSelection {
 	model: Model<Api>;
 	explicit: boolean;
 	thinkingLevel?: ConfiguredThinkingLevel;
 }
 
-/** Resolve a role's primary and retry candidates in effective attempt order. */
-export function resolveRoleChain(role: string, settings: Settings, pool: Model<Api>[]): RoleChainCandidate[] {
-	const configuredRoles = settings.getModelRoles();
+/**
+ * Resolve a role to its model: the configured role value, else the built-in role alias
+ * (priority defaults). Returns undefined when nothing in `pool` satisfies it.
+ */
+export function resolveRoleModel(role: string, settings: Settings, pool: Model<Api>[]): RoleModelSelection | undefined {
 	const configured = settings.getModelRole(role)?.trim();
-	const primarySelector = configured || formatModelRoleAlias(role);
-	const configuredFallbacks = cfgRetryFallbackChains.get(settings)[role];
-	const hasConfiguredFallbackChain = Array.isArray(configuredFallbacks);
-	const fallbackSelectors = hasConfiguredFallbackChain ? configuredFallbacks : rolePriorityDefaults(role);
-	const selectors = [
-		{ selector: primarySelector, explicit: Object.hasOwn(configuredRoles, role) },
-		...fallbackSelectors.map(selector => ({ selector, explicit: hasConfiguredFallbackChain })),
-	];
-	const candidates: RoleChainCandidate[] = [];
-	const candidateByRoute = new Map<string, RoleChainCandidate>();
-	for (const { selector, explicit } of selectors) {
-		const resolved = resolveModelRoleValue(selector, pool, { settings });
-		if (!resolved.model) continue;
-		const key = formatModelStringWithRouting(resolved.model);
-		const existing = candidateByRoute.get(key);
-		if (existing) {
-			if (explicit) existing.explicit = true;
-			continue;
-		}
-		const candidate: RoleChainCandidate = { model: resolved.model, explicit };
-		if (resolved.thinkingLevel !== undefined) candidate.thinkingLevel = resolved.thinkingLevel;
-		candidateByRoute.set(key, candidate);
-		candidates.push(candidate);
-	}
-	return candidates;
+	const resolved = resolveModelRoleValue(configured || formatModelRoleAlias(role), pool, { settings });
+	if (!resolved.model) return undefined;
+	const selection: RoleModelSelection = {
+		model: resolved.model,
+		explicit: Object.hasOwn(settings.getModelRoles(), role),
+	};
+	if (resolved.thinkingLevel !== undefined) selection.thinkingLevel = resolved.thinkingLevel;
+	return selection;
 }
 
 /**
@@ -1715,18 +1695,14 @@ export function disabledProviderIds(settings?: Settings): ReadonlySet<string> {
 }
 
 /**
- * Resolve a list of override patterns to the first matching model, with an
- * auth-aware fallback to the parent session's active model.
+ * Resolve a list of override patterns to the first matching model whose
+ * provider has working credentials. The list is the caller's own ordered set
+ * of requested alternatives; when none is authenticated the first match is
+ * returned unchanged so the existing error path still surfaces a meaningful
+ * failure downstream. Nothing outside the requested patterns is ever chosen.
  *
  * Providers disabled through settings are removed before matching so ordered
  * overrides skip them and an all-disabled list resolves to no model.
- *
- * If the resolved subagent model has no working credentials (provider has no
- * usable auth), and the parent's active model resolves with working auth,
- * use the parent's model instead. This prevents subagent dispatch from
- * silently routing to a provider the user can't actually call (e.g.
- * `modelRoles.task` pointing at an unqualified id whose only available
- * provider variant has no configured credentials — see #985).
  *
  * `sessionId` is forwarded to `getApiKey` so that session-sticky OAuth
  * credentials resolve correctly during the pre-flight auth check. Without it,
@@ -1735,17 +1711,10 @@ export function disabledProviderIds(settings?: Settings): ReadonlySet<string> {
  *
  * Keyless-by-design providers (llama.cpp, ollama, lm-studio) advertise the
  * `kNoAuth` sentinel from `getApiKey` to signal that they do not require
- * credentials. Those are treated as authenticated here so an explicitly
- * configured local model is never silently rerouted to the parent's remote
- * provider (see #1008).
- *
- * If neither the subagent nor the parent has working auth, returns the
- * primary resolution unchanged so the existing error path still surfaces
- * a meaningful failure downstream.
+ * credentials. Those are treated as authenticated here.
  */
-export async function resolveModelOverrideWithAuthFallback(
+export async function resolveAuthenticatedModelOverride(
 	modelPatterns: string[],
-	parentActiveModelPattern: string | undefined,
 	modelRegistry: ModelLookupRegistry & Pick<ModelRegistry, "getApiKey">,
 	settings?: Settings,
 	sessionId?: string,
@@ -1753,7 +1722,6 @@ export async function resolveModelOverrideWithAuthFallback(
 	model?: Model<Api>;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	explicitThinkingLevel: boolean;
-	authFallbackUsed: boolean;
 	warning?: string;
 }> {
 	const disabledProviders = disabledProviderIds(settings);
@@ -1762,39 +1730,19 @@ export async function resolveModelOverrideWithAuthFallback(
 		const enabledModels = modelRegistry.getAvailable().filter(model => !disabledProviders.has(model.provider));
 		lookupRegistry = { getAvailable: () => enabledModels };
 	}
-	// Expand first: a role (or comma-separated item) may contain several
-	// requested alternatives that must be tried before the parent model.
 	const patterns = resolveConfiguredModelPatterns(modelPatterns, settings);
 	const primary = resolveModelOverride(patterns, lookupRegistry, settings);
-	// Without an alternative there is no routing decision to make. Let the
+	// A single requested pattern has no alternative to choose between. Let the
 	// child session resolve credentials through its normal execution path.
-	if (!primary.model || (!parentActiveModelPattern && patterns.length === 1)) {
-		return { ...primary, authFallbackUsed: false };
-	}
+	if (!primary.model || patterns.length === 1) return primary;
 
 	for (const pattern of patterns) {
 		const candidate = resolveModelOverride([pattern], lookupRegistry, settings);
 		if (!candidate.model) continue;
 		const key = await modelRegistry.getApiKey(candidate.model, sessionId);
-		if (key === kNoAuth || isAuthenticated(key)) {
-			return { ...candidate, authFallbackUsed: false };
-		}
+		if (key === kNoAuth || isAuthenticated(key)) return candidate;
 	}
-	if (!parentActiveModelPattern) return { ...primary, authFallbackUsed: false };
-
-	const fallback = resolveModelOverride([parentActiveModelPattern], lookupRegistry, settings);
-	if (!fallback.model) {
-		return { ...primary, authFallbackUsed: false };
-	}
-	if (modelsAreEqual(fallback.model, primary.model)) {
-		return { ...primary, authFallbackUsed: false };
-	}
-	const fallbackKey = await modelRegistry.getApiKey(fallback.model, sessionId);
-	if (fallbackKey !== kNoAuth && !isAuthenticated(fallbackKey)) {
-		return { ...primary, authFallbackUsed: false };
-	}
-
-	return { ...fallback, authFallbackUsed: true, warning: primary.warning ?? fallback.warning };
+	return primary;
 }
 
 /**
@@ -2354,154 +2302,6 @@ function resolveCliModelInScope(
 		warning,
 		error: undefined,
 	};
-}
-
-export interface InitialModelResult {
-	model: Model<Api> | undefined;
-	thinkingLevel?: ThinkingLevel;
-	fallbackMessage: string | undefined;
-}
-
-/**
- * Find the initial model to use based on priority:
- * 1. CLI args (provider + model)
- * 2. First model from scoped models (if not continuing/resuming)
- * 3. Restored from session (if continuing/resuming)
- * 4. Saved default from settings
- * 5. First available model with valid API key
- */
-export async function findInitialModel(options: {
-	cliProvider?: string;
-	cliModel?: string;
-	scopedModels: ScopedModel[];
-	isContinuing: boolean;
-	defaultProvider?: string;
-	defaultModelId?: string;
-	defaultThinkingSelector?: Effort;
-	modelRegistry: InitialModelRegistry;
-}): Promise<InitialModelResult> {
-	const {
-		cliProvider,
-		cliModel,
-		scopedModels,
-		isContinuing,
-		defaultProvider,
-		defaultModelId,
-		defaultThinkingSelector,
-		modelRegistry,
-	} = options;
-
-	let model: Model<Api> | undefined;
-	let thinkingLevel: Effort | undefined;
-
-	// 1. CLI args take priority
-	if (cliProvider && cliModel) {
-		const found = modelRegistry.find(cliProvider, cliModel);
-		if (!found) {
-			console.error(chalk.red(`Model ${cliProvider}/${cliModel} not found`));
-			process.exit(1);
-		}
-		return { model: found, thinkingLevel: undefined, fallbackMessage: undefined };
-	}
-
-	// 2. Use first model from scoped models (skip if continuing/resuming)
-	if (scopedModels.length > 0 && !isContinuing) {
-		const scoped = scopedModels[0];
-		const scopedThinkingSelector =
-			scoped.thinkingLevel === ThinkingLevel.Inherit
-				? defaultThinkingSelector
-				: (scoped.thinkingLevel ?? defaultThinkingSelector);
-		return {
-			model: scoped.model,
-			thinkingLevel:
-				scopedThinkingSelector === ThinkingLevel.Off
-					? ThinkingLevel.Off
-					: clampThinkingLevelForModel(scoped.model, scopedThinkingSelector),
-			fallbackMessage: undefined,
-		};
-	}
-
-	// 3. Try saved default from settings
-	if (defaultProvider && defaultModelId && !accountSource(defaultProvider)) {
-		const found = modelRegistry.find(defaultProvider, defaultModelId);
-		if (found) {
-			model = found;
-			thinkingLevel = clampThinkingLevelForModel(found, defaultThinkingSelector);
-			return { model, thinkingLevel, fallbackMessage: undefined };
-		}
-	}
-
-	// 4. Try first available model with valid API key
-	const availableModels = modelRegistry.getAvailable();
-
-	const fallback = pickDefaultAvailableModel(availableModels, provider => modelRegistry.hasConcreteAuth(provider));
-	if (fallback) {
-		return { model: fallback, thinkingLevel: undefined, fallbackMessage: undefined };
-	}
-
-	// 5. No model found
-	return { model: undefined, thinkingLevel: undefined, fallbackMessage: undefined };
-}
-
-/**
- * Restore model from session, with fallback to available models
- */
-export async function restoreModelFromSession(
-	savedProvider: string,
-	savedModelId: string,
-	currentModel: Model<Api> | undefined,
-	shouldPrintMessages: boolean,
-	modelRegistry: RestorableModelRegistry,
-): Promise<{ model: Model<Api> | undefined; fallbackMessage: string | undefined }> {
-	const restoredModel = modelRegistry.find(savedProvider, savedModelId);
-
-	// Check if restored model exists and has a valid API key
-	const hasApiKey = restoredModel ? !!(await modelRegistry.getApiKey(restoredModel)) : false;
-
-	if (restoredModel && hasApiKey) {
-		if (shouldPrintMessages) {
-			console.log(chalk.dim(`Restored model: ${savedProvider}/${savedModelId}`));
-		}
-		return { model: restoredModel, fallbackMessage: undefined };
-	}
-
-	// Model not found or no API key - fall back
-	const reason = !restoredModel ? "model no longer exists" : "no API key available";
-
-	if (shouldPrintMessages) {
-		console.error(chalk.yellow(`Warning: Could not restore model ${savedProvider}/${savedModelId} (${reason}).`));
-	}
-
-	// If we already have a model, use it as fallback
-	if (currentModel) {
-		if (shouldPrintMessages) {
-			console.log(chalk.dim(`Falling back to: ${currentModel.provider}/${currentModel.id}`));
-		}
-		return {
-			model: currentModel,
-			fallbackMessage: `Could not restore model ${savedProvider}/${savedModelId} (${reason}). Using ${currentModel.provider}/${currentModel.id}.`,
-		};
-	}
-
-	// Try to find any available model
-	const availableModels = modelRegistry.getAvailable();
-
-	const fallbackModel = pickDefaultAvailableModel(availableModels, provider =>
-		modelRegistry.hasConcreteAuth(provider),
-	);
-	if (fallbackModel) {
-		if (shouldPrintMessages) {
-			console.log(chalk.dim(`Falling back to: ${fallbackModel.provider}/${fallbackModel.id}`));
-		}
-
-		return {
-			model: fallbackModel,
-			fallbackMessage: `Could not restore model ${savedProvider}/${savedModelId} (${reason}). Using ${fallbackModel.provider}/${fallbackModel.id}.`,
-		};
-	}
-
-	// No models available
-	return { model: undefined, fallbackMessage: undefined };
 }
 
 /**

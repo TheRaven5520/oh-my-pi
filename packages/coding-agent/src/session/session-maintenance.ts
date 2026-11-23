@@ -60,12 +60,10 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
-import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isRecord, logger, prompt, Snowflake, stringifyJson } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { writeArtifact } from "./artifacts";
 import type { ModelRegistry } from "../config/model-registry";
-import { CHAT_MODEL_ROLE_IDS } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import type { ExtensionRunner, SessionBeforeCompactResult } from "../extensibility/extensions";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
@@ -75,7 +73,6 @@ import type { MemoryBackendOperationContext } from "../memory-backend/types";
 import { computeNonMessageTokens, type NonMessageTokenSource } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
 import { isCompleteReadResult } from "../tools/read-supersede";
-import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ContextUsageBreakdown, HandoffResult, SessionHandoffOptions } from "./agent-session-types";
 import { findCompactMode } from "./compact-modes";
@@ -94,11 +91,7 @@ import {
 	stripImagesFromMessage,
 } from "./messages";
 import { isTerminalTextAssistantAnswer } from "./queued-messages";
-import {
-	resolveCompactionConfiguredTarget,
-	resolveContextPromotionConfiguredTarget,
-	resolveRoleModelFull,
-} from "./role-models";
+import { resolveCompactionConfiguredTarget } from "./role-models";
 import type { SessionContext } from "./session-context";
 import { buildSessionContext, getLatestCompactionEntry, getOpenAiRemoteCompactionPayload } from "./session-context";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
@@ -115,7 +108,6 @@ import {
 	cfgCompactionAutoContinue,
 	cfgCompactionEnabled,
 	cfgCompactionMethodOrder,
-	cfgContextPromotionEnabled,
 	cfgSnapcompactShape,
 } from "./context-settings";
 import { cfgRetry } from "./settings";
@@ -485,11 +477,6 @@ export interface SessionMaintenanceHost {
 		options: { autoContinue: boolean; triggerContextTokens?: number; excludeMediaMethods?: boolean },
 	): Promise<CompactionCheckResult>;
 	parseRetryAfterMsFromError(errorMessage: string): number | undefined;
-	setModelTemporary(
-		model: Model,
-		thinkingLevel?: ConfiguredThinkingLevel,
-		options?: { ephemeral?: boolean },
-	): Promise<void>;
 	abort(options?: {
 		goalReason?: "interrupted" | "internal";
 		reason?: string;
@@ -498,7 +485,7 @@ export interface SessionMaintenanceHost {
 	abortHandoff(): void;
 }
 
-/** Owns compaction, pruning, shake, promotion, and automatic context maintenance. */
+/** Owns compaction, pruning, shake, and automatic context maintenance. */
 export class SessionMaintenance {
 	#compactionAbortController: AbortController | undefined;
 	/** Resolves after an active manual compaction has reconnected the agent subscription. */
@@ -1199,13 +1186,13 @@ export class SessionMaintenance {
 			const effectiveSettings = resolveMethodSettings(compactionSettings, selectedMethod);
 			const availableModels = this.#host.modelRegistry.getAvailable();
 			const requireProviderRemote = selectedMethod === "remote" && !effectiveSettings.remoteEndpoint;
-			const compactionCandidates = this.#getCompactionModelCandidates(
+			const compactionModel = this.#getCompactionModel(
 				availableModels,
 				requireProviderRemote
 					? candidate => canUseLiveProviderNativeCompaction(candidate, activeModel, effectiveSettings)
 					: undefined,
 			);
-			if (requireProviderRemote && compactionCandidates.length === 0) {
+			if (requireProviderRemote && !compactionModel) {
 				this.#host.emitNotice(
 					"warning",
 					`remote compaction is unavailable for ${activeModel.id}; trying the next preferred method`,
@@ -1424,7 +1411,7 @@ export class SessionMaintenance {
 				// block because every catch path throws — the post-try reads
 				// of the result-derived locals are reachable only on success.
 				try {
-					const result = await this.#compactWithFallbackModel(
+					const result = await this.#compactWithModel(
 						preparation,
 						options?.internalGuidance ?? customInstructions,
 						compactionAbortController.signal,
@@ -1438,7 +1425,7 @@ export class SessionMaintenance {
 							convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
 							codexCompaction,
 						},
-						compactionCandidates,
+						compactionModel,
 					);
 					summary = result.summary;
 					shortSummary = result.shortSummary;
@@ -2226,19 +2213,19 @@ export class SessionMaintenance {
 			// No hookCompaction is passed above, so "fromHook" is unreachable;
 			// the guard just narrows the union.
 			if (compactionPrep.kind === "fromHook") return clear();
-			const candidates = this.#getCompactionModelCandidates(
+			const summarizer = this.#getCompactionModel(
 				this.#host.modelRegistry.getAvailable(),
 				method === "remote" && !effectiveSettings.remoteEndpoint
 					? candidate => canUseLiveProviderNativeCompaction(candidate, model, effectiveSettings)
 					: undefined,
 			);
-			if (candidates.length === 0) return clear();
+			if (!summarizer) return clear();
 			const codexCompaction = createCodexCompactionContext({
 				trigger: "auto",
 				reason: "context_limit",
 				phase: "standalone_turn",
 			});
-			const result = await this.#compactWithFallbackModel(
+			const result = await this.#compactWithModel(
 				preparation,
 				undefined,
 				signal,
@@ -2253,7 +2240,7 @@ export class SessionMaintenance {
 					sessionId: `${this.#host.sessionId()}:spec:${Snowflake.next()}`,
 					preferWebsockets: false,
 				},
-				candidates,
+				summarizer,
 			);
 			armed = {
 				result: {
@@ -2556,19 +2543,6 @@ export class SessionMaintenance {
 			return;
 		}
 
-		// Auto-promote first: switching to a larger-context model avoids compacting
-		// the history at all. The post-turn threshold path already promotes before
-		// compacting; without this, the pre-prompt path would pre-empt promotion and
-		// compact (snapcompact/summary) a session that should have just been promoted.
-		if (await this.#promoteContextModel()) {
-			logger.debug("Pre-prompt context promotion avoided compaction", {
-				contextTokens,
-				contextWindow,
-				model: `${model.provider}/${model.id}`,
-			});
-			return;
-		}
-
 		logger.debug("Pre-prompt context maintenance triggered by pending prompt size", {
 			contextTokens,
 			contextWindow,
@@ -2700,21 +2674,6 @@ export class SessionMaintenance {
 			this.#midTurnDeadEndPendingPrePrompt = false;
 		}
 
-		// Promote to a larger-context sibling before compacting, mirroring the
-		// pre-prompt (runPrePromptCompactionIfNeeded) and post-turn threshold
-		// (checkCompaction) paths. Without this, a long mid-turn tool loop that
-		// crosses the threshold compacts the history (and can hit the no-progress
-		// dead-end on a single oversized turn) on a model that should have just
-		// been promoted to a larger window instead.
-		if (await this.#promoteContextModel()) {
-			logger.debug("Mid-run context promotion avoided compaction", {
-				contextTokens,
-				contextWindow,
-				from: `${model?.provider}/${model?.id}`,
-			});
-			return;
-		}
-
 		const messagesBefore = activeMessages.length;
 		const result = await this.runAutoCompaction("threshold", false, {
 			autoContinue: false,
@@ -2744,18 +2703,17 @@ export class SessionMaintenance {
 		});
 	}
 	/**
-	 * Check if context maintenance or promotion is needed and run it.
+	 * Check if context maintenance is needed and run it.
 	 * Called after agent_end and before prompt submission.
 	 *
-	 * Four cases (in order):
-	 * 1. Input overflow + promotion: promote to larger model, retry without maintenance.
-	 * 2. Input overflow + no promotion target: run context maintenance, auto-retry on same model.
-	 * 3. Output incomplete (stopReason === "length", e.g. `response.incomplete`): the
-	 *    model exhausted its output budget. Try promotion; otherwise compact and
+	 * Three cases (in order):
+	 * 1. Input overflow: run context maintenance, auto-retry on same model.
+	 * 2. Output incomplete (stopReason === "length", e.g. `response.incomplete`): the
+	 *    model exhausted its output budget. Compact and
 	 *    retry when the context is over threshold (the window, not the output cap,
 	 *    ran out), retry as-is when the turn produced nothing actionable, and
 	 *    keep a truncated deliverable with a warning otherwise.
-	 * 4. Threshold: context over threshold, run context maintenance (no auto-retry).
+	 * 3. Threshold: context over threshold, run context maintenance (no auto-retry).
 	 *
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
@@ -2864,7 +2822,7 @@ export class SessionMaintenance {
 		// context window is known: a known window's `trustedPayloadRejection` only
 		// requires local headroom, so a message like "too many images" can still
 		// fail that check (e.g. the local estimate is near the occupancy ceiling)
-		// and fall through to promotion/compaction despite proving an image-count
+		// and fall through to compaction despite proving an image-count
 		// limit neither can raise. Gated to `!usageBackedOverflow` though: when
 		// provider-reported usage *also* proves a genuine token overflow, that's a
 		// real, separately fixable problem — compaction should still get a shot at
@@ -2893,20 +2851,6 @@ export class SessionMaintenance {
 		if (overflowEvidence || (payloadRejection && !trustedPayloadRejection)) {
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
 
-			// Try context promotion first - switch to a larger model and retry without compacting
-			const promoted = await this.#tryContextPromotion(assistantMessage);
-			if (promoted) {
-				await this.#host.dropPersistedAssistantTurn(assistantMessage);
-				// Retry on the promoted (larger) model without compacting
-				this.#host.scheduleAgentContinue({
-					source: "context-promotion-overflow",
-					delayMs: 100,
-					generation,
-				});
-				return COMPACTION_CHECK_CONTINUATION;
-			}
-
-			// No promotion target available fall through to compaction
 			if (compactionAvailable) {
 				const compactionResult = await this.#host.runRecoveryCompactionWithRollback("overflow", assistantMessage, {
 					autoContinue,
@@ -2990,56 +2934,10 @@ export class SessionMaintenance {
 			}
 			return COMPACTION_CHECK_NONE;
 		}
-		// A context promotion can land while the failing call is already in
-		// flight (or on a run whose loop predates the switch): the overflow
-		// error then arrives stamped with the pre-promotion model while
-		// `this.#host.model()` is already the promoted target. The sameModel guard
-		// above deliberately ignores stale foreign-model errors, but this
-		// state is not stale — recover exactly like the promotion path:
-		// drop the dead turn and retry on the already-promoted model. Gated
-		// narrowly on "current model IS the failed model's promotion target
-		// with a strictly larger window" so genuinely stale errors from
-		// old user-switched models keep surfacing untouched.
-		if (
-			!sameModel &&
-			autoContinue &&
-			!errorIsFromBeforeCompaction &&
-			assistantMessage.stopReason === "error" &&
-			this.#model &&
-			contextWindow > 0 &&
-			cfgContextPromotionEnabled.get(this.#host.settings)
-		) {
-			const failedModel = this.#host.modelRegistry.find(assistantMessage.provider, assistantMessage.model);
-			const failedWindow = failedModel?.contextWindow ?? 0;
-			const promotionTarget = failedModel
-				? resolveContextPromotionConfiguredTarget(failedModel, this.#host.modelRegistry.getAvailable())
-				: undefined;
-			if (
-				failedModel &&
-				failedWindow > 0 &&
-				contextWindow > failedWindow &&
-				promotionTarget &&
-				modelsAreEqual(promotionTarget, this.#model) &&
-				AIError.isContextOverflow(assistantMessage, failedWindow)
-			) {
-				this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
-				await this.#host.dropPersistedAssistantTurn(assistantMessage);
-				logger.debug("Overflow on pre-promotion model; retrying on promoted model", {
-					failed: `${assistantMessage.provider}/${assistantMessage.model}`,
-					current: `${this.#model.provider}/${this.#model.id}`,
-				});
-				this.#host.scheduleAgentContinue({
-					source: "promoted-model-overflow",
-					delayMs: 100,
-					generation,
-				});
-				return COMPACTION_CHECK_CONTINUATION;
-			}
-		}
 
-		// Case 3: Output-side incomplete — `response.incomplete` from OpenAI Responses
+		// Case 2: Output-side incomplete — `response.incomplete` from OpenAI Responses
 		// (and Codex), Anthropic `max_tokens` / `model_context_window_exceeded`, all
-		// map to stopReason === "length". Promotion if available; compaction only
+		// map to stopReason === "length". Compaction only
 		// when the window is what ran out, since shrinking the input cannot raise an
 		// output cap. Unlike overflow, the *input* is fine, so a reachable handoff
 		// preference may run.
@@ -3069,23 +2967,8 @@ export class SessionMaintenance {
 
 			// Same active-context vs persisted-history split as the overflow path
 			// above: clear the dead turn from agent state so it cannot be replayed,
-			// but keep it on the branch unless promotion or compaction actually runs.
+			// but keep it on the branch unless compaction actually runs.
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
-
-			const promoted = await this.#tryContextPromotion(assistantMessage);
-			if (promoted) {
-				await this.#host.dropPersistedAssistantTurn(assistantMessage);
-				this.#incompleteRecoveryAttempts = 0;
-				logger.debug("Context promotion triggered by response.incomplete (length stop)", {
-					from: `${assistantMessage.provider}/${assistantMessage.model}`,
-				});
-				this.#host.scheduleAgentContinue({
-					source: "context-promotion-incomplete",
-					delayMs: 100,
-					generation,
-				});
-				return COMPACTION_CHECK_CONTINUATION;
-			}
 
 			if (
 				incompleteCompactionSettings.enabled &&
@@ -3152,7 +3035,7 @@ export class SessionMaintenance {
 					this.#host.scheduleAgentContinue({ source: "incomplete-retry", delayMs: 100, generation });
 					return COMPACTION_CHECK_CONTINUATION;
 				}
-				logger.debug("Compaction triggered by response.incomplete (length stop, no promotion target)", {
+				logger.debug("Compaction triggered by response.incomplete (length stop)", {
 					model: `${assistantMessage.provider}/${assistantMessage.model}`,
 					methods: resolveCompactionMethodOrder(incompleteCompactionSettings.methodOrder),
 					attempt: this.#incompleteRecoveryAttempts,
@@ -3162,9 +3045,9 @@ export class SessionMaintenance {
 					triggerContextTokens: calculateContextTokens(assistantMessage.usage),
 				});
 			}
-			// Neither promotion nor compaction is available — surface the dead-end so
+			// No compaction is available — surface the dead-end so
 			// the user understands why the turn yielded with nothing.
-			logger.warn("response.incomplete with no recovery path (promotion + compaction both unavailable)", {
+			logger.warn("response.incomplete with no recovery path (compaction unavailable)", {
 				model: `${assistantMessage.provider}/${assistantMessage.model}`,
 			});
 			return COMPACTION_CHECK_NONE;
@@ -3184,7 +3067,7 @@ export class SessionMaintenance {
 		)
 			return COMPACTION_CHECK_NONE;
 
-		// Case 4: Threshold - turn succeeded but context is getting large
+		// Case 3: Threshold - turn succeeded but context is getting large
 		// Skip if this was an error (non-overflow errors don't have usage data)
 		if (assistantMessage.stopReason === "error") return COMPACTION_CHECK_NONE;
 		const pruneResult = this.#usesExperimentalContextManagement() ? undefined : await this.#pruneToolOutputs();
@@ -3237,13 +3120,11 @@ export class SessionMaintenance {
 			postMaintenanceContextTokens,
 			maintenanceTokensFreed,
 			shouldCompact: shouldThresholdCompact,
-			contextPromotionEnabled: cfgContextPromotionEnabled.get(this.#host.settings) === true,
 		});
 		if (shouldThresholdCompact) {
 			// Grace band: a live (or just-started) background speculation absorbs
 			// the blocking summarization; the session stays responsive and the
-			// armed result lands at the next boundary. Deferral delays promotion
-			// by at most the band — the eventual real pass still promotes first.
+			// armed result lands at the next boundary.
 			if (this.deferThresholdCompactionToSpeculation(postMaintenanceContextTokens, contextWindow)) {
 				logger.debug("Post-turn threshold deferred to speculative compaction", {
 					postMaintenanceContextTokens,
@@ -3251,144 +3132,36 @@ export class SessionMaintenance {
 				});
 				return COMPACTION_CHECK_NONE;
 			}
-			// Try promotion first — if a larger model is available, switch instead of compacting
-			const promoted = await this.#tryContextPromotion(assistantMessage);
-			if (!promoted) {
-				return await this.runAutoCompaction("threshold", false, {
-					autoContinue,
-					triggerContextTokens: postMaintenanceContextTokens,
-					phase: "pre_turn",
-					terminalTextAnswer: isTerminalTextAssistantAnswer(assistantMessage),
-				});
-			}
-			logger.debug("Auto-compaction threshold satisfied but context promotion took over", {
-				contextTokens,
-				contextWindow,
-				model: `${assistantMessage.provider}/${assistantMessage.model}`,
+			return await this.runAutoCompaction("threshold", false, {
+				autoContinue,
+				triggerContextTokens: postMaintenanceContextTokens,
+				phase: "pre_turn",
+				terminalTextAnswer: isTerminalTextAssistantAnswer(assistantMessage),
 			});
-		} else {
-			this.maybeStartSpeculativeCompaction(contextTokens, contextWindow);
 		}
+		this.maybeStartSpeculativeCompaction(contextTokens, contextWindow);
 		return COMPACTION_CHECK_NONE;
 	}
 
-	/**
-	 * Attempt context promotion to a larger model.
-	 * Returns true if promotion succeeded (caller should retry without compacting).
-	 */
-	async #tryContextPromotion(assistantMessage: AssistantMessage): Promise<boolean> {
-		const currentModel = this.#model;
-		if (!currentModel) return false;
-		// The overflow/length error may have come from a model the user already
-		// switched away from; only promote when the failing turn was this model.
-		if (assistantMessage.provider !== currentModel.provider || assistantMessage.model !== currentModel.id)
-			return false;
-		return this.#promoteContextModel();
+	#getCompactionModel(availableModels: Model[], filter?: (model: Model) => boolean): Model | undefined {
+		return this.resolveCompactionModel(this.#model, availableModels, filter);
 	}
 
 	/**
-	 * Switch to a larger-context sibling when context promotion is enabled and a
-	 * target with a strictly larger window (and a usable key) exists. Returns true
-	 * when the model was switched, so the caller can retry without compacting.
-	 * Message-independent core shared by the post-turn overflow path
-	 * ({@link #tryContextPromotion}) and the pre-prompt threshold path
-	 * ({@link runPrePromptCompactionIfNeeded}).
+	 * The one model that summarizes for `preferredModel`: its explicit `compactionModel`
+	 * target when configured, else `preferredModel` itself. `filter` is a capability check
+	 * made before any request (e.g. a remote-only method): a target that fails it yields to
+	 * `preferredModel`. A model that fails at request time is never replaced.
 	 */
-	async #promoteContextModel(): Promise<boolean> {
-		if (!cfgContextPromotionEnabled.get(this.#host.settings)) return false;
-		const currentModel = this.#model;
-		if (!currentModel) return false;
-		const contextWindow = currentModel.contextWindow ?? 0;
-		if (contextWindow <= 0) return false;
-		const targetModel = await this.resolveContextPromotionTarget(currentModel, contextWindow);
-		if (!targetModel) return false;
-
-		try {
-			await this.#host.setModelTemporary(targetModel, undefined, { ephemeral: true });
-			logger.debug("Context promotion switched model on overflow", {
-				from: `${currentModel.provider}/${currentModel.id}`,
-				to: `${targetModel.provider}/${targetModel.id}`,
-			});
-			return true;
-		} catch (error) {
-			logger.warn("Context promotion failed", {
-				from: `${currentModel.provider}/${currentModel.id}`,
-				to: `${targetModel.provider}/${targetModel.id}`,
-				error: String(error),
-			});
-			return false;
-		}
-	}
-
-	async resolveContextPromotionTarget(
-		currentModel: Model,
-		contextWindow: number,
-		signal?: AbortSignal,
-	): Promise<Model | undefined> {
-		const availableModels = this.#host.modelRegistry.getAvailable();
-		if (availableModels.length === 0) return undefined;
-
-		const candidate = resolveContextPromotionConfiguredTarget(currentModel, availableModels);
-		if (!candidate) return undefined;
-		if (modelsAreEqual(candidate, currentModel)) return undefined;
-		if (candidate.contextWindow == null || candidate.contextWindow <= contextWindow) return undefined;
-		const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId(), { signal });
-		if (!apiKey) return undefined;
-		return candidate;
-	}
-
-	#getCompactionModelCandidates(availableModels: Model[], filter?: (model: Model) => boolean): Model[] {
-		return this.resolveCompactionModelCandidates(this.#model, availableModels, filter);
-	}
-
-	resolveCompactionModelCandidates(
+	resolveCompactionModel(
 		preferredModel: Model | null | undefined,
 		availableModels: Model[],
 		filter?: (model: Model) => boolean,
-	): Model[] {
-		const candidates: Model[] = [];
-		const seen = new Set<string>();
-		const routedProviders = new Set<string>();
-
-		const addCandidate = (model: Model | undefined): void => {
-			if (!model) return;
-			const key = `${model.provider}/${model.id}`;
-			if (seen.has(key)) return;
-			seen.add(key);
-			routedProviders.add(model.provider);
-			// `seen` still tracks rejected models so the largest-context fallback
-			// scan below doesn't reintroduce them; the filter just suppresses
-			// inclusion in this caller's candidate chain.
-			if (filter && !filter(model)) return;
-			candidates.push(model);
-		};
-
-		if (preferredModel) {
-			addCandidate(resolveCompactionConfiguredTarget(preferredModel, availableModels));
-		}
-		addCandidate(preferredModel ?? undefined);
-		for (const role of CHAT_MODEL_ROLE_IDS) {
-			addCandidate(
-				resolveRoleModelFull(this.#host.settings, role, availableModels, preferredModel ?? undefined).model,
-			);
-		}
-
-		// Last resort widens the window only within providers this chain already
-		// routes to (preferred model, its compaction target, role assignments).
-		// Scanning every available model would hand the whole conversation to an
-		// unconfigured provider — a personal account, or ambient-credential
-		// Bedrock on an EC2 host — whenever its catalog window is the largest.
-		const sortedByContext = availableModels
-			.filter(model => routedProviders.has(model.provider))
-			.sort((a, b) => (b.contextWindow ?? 0) - (a.contextWindow ?? 0));
-		for (const model of sortedByContext) {
-			if (!seen.has(`${model.provider}/${model.id}`)) {
-				addCandidate(model);
-				break;
-			}
-		}
-
-		return candidates;
+	): Model | undefined {
+		if (!preferredModel) return undefined;
+		const target = resolveCompactionConfiguredTarget(preferredModel, availableModels);
+		if (target && (!filter || filter(target))) return target;
+		return !filter || filter(preferredModel) ? preferredModel : undefined;
 	}
 
 	#buildCompactionAuthError(): Error {
@@ -3400,82 +3173,62 @@ export class SessionMaintenance {
 		}
 		return new Error(
 			`Compaction requires usable credentials for ${currentModel.provider}/${currentModel.id}. ` +
-				`Configure ${currentModel.provider} credentials or assign an authenticated fallback role such as modelRoles.smol.`,
+				`Configure ${currentModel.provider} credentials or set a compactionModel with usable credentials.`,
 		);
 	}
 
-	async #compactWithFallbackModel(
+	async #compactWithModel(
 		preparation: CompactionPreparation,
 		customInstructions: string | undefined,
 		signal: AbortSignal,
-		options?: SummaryOptions,
-		precomputedCandidates?: Model[],
+		options: SummaryOptions | undefined,
+		model: Model | undefined,
 	): Promise<CompactionResult> {
-		const candidates =
-			precomputedCandidates ?? this.#getCompactionModelCandidates(this.#host.modelRegistry.getAvailable());
+		const apiKey = model ? await this.#host.modelRegistry.getApiKey(model, this.#host.sessionId()) : undefined;
+		if (!model || !apiKey) throw this.#buildCompactionAuthError();
 		const telemetry = resolveTelemetry(this.#host.agent.telemetry, this.#host.sessionId());
-		let nativeCompactionFailure: { error: NativeCompactionError; provider: string } | undefined;
 
-		for (const candidate of candidates) {
-			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
-			if (!apiKey) continue;
-			if (
-				nativeCompactionFailure &&
-				(candidate.provider !== nativeCompactionFailure.provider ||
-					!shouldUseProviderNativeCompaction(candidate, preparation.settings))
-			) {
-				throw nativeCompactionFailure.error;
-			}
-
-			try {
-				return await compact(
-					this.#host.obfuscatePreparationForProvider(preparation),
-					candidate,
-					this.#host.modelRegistry.resolver(candidate, this.#host.sessionId()),
-					this.#host.obfuscateTextForProvider(customInstructions),
-					signal,
-					{
-						...options,
-						metadata: this.#host.agent.metadataForProvider(candidate.provider),
-						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
-						telemetry,
-						// Honor the user's /model thinking selection (incl. `off`) on
-						// the manual `/compact` path. Clamped per-model inside compact()
-						// via resolveCompactionEffort so unsupported-effort models
-						// (xai-oauth/grok-build) don't trip requireSupportedEffort.
-						thinkingLevel: this.#host.thinkingLevel(),
-						tools: this.#host.agent.state.tools,
-						sessionId: this.#host.sessionId(),
-						promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
-						providerSessionState: this.#host.providerSessionState,
-						preferWebsockets: this.#host.preferWebsockets(),
-						// Route every summarization HTTP request through the
-						// session's side-stream transport so the provider
-						// concurrency cap (e.g. providers.ollama-cloud.maxConcurrency)
-						// brackets compaction the same way it brackets the live
-						// agent turn — without this, multiple ollama-cloud
-						// subagents auto/manually compacting issued uncapped
-						// summary requests in parallel (chatgpt-codex review on
-						// #3751).
-						completeImpl: async (requestModel, requestContext, requestOptions) => {
-							const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
-							return stream.result();
-						},
+		try {
+			return await compact(
+				this.#host.obfuscatePreparationForProvider(preparation),
+				model,
+				this.#host.modelRegistry.resolver(model, this.#host.sessionId()),
+				this.#host.obfuscateTextForProvider(customInstructions),
+				signal,
+				{
+					...options,
+					metadata: this.#host.agent.metadataForProvider(model.provider),
+					convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+					telemetry,
+					// Honor the user's /model thinking selection (incl. `off`) on
+					// the manual `/compact` path. Clamped per-model inside compact()
+					// via resolveCompactionEffort so unsupported-effort models
+					// (xai-oauth/grok-build) don't trip requireSupportedEffort.
+					thinkingLevel: this.#host.thinkingLevel(),
+					tools: this.#host.agent.state.tools,
+					sessionId: this.#host.sessionId(),
+					promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+					providerSessionState: this.#host.providerSessionState,
+					preferWebsockets: this.#host.preferWebsockets(),
+					// Route every summarization HTTP request through the
+					// session's side-stream transport so the provider
+					// concurrency cap (e.g. providers.ollama-cloud.maxConcurrency)
+					// brackets compaction the same way it brackets the live
+					// agent turn — without this, multiple ollama-cloud
+					// subagents auto/manually compacting issued uncapped
+					// summary requests in parallel (chatgpt-codex review on
+					// #3751).
+					completeImpl: async (requestModel, requestContext, requestOptions) => {
+						const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
+						return stream.result();
 					},
-				);
-			} catch (error) {
-				const id = AIError.classify(error instanceof NativeCompactionError ? error.cause : error, candidate.api);
-				if (AIError.is(id, AIError.Flag.AuthFailed)) continue;
-				if (error instanceof NativeCompactionError) {
-					nativeCompactionFailure ??= { error, provider: candidate.provider };
-					continue;
-				}
-				throw error;
-			}
+				},
+			);
+		} catch (error) {
+			const id = AIError.classify(error instanceof NativeCompactionError ? error.cause : error, model.api);
+			if (AIError.is(id, AIError.Flag.AuthFailed)) throw this.#buildCompactionAuthError();
+			throw error;
 		}
-
-		if (nativeCompactionFailure) throw nativeCompactionFailure.error;
-		throw this.#buildCompactionAuthError();
 	}
 
 	async #prepareCompactionFromHooks(
@@ -4787,17 +4540,16 @@ export class SessionMaintenance {
 				preserveData = { ...compactionPrep.preserveData, ...snapcompactResult.preserveData };
 			} else {
 				const liveModel = this.#model;
-				const candidates = this.#getCompactionModelCandidates(
+				const candidate = this.#getCompactionModel(
 					availableModels,
 					method === "remote" && !effectiveSettings.remoteEndpoint && liveModel
-						? candidate => canUseLiveProviderNativeCompaction(candidate, liveModel, effectiveSettings)
+						? model => canUseLiveProviderNativeCompaction(model, liveModel, effectiveSettings)
 						: undefined,
 				);
 				const retrySettings = cfgRetry.get(this.#host.settings);
 				const telemetry = resolveTelemetry(this.#host.agent.telemetry, this.#host.sessionId());
 				let compactResult: CompactionResult | undefined;
 				let lastError: unknown;
-				let nativeCompactionFailure: { error: NativeCompactionError; provider: string } | undefined;
 				codexCompaction = createCodexCompactionContext({
 					trigger: "auto",
 					reason: "context_limit",
@@ -4806,19 +4558,10 @@ export class SessionMaintenance {
 						(reason === "threshold" ? "pre_turn" : reason === "idle" ? "standalone_turn" : "mid_turn"),
 				});
 
-				for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
-					const candidate = candidates[candidateIndex];
-					const hasMoreCandidates = candidateIndex < candidates.length - 1;
-					const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
-					if (!apiKey) continue;
-					if (
-						nativeCompactionFailure &&
-						(candidate.provider !== nativeCompactionFailure.provider ||
-							!shouldUseProviderNativeCompaction(candidate, preparation.settings))
-					) {
-						throw nativeCompactionFailure.error;
-					}
-
+				const apiKey = candidate
+					? await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId())
+					: undefined;
+				if (candidate && apiKey) {
 					let attempt = 0;
 					while (true) {
 						try {
@@ -4877,38 +4620,23 @@ export class SessionMaintenance {
 								candidate.api,
 							);
 							if (AIError.is(id, AIError.Flag.AuthFailed)) {
-								if (!nativeCompactionFailure) lastError = this.#buildCompactionAuthError();
+								lastError = this.#buildCompactionAuthError();
 								break;
 							}
 							if (AIError.is(id, AIError.Flag.Timeout)) {
-								const nativeFailure = error instanceof NativeCompactionError;
-								logger.warn(
-									nativeFailure
-										? "Provider-native auto-compaction timed out, preserving native failure"
-										: hasMoreCandidates
-											? "Auto-compaction summarization timed out, trying next model"
-											: "Auto-compaction summarization timed out, not retrying same model",
-									{
-										error: message,
-										model: `${candidate.provider}/${candidate.id}`,
-									},
-								);
-								if (nativeFailure) {
-									nativeCompactionFailure ??= { error, provider: candidate.provider };
-									lastError = nativeCompactionFailure.error;
-								} else {
-									lastError = error;
-								}
+								logger.warn("Auto-compaction summarization timed out, not retrying same model", {
+									error: message,
+									model: `${candidate.provider}/${candidate.id}`,
+								});
+								lastError = error;
 								break;
 							}
 
 							const retryAfterMs = this.#host.parseRetryAfterMsFromError(message);
 							// An input the summarizer cannot fit is deterministic: the same
 							// prompt fails identically every attempt, so the retry budget is
-							// pure latency and the next candidate (a larger window) is the
-							// only move that can succeed. Overflow therefore vetoes the
-							// transient/usage-limit arms, which a provider blob can trip on
-							// coincidence alone.
+							// pure latency. Overflow therefore vetoes the transient/usage-limit
+							// arms, which a provider blob can trip on coincidence alone.
 							const shouldRetry =
 								retrySettings.enabled &&
 								attempt < retrySettings.maxRetries &&
@@ -4917,35 +4645,12 @@ export class SessionMaintenance {
 									AIError.is(id, AIError.Flag.Transient) ||
 									AIError.is(id, AIError.Flag.UsageLimit));
 							if (!shouldRetry) {
-								if (error instanceof NativeCompactionError) {
-									nativeCompactionFailure ??= { error, provider: candidate.provider };
-									lastError = nativeCompactionFailure.error;
-								} else {
-									lastError = error;
-								}
+								lastError = error;
 								break;
 							}
 
 							const baseDelayMs = retrySettings.baseDelayMs * 2 ** attempt;
 							const delayMs = retryAfterMs !== undefined ? Math.max(baseDelayMs, retryAfterMs) : baseDelayMs;
-
-							// If retry delay is too long (>30s), try next candidate instead of waiting
-							const maxAcceptableDelayMs = 30_000;
-							if (delayMs > maxAcceptableDelayMs && hasMoreCandidates) {
-								if (error instanceof NativeCompactionError) {
-									nativeCompactionFailure ??= { error, provider: candidate.provider };
-									lastError = nativeCompactionFailure.error;
-									break;
-								}
-								logger.warn("Auto-compaction retry delay too long, trying next model", {
-									delayMs,
-									retryAfterMs,
-									error: message,
-									model: `${candidate.provider}/${candidate.id}`,
-								});
-								lastError = error;
-								break; // Exit retry loop, continue to next candidate
-							}
 
 							attempt++;
 							logger.warn("Auto-compaction failed, retrying", {
@@ -4958,10 +4663,6 @@ export class SessionMaintenance {
 							});
 							await scheduler.wait(delayMs, { signal: autoCompactionSignal });
 						}
-					}
-
-					if (compactResult) {
-						break;
 					}
 				}
 

@@ -111,19 +111,18 @@ describe("AgentSession memory backend lifecycle", () => {
 		return session;
 	}
 
-	async function startMemoryCompletion(models: Model<Api>[]) {
+	async function startMemoryCompletion(model: Model<Api>) {
 		settings = Settings.isolated({
 			"compaction.enabled": false,
 			"memory.backend": "mnemopi",
 			"mnemopi.noEmbeddings": true,
 			"mnemopi.llmMode": "smol",
 			"mnemopi.autoRetain": false,
-			modelRoles: { memory: `${models[0]!.provider}/${models[0]!.id}` },
-			"retry.fallbackChains": { memory: models.slice(1).map(model => `${model.provider}/${model.id}`) },
+			modelRoles: { memory: `${model.provider}/${model.id}` },
 		});
 		const current = createSession(async () => []);
-		for (const model of models) authStorage.keys.setRuntime(model.provider, "test-key");
-		spyOn(current.modelRegistry, "getAvailable").mockReturnValue(models);
+		authStorage.keys.setRuntime(model.provider, "test-key");
+		spyOn(current.modelRegistry, "getAvailable").mockReturnValue([model]);
 		spyOn(current.modelRegistry, "getApiKeyForProvider").mockResolvedValue(undefined);
 		await current.applyMemoryBackend();
 		const llm = getMnemopiSessionState(current)!.config.providerOptions.llm;
@@ -165,7 +164,7 @@ describe("AgentSession memory backend lifecycle", () => {
 			options?.onAttempt?.(response);
 			return response;
 		});
-		const { current, complete } = await startMemoryCompletion([model]);
+		const { current, complete } = await startMemoryCompletion(model);
 		const manager = current.sessionManager;
 		manager.appendMessage({ role: "user", content: "Remember Sam's employer.", timestamp: 1 });
 		const leafBefore = manager.getLeafId();
@@ -187,22 +186,18 @@ describe("AgentSession memory backend lifecycle", () => {
 		expect(manager.getLeafId()).toBe(usage[0]!.id);
 	});
 
-	it("journals both the billed memory failure and its successful remote fallback", async () => {
+	it("journals a billed memory failure", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-6")!;
-		const backup = { ...model, id: "memory-backup" };
 		const failed = memoryReply(model, "error");
-		const succeeded = memoryReply(backup);
-		spyOn(ai, "completeSimple").mockImplementation(async (candidate, _context, options) => {
-			const response = candidate.id === model.id ? failed : succeeded;
-			options?.onAttempt?.(response);
-			return response;
+		spyOn(ai, "completeSimple").mockImplementation(async (_model, _context, options) => {
+			options?.onAttempt?.(failed);
+			return failed;
 		});
-		const { current, complete } = await startMemoryCompletion([model, backup]);
+		const { current, complete } = await startMemoryCompletion(model);
 
-		expect(await complete("Sam works at Globex.")).toBe("Sam works at Globex.");
+		expect(await complete("Sam works at Globex.")).toBeNull();
 
 		const usage = current.sessionManager.getBranch().filter(entry => entry.type === "model_usage");
-		expect(usage).toHaveLength(2);
 		expect(usage).toMatchObject([
 			{
 				purpose: "memory",
@@ -212,14 +207,13 @@ describe("AgentSession memory backend lifecycle", () => {
 				stopReason: "error",
 				errorMessage: "Invalid request",
 			},
-			{ purpose: "memory", role: "memory", model: backup.id, usage: succeeded.usage, stopReason: "stop" },
 		]);
 	});
 
 	it("does not journal unbilled local-inference memory completions", async () => {
 		const model = getBundledModel("local", "qwen2.5-1.5b")!;
 		spyOn(tinyModelClient, "complete").mockResolvedValue("Sam works at Globex.");
-		const { current, complete } = await startMemoryCompletion([model]);
+		const { current, complete } = await startMemoryCompletion(model);
 
 		expect(await complete("Sam works at Globex.")).toBe("Sam works at Globex.");
 		expect(current.sessionManager.getBranch().filter(entry => entry.type === "model_usage")).toEqual([]);
@@ -235,7 +229,7 @@ describe("AgentSession memory backend lifecycle", () => {
 			options?.onAttempt?.(message);
 			return message;
 		});
-		const { current, complete } = await startMemoryCompletion([model]);
+		const { current, complete } = await startMemoryCompletion(model);
 		const pending = complete("Sam works at Globex.");
 		await started.promise;
 		await current.sessionManager.newSession();
@@ -252,7 +246,7 @@ describe("AgentSession memory backend lifecycle", () => {
 			options?.onAttempt?.(response);
 			return response;
 		});
-		const { current, complete } = await startMemoryCompletion([model]);
+		const { current, complete } = await startMemoryCompletion(model);
 		const previousSessionId = current.sessionManager.getSessionId();
 		await current.sessionManager.newSession();
 		expect(current.sessionManager.getSessionId()).not.toBe(previousSessionId);

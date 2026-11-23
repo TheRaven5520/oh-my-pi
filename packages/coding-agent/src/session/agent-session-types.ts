@@ -124,33 +124,6 @@ export interface PlanYolo {
 	thinkingLevel?: ConfiguredThinkingLevel;
 }
 
-/** Details shown when confirming a usage-reserve-triggered model fallback. */
-export interface UsageFallbackConfirmation {
-	from: string;
-	to: string;
-	remainingPercent: number | undefined;
-}
-
-/**
- * Confirms whether a reserve-triggered model fallback may proceed.
- *
- * Interactive callers use the confirmation details to present the pending
- * route change; aborting `signal` cancels that pending confirmation.
- */
-export type UsageFallbackConfirmer = (confirmation: UsageFallbackConfirmation, signal: AbortSignal) => Promise<boolean>;
-
-/** Identifies a retry fallback chain already entered during startup model resolution. */
-export interface InitialRetryFallbackState {
-	/** Role whose configured primary was unavailable. */
-	role: string;
-	/** Configured primary selector retained for restoration when it becomes available. */
-	originalSelector: string;
-	/** Thinking selector configured for the unavailable primary. */
-	originalThinkingLevel: ConfiguredThinkingLevel | undefined;
-	/** Prevent cooldown restoration when startup selected this fallback from live usage health. */
-	pinned?: boolean;
-}
-
 /** Dependencies and initial state used to construct an AgentSession. */
 export interface AgentSessionConfig {
 	agent: Agent;
@@ -192,12 +165,8 @@ export interface AgentSessionConfig {
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	/** Initial session thinking selector. */
 	thinkingLevel?: ConfiguredThinkingLevel;
-	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); every later change, including retry-fallback recovery, is re-clamped to it. */
+	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); every later change, is re-clamped to it. */
 	thinkingLevelCeiling?: Effort;
-	/** Retry chain ownership when startup selected one of its fallback entries. */
-	initialRetryFallback?: InitialRetryFallbackState;
-	/** Skip retry.fallbackChains validation at construction; the host calls `validateRetryFallbackChains()` later. */
-	deferRetryFallbackValidation?: boolean;
 	/** Prewalk from the starting model to a fast/cheap target after implementation begins. */
 	prewalk?: Prewalk;
 	/** Force read-only plan mode at start, auto-approve, then switch to the target. */

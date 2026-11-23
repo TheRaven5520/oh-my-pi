@@ -114,7 +114,6 @@ import {
 	type CompactionBlockParam,
 	type CompactionEdit,
 	type ContentBlockParam,
-	type FallbackParam,
 	isAnthropicServerToolHistoryBlock,
 	type MessageCreateParams,
 	type MessageCreateParamsStreaming,
@@ -236,7 +235,6 @@ const midConversationOutputConfigBeta = "mid-conversation-output-config-2026-07-
 const contextManagementBeta = "context-management-2025-06-27";
 const structuredOutputsBeta = "structured-outputs-2025-12-15";
 const thinkingTokenCountBeta = "thinking-token-count-2026-05-13";
-const fallbackCreditBeta = "fallback-credit-2026-06-01";
 const claudeCodeUtilityBetaDefaults = [
 	oauthAuthBeta,
 	"interleaved-thinking-2025-05-14",
@@ -260,7 +258,6 @@ const interleavedThinkingBeta = "interleaved-thinking-2025-05-14";
 const fastModeBeta = "fast-mode-2026-02-01";
 const taskBudgetBeta = "task-budgets-2026-03-13";
 const effortBeta = "effort-2025-11-24";
-const serverSideFallbackBeta = "server-side-fallback-2026-06-01";
 
 function resolveAnthropicControlBetas(
 	model: Model<"anthropic-messages">,
@@ -299,7 +296,6 @@ function buildClaudeCodeBetas({
 	}
 	if (!agentRequest) return betas;
 	if (thinkingRequest) betas.push(effortBeta);
-	betas.push(fallbackCreditBeta);
 	return betas;
 }
 
@@ -1068,15 +1064,6 @@ export interface AnthropicOptions extends StreamOptions {
 	 * including SDK clients such as `AnthropicVertex`.
 	 */
 	client?: AnthropicMessagesClientLike;
-	/**
-	 * Server-side fallback beta chain (`server-side-fallback-2026-06-01`).
-	 * When set, `fallbacks` is forwarded on the request body and the beta
-	 * header is auto-attached; the response parser then honors mid-stream
-	 * `fallback` content blocks and `usage.iterations` for served-model
-	 * promotion and per-attempt pricing. Opt-in ONLY — leaving this
-	 * undefined preserves the pre-fallback behavior on every code path.
-	 */
-	fallbacks?: FallbackParam[];
 }
 
 export type AnthropicClientOptionsArgs = {
@@ -1518,54 +1505,6 @@ function unwrapAnthropicThinkingEnvelope(text: string): string | undefined {
 		stripped = true;
 	}
 	return stripped ? current : undefined;
-}
-
-/**
- * The refused response's content as the continuation prefix: client tool
- * calls (no matching tool_result) are omitted and a trailing text block is
- * right-trimmed, per the fallback-credit continuation contract.
- */
-function refusalContinuationPrefix(content: AssistantMessage["content"]): AssistantMessage["content"] {
-	const prefix = structuredClone(content.filter(block => block.type !== "toolCall"));
-	const last = prefix.at(-1);
-	if (last?.type === "text") last.text = last.text.trimEnd();
-	return prefix;
-}
-
-/** Wire form of {@link refusalContinuationPrefix} for the appended assistant message. */
-function formatEchoedRefusalContent(content: AssistantMessage["content"]): unknown[] {
-	return refusalContinuationPrefix(content).map(block => {
-		switch (block.type) {
-			case "text":
-				return { type: "text", text: block.text };
-			case "thinking":
-				return {
-					type: "thinking",
-					thinking: block.thinking,
-					...(block.thinkingSignature ? { signature: block.thinkingSignature } : {}),
-				};
-			case "redactedThinking":
-				return { type: "redacted_thinking", data: block.data };
-			case "fallback":
-				return { type: "fallback", from: block.from, to: block.to };
-			case "anthropicServerTool":
-				return block.block;
-			default:
-				return block;
-		}
-	});
-}
-
-function isAnthropicBadRequest(error: unknown): boolean {
-	if (!error) return false;
-	if (typeof error === "object") {
-		const rec = error as Record<string, unknown>;
-		if (rec.status === 400 || rec.statusCode === 400) return true;
-		if (typeof rec.message === "string" && (/\b400\b/.test(rec.message) || rec.message.includes("BadRequestError"))) {
-			return true;
-		}
-	}
-	return false;
 }
 
 function createEmptyUsage(premiumRequests?: number): Usage {
@@ -2079,30 +2018,10 @@ const streamAnthropicOnce = (
 			const controlBetas = resolveAnthropicControlBetas(model, prefixMismatchBehavior);
 			const mergedCallerHeaders = mergeHeaders(model.headers, options?.headers);
 			const umansGatewayWebSearchHeader = getUmansWebSearchHeader(model, mergedCallerHeaders);
-			// Keep fallback payloads aligned with the top-level Vertex effort gate:
-			// no nested effort field means the fallback scan cannot re-add its beta.
-			let fallbacks = options?.fallbacks;
-			if (
-				!model.compat.supportsOutputEffort &&
-				fallbacks?.some(entry => entry.output_config?.effort !== undefined)
-			) {
-				fallbacks = fallbacks.map(entry => {
-					const outputConfig = entry.output_config;
-					if (outputConfig?.effort === undefined) return entry;
-					return {
-						...entry,
-						output_config:
-							outputConfig.task_budget === undefined ? undefined : { task_budget: outputConfig.task_budget },
-					};
-				});
-			}
-
 			let client: AnthropicMessagesClientLike;
 			let isOAuthToken: boolean;
 			// Retained so a Claude Code version bump can rebuild the client's fingerprint headers.
 			let clientArgs: AnthropicClientOptionsArgs | undefined;
-			let requestExtraBetas: readonly string[] = [];
-			let clientDefaultHeaders: Record<string, string> | undefined;
 
 			if (options?.client) {
 				client = options.client;
@@ -2194,43 +2113,6 @@ const streamAnthropicOnce = (
 				) {
 					extraBetas.push(extendedCacheTtlBeta);
 				}
-				if (!isOAuth && isOfficialAnthropicApiUrl(baseUrl) && !extraBetas.includes(fallbackCreditBeta)) {
-					extraBetas.push(fallbackCreditBeta);
-				}
-				if (options?.fallbackCreditRedemption) {
-					const frozenBetas = (options.fallbackCreditRedemption.betas ?? []).filter(
-						b => !b.startsWith("server-side-fallback-"),
-					);
-					extraBetas.length = 0;
-					for (const beta of frozenBetas) {
-						extraBetas.push(beta);
-					}
-					if (!extraBetas.includes(fallbackCreditBeta) && !extraBetas.includes("fallback-credit-2026-06-01")) {
-						extraBetas.push(fallbackCreditBeta);
-					}
-				}
-				// Server-side fallback beta chain: opt-in via `options.fallbacks`.
-				// Nested overrides (`speed`, `output_config.effort`,
-				// `output_config.task_budget`) reuse the same top-level betas
-				// Anthropic requires for the primary request, so scan the chain
-				// and add every companion beta the fallback entries touch.
-				if (fallbacks?.length) {
-					if (!extraBetas.includes(serverSideFallbackBeta)) {
-						extraBetas.push(serverSideFallbackBeta);
-					}
-					for (const entry of fallbacks) {
-						if (entry.speed === "fast" && !extraBetas.includes(fastModeBeta)) {
-							extraBetas.push(fastModeBeta);
-						}
-						if (entry.output_config?.effort && !extraBetas.includes(effortBeta)) {
-							extraBetas.push(effortBeta);
-						}
-						if (entry.output_config?.task_budget && !extraBetas.includes(taskBudgetBeta)) {
-							extraBetas.push(taskBudgetBeta);
-						}
-					}
-				}
-
 				clientArgs = {
 					model,
 					apiKey,
@@ -2256,8 +2138,6 @@ const streamAnthropicOnce = (
 				const created = createClient(model, clientArgs);
 				client = created.client;
 				isOAuthToken = created.isOAuthToken;
-				clientDefaultHeaders = created.defaultHeaders;
-				requestExtraBetas = extraBetas;
 			}
 			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
@@ -2270,7 +2150,6 @@ const streamAnthropicOnce = (
 					prefixMismatchBehavior,
 					dropAllThinking,
 					droppedThinkingBlocks: providerSessionState?.prefixDroppedThinkingBlocks,
-					fallbacks,
 					effectiveBaseUrl: baseUrl,
 				});
 				let nextParams = built.params;
@@ -2301,61 +2180,13 @@ const streamAnthropicOnce = (
 				};
 				return nextParams;
 			};
-			let usingFallbackCredit = false;
-			let fallbackCreditShape: "continuation" | "unchanged" | undefined = undefined;
-			let fallbackCreditTransientRetries = 0;
-			let params: MessageCreateParamsStreaming;
-			if (
-				options?.fallbackCreditRedemption &&
-				Date.now() <= options.fallbackCreditRedemption.expiresAt &&
-				options.fallbackCreditRedemption.params
-			) {
-				const redemption = options.fallbackCreditRedemption;
-				usingFallbackCredit = true;
-				const frozenParams = structuredClone(redemption.params as MessageCreateParamsStreaming);
-				const targetModelId = options?.requestModelId ?? model.requestModelId ?? model.id;
-				frozenParams.model = targetModelId;
-				frozenParams.fallback_credit_token = redemption.token;
-				delete frozenParams.fallbacks;
-				if (
-					redemption.prefillClaim !== false &&
-					redemption.refusedContent &&
-					redemption.refusedContent.length > 0
-				) {
-					fallbackCreditShape = "continuation";
-					const echoed = formatEchoedRefusalContent(redemption.refusedContent);
-					if (echoed.length > 0) {
-						frozenParams.messages = [
-							...frozenParams.messages,
-							{ role: "assistant", content: echoed } as unknown as (typeof frozenParams.messages)[number],
-						];
-					}
-				} else {
-					fallbackCreditShape = "unchanged";
-				}
-				params = frozenParams;
-				rawRequestDump = {
-					provider: model.provider,
-					api: output.api,
-					model: model.id,
-					method: "POST",
-					url: `${baseUrl}/v1/messages${isOAuthToken ? "?beta=true" : ""}`,
-					body: params,
-				};
-			} else {
-				params = await prepareParams();
-			}
+			let params = await prepareParams();
 			const seenInputTransformations = new Set<string>();
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
 			const firstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
 			const requestTimeoutMs =
 				firstEventTimeoutMs !== undefined && firstEventTimeoutMs > 0 ? firstEventTimeoutMs : undefined;
 
-			// Opt-in flag: the response parser only honors `fallback` content
-			// blocks and `usage.iterations` when the current request opted into
-			// server-side-fallback beta chain. Leaving `fallbacks` unset preserves
-			// the pre-fallback stream shape on every event.
-			const serverSideFallback = !!fallbacks?.length;
 			type Block = (
 				| ThinkingContent
 				| RedactedThinkingContent
@@ -2438,25 +2269,6 @@ const streamAnthropicOnce = (
 				output.stopReason = "stop";
 				firstTokenTime = undefined;
 			};
-			// A rebuilt body no longer matches the refused request, so it cannot carry
-			// the credit token. When the refused turn already ran server tools, a
-			// tokenless retry would re-run and re-bill them: surface the failure instead.
-			const forfeitFallbackCredit = (streamFailure: unknown): void => {
-				if (
-					options?.fallbackCreditRedemption?.refusedContent?.some(block => block.type === "anthropicServerTool")
-				) {
-					logger.warn("anthropic: fallback credit cannot be forfeited after server tools ran; surfacing error", {
-						model: model.id,
-					});
-					throw streamFailure;
-				}
-				usingFallbackCredit = false;
-				fallbackCreditShape = undefined;
-			};
-			const rebuildParams = async (streamFailure: unknown): Promise<MessageCreateParamsStreaming> => {
-				if (usingFallbackCredit) forfeitFallbackCredit(streamFailure);
-				return prepareParams();
-			};
 			// Subscription slow mode (Claude Code `/low-priority`): first-party OAuth
 			// requests only. Capacity waits are tracked per request so the caller's
 			// max-wait budget covers the whole wait, not one attempt.
@@ -2519,7 +2331,7 @@ const streamAnthropicOnce = (
 					}
 				}
 				sentSlow = slowMode?.isActive(slowLane) === true;
-				let perRequestHeaders: Record<string, string> | undefined =
+				const perRequestHeaders: Record<string, string> | undefined =
 					umansGatewayWebSearchHeader || injectedClientBetaHeaders || options?.userProfileId || sentSlow
 						? {
 								...umansGatewayWebSearchHeader,
@@ -2528,19 +2340,6 @@ const streamAnthropicOnce = (
 								...(sentSlow ? { [ANTHROPIC_USAGE_LIMIT_HEADER]: ANTHROPIC_SLOW_USAGE_LIMIT } : {}),
 							}
 						: undefined;
-				if (usingFallbackCredit && options?.fallbackCreditRedemption?.betaHeader) {
-					const rawBetas = options.fallbackCreditRedemption.betaHeader
-						.split(",")
-						.map(b => b.trim())
-						.filter(b => b && !b.startsWith("server-side-fallback-"));
-					if (!rawBetas.includes(fallbackCreditBeta) && !rawBetas.includes("fallback-credit-2026-06-01")) {
-						rawBetas.push(fallbackCreditBeta);
-					}
-					perRequestHeaders = {
-						...perRequestHeaders,
-						"anthropic-beta": rawBetas.join(","),
-					};
-				}
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
 					maxRetries: 0,
@@ -2689,12 +2488,10 @@ const streamAnthropicOnce = (
 								const compacted = applyCompactionIterationUsage(output.usage, startUsage);
 								output.usage.totalTokens =
 									output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-								if (serverSideFallback) {
-									const served = fallbackServedModelFromUsage(startUsage);
-									if (served) output.model = served;
-								}
+								const served = fallbackServedModelFromUsage(startUsage);
+								if (served) output.model = served;
 								if (
-									!(serverSideFallback || compacted) ||
+									!(served || compacted) ||
 									!calculateIterationTurnCost(model, output.usage, startUsage, output.timestamp)
 								) {
 									calculateCost(model, output.usage, output.timestamp);
@@ -2737,15 +2534,11 @@ const streamAnthropicOnce = (
 							}
 							if (!firstTokenTime) firstTokenTime = performance.now();
 							if (event.content_block.type === "fallback") {
-								// Fallback boundary is only meaningful when the request
-								// opted into the beta chain — silently drop otherwise so
-								// unopted-in sessions never see the block persisted or
-								// influence downstream converters.
+								// The server may hand a turn to another model on its own;
+								// record the boundary so history and pricing reflect it.
 								const fallback = parseAnthropicFallbackWireBlock(event.content_block);
-								if (!serverSideFallback || !fallback) {
-									if (!fallback) {
-										reportAnthropicEnvelopeAnomaly("fallback content_block missing model refs");
-									}
+								if (!fallback) {
+									reportAnthropicEnvelopeAnomaly("fallback content_block missing model refs");
 									openBlocks.set(event.index, { contentIndex: -1, kind: "ignored" });
 									continue;
 								}
@@ -3017,21 +2810,6 @@ const streamAnthropicOnce = (
 									const label = category ? `Refusal (${category})` : "Refusal";
 									output.errorMessage = explanation ? `${label}: ${explanation}` : label;
 								}
-								if (stopDetails?.fallback_credit_token) {
-									const sentBetaHeader =
-										getHeaderCaseInsensitive(perRequestHeaders ?? {}, "anthropic-beta") ??
-										getHeaderCaseInsensitive(clientDefaultHeaders ?? {}, "anthropic-beta") ??
-										requestExtraBetas.join(",");
-									output.fallbackCreditHandle = {
-										token: stopDetails.fallback_credit_token,
-										prefillClaim: stopDetails.fallback_has_prefill_claim,
-										params: structuredClone(params),
-										betas: Array.from(requestExtraBetas),
-										betaHeader: sentBetaHeader,
-										expiresAt: Date.now() + 5 * 60 * 1000,
-										refusedContent: output.content ? structuredClone(output.content) : undefined,
-									};
-								}
 								if (!output.errorMessage) {
 									// Anthropic flagged an error-class stop (refusal / sensitive) without
 									// populating stop_details. Surface the raw reason instead of falling
@@ -3063,12 +2841,10 @@ const streamAnthropicOnce = (
 								const compacted = applyCompactionIterationUsage(output.usage, deltaUsage);
 								output.usage.totalTokens =
 									output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-								if (serverSideFallback) {
-									const served = fallbackServedModelFromUsage(deltaUsage);
-									if (served) output.model = served;
-								}
+								const served = fallbackServedModelFromUsage(deltaUsage);
+								if (served) output.model = served;
 								if (
-									!(serverSideFallback || compacted) ||
+									!(served || compacted) ||
 									!calculateIterationTurnCost(model, output.usage, deltaUsage, output.timestamp)
 								) {
 									calculateCost(model, output.usage, output.timestamp);
@@ -3147,65 +2923,9 @@ const streamAnthropicOnce = (
 							providerSessionState.strictToolsDisabled = true;
 						}
 						disableStrictTools = true;
-						params = await rebuildParams(streamFailure);
+						params = await prepareParams();
 						resetStreamOutputState();
 						continue;
-					}
-					if (usingFallbackCredit && firstTokenTime === undefined && isAnthropicBadRequest(streamFailure)) {
-						const errMessage = streamFailure instanceof Error ? streamFailure.message : String(streamFailure);
-						const redemption = options!.fallbackCreditRedemption!;
-						if (errMessage.includes("redemption temporarily unavailable")) {
-							if (Date.now() < redemption.expiresAt && fallbackCreditTransientRetries < 2) {
-								fallbackCreditTransientRetries++;
-								logger.warn(
-									"anthropic: fallback credit redemption temporarily unavailable, retrying same shape",
-									{
-										model: model.id,
-										attempt: fallbackCreditTransientRetries,
-									},
-								);
-								if (options?.providerRetryWait) {
-									await options.providerRetryWait(500, options.signal);
-								} else {
-									await scheduler.wait(500, { signal: options?.signal });
-								}
-								resetStreamOutputState();
-								continue;
-							}
-							throw streamFailure;
-						}
-						if (fallbackCreditShape === "continuation") {
-							logger.warn(
-								"anthropic: fallback credit continuation shape rejected, retrying with unchanged body",
-								{
-									model: model.id,
-									error: errMessage,
-								},
-							);
-							fallbackCreditShape = "unchanged";
-							const frozenParams = structuredClone(redemption.params as MessageCreateParamsStreaming);
-							const targetModelId = options?.requestModelId ?? model.requestModelId ?? model.id;
-							frozenParams.model = targetModelId;
-							frozenParams.fallback_credit_token = redemption.token;
-							delete frozenParams.fallbacks;
-							params = frozenParams;
-							resetStreamOutputState();
-							continue;
-						}
-						if (errMessage.includes("fallback_credit_token")) {
-							forfeitFallbackCredit(streamFailure);
-							logger.warn(
-								"anthropic: fallback credit token rejected, falling back to standard request without token",
-								{
-									model: model.id,
-									error: errMessage,
-								},
-							);
-							dropAllThinking = true;
-							params = await prepareParams();
-							resetStreamOutputState();
-							continue;
-						}
 					}
 					const streamFailureMessage =
 						streamFailure instanceof Error ? streamFailure.message : String(streamFailure);
@@ -3220,8 +2940,7 @@ const streamAnthropicOnce = (
 							version: getClaudeCodeVersion(),
 						});
 						client = createClient(model, { ...clientArgs, disableStrictTools }).client;
-						// The version only changes client headers; a redemption keeps its frozen body.
-						if (!usingFallbackCredit) params = await prepareParams();
+						params = await prepareParams();
 						providerRetryAttempt = 0;
 						output.content.length = 0;
 						output.model = model.id;
@@ -3249,7 +2968,7 @@ const streamAnthropicOnce = (
 						prefixBindingRetryAttempted = true;
 						prefixMismatchBehavior = undefined;
 						dropAllThinking = !rememberPrefixBindingFailure(params, streamFailureMessage, providerSessionState);
-						params = await rebuildParams(streamFailure);
+						params = await prepareParams();
 						providerRetryAttempt = 0;
 						output.content.length = 0;
 						output.model = model.id;
@@ -3283,7 +3002,7 @@ const streamAnthropicOnce = (
 							providerSessionState.replayUnsignedThinkingDisabled = true;
 						}
 						forceDemoteUnsignedThinking = true;
-						params = await rebuildParams(streamFailure);
+						params = await prepareParams();
 						providerRetryAttempt = 0;
 						output.content.length = 0;
 						output.model = model.id;
@@ -3325,7 +3044,7 @@ const streamAnthropicOnce = (
 						}
 						droppedAllThinkingForSignature = true;
 						dropAllThinking = true;
-						params = await rebuildParams(streamFailure);
+						params = await prepareParams();
 						providerRetryAttempt = 0;
 						output.content.length = 0;
 						output.model = model.id;
@@ -3352,7 +3071,7 @@ const streamAnthropicOnce = (
 							providerSessionState.fastModeDisabled = true;
 						}
 						dropFastMode = true;
-						params = await rebuildParams(streamFailure);
+						params = await prepareParams();
 						providerRetryAttempt = 0;
 						output.content.length = 0;
 						output.model = model.id;
@@ -3452,15 +3171,6 @@ const streamAnthropicOnce = (
 					output.stopReason = "stop";
 					firstTokenTime = undefined;
 				}
-			}
-			if (
-				usingFallbackCredit &&
-				fallbackCreditShape === "continuation" &&
-				options?.fallbackCreditRedemption?.refusedContent
-			) {
-				// The response continues the echoed prefix; keep it in the stored turn in
-				// AssistantMessage form so later replays keep signatures and server tools.
-				output.content.unshift(...refusalContinuationPrefix(options.fallbackCreditRedemption.refusedContent));
 			}
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
@@ -3863,14 +3573,13 @@ function ensureMaxTokensForThinking(params: MessageCreateParamsStreaming, maxAll
 function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl: AnthropicCacheControl): boolean {
 	for (let index = blocks.length - 1; index >= 0; index--) {
 		const block = blocks[index];
-		// Anthropic rejects cache_control on generated reasoning, fallback
-		// boundaries, and mid-conversation tool-control blocks. Preserve the
+		// Anthropic rejects cache_control on generated reasoning and
+		// mid-conversation tool-control blocks. Preserve the
 		// requested trailing boundary on ordinary content, including tool use
 		// and tool results.
 		if (
 			block.type === "thinking" ||
 			block.type === "redacted_thinking" ||
-			block.type === "fallback" ||
 			block.type === "tool_addition" ||
 			block.type === "tool_removal"
 		) {
@@ -4500,8 +4209,6 @@ type AnthropicParamBuildOptions = {
 	prefixMismatchBehavior?: "drop_block" | "error";
 	dropAllThinking: boolean;
 	droppedThinkingBlocks?: ReadonlySet<string>;
-	/** Sanitized server-side fallback entries; defaults to `options?.fallbacks` when omitted. */
-	fallbacks?: AnthropicOptions["fallbacks"];
 	/**
 	 * Whether the endpoint this request reaches accepts server-side compaction
 	 * (see {@link supportsAnthropicCompaction}); false keeps the edit, the beta,
@@ -4596,7 +4303,6 @@ function buildParams(
 		prefixMismatchBehavior,
 		dropAllThinking,
 		droppedThinkingBlocks,
-		fallbacks = options?.fallbacks,
 		compactionSupported = supportsAnthropicCompaction(model),
 		effectiveBaseUrl,
 	} = buildOptions;
@@ -4808,7 +4514,6 @@ function buildParams(
 		effectiveModel,
 		isOAuthToken,
 		{
-			serverSideFallbackEnabled: !!fallbacks?.length,
 			replayCompaction: compactionSupported,
 			replayLegacyCompaction: compactionReplay?.legacy,
 			dropAllThinking: dropAllThinking || stripThinkingHistory,
@@ -4884,7 +4589,6 @@ function buildParams(
 			},
 		}),
 		...(outputConfig && { output_config: outputConfig }),
-		...(fallbacks?.length ? { fallbacks } : {}),
 		...(vertexControlBetas.length > 0 ? { anthropic_beta: vertexControlBetas } : {}),
 		stream: true,
 	};
@@ -5049,12 +4753,6 @@ function toWellFormedDeep(value: unknown): unknown {
 /**
  * Serialize omp {@link Message}s to Anthropic wire messages.
  *
- * `opts.serverSideFallbackEnabled` — when the CURRENT request itself
- * opts into the server-side-fallback beta chain. Only then may a persisted
- * `fallback` content block from a prior turn be replayed on the wire;
- * otherwise the block is dropped to avoid a 400 on non-fallback requests
- * that don't send the beta.
- *
  * `opts.replayCompaction` — replay a user-role compaction summary that
  * carries an {@link AnthropicCompactionPayload} from this provider as a
  * native `compaction` block instead of its text. The API drops every block
@@ -5067,7 +4765,6 @@ export function convertAnthropicMessages(
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
 	opts?: {
-		serverSideFallbackEnabled?: boolean;
 		replayCompaction?: boolean;
 		replayLegacyCompaction?: boolean;
 		dropAllThinking?: boolean;
@@ -5281,18 +4978,10 @@ export function convertAnthropicMessages(
 				} else if (block.type === "anthropicServerTool") {
 					blocks.push(block.block);
 				} else if (block.type === "fallback") {
-					// Replay ONLY when both sides are aligned: the current
-					// request opted into the beta chain, and the target is
-					// official Anthropic (the only endpoint that accepts the
-					// block on the wire). `transformMessages` already drops
-					// the block for cross-provider / non-official replays, so
-					// this is defense-in-depth for direct convert calls.
-					if (!opts?.serverSideFallbackEnabled || !model.compat.officialEndpoint) continue;
-					blocks.push({
-						type: "fallback",
-						from: block.from,
-						to: block.to,
-					});
+					// Server-emitted handoff marker kept in persisted history only.
+					// Requests never send the server-side-fallback beta, so the
+					// block is never replayed on the wire.
+					continue;
 				} else if (block.type === "toolCall") {
 					blocks.push({
 						type: "tool_use",

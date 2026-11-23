@@ -40,7 +40,6 @@ import {
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
 } from "./messages";
-import type { RetryFallbackRole } from "./retry-fallback-chains";
 import { type BuildSessionContextOptions, buildSessionContext, type SessionContext } from "./session-context";
 import {
 	type BranchSummaryEntry,
@@ -3405,15 +3404,13 @@ export class SessionManager {
 	 * Append a model change as a child of the current leaf, then advance the leaf.
 	 * @param model Model in "provider/modelId" format
 	 * @param role Optional role (default: "default")
-	 * @param resolvedModelIsFallback Whether this transition selected a retry-fallback model
 	 */
-	appendModelChange(model: string, role?: string, resolvedModelIsFallback = false): string {
+	appendModelChange(model: string, role?: string): string {
 		const entry: ModelChangeEntry = {
 			type: "model_change",
 			...this.#freshEntryFields(),
 			model,
 			role,
-			resolvedModelIsFallback,
 		};
 		this.#recordEntry(entry);
 		return entry.id;
@@ -3426,7 +3423,6 @@ export class SessionManager {
 		agent?: string;
 		modelRole?: string;
 		resolvedModel?: string;
-		retryFallback?: RetryFallbackRole;
 		readOnly?: boolean;
 		outputSchema?: unknown;
 		outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -4298,7 +4294,6 @@ export interface PersistedSessionInit {
 	agent?: string;
 	modelRole?: string;
 	resolvedModel?: string;
-	retryFallback?: RetryFallbackRole;
 	readOnly?: boolean;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -4325,7 +4320,6 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			agent: entry.agent,
 			modelRole: entry.modelRole,
 			resolvedModel: entry.resolvedModel,
-			retryFallback: entry.retryFallback,
 			readOnly: entry.readOnly,
 			outputSchema: entry.outputSchema,
 			outputSchemaMode: entry.outputSchemaMode,

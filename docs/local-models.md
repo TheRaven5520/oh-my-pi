@@ -1,6 +1,6 @@
 # Local Model Catalog and Experiments
 
-This document covers the on-device models in the `local` catalog and records the tiny-model experiments behind the shipped title and memory recommendations. Model selection is role-based: use `modelRoles.<role>` for the primary selector and `retry.fallbackChains.<role>` for ordered alternatives. Catalog entries are authored in `packages/catalog/src/compat/rules/providers/local.kdl`; text model exports live in `packages/coding-agent/src/tiny/models.ts`. Benchmark timings below are historical measurements, not current-runtime guarantees.
+This document covers the on-device models in the `local` catalog and records the tiny-model experiments behind the shipped title and memory recommendations. Model selection is role-based: use `modelRoles.<role>` to select the model for a workload. Catalog entries are authored in `packages/catalog/src/compat/rules/providers/local.kdl`; text model exports live in `packages/coding-agent/src/tiny/models.ts`. Benchmark timings below are historical measurements, not current-runtime guarantees.
 
 ```yaml
 modelRoles:
@@ -10,17 +10,9 @@ modelRoles:
   dictation: local/parakeet-tdt-0.6b-v3
   # A local tiny model may also serve typed judgments:
   judge: local/lfm2-1.2b
-
-retry:
-  fallbackChains:
-    tiny: []
-    memory: []
-    speech: []
-    dictation: []
-    judge: []
 ```
 
-An explicit empty chain keeps each workload local. Leaving a model-kind chain unset instead uses that role's built-in priority list. The `default` fallback chain does not apply to `speech`, `dictation`, or `judge`.
+Assigning a local model to a role keeps that workload local. Leaving a model-kind role unset instead uses that role's built-in priority list to pick the first available candidate.
 
 Inspect the catalog with `omp models --kind tiny`, `omp models --kind tts`, and `omp models --kind stt`. Download tiny models with `omp tiny-models list`, `omp tiny-models download <model-id>`, or `omp tiny-models download all`. Run `omp setup speech` to choose, persist, and download the local speech and dictation models selected by their roles.
 
@@ -232,5 +224,5 @@ Kokoro and the transformers.js Whisper models read `providers.tinyModelDevice` /
 - Local tiny inference for title, memory, or judgment workloads is selected with a `local/<model-id>` role assignment. An unset `tiny` role stays on its online default; an unset `memory` role follows the effective `tiny` role and can therefore become local when `tiny` is local. Unset `speech` and `dictation` roles use their own built-in priority lists, whose first candidates are local.
 - Local inference runs **in a worker** (off the main thread); weights are downloaded only when a local candidate is used or explicitly prefetched with `omp tiny-models` or `omp setup speech`, then cached on disk.
 - Session-title generation uses `modelRoles.tiny`; Mnemopi extraction and consolidation use `modelRoles.memory` when its LLM mode is enabled. Their distinct prompts and benchmark groups do not impose separate runtime model types.
-- Auto-thinking, Smart unexpected-stop detection, typed Eval judgments, and AI-assisted git staging use the `judge` role. Assign `typesafe/jev-latest` for TypeSafe or a compatible local tiny model for on-device judgment; order alternatives under `retry.fallbackChains.judge`.
+- Auto-thinking, Smart unexpected-stop detection, typed Eval judgments, and AI-assisted git staging use the `judge` role. Assign `typesafe/jev-latest` for TypeSafe or a compatible local tiny model for on-device judgment.
 - Managed memory extraction uses the shared line-format, small-talk-guarded system prompt on both local and online transports. A local primary additionally selects the local consolidation prompt. Explicit external Mnemopi endpoints remain authoritative instead of being replaced by the memory role.

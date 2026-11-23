@@ -21,7 +21,6 @@ import type { ModelRegistry } from "../config/model-registry";
 import { accountSource } from "../config/personal-accounts";
 import {
 	filterAvailableModelsByEnabledPatterns,
-	formatModelStringWithRouting,
 	getModelMatchPreferences,
 	type ResolvedModelRoleValue,
 	resolveModelRoleValue,
@@ -75,7 +74,6 @@ export interface ModelControlsHost {
 	resolveActiveEditMode(): EditMode;
 	syncAfterModelChange(previousEditMode: EditMode): Promise<void>;
 	setModelWithProviderSessionReset(model: Model): Promise<void>;
-	clearActiveRetryFallback(): void;
 	clearInheritedProviderPromptCacheKey(): void;
 	magicKeywordEnabled(keyword: MagicKeywordId): boolean;
 	emit(event: AgentSessionEvent): void;
@@ -94,7 +92,7 @@ export class ModelControls {
 	 * effort ladder (Haiku stops at xhigh) never lowers the level later models get.
 	 */
 	#requestedThinkingLevel: Exclude<ThinkingLevel, typeof ThinkingLevel.Inherit> | undefined;
-	/** Hard per-session effort ceiling (e.g. a task spawn's `task.maxEffort` cap); recovery paths re-clamp to it. */
+	/** Hard per-session effort ceiling (e.g. a task spawn's `task.maxEffort` cap); every thinking-level change is clamped to it. */
 	readonly #thinkingLevelCeiling: Effort | undefined;
 	#autoThinking = false;
 	#autoResolvedLevel: Effort | undefined;
@@ -141,11 +139,6 @@ export class ModelControls {
 	/** Effective metadata-clamped thinking level applied to the agent. */
 	get thinkingLevel(): ThinkingLevel | undefined {
 		return this.#thinkingLevel;
-	}
-
-	/** Hard per-session effort ceiling every thinking-level change is clamped to. */
-	get thinkingLevelCeiling(): Effort | undefined {
-		return this.#thinkingLevelCeiling;
 	}
 
 	/** Configured selector, preserving `auto` while classification is active. */
@@ -272,8 +265,6 @@ export class ModelControls {
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
 
-		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
-		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(targetModel);
 		this.#host.sessionManager.appendModelChange(`${targetModel.provider}/${targetModel.id}`, role);
 		if (options?.persist) {
@@ -317,8 +308,6 @@ export class ModelControls {
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
 
-		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
-		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(targetModel);
 		this.#host.sessionManager.appendModelChange(
 			`${targetModel.provider}/${targetModel.id}`,
@@ -551,8 +540,6 @@ export class ModelControls {
 		const next = scopedModels[nextIndex];
 
 		// Apply model
-		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(next.model));
-		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(next.model);
 		this.#host.sessionManager.appendModelChange(`${next.model.provider}/${next.model.id}`);
 		this.#host.settings.getStorage()?.recordModelUsage(`${next.model.provider}/${next.model.id}`);
@@ -582,8 +569,6 @@ export class ModelControls {
 			throw new Error(`No API key for ${nextModel.provider}/${nextModel.id}`);
 		}
 
-		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(nextModel));
-		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(nextModel);
 		this.#host.sessionManager.appendModelChange(`${nextModel.provider}/${nextModel.id}`);
 		this.#host.settings.getStorage()?.recordModelUsage(`${nextModel.provider}/${nextModel.id}`);
@@ -638,14 +623,6 @@ export class ModelControls {
 			cfgDefaultThinkingLevel.set(this.#host.settings, requested);
 		}
 		this.#applyThinkingLevel(level, false, requested, requestChanged);
-	}
-
-	/**
-	 * Apply a level for the active model only (turn-recovery fallbacks): the
-	 * level the user asked for is kept, so the next model switch re-clamps from it.
-	 */
-	applyThinkingLevel(level: ConfiguredThinkingLevel | undefined): void {
-		this.#applyThinkingLevel(level, false, this.#requestedThinkingLevel);
 	}
 
 	/**

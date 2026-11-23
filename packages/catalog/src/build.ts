@@ -70,8 +70,7 @@ function isInputModalities(value: unknown): value is ("text" | "image")[] {
  * `context-window-floor`) overwrite upstream values; selection metadata
  * (`priority`, `apply-patch-tool-type`, `service-tier-cost`,
  * `requires-cursor-tool-schema-projection`, `requires-tool-result-image-hoisting`,
- * `supports-assistant-prefill`) is rule-owned; `context-promotion-target` fills
- * only when the spec left it unset.
+ * `supports-assistant-prefill`) is rule-owned.
  */
 function applyCatalogAssignments<TApi extends Api>(model: Model<TApi>, catalog: Record<string, unknown>): void {
 	const kind = MODEL_KINDS.find(value => value === catalog.kind);
@@ -155,10 +154,6 @@ function applyCatalogAssignments<TApi extends Api>(model: Model<TApi>, catalog: 
 	// transport. Materialize it because the transport consumes the model field.
 	if (typeof catalog.omitMaxOutputTokens === "boolean" && model.omitMaxOutputTokens === undefined) {
 		model.omitMaxOutputTokens = catalog.omitMaxOutputTokens;
-	}
-	const contextPromotionTarget = catalog.contextPromotionTarget;
-	if (typeof contextPromotionTarget === "string" && model.contextPromotionTarget === undefined) {
-		model.contextPromotionTarget = contextPromotionTarget;
 	}
 }
 

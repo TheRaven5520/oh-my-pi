@@ -10,8 +10,7 @@
  * Those bodies used to be either dropped silently (the stream then looked like a
  * successful empty completion) or surfaced as an unclassified
  * {@link ProviderResponseError} whose `errorId` stayed 0 — so `AIError.retriable`
- * answered "terminal" and `retry.fallbackChains` never advanced, pinning the
- * session on a provider that was merely busy.
+ * answered "terminal" instead of allowing a same-model retry.
  *
  * Both probes hand the classifier the structured signal it already trusts for an
  * out-of-band failure: a {@link ProviderHttpError} carrying a status the upstream

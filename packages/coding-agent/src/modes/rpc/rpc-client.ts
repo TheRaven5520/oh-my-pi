@@ -158,8 +158,6 @@ const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
 	"auto_retry_end",
 	"cache_warming_start",
 	"cache_warming_end",
-	"retry_fallback_applied",
-	"retry_fallback_succeeded",
 	"ttsr_triggered",
 	"todo_reminder",
 	"todo_auto_clear",

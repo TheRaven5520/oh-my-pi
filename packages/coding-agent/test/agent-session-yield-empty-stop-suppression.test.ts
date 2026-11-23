@@ -96,7 +96,6 @@ async function createHarness(
 		"retry.baseDelayMs": 5,
 		"retry.maxDelayMs": 100,
 		"retry.maxRetries": 1,
-		"retry.modelFallback": false,
 		"todo.enabled": false,
 		"todo.eager": "default",
 		"todo.reminders": false,

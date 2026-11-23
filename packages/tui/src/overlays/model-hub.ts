@@ -1,4 +1,3 @@
-import { parseModelString, splitUpstreamRouting, formatModelSelectorValue } from "./model-selector";
 /**
  * Fullscreen /models hub, shown on the alternate screen like /settings.
  *
@@ -77,34 +76,15 @@ import { renderSegmentTrack } from "../chrome/segment-track";
 
 const MODEL_HUB_BODY_MIN_WIDTH = 28;
 
-/**
- * A row of the Roles view: a role, a model/wildcard chain-key header, one of a
- * chain's fallback entries, or the trailing "+ New role…". Fallback rows under
- * a chain-key header carry the key in `role` — `retry.fallbackChains` treats
- * roles, `provider/model-id`, and `provider/*` keys uniformly.
- */
-type RolesRow =
-	| { kind: "role"; role: string }
-	| { kind: "chainKey"; role: string }
-	| { kind: "fallback"; role: string; chainIndex: number; selector: string }
-	| { kind: "separator" }
-	| { kind: "newFallback" }
-	| { kind: "newRole" };
+/** A row of the Roles view: a role, a separator, or the trailing "+ New role…". */
+type RolesRow = { kind: "role"; role: string } | { kind: "separator" } | { kind: "newRole" };
 
-/**
- * What the model browser is currently picking for: a role's model, a slot in
- * a fallback chain (`role` may be a role name, model selector, or `provider/*`
- * key), or the primary model a brand-new fallback chain protects.
- */
-type AssignTarget =
-	| { kind: "role"; role: string }
-	| { kind: "fallback"; role: string; index: number | null }
-	| { kind: "fallbackKey" };
+/** What the model browser is currently picking for: a role's model. */
+type AssignTarget = { kind: "role"; role: string };
 
 /** Live preferences and selector operations supplied by the host. */
 export interface ModelHubSource extends ModelBrowserSource {
 	readonly disabledProviders: readonly string[];
-	readonly fallbackChains: Record<string, string[]>;
 	readonly modelRoleStorage: "global" | "project";
 	readonly cycleOrder: readonly string[];
 	getProjectModelRole(role: string): string | undefined;
@@ -159,8 +139,6 @@ export interface ModelHubCallbacks {
 	) => void | boolean | Promise<void | boolean>;
 	/** Clear a configured role back to auto-selection. */
 	onUnassign: (role: string, scope?: ModelRoleSelectionScope) => void;
-	/** Persist a `retry.fallbackChains` entry — keyed by a role, `provider/model-id`, or `provider/*`; an empty chain clears the key. */
-	onFallbackChainChange?: (role: string, chain: string[]) => void;
 	/** Locked provider activation: forward to the /login flow. */
 	onLoginRequest?: (providerId: string) => void;
 	/** Save the current role assignments and default thinking level as a named model preset. */
@@ -216,9 +194,7 @@ interface SidebarAnchor {
 	offset: number;
 }
 
-interface StripChip extends HubStripChip<
-	"assign" | "unassign" | "fallback" | "fallbackModel" | "fallbackProvider" | "scope" | "thinking"
-> {
+interface StripChip extends HubStripChip<"assign" | "unassign" | "scope" | "thinking"> {
 	role?: string;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	scope?: ModelRoleSelectionScope;
@@ -229,8 +205,6 @@ type StripState =
 			kind: "role" | "scope" | "thinking";
 			item: ModelBrowserItem;
 			role?: string;
-			/** Set when a thinking strip edits a fallback-chain entry instead of a role assignment. */
-			fallbackIndex?: number;
 			scope?: ModelRoleSelectionScope;
 			/** Where to land when a scope or thinking strip closes. */
 			returnToRoles: boolean;
@@ -248,7 +222,6 @@ type StripState =
 type RolesAction =
 	| "pick"
 	| "clear"
-	| "fallback"
 	| "cycle"
 	| "earlier"
 	| "later"
@@ -261,7 +234,6 @@ type RolesAction =
 /** Printable keys of the Roles view and the command each runs. */
 const ROLES_ACTION_KEYS: Record<string, RolesAction> = {
 	x: "clear",
-	f: "fallback",
 	c: "cycle",
 	"[": "earlier",
 	"]": "later",
@@ -313,14 +285,9 @@ function rolesRowKey(row: RolesRow, index: number): string {
 	switch (row.kind) {
 		case "role":
 			return `role:${row.role}`;
-		case "chainKey":
-			return `chain:${row.role}`;
-		case "fallback":
-			return `fallback:${row.role}:${row.chainIndex}`;
 		case "separator":
 			return `sep:${index}`;
 		case "newRole":
-		case "newFallback":
 			return row.kind;
 	}
 }
@@ -883,43 +850,11 @@ export class ModelHubComponent implements Component {
 		);
 	}
 
-	/**
-	 * The configured `retry.fallbackChains` record with malformed keys/entries
-	 * dropped: non-array chains and non-string selectors never reach the rows
-	 * or chain editors, so an edit through the hub replaces them wholesale.
-	 */
-	#fallbackChains(): Record<string, string[]> {
-		try {
-			const chains = this.#settings.fallbackChains;
-			if (!chains || typeof chains !== "object" || Array.isArray(chains)) return {};
-			const sanitized: Record<string, string[]> = {};
-			for (const key in chains) {
-				const chain = (chains as Record<string, unknown>)[key];
-				if (!Array.isArray(chain)) continue;
-				sanitized[key] = chain.filter((entry): entry is string => typeof entry === "string");
-			}
-			return sanitized;
-		} catch {
-			return {};
-		}
-	}
-
-	/**
-	 * Rebuild the Roles view rows: each visible role followed by its
-	 * fallback-chain entries, then model-oriented chains (`provider/model-id`
-	 * and `provider/*` keys) as headed groups.
-	 */
+	/** Rebuild the Roles view rows: each visible role, then the trailing "+ New role…". */
 	#buildRolesRows(): void {
 		const rows: RolesRow[] = [];
-		const chains = this.#fallbackChains();
 		const appendRoles = (roles: ReadonlyArray<string>): void => {
-			for (const role of roles) {
-				rows.push({ kind: "role", role });
-				const chain = chains[role] ?? [];
-				for (let i = 0; i < chain.length; i++) {
-					rows.push({ kind: "fallback", role, chainIndex: i, selector: chain[i] });
-				}
-			}
+			for (const role of roles) rows.push({ kind: "role", role });
 		};
 		const visibleRoles = this.#visibleRoleIds();
 		if (this.#roleTab === "all") {
@@ -932,18 +867,6 @@ export class ModelHubComponent implements Component {
 			appendRoles(visibleRoles.filter(role => this.#settings.getRoleInfo(role).section === this.#roleTab));
 		}
 		rows.push({ kind: "newRole" });
-		rows.push({ kind: "separator" });
-		const modelKeys = Object.keys(chains)
-			.filter(key => key.includes("/"))
-			.sort();
-		for (const key of modelKeys) {
-			const chain = chains[key] ?? [];
-			rows.push({ kind: "chainKey", role: key });
-			for (let i = 0; i < chain.length; i++) {
-				rows.push({ kind: "fallback", role: key, chainIndex: i, selector: chain[i] });
-			}
-		}
-		rows.push({ kind: "newFallback" });
 		this.#rolesRows = rows;
 	}
 
@@ -952,12 +875,8 @@ export class ModelHubComponent implements Component {
 	 * unfiltered `total`, counted in the same rows Tern counts as shown.
 	 */
 	#allRolesRowCount(): number {
-		const chains = this.#fallbackChains();
-		// "New role…" and "New fallback chain…", then each role and model chain with its fallback entries.
-		let count = 2;
-		for (const role of this.#visibleRoleIds()) count += 1 + (chains[role]?.length ?? 0);
-		for (const key in chains) if (key.includes("/")) count += 1 + chains[key].length;
-		return count;
+		// "New role…" plus each visible role.
+		return 1 + this.#visibleRoleIds().length;
 	}
 
 	/** Refresh roles + dependent state after a settings mutation (assign/unassign). */
@@ -1251,9 +1170,7 @@ export class ModelHubComponent implements Component {
 			const target = this.#assigning;
 			this.#assigning = null;
 			if (!target) this.#openRoleStrip(registeredItem);
-			else if (target.kind === "role") this.#assignRole(registeredItem, target.role, true);
-			else if (target.kind === "fallbackKey") this.#openFallbackKeyStrip(registeredItem);
-			else this.#commitFallback(registeredItem, target);
+			else this.#assignRole(registeredItem, target.role, true);
 		}, settle);
 	}
 
@@ -1272,13 +1189,7 @@ export class ModelHubComponent implements Component {
 		if (this.#assigning) {
 			const target = this.#assigning;
 			this.#assigning = null;
-			if (target.kind === "role") {
-				this.#assignRole(item, target.role, true);
-			} else if (target.kind === "fallbackKey") {
-				this.#openFallbackKeyStrip(item);
-			} else {
-				this.#commitFallback(item, target);
-			}
+			this.#assignRole(item, target.role, true);
 			return;
 		}
 		this.#openRoleStrip(item);
@@ -1386,7 +1297,7 @@ export class ModelHubComponent implements Component {
 	 * Resolve what `t` on a role row would edit: the role's model in its
 	 * persisted scope. Undefined when the role is unassigned or its model has
 	 * no thinking levels to offer, which makes both `t` and its footer hint
-	 * inert — the same rule wildcard fallback rows follow.
+	 * inert.
 	 */
 	#roleThinkingTarget(role: string): { item: ModelBrowserItem; scope?: ModelRoleSelectionScope } | undefined {
 		const assignment = this.#roles[role];
@@ -1435,20 +1346,6 @@ export class ModelHubComponent implements Component {
 					action: assignedHere ? "unassign" : "assign",
 				});
 			}
-		}
-		chips.push({
-			label: `fallbacks:${item.model.id}`,
-			styled: theme.fg("muted", `fallbacks:${item.model.id}`),
-			action: "fallbackModel",
-		});
-		chips.push({
-			label: `fallbacks:${item.model.provider}/*`,
-			styled: theme.fg("muted", `fallbacks:${item.model.provider}/*`),
-			action: "fallbackProvider",
-		});
-		// `retry-fallback` appends to the default chain, so only chat-capable models qualify.
-		if (this.#settings.getRoleInfo("default").accepts(item.model)) {
-			chips.push({ label: "fallback", styled: theme.fg("muted", "retry-fallback"), action: "fallback" });
 		}
 		this.#strip = { kind: "role", item, chips, index: 0, returnToRoles: false };
 	}
@@ -1502,130 +1399,6 @@ export class ModelHubComponent implements Component {
 		});
 	}
 
-	/**
-	 * Fallback-entry model lookup through the registry — the same
-	 * case-insensitive, alias-aware resolution the runtime uses, so
-	 * `OpenAI/GPT-5.5` edits the model it runs. Covers locked providers too:
-	 * effort support is a catalog fact, not an auth fact, and the row already
-	 * exists, so the strip changes no scope.
-	 */
-	#findFallbackModel(provider: string, id: string): ModelBrowserItem | undefined {
-		const model = this.#registry.find(provider, id);
-		if (!model) return undefined;
-		return { provider: model.provider, id: model.id, model, selector: `${model.provider}/${model.id}` };
-	}
-
-	/**
-	 * Split a fallback-chain entry into its model base, explicit effort, and
-	 * `@upstream` routing. An exact literal id wins over routing
-	 * (`google-vertex/claude-opus-4-8@default` is a real model, not a route —
-	 * mirroring the runtime's exact-first precedence); otherwise the routing
-	 * slug is kept verbatim so saves can re-attach it (`openrouter/id@fireworks`
-	 * looks up `openrouter/id` but persists with the route intact).
-	 */
-	#parseFallbackEntry(raw: string):
-		| {
-				provider: string;
-				id: string;
-				thinkingLevel?: ConfiguredThinkingLevel;
-				upstream: string | undefined;
-		  }
-		| undefined {
-		const trimmed = raw.trim();
-		const parse = (pattern: string) =>
-			parseModelString(pattern, {
-				allowMaxSuffix: true,
-				allowAutoAlias: true,
-				isLiteralModelId: (provider, id) => this.#findFallbackModel(provider, id) !== undefined,
-			});
-		const literal = parse(trimmed);
-		if (literal && this.#findFallbackModel(literal.provider, literal.id)) return { ...literal, upstream: undefined };
-		const routing = splitUpstreamRouting(trimmed);
-		if (!routing) {
-			if (!literal) return undefined;
-			return { ...literal, upstream: undefined };
-		}
-		const parsed = parse(routing.base.trim());
-		if (!parsed) return undefined;
-		return { ...parsed, upstream: routing.upstream };
-	}
-
-	/**
-	 * Resolve a fallback-chain entry to its browser item, explicit effort, and
-	 * routing. Undefined when the row is inert: `provider/*` wildcards (always
-	 * inherit) or models known neither live nor from the catalog.
-	 */
-	#resolveFallbackEntry(
-		role: string,
-		index: number,
-	):
-		| { item: ModelBrowserItem; thinkingLevel: ConfiguredThinkingLevel | undefined; upstream: string | undefined }
-		| undefined {
-		const raw = this.#fallbackChains()[role]?.[index];
-		if (!raw || raw.endsWith("/*")) return undefined;
-		const parsed = this.#parseFallbackEntry(raw);
-		if (!parsed) return undefined;
-		const item = this.#findFallbackModel(parsed.provider, parsed.id);
-		if (!item) return undefined;
-		return { item, thinkingLevel: parsed.thinkingLevel, upstream: parsed.upstream };
-	}
-
-	/**
-	 * Open the thinking strip for a fallback-chain entry (`t` on a `↳` row).
-	 * Wildcard entries (`provider/*`) always inherit by design, so `t` is inert on them.
-	 */
-	#openFallbackThinkingStrip(row: { role: string; chainIndex: number }): void {
-		const resolved = this.#resolveFallbackEntry(row.role, row.chainIndex);
-		if (!resolved) return;
-		const { item } = resolved;
-		// No `auto` chip: a hand-written `:auto` suffix collapses to inherit at
-		// apply time, so offering it would promise per-prompt classification the
-		// fallback never performs. A primary running `auto` is inherited anyway
-		// through the bare form.
-		const options: ConfiguredThinkingLevel[] = [
-			ThinkingLevel.Inherit,
-			ThinkingLevel.Off,
-			...getSupportedEfforts(item.model),
-		];
-		const current =
-			resolved.thinkingLevel === undefined || resolved.thinkingLevel === AUTO_THINKING
-				? ThinkingLevel.Inherit
-				: resolved.thinkingLevel;
-		const chips = this.#thinkingChips(options);
-		this.#strip = {
-			kind: "thinking",
-			item,
-			role: row.role,
-			fallbackIndex: row.chainIndex,
-			chips,
-			index: Math.max(0, options.indexOf(current)),
-			returnToRoles: true,
-		};
-	}
-
-	/** Persist a fallback entry's thinking choice: an explicit effort is suffixed, inherit is stored bare. */
-	#setFallbackThinking(role: string, index: number, level: ConfiguredThinkingLevel): void {
-		const chain = [...(this.#fallbackChains()[role] ?? [])];
-		if (index >= chain.length) return;
-		const resolved = this.#resolveFallbackEntry(role, index);
-		if (!resolved) return;
-		// Save the registry-canonical spelling (`OpenAI/GPT-5.5` persists as
-		// `openai/gpt-5.5:off`), re-attaching `@upstream` routing ahead of the
-		// effort suffix (`id@up:low` is the canonical order).
-		const base = `${resolved.item.provider}/${resolved.item.id}`;
-		const routed = resolved.upstream ? `${base}@${resolved.upstream}` : base;
-		const next = formatModelSelectorValue(routed, level);
-		chain[index] = next;
-		for (let i = chain.length - 1; i >= 0; i--) {
-			if (i !== index && chain[i] === next) chain.splice(i, 1);
-		}
-		this.#setFallbackChain(role, chain);
-		const rowIndex = this.#rolesRows.findIndex(
-			row => row.kind === "fallback" && row.role === role && row.selector === next,
-		);
-		if (rowIndex >= 0) this.#roleIndex = rowIndex;
-	}
-
 	#closeStrip(): void {
 		const strip = this.#strip;
 		this.#strip = null;
@@ -1659,18 +1432,6 @@ export class ModelHubComponent implements Component {
 				}
 				this.#closeStrip();
 				return;
-			case "fallback":
-				this.#appendFallback(strip.item, "default");
-				this.#closeStrip();
-				return;
-			case "fallbackModel":
-				this.#closeStrip();
-				this.#startAssignFallback(strip.item.selector, null);
-				return;
-			case "fallbackProvider":
-				this.#closeStrip();
-				this.#startAssignFallback(`${strip.item.model.provider}/*`, null);
-				return;
 			case "scope":
 				if (strip.role && chip.scope) {
 					this.#strip = null;
@@ -1678,12 +1439,6 @@ export class ModelHubComponent implements Component {
 				}
 				return;
 			case "thinking": {
-				if (strip.role && chip.thinkingLevel !== undefined && strip.fallbackIndex !== undefined) {
-					this.#setFallbackThinking(strip.role, strip.fallbackIndex, chip.thinkingLevel);
-					this.#strip = null;
-					this.#frame.chipRanges = [];
-					return;
-				}
 				// The preselected level is confirmation, not a force-reapply action;
 				// only a changed level should call setModel() again.
 				const changed = chip.thinkingLevel !== strip.initialThinkingLevel;
@@ -1719,106 +1474,6 @@ export class ModelHubComponent implements Component {
 		if (current) {
 			this.#browser.selectSelector(`${current.model.provider}/${current.model.id}`);
 		}
-	}
-
-	/** Browse the catalog to fill a fallback-chain slot: `index` replaces an entry, `null` appends. */
-	#startAssignFallback(role: string, index: number | null): void {
-		this.#assigning = { kind: "fallback", role, index };
-		this.#focus = "list";
-		this.#browser.setShowProvider(true);
-		this.#setCandidateItems(this.#availableItems);
-		this.#browser.setQuery("");
-		if (index !== null) {
-			const selector = this.#fallbackChains()[role]?.[index];
-			// Suffixed entries (`provider/id:low`) carry effort the browser rows
-			// don't show; match on the base so the current model preselects.
-			if (selector) {
-				const parsed = this.#parseFallbackEntry(selector);
-				this.#browser.selectSelector(parsed ? `${parsed.provider}/${parsed.id}` : selector);
-			}
-		}
-	}
-
-	/** Browse the catalog for the primary model a brand-new fallback chain protects. */
-	#startAssignFallbackKey(): void {
-		this.#assigning = { kind: "fallbackKey" };
-		this.#focus = "list";
-		this.#browser.setShowProvider(true);
-		this.#setCandidateItems(this.#availableItems);
-		this.#browser.setQuery("");
-	}
-
-	/** Second step of "+ New fallback…": key the chain by the picked model or its whole provider. */
-	#openFallbackKeyStrip(item: ModelBrowserItem): void {
-		const chips: StripChip[] = [
-			{
-				label: `for ${item.selector}`,
-				styled: theme.fg("muted", `for ${item.selector}`),
-				action: "fallbackModel",
-			},
-			{
-				label: `for ${item.model.provider}/*`,
-				styled: theme.fg("muted", `for ${item.model.provider}/*`),
-				action: "fallbackProvider",
-			},
-		];
-		this.#strip = { kind: "role", item, chips, index: 0, returnToRoles: false };
-	}
-
-	/** Write the picked model into the target chain slot, dedupe, and land back on its Roles row. */
-	#commitFallback(item: ModelBrowserItem, target: { role: string; index: number | null }): void {
-		const chain = [...(this.#fallbackChains()[target.role] ?? [])];
-		// New picks are stored bare, i.e. inherit-the-primary; `t` on the row specializes the effort.
-		const selector = item.selector;
-		if (target.index !== null && target.index < chain.length) {
-			chain[target.index] = selector;
-			for (let i = chain.length - 1; i >= 0; i--) {
-				if (i !== target.index && chain[i] === selector) chain.splice(i, 1);
-			}
-		} else if (!chain.includes(selector)) {
-			chain.push(selector);
-		}
-		this.#setFallbackChain(target.role, chain);
-		this.#browser.setQuery("");
-		this.#setActiveEntry("roles");
-		this.#focus = "list";
-		const rowIndex = this.#rolesRows.findIndex(
-			row => row.kind === "fallback" && row.role === target.role && row.selector === selector,
-		);
-		if (rowIndex >= 0) this.#roleIndex = rowIndex;
-	}
-
-	/** Persist `role`'s chain through the host callback and rebuild dependent state. */
-	#setFallbackChain(role: string, chain: string[]): void {
-		this.#callbacks.onFallbackChainChange?.(role, chain);
-		this.#refreshAfterMutation();
-	}
-
-	/** Append `item` to `role`'s fallback chain (no-op when already present). */
-	#appendFallback(item: ModelBrowserItem, role: string): void {
-		const chain = [...(this.#fallbackChains()[role] ?? [])];
-		if (chain.includes(item.selector)) return;
-		chain.push(item.selector);
-		this.#setFallbackChain(role, chain);
-	}
-
-	/** Remove one chain entry; the cursor stays on the nearest surviving row. */
-	#removeFallback(row: { role: string; chainIndex: number }): void {
-		const chain = [...(this.#fallbackChains()[row.role] ?? [])];
-		if (row.chainIndex >= chain.length) return;
-		chain.splice(row.chainIndex, 1);
-		this.#setFallbackChain(row.role, chain);
-		this.#roleIndex = Math.min(this.#roleIndex, Math.max(0, this.#rolesRows.length - 1));
-	}
-
-	/** Move a chain entry one slot earlier/later; the cursor follows the moved entry. */
-	#moveFallback(row: { role: string; chainIndex: number }, delta: -1 | 1): void {
-		const chain = [...(this.#fallbackChains()[row.role] ?? [])];
-		const target = row.chainIndex + delta;
-		if (row.chainIndex >= chain.length || target < 0 || target >= chain.length) return;
-		[chain[row.chainIndex], chain[target]] = [chain[target], chain[row.chainIndex]];
-		this.#setFallbackChain(row.role, chain);
-		this.#roleIndex += delta;
 	}
 
 	#cancelAssign(): void {
@@ -2163,7 +1818,7 @@ export class ModelHubComponent implements Component {
 		}
 	}
 
-	/** Row count of the roles view (roles, their fallback entries, and the trailing "+ New role…" row). */
+	/** Row count of the roles view (roles and the trailing "+ New role…" row). */
 	get #rolesRowCount(): number {
 		return this.#rolesRows.length;
 	}
@@ -2173,15 +1828,6 @@ export class ModelHubComponent implements Component {
 		switch (row.kind) {
 			case "role":
 				this.#startAssign(row.role);
-				return;
-			case "chainKey":
-				this.#startAssignFallback(row.role, null);
-				return;
-			case "fallback":
-				this.#startAssignFallback(row.role, row.chainIndex);
-				return;
-			case "newFallback":
-				this.#startAssignFallbackKey();
 				return;
 			case "newRole":
 				this.#openNameStrip("role");
@@ -2245,7 +1891,7 @@ export class ModelHubComponent implements Component {
 			return;
 		}
 		// Reordering: [ / shift+↑ moves the row earlier, ] / shift+↓ later —
-		// cycle order on a role row, chain order on a fallback row.
+		// cycle order on a role row.
 		if (matchesKey(data, "shift+up")) {
 			this.#runRolesAction("earlier");
 			return;
@@ -2270,14 +1916,6 @@ export class ModelHubComponent implements Component {
 				return;
 			case "clear":
 				if (role) this.#unassignRole(role);
-				else if (row?.kind === "fallback") this.#removeFallback(row);
-				else if (row?.kind === "chainKey") this.#setFallbackChain(row.role, []);
-				return;
-			case "fallback":
-				if (row?.kind === "newFallback") this.#startAssignFallbackKey();
-				else if (row && row.kind !== "newRole" && row.kind !== "separator") {
-					this.#startAssignFallback(row.role, null);
-				}
 				return;
 			case "cycle":
 				if (role) this.#toggleCycleMembership(role);
@@ -2286,7 +1924,6 @@ export class ModelHubComponent implements Component {
 			case "later": {
 				const delta = action === "earlier" ? -1 : 1;
 				if (role) this.#moveCycleMembership(role, delta);
-				else if (row?.kind === "fallback") this.#moveFallback(row, delta);
 				return;
 			}
 			case "new":
@@ -2303,8 +1940,6 @@ export class ModelHubComponent implements Component {
 				if (role) {
 					const target = this.#roleThinkingTarget(role);
 					if (target) this.#openThinkingStrip(target.item, role, true, target.scope);
-				} else if (row?.kind === "fallback") {
-					this.#openFallbackThinkingStrip(row);
 				}
 				return;
 		}
@@ -2515,24 +2150,8 @@ export class ModelHubComponent implements Component {
 		if (this.#assigning !== null) {
 			const enter = formatKeyHint("enter");
 			const cancel = editorKey("tui.select.cancel");
-			if (this.#assigning.kind === "fallbackKey") {
-				return truncateToWidth(
-					theme.fg("accent", ` New fallback chain — ${enter} picks the model it protects, ${cancel} cancels`),
-					width,
-				);
-			}
 			const info = this.#settings.getRoleInfo(this.#assigning.role);
 			const label = info.tag ?? info.name ?? this.#assigning.role;
-			if (this.#assigning.kind === "fallback") {
-				const verb = this.#assigning.index === null ? "Adding fallback for" : "Replacing fallback of";
-				return truncateToWidth(
-					theme.fg(
-						"accent",
-						` ${verb} ${theme.bold(label)} — ${enter} picks the fallback model, ${cancel} cancels`,
-					),
-					width,
-				);
-			}
 			return truncateToWidth(
 				theme.fg("accent", ` Assigning ${theme.bold(label)} — ${enter} assigns, ${cancel} cancels`),
 				width,
@@ -2549,7 +2168,7 @@ export class ModelHubComponent implements Component {
 				text = `Recently used models${scopedSuffix}`;
 				break;
 			case "roles":
-				text = `Model roles — ${formatKeyHint("f")} adds a retry fallback, cleared roles fall back to auto-selection`;
+				text = "Model roles — cleared roles fall back to auto-selection";
 				break;
 			case "provider":
 				if (entry.locked) {
@@ -2620,29 +2239,8 @@ export class ModelHubComponent implements Component {
 				continue;
 			}
 
-			if (rowDef.kind === "newRole" || rowDef.kind === "newFallback") {
-				const label = rowDef.kind === "newRole" ? "+ New role…" : "+ New fallback…";
-				let line = ` ${cursor} ${theme.fg(selected ? "accent" : "dim", label)}`;
-				line = this.#finishRolesRow(line, width, hovered);
-				lines.push(line);
-				continue;
-			}
-
-			if (rowDef.kind === "chainKey") {
-				const key = rowDef.role;
-				const slash = key.lastIndexOf("/");
-				const tail = key.slice(slash + 1);
-				const keyStyled = theme.fg("dim", key.slice(0, slash + 1)) + (selected ? theme.fg("accent", tail) : tail);
-				let line = ` ${cursor} ${theme.fg("dim", theme.status.shadowed)} ${keyStyled}`;
-				line = this.#finishRolesRow(line, width, hovered);
-				lines.push(line);
-				continue;
-			}
-
-			if (rowDef.kind === "fallback") {
-				const branch = theme.fg("dim", `${"".padEnd(tagWidth + 3)}↳`);
-				const selector = selected ? theme.fg("accent", rowDef.selector) : theme.fg("muted", rowDef.selector);
-				let line = ` ${cursor} ${branch} ${selector}`;
+			if (rowDef.kind === "newRole") {
+				let line = ` ${cursor} ${theme.fg(selected ? "accent" : "dim", "+ New role…")}`;
 				line = this.#finishRolesRow(line, width, hovered);
 				lines.push(line);
 				continue;
@@ -2707,8 +2305,7 @@ export class ModelHubComponent implements Component {
 			const cycleKey = editorKey("app.model.cycleForward") || formatKeyHint("ctrl+p");
 			if (cycleOrder.length > 0) {
 				const selectedRow = this.#rolesRows[this.#roleIndex];
-				const selectedRole =
-					selectedRow && (selectedRow.kind === "role" || selectedRow.kind === "fallback") ? selectedRow.role : "";
+				const selectedRole = selectedRow?.kind === "role" ? selectedRow.role : "";
 				const activeIndex = cycleOrder.indexOf(selectedRole);
 				const track = renderSegmentTrack(
 					cycleOrder.map(role => ({ label: role })),
@@ -2791,14 +2388,7 @@ export class ModelHubComponent implements Component {
 				return `${enterRight} models · ${upDown} providers · type to search · ${altLeftRight} kind · ${cancel} cancel`;
 			}
 			const browse = `${upDown} models · ${left} providers · type to search · ${altLeftRight} kind · ${cancel} cancel`;
-			switch (this.#assigning.kind) {
-				case "fallback":
-					return `${enter} pick fallback · ${browse}`;
-				case "fallbackKey":
-					return `${enter} pick the protected model · ${browse}`;
-				default:
-					return `${enter} assign · ${browse}`;
-			}
+			return `${enter} assign · ${browse}`;
 		}
 		const entry = this.#activeEntry();
 		if (entry.kind === "roles") {
@@ -2808,27 +2398,13 @@ export class ModelHubComponent implements Component {
 				return `${upDown} providers · ${enterRight} roles · ${altLeftRight} tabs${presets} · ${cancel} close`;
 			}
 			const row = this.#rolesRows[this.#roleIndex];
-			if (row?.kind === "fallback") {
-				// Advertise `t` only when the entry resolves: wildcards always
-				// inherit and unknown models have no ladder to offer, so the
-				// action would be inert there.
-				const editable = this.#resolveFallbackEntry(row.role, row.chainIndex) !== undefined;
-				const thinking = editable ? ` · ${formatKeyHint("t")} thinking` : "";
-				return `${upDown} rows · ${enter} replace · ${formatKeyHint("f")} add another · ${formatKeyHint("x")} remove${thinking} · [/] reorder · ${left} providers`;
-			}
-			if (row?.kind === "chainKey") {
-				return `${upDown} rows · ${formatKeyHints(["enter", "f"])} add fallback · ${formatKeyHint("x")} clear chain · ${left} providers`;
-			}
-			if (row?.kind === "newFallback") {
-				return `${upDown} rows · ${enter} new model/provider fallback chain · ${left} providers`;
-			}
-			// Same rule as fallback rows: advertise `t` only where a strip would
-			// open — an assigned role whose model has thinking levels to offer.
+			// Advertise `t` only where a strip would open — an assigned role whose
+			// model has thinking levels to offer.
 			const editable = row?.kind === "role" && this.#roleThinkingTarget(row.role) !== undefined;
 			const thinking = editable ? ` · ${formatKeyHint("t")} thinking` : "";
 			const savePreset = this.#callbacks.onSavePreset ? ` · ${formatKeyHint("s")} save preset` : "";
 			const switchPreset = this.#presets().names.length > 0 ? ` · ${formatKeyHints(["p", "shift+p"])} preset` : "";
-			return `${upDown} rows · ${enter} pick · ${formatKeyHint("f")} fallback · ${formatKeyHint("x")} clear${thinking} · ${formatKeyHint("c")} cycle · [/] reorder · ${formatKeyHint("n")} new${savePreset}${switchPreset}`;
+			return `${upDown} rows · ${enter} pick · ${formatKeyHint("x")} clear${thinking} · ${formatKeyHint("c")} cycle · [/] reorder · ${formatKeyHint("n")} new${savePreset}${switchPreset}`;
 		}
 		if (entry.kind === "provider" && entry.locked) {
 			return entry.oauth
@@ -3038,19 +2614,9 @@ export class ModelHubComponent implements Component {
 		let spans: TspSpan[];
 		const assigning = this.#assigning;
 		if (assigning !== null) {
-			if (assigning.kind === "fallbackKey") {
-				spans = [span("New fallback chain — pick the model it protects", "accent")];
-			} else {
-				const info = this.#settings.getRoleInfo(assigning.role);
-				const label = info.tag ?? info.name ?? assigning.role;
-				const verb =
-					assigning.kind === "role"
-						? "Assigning"
-						: assigning.index === null
-							? "Adding fallback for"
-							: "Replacing fallback of";
-				spans = [span(`${verb} `, "accent"), span(label, "accent strong")];
-			}
+			const info = this.#settings.getRoleInfo(assigning.role);
+			const label = info.tag ?? info.name ?? assigning.role;
+			spans = [span("Assigning ", "accent"), span(label, "accent strong")];
 			return node("text", { spans, truncate: "end" }, undefined, "status");
 		}
 		const entry = this.#activeEntry();
@@ -3066,11 +2632,7 @@ export class ModelHubComponent implements Component {
 				spans = [span(`Recently used models${scopedSuffix}`, "muted")];
 				break;
 			case "roles":
-				spans = [
-					span("Model roles — ", "muted"),
-					span("f", "key"),
-					span(" adds a retry fallback, cleared roles fall back to auto-selection", "muted"),
-				];
+				spans = [span("Model roles — cleared roles fall back to auto-selection", "muted")];
 				break;
 			case "provider":
 				if (entry.locked) {
@@ -3136,25 +2698,6 @@ export class ModelHubComponent implements Component {
 				return node("rule", undefined, undefined, key);
 			case "newRole":
 				return node("item", { label: [span("+ New role…", "dim")] }, undefined, key);
-			case "newFallback":
-				return node("item", { label: [span("+ New fallback…", "dim")] }, undefined, key);
-			case "chainKey": {
-				const slash = rowDef.role.lastIndexOf("/");
-				return node(
-					"item",
-					{
-						label: [
-							span(`${theme.status.shadowed} `, "dim"),
-							span(rowDef.role.slice(0, slash + 1), "dim"),
-							span(rowDef.role.slice(slash + 1)),
-						],
-					},
-					undefined,
-					key,
-				);
-			}
-			case "fallback":
-				return node("item", { label: [span("  ↳ ", "dim"), span(rowDef.selector, "muted")] }, undefined, key);
 			case "role":
 				break;
 		}
@@ -3205,8 +2748,7 @@ export class ModelHubComponent implements Component {
 			);
 		}
 		const selectedRow = this.#rolesRows[this.#roleIndex];
-		const selectedRole =
-			selectedRow && (selectedRow.kind === "role" || selectedRow.kind === "fallback") ? selectedRow.role : "";
+		const selectedRole = selectedRow?.kind === "role" ? selectedRow.role : "";
 		const track: TspSpan[] = [];
 		for (const role of cycleOrder) {
 			if (track.length > 0) track.push(span(" › ", "dim"));
@@ -3374,16 +2916,9 @@ export class ModelHubComponent implements Component {
 		if (this.#assignmentPending) return "Applying model…";
 		const assigning = this.#assigning;
 		if (assigning !== null) {
-			if (assigning.kind === "fallbackKey") return "New fallback chain — pick the model it protects";
 			const info = this.#settings.getRoleInfo(assigning.role);
 			const label = info.tag ?? info.name ?? assigning.role;
-			const verb =
-				assigning.kind === "role"
-					? "Assigning"
-					: assigning.index === null
-						? "Adding fallback for"
-						: "Replacing fallback of";
-			return [span(`${verb} `), span(label, "strong")];
+			return [span("Assigning "), span(label, "strong")];
 		}
 		if (this.#configError && entry.kind !== "provider") return [span(this.#configError, "error")];
 		if (entry.kind === "provider" && entry.providerId && this.#refreshingProviders.has(entry.providerId)) {
@@ -3532,13 +3067,7 @@ export class ModelHubComponent implements Component {
 		const refresh =
 			entry.kind === "provider" && !entry.locked ? pickerAction("refresh", "Refresh provider", "f5") : undefined;
 		if (this.#assigning !== null) {
-			const label =
-				this.#assigning.kind === "fallback"
-					? "Pick fallback"
-					: this.#assigning.kind === "fallbackKey"
-						? "Pick protected model"
-						: "Assign";
-			return compact([pickerAction("assign", label, "enter", { primary: true }), refresh, cancel("Cancel")]);
+			return compact([pickerAction("assign", "Assign", "enter", { primary: true }), refresh, cancel("Cancel")]);
 		}
 		if (rolesView) {
 			const row = this.#rolesRows[this.#roleIndex];
@@ -3550,7 +3079,6 @@ export class ModelHubComponent implements Component {
 					const assigned = this.#roles[row.role];
 					actions.push(
 						roleAction("pick", "Pick model", "enter", true),
-						roleAction("fallback", "Add fallback", "f"),
 						assigned && !assigned.autoSelected ? roleAction("clear", "Clear", "x") : undefined,
 						this.#roleThinkingTarget(row.role) ? roleAction("thinking", "Thinking", "t") : undefined,
 						roleAction("cycle", this.#cycleOrder().includes(row.role) ? "Leave cycle" : "Add to cycle", "c"),
@@ -3560,24 +3088,6 @@ export class ModelHubComponent implements Component {
 					);
 					break;
 				}
-				case "fallback":
-					actions.push(
-						roleAction("pick", "Replace", "enter", true),
-						roleAction("fallback", "Add another", "f"),
-						roleAction("clear", "Remove", "x"),
-						this.#resolveFallbackEntry(row.role, row.chainIndex)
-							? roleAction("thinking", "Thinking", "t")
-							: undefined,
-						roleAction("earlier", "Earlier", "["),
-						roleAction("later", "Later", "]"),
-					);
-					break;
-				case "chainKey":
-					actions.push(roleAction("pick", "Add fallback", "enter", true), roleAction("clear", "Clear chain", "x"));
-					break;
-				case "newFallback":
-					actions.push(roleAction("pick", "New fallback chain", "enter", true));
-					break;
 				case "newRole":
 					actions.push(roleAction("pick", "New role", "enter", true));
 					break;
@@ -3615,11 +3125,7 @@ export class ModelHubComponent implements Component {
 		}
 		let label: TspSpan[];
 		if (strip.kind === "role") {
-			// The second step of "New fallback chain…" reuses the role strip with key chips only.
-			const keyStrip = strip.chips.every(chip => chip.label.startsWith("for "));
-			label = keyStrip
-				? [span("New fallback chain", "muted")]
-				: [span("Assign ", "muted"), span(strip.item.id, "mono"), span(" to", "muted")];
+			label = [span("Assign ", "muted"), span(strip.item.id, "mono"), span(" to", "muted")];
 		} else {
 			const info = this.#settings.getRoleInfo(strip.role ?? "");
 			const roleLabel = (info.tag ?? strip.role ?? "").toLowerCase();
@@ -3668,15 +3174,6 @@ export class ModelHubComponent implements Component {
 				case "newRole":
 					items.push({ id, label: "New role…", icon: "plus", tone: "muted" });
 					return;
-				case "newFallback":
-					items.push({ id, label: "New fallback chain…", icon: "plus", tone: "muted" });
-					return;
-				case "chainKey":
-					items.push({ id, label: row.role, mono: true, icon: "git-branch", detail: "fallback chain" });
-					return;
-				case "fallback":
-					items.push({ id, label: row.selector, mono: true, depth: 1, detail: `fallback ${row.chainIndex + 1}` });
-					return;
 				case "role":
 					break;
 			}
@@ -3717,7 +3214,7 @@ export class ModelHubComponent implements Component {
 		return items;
 	}
 
-	/** Roles-view order: the separators become group heads (chat roles, kind roles, model fallback chains). */
+	/** Roles-view order: the separators become group heads (chat roles, kind roles). */
 	#rolePickerOrder(): (string | TspPickerGroup)[] {
 		const order: (string | TspPickerGroup)[] = [];
 		let head: { group: string; label: string; count: number } | undefined;
@@ -3728,32 +3225,23 @@ export class ModelHubComponent implements Component {
 		open(this.#roleTab === "kind" ? "kind" : "chat", this.#roleTab === "kind" ? "Kind roles" : "Chat roles");
 		this.#rolesRows.forEach((row, index) => {
 			if (row.kind === "separator") {
-				const previous = this.#rolesRows[index - 1];
-				if (previous?.kind === "newRole") open("chains", "Model fallback chains");
-				else open("kind", "Kind roles");
+				open("kind", "Kind roles");
 				return;
 			}
 			order.push(rolesRowKey(row, index));
-			// Heads count roles and chains, not their fallback entries or the "new" rows.
-			if (head && (row.kind === "role" || row.kind === "chainKey")) head.count++;
+			// Heads count roles, not the "new" row.
+			if (head && row.kind === "role") head.count++;
 		});
 		return order;
 	}
 
-	/** The selected Roles-view row's preview: its model's facts and its fallback chain. */
+	/** The selected Roles-view row's preview: its model's facts. */
 	#rolePreview(row: RolesRow | undefined): readonly NativeChild[] {
 		const memo = this.#pickerRolePreview;
 		if (memo !== undefined && memo.row === row && memo.roles === this.#roles && memo.rows === this.#rolesRows) {
 			return memo.children;
 		}
 		const children: NativeChild[] = [];
-		const chainList = (key: string): NativeChild | undefined => {
-			const chain = this.#fallbackChains()[key] ?? [];
-			if (chain.length === 0) return undefined;
-			return node("section", { head: "Fallback chain" }, [
-				md(chain.map((selector, index) => `${index + 1}. \`${selector}\``).join("\n")),
-			]);
-		};
 		const modelItem = (model: Model): ModelBrowserItem => ({
 			provider: model.provider,
 			id: model.id,
@@ -3784,36 +3272,12 @@ export class ModelHubComponent implements Component {
 						text([span("Not assigned; no available model fits this role.", "muted")], { wrap: "word" }),
 					);
 				}
-				const chain = chainList(row.role);
-				if (chain) children.push(chain);
-				break;
-			}
-			case "fallback": {
-				const resolved = this.#resolveFallbackEntry(row.role, row.chainIndex);
-				if (resolved) children.push(...this.#browser.modelPreview(resolved.item, "full", this.#currentSelector));
-				else children.push(text([span(row.selector, "mono")], { role: "omp.picker.title" }));
-				const chain = chainList(row.role);
-				if (chain) children.push(chain);
-				break;
-			}
-			case "chainKey": {
-				children.push(text([span(row.role, "mono")], { role: "omp.picker.title" }));
-				const chain = chainList(row.role);
-				if (chain) children.push(chain);
 				break;
 			}
 			case "newRole":
 				children.push(
 					text("New role", { role: "omp.picker.title" }),
 					text([span("Name a custom role, then pick the model it runs on.", "muted")], { wrap: "word" }),
-				);
-				break;
-			case "newFallback":
-				children.push(
-					text("New fallback chain", { role: "omp.picker.title" }),
-					text([span("Pick the model (or provider) a new retry fallback chain protects.", "muted")], {
-						wrap: "word",
-					}),
 				);
 				break;
 		}
@@ -4035,13 +3499,7 @@ export class ModelHubComponent implements Component {
 			if (this.#focus === "scope") {
 				return [keys("models", "enter", "right"), upDown("providers"), search, kind, cancel("cancel")];
 			}
-			const pick =
-				this.#assigning.kind === "fallback"
-					? "pick fallback"
-					: this.#assigning.kind === "fallbackKey"
-						? "pick the protected model"
-						: "assign";
-			return [keys(pick, "enter"), upDown("models"), keys("providers", "left"), search, kind, cancel("cancel")];
+			return [keys("assign", "enter"), upDown("models"), keys("providers", "left"), search, kind, cancel("cancel")];
 		}
 		const presetHint = this.#presets().names.length > 0 ? keys("preset", "ctrl+left", "ctrl+right") : undefined;
 		const entry = this.#activeEntry();
@@ -4056,35 +3514,10 @@ export class ModelHubComponent implements Component {
 				];
 			}
 			const row = this.#rolesRows[this.#roleIndex];
-			if (row?.kind === "fallback") {
-				// Advertise `t` only where a strip would open, as the ANSI footer does.
-				const editable = this.#resolveFallbackEntry(row.role, row.chainIndex) !== undefined;
-				return [
-					upDown("rows"),
-					keys("replace", "enter"),
-					keys("add another", "f"),
-					keys("remove", "x"),
-					editable ? keys("thinking", "t") : undefined,
-					reorder,
-					keys("providers", "left"),
-				];
-			}
-			if (row?.kind === "chainKey") {
-				return [
-					upDown("rows"),
-					keys("add fallback", "enter", "f"),
-					keys("clear chain", "x"),
-					keys("providers", "left"),
-				];
-			}
-			if (row?.kind === "newFallback") {
-				return [upDown("rows"), keys("new model/provider fallback chain", "enter"), keys("providers", "left")];
-			}
 			const editable = row?.kind === "role" && this.#roleThinkingTarget(row.role) !== undefined;
 			return [
 				upDown("rows"),
 				keys("pick", "enter"),
-				keys("fallback", "f"),
 				keys("clear", "x"),
 				editable ? keys("thinking", "t") : undefined,
 				keys("cycle", "c"),

@@ -57,7 +57,6 @@ import {
 	applyOllamaCloudOutputCap,
 	applyPricingPeerFallback,
 	hasBillableCost,
-	linkOpenAIPromotionTargets,
 } from "./generated-policies";
 
 const packageRoot = path.join(import.meta.dir, "..");
@@ -690,7 +689,6 @@ async function generateModels() {
 	// policy re-bake so the aliases get the same baked thinking metadata.
 	allModels = projectOpenAIProReasoningAliases(allModels);
 	applyGeneratedModelPolicies(allModels);
-	linkOpenAIPromotionTargets(allModels);
 	// Collapse effort-tier variants AFTER the policy re-bake: live-discovery
 	// entries are already collapsed (rebake skips them); this pass folds
 	// previous-snapshot raw members into their logical families.

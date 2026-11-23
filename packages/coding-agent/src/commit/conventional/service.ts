@@ -94,9 +94,7 @@ async function createOmpInference(
 		await registry.refresh();
 		await loadCliExtensionProviders(registry, settings, options.cwd);
 		const primary = await resolvePrimaryModel(options.modelOverride, settings, registry);
-		const smol = options.modelOverride
-			? primary
-			: await resolveSmolModel(settings, registry, primary.model, primary.apiKey);
+		const smol = options.modelOverride ? primary : await resolveSmolModel(settings, registry, primary);
 		const cache = config.cacheEnabled
 			? await CommitInferenceCache.open(getCommitCacheDbPath(), config.cacheTtlDays)
 			: null;

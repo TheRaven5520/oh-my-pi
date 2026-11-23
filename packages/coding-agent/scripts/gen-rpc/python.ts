@@ -45,8 +45,6 @@ interface PythonBinding {
 
 const PYTHON_BINDING: PythonBinding = {
 	fieldNames: {
-		"RetryFallbackAppliedEvent.from": "from_model",
-		"RetryFallbackAppliedEvent.to": "to_model",
 		"ModelInfo.input": "input_modalities",
 	},
 	flatten: {

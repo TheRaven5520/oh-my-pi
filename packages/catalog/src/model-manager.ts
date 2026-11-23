@@ -674,7 +674,6 @@ function mergeDynamicModel<TApi extends Api>(existingModel: Model<TApi>, dynamic
 				: existingModel.headers,
 		resolveHeaders,
 		compat,
-		contextPromotionTarget: dynamicModel.contextPromotionTarget ?? existingModel.contextPromotionTarget,
 	} as ModelSpec<TApi>);
 }
 

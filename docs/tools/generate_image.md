@@ -26,7 +26,7 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
 | `aspect_ratio` | `"1:1" \| "3:4" \| "4:3" \| "9:16" \| "16:9" \| "3:2" \| "2:3"` | No | Requested output aspect ratio. |
 | `image_size` | `"1024x1024" \| "1536x1024" \| "1024x1536"` | No | Requested output size where the selected model transport supports it. |
 | `input` | `Array<{ path?: string; data?: string; mime_type?: string }>` | No | Input images by local path or inline base64 data. |
-| `model` | `string` | No | Image-model selector for this request, for example `openrouter/google/gemini-3-pro-image` or `xai/grok-imagine-image`. When omitted, the configured `image` role chain is used. |
+| `model` | `string` | No | Image-model selector for this request, for example `openrouter/google/gemini-3-pro-image` or `xai/grok-imagine-image`. When omitted, the configured `image` role selects the model. |
 
 ## Outputs
 - Success with image data:
@@ -38,8 +38,8 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
 
 ## Flow
 1. The SDK injects `imageGenTool` as the `generate_image` custom tool only when the feature gate and tool filter allow it.
-2. A request with `model` resolves that selector against available catalog models of kind `image` and attempts only the selected model. Without it, candidates are ordered as explicitly configured image-role/fallback entries, the active model's configured `imageModel` target and then the active model itself when it supports hosted images, then non-explicit role-chain defaults. Duplicate provider/model entries are removed. `retry.fallbackChains.image: []` removes fallback selectors from the role chain, but does not suppress the active model's image candidates.
-3. The tool skips candidates with an unsupported API transport, unavailable credentials, or an unavailable hosted carrier. A provider HTTP failure advances to the next model in the resolved chain; validation, parsing, local I/O, cancellation, and timeout failures do not.
+2. A request with `model` resolves that selector against available catalog models of kind `image` and attempts only the selected model. Without it, candidates are ordered as the explicitly configured `modelRoles.image` entries, the active model's configured `imageModel` target and then the active model itself when it supports hosted images, then the built-in `image` priority list. Duplicate provider/model entries are removed.
+3. The tool picks the first candidate with a supported API transport, available credentials, and an available hosted carrier; candidates failing those checks are skipped during selection. Once a model is picked, a provider HTTP failure is surfaced as the tool error; the tool does not try the next candidate.
 4. Input images are resolved once, after the first usable model is found. A `path` is resolved relative to session cwd and content-sniffed. Inline `data` may be raw base64 (requiring `mime_type`) or a `data:<mime>;base64,...` URL.
 5. The selected catalog model's `api` determines the transport:
    - `openai-images`: OpenAI-compatible `/images/generations` and `/images/edits` requests, including xAI/xAI OAuth and DeepInfra. OpenAI edits use multipart image uploads; other providers use JSON references. A `404` from the edit endpoint retries the generation endpoint with the edit payload.
@@ -55,12 +55,12 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
 - Text-to-image: provide `subject` and optional style/composition fields, no `input`.
 - Image edit: provide one or more `input` images plus `changes` and a subject that identifies each image role.
 - Text rendering: use `text`; the prompt instructs callers to request sharp, legible, correctly spelled short text.
-- Model selection: set `model` to pin one available image catalog model for the request. Omit it to use the `image` role and its fallback chain.
+- Model selection: set `model` to pin one available image catalog model for the request. Omit it to use the `image` role.
 
 ## Side Effects
 - Filesystem: reads local input images and writes generated output images to `omp-image-<snowflake>.<ext>` files under the OS temporary directory.
 - Network: sends prompts and optional images through the selected catalog model's API transport. OpenRouter/xAI image URLs in responses are downloaded before saving.
-- Session state: reads the active model and its image capabilities/target, session id, cwd, credentials, `modelRoles.image`, `retry.fallbackChains.image`, model endpoints/headers, and optional injected `fetch`.
+- Session state: reads the active model and its image capabilities/target, session id, cwd, credentials, `modelRoles.image`, model endpoints/headers, and optional injected `fetch`.
 - Background work / cancellation: provider calls use the caller abort signal combined with a 3 minute timeout.
 
 ## Limits & Caps
@@ -76,12 +76,12 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
 - xAI/xAI OAuth edit requests are limited to 3 input images.
 
 ## Errors
-- No usable model in the resolved chain: the aggregate error lists attempted models and candidates skipped for unsupported transports, unavailable credentials, invalid credentials, or unavailable hosted carriers.
+- No usable model: the error lists candidates skipped for unsupported transports, unavailable credentials, invalid credentials, or unavailable hosted carriers.
 - Invalid input: file not found, file over 35 MiB, unsupported content-sniffed image type, missing `path`/`data`, empty image data, or raw base64 without `mime_type`.
 - Hosted image models without an available same-provider `hostedImage` carrier are skipped as `hosted chat carrier unavailable`; a carrier without usable credentials is skipped as `carrier credentials unavailable`.
 - Antigravity credentials that do not contain both an access token and `projectId` cause that candidate to be skipped as `invalid credentials`.
 - More than three xAI/xAI OAuth edit references: `<provider> image edits accept up to 3 reference images; got <N>`.
-- Credentialed model HTTP failures fall through to later candidates in the image chain. If every candidate fails or is skipped, the tool throws an `AggregateError` naming the attempted models and containing collected provider HTTP errors.
+- A credentialed model HTTP failure throws an error containing the provider HTTP error for the selected model.
 - Cancellation, the three-minute timeout, malformed provider responses, and local I/O errors throw directly.
 
 ## Notes

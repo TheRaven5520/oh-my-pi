@@ -360,9 +360,8 @@ export class VibeSessionRegistry {
 			throw new ToolError(`Bundled agent "${agentName}" for vibe cli "${cli}" is unavailable.`);
 		}
 		const agentModelOverrides = cfgTaskAgentModelOverrides.get(session.settings);
-		// Same contract as the task spawn path: the expansion discards the role
-		// alias (`@task`, `@smol`), so patterns and role identity come from one
-		// call — the child's inherited retry-fallback chain is keyed off the role.
+		// Patterns and role identity come from one call: the expansion discards the
+		// role alias (`@task`, `@smol`).
 		const { patterns, role, inheritsLiveThinkingLevel } = resolveAgentModelSelection({
 			settingsOverride: agentModelOverrides[agentName],
 			agentModel: agent.model,
@@ -1312,7 +1311,6 @@ export class VibeSessionRegistry {
 			modelOverride: record.modelOverride,
 			modelRole: record.modelRole,
 			modelInheritsLiveThinkingLevel: record.modelInheritsLiveThinkingLevel,
-			parentActiveModelPattern: session.getActiveModelString?.(),
 			thinkingLevel: record.agent.thinkingLevel,
 			sessionFile,
 			persistArtifacts: Boolean(sessionFile),

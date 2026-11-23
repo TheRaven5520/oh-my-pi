@@ -11,9 +11,8 @@ import {
 	type Model,
 	parseAntigravityCredentials,
 } from "@oh-my-pi/pi-ai";
-import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { isEnoent, logger, parseImageMetadata, prompt, ptree, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
-import { type RoleChainCandidate, resolveModelRoleValue, resolveRoleChain } from "../config/model-resolver";
+import { type RoleModelSelection, resolveModelRoleValue, resolveRoleModel } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
 import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
 import { settings } from "../config/settings";
@@ -152,30 +151,20 @@ function resolveHostedImageCarrier(
 }
 
 /**
- * Default image candidates: explicit role entries first, then the session's
+ * Default image model: an explicitly configured role entry, else the session's
  * own provider (its `imageModel` swap, then the session model itself when it
- * carries the hosted image tool), then the remaining built-in chain.
+ * carries the hosted image tool), else the built-in role default.
  */
-function defaultImageCandidates(chain: RoleChainCandidate[], sessionModel: Model | undefined, pool: Model[]): Model[] {
-	const sessionCandidates = sessionModel
-		? [
-				resolveConfiguredModelTarget(sessionModel.imageModel, sessionModel, pool),
-				sessionModel.hostedImage ? sessionModel : undefined,
-			]
-		: [];
-	const ordered = [
-		...chain.filter(candidate => candidate.explicit).map(candidate => candidate.model),
-		...sessionCandidates,
-		...chain.filter(candidate => !candidate.explicit).map(candidate => candidate.model),
-	];
-	const seen = new Set<string>();
-	return ordered.filter((model): model is Model => {
-		if (!model) return false;
-		const key = `${model.provider}/${model.id}`;
-		if (seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	});
+function defaultImageModel(
+	selection: RoleModelSelection | undefined,
+	sessionModel: Model | undefined,
+	pool: Model[],
+): Model | undefined {
+	if (selection?.explicit) return selection.model;
+	const swap = sessionModel && resolveConfiguredModelTarget(sessionModel.imageModel, sessionModel, pool);
+	if (swap) return swap;
+	if (sessionModel?.hostedImage) return sessionModel;
+	return selection?.model;
 }
 
 async function buildToolResult(
@@ -235,102 +224,74 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 			const requestSignal = ptree.combineSignals(signal, IMAGE_TIMEOUT);
 			const effectiveSettings = ctx.settings ?? settings;
 			const pool = roleCandidatePool("image", effectiveSettings, ctx.modelRegistry);
-			let candidates: Model[];
+			let model: Model;
 			if (params.model) {
 				const selected = resolveModelRoleValue(params.model, pool, { settings: effectiveSettings }).model;
 				if (!selected)
 					throw new Error(`Image model selector did not match an available image model: ${params.model}`);
-				candidates = [selected];
+				model = selected;
 			} else {
-				candidates = defaultImageCandidates(resolveRoleChain("image", effectiveSettings, pool), ctx.model, pool);
+				const selected = defaultImageModel(resolveRoleModel("image", effectiveSettings, pool), ctx.model, pool);
+				if (!selected) throw new Error("No available image model is configured for the image role.");
+				model = selected;
+			}
+			const label = `${model.provider}/${model.id}`;
+
+			if (!isImageGenerationApi(model.api)) {
+				logger.warn("Unsupported image model API", { provider: model.provider, model: model.id, api: model.api });
+				throw new Error(`Image model ${label} uses an unsupported API (${model.api}).`);
 			}
 
-			const failures: ProviderHttpError[] = [];
-			const skipped: string[] = [];
-			let inputImages: ImageGenerationRequest["inputImages"];
-			for (const model of candidates) {
-				if (!isImageGenerationApi(model.api)) {
-					logger.warn("Skipping unsupported image model API", {
-						provider: model.provider,
-						model: model.id,
-						api: model.api,
-					});
-					skipped.push(`${model.provider}/${model.id} (unsupported ${model.api})`);
-					continue;
-				}
-
-				const initialKey = await ctx.modelRegistry.getApiKey(model, sessionId, { signal: requestSignal });
-				if (!isAuthenticated(initialKey)) {
-					skipped.push(`${model.provider}/${model.id} (credentials unavailable)`);
-					continue;
-				}
-				if (model.api === "google-gemini-cli" && !parseAntigravityCredentials(initialKey)) {
-					skipped.push(`${model.provider}/${model.id} (invalid credentials)`);
-					continue;
-				}
-
-				let carrier: Model | undefined;
-				let apiKey = ctx.modelRegistry.resolver(model, sessionId);
-				if (model.api === "openai-responses" || model.api === "openai-codex-responses") {
-					carrier = model.hostedImage ? model : resolveHostedImageCarrier(ctx.modelRegistry, model, ctx.model);
-					if (!carrier) {
-						skipped.push(`${model.provider}/${model.id} (hosted chat carrier unavailable)`);
-						continue;
-					}
-					const carrierKey = await ctx.modelRegistry.getApiKey(carrier, sessionId, { signal: requestSignal });
-					if (!isAuthenticated(carrierKey)) {
-						skipped.push(`${model.provider}/${model.id} (carrier credentials unavailable)`);
-						continue;
-					}
-					apiKey = ctx.modelRegistry.resolver(carrier, sessionId);
-				}
-
-				if (!inputImages) {
-					inputImages = [];
-					for (const input of params.input ?? []) {
-						inputImages.push(await resolveInputImage(input, ctx.sessionManager.getCwd()));
-					}
-				}
-				const request: ImageGenerationRequest = {
-					prompt: assemblePrompt(params),
-					inputImages,
-					aspectRatio: params.aspect_ratio,
-					imageSize: params.image_size,
-					count: 1,
-				};
-				const resolvedModel = {
-					...model,
-					resolveHeaders: (headerSignal?: AbortSignal) =>
-						ctx.modelRegistry.resolveModelHeaders(model, headerSignal),
-				};
-				const resolvedCarrier = carrier
-					? {
-							...carrier,
-							resolveHeaders: (headerSignal?: AbortSignal) =>
-								ctx.modelRegistry.resolveModelHeaders(carrier, headerSignal),
-						}
-					: undefined;
-				try {
-					const result = await generateImage(resolvedModel, request, {
-						apiKey,
-						fetch: ctx.fetch ?? fetch,
-						signal: requestSignal,
-						carrier: resolvedCarrier,
-						sessionId,
-					});
-					return buildToolResult(model, result);
-				} catch (error) {
-					if (!(error instanceof ProviderHttpError) || requestSignal?.aborted) throw error;
-					failures.push(error);
-				}
+			const initialKey = await ctx.modelRegistry.getApiKey(model, sessionId, { signal: requestSignal });
+			if (!isAuthenticated(initialKey)) {
+				throw new Error(`Image model ${label} has no credentials available.`);
+			}
+			if (model.api === "google-gemini-cli" && !parseAntigravityCredentials(initialKey)) {
+				throw new Error(`Image model ${label} has invalid credentials.`);
 			}
 
-			const attempted = candidates.map(model => `${model.provider}/${model.id}`).join(", ");
-			const suffix = skipped.length > 0 ? ` Skipped: ${skipped.join(", ")}.` : "";
-			throw new AggregateError(
-				failures,
-				`Image generation exhausted the resolved image chain${attempted ? `: ${attempted}` : "."}${suffix}`,
-			);
+			let carrier: Model | undefined;
+			let apiKey = ctx.modelRegistry.resolver(model, sessionId);
+			if (model.api === "openai-responses" || model.api === "openai-codex-responses") {
+				carrier = model.hostedImage ? model : resolveHostedImageCarrier(ctx.modelRegistry, model, ctx.model);
+				if (!carrier) throw new Error(`Image model ${label} has no hosted chat carrier available.`);
+				const carrierKey = await ctx.modelRegistry.getApiKey(carrier, sessionId, { signal: requestSignal });
+				if (!isAuthenticated(carrierKey)) {
+					throw new Error(`Image model ${label} has no carrier credentials available.`);
+				}
+				apiKey = ctx.modelRegistry.resolver(carrier, sessionId);
+			}
+
+			const inputImages: NonNullable<ImageGenerationRequest["inputImages"]> = [];
+			for (const input of params.input ?? []) {
+				inputImages.push(await resolveInputImage(input, ctx.sessionManager.getCwd()));
+			}
+			const request: ImageGenerationRequest = {
+				prompt: assemblePrompt(params),
+				inputImages,
+				aspectRatio: params.aspect_ratio,
+				imageSize: params.image_size,
+				count: 1,
+			};
+			const resolvedModel = {
+				...model,
+				resolveHeaders: (headerSignal?: AbortSignal) => ctx.modelRegistry.resolveModelHeaders(model, headerSignal),
+			};
+			const resolvedCarrier = carrier
+				? {
+						...carrier,
+						resolveHeaders: (headerSignal?: AbortSignal) =>
+							ctx.modelRegistry.resolveModelHeaders(carrier, headerSignal),
+					}
+				: undefined;
+			const result = await generateImage(resolvedModel, request, {
+				apiKey,
+				fetch: ctx.fetch ?? fetch,
+				signal: requestSignal,
+				carrier: resolvedCarrier,
+				sessionId,
+			});
+			return buildToolResult(model, result);
 		});
 	},
 };

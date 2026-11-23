@@ -843,7 +843,7 @@ export class Settings {
 	 * supplies the default. Read settings through their handles, not this.
 	 *
 	 * A configured `null` is treated as unset: YAML writes `null` for a key left
-	 * without a value (`fallbackChains:`), and no schema entry has a null
+	 * without a value, and no schema entry has a null
 	 * default, so returning it verbatim would hand callers a value the schema
 	 * says is impossible (#13183).
 	 */
@@ -3200,8 +3200,8 @@ export class Settings {
 		delete raw["mcp.discoveryMode"];
 		delete raw["mcp.discoveryDefaultServers"];
 
-		// Retired provider/model selectors now live in modelRoles plus explicit
-		// retry chains. Read nested and quoted-dotted forms from the same layer;
+		// Retired provider/model selectors now live in modelRoles. Read nested
+		// and quoted-dotted forms from the same layer;
 		// an owned nested key wins even when its value is undefined. Every legacy
 		// key is removed after inspection so it cannot leak back into config.yml.
 		function migrateKindRoleSettings(): void {
@@ -3214,22 +3214,12 @@ export class Settings {
 				if (root) delete root[key];
 				delete raw[flatKey];
 			};
-			const dedupe = (values: readonly string[]): string[] => [...new Set(values)];
-
 			const roles = isRecord(raw.modelRoles) ? raw.modelRoles : {};
-			const retrySettings = isRecord(raw.retry) ? raw.retry : {};
-			const fallbackChains = isRecord(retrySettings.fallbackChains) ? retrySettings.fallbackChains : {};
 			let rolesChanged = false;
-			let fallbackChainsChanged = false;
-			const setRoleChain = (role: string, candidates: readonly string[]): void => {
-				if (candidates.length === 0) return;
-				if (!Object.hasOwn(roles, role)) {
-					roles[role] = candidates[0];
+			const setRole = (role: string, selector: string | undefined): void => {
+				if (selector && !Object.hasOwn(roles, role)) {
+					roles[role] = selector;
 					rolesChanged = true;
-				}
-				if (!Object.hasOwn(fallbackChains, role)) {
-					fallbackChains[role] = candidates.slice(1);
-					fallbackChainsChanged = true;
 				}
 			};
 
@@ -3292,9 +3282,9 @@ export class Settings {
 			);
 			// The Gemini model only shapes an ordered `gemini` entry; the defaults hold no chat models.
 			if (orderedWebSelectors.length > 0 || excludedWebProviders.size > 0) {
-				setRoleChain(
+				setRole(
 					"web",
-					dedupe([...orderedWebSelectors, ...MODEL_PRIO.web]).filter(selector => !isWebSelectorExcluded(selector)),
+					[...orderedWebSelectors, ...MODEL_PRIO.web].find(selector => !isWebSelectorExcluded(selector)),
 				);
 			}
 
@@ -3325,11 +3315,11 @@ export class Settings {
 				: typeof legacyImage === "string" && legacyImage !== "auto"
 					? [legacyImage]
 					: [];
-			const orderedImageSelectors = orderedImageProviders.flatMap(value =>
-				typeof value === "string" ? (imageSelector(value) ?? []) : [],
-			);
-			if (orderedImageSelectors.length > 0) {
-				setRoleChain("image", dedupe([...orderedImageSelectors, ...MODEL_PRIO.image]));
+			for (const value of orderedImageProviders) {
+				const selector = typeof value === "string" ? imageSelector(value) : undefined;
+				if (!selector) continue;
+				setRole("image", selector);
+				break;
 			}
 
 			const legacyTtsProvider = legacy(providerSettings, "tts", "providers.tts");
@@ -3341,7 +3331,7 @@ export class Settings {
 						: legacyTtsProvider === "deepinfra"
 							? "deepinfra/hexgrad/Kokoro-82M"
 							: undefined;
-			if (speechSelector) setRoleChain("speech", [speechSelector]);
+			setRole("speech", speechSelector);
 
 			const legacySttModel = legacy(sttSettings, "modelName", "stt.modelName");
 			const dictationSelector =
@@ -3352,10 +3342,7 @@ export class Settings {
 						: legacySttModel === "turbo" || legacySttModel === "whisper-large-v3-turbo"
 							? "local/whisper-large-v3-turbo"
 							: undefined;
-			if (dictationSelector && !Object.hasOwn(roles, "dictation")) {
-				roles.dictation = dictationSelector;
-				rolesChanged = true;
-			}
+			setRole("dictation", dictationSelector);
 
 			const legacyJudgmentProvider = legacy(providerSettings, "judgmentProvider", "providers.judgmentProvider");
 			const legacyAutoThinkingModel = legacy(providerSettings, "autoThinkingModel", "providers.autoThinkingModel");
@@ -3369,33 +3356,22 @@ export class Settings {
 				(typeof legacyAutoThinkingModel === "string" && legacyAutoThinkingModel !== "online") ||
 				(typeof legacyUnexpectedStopModel === "string" && legacyUnexpectedStopModel !== "online");
 			if (nonDefaultJudge) {
-				const judgeCandidates: string[] = [];
-				if (legacyJudgmentProvider !== "llm") judgeCandidates.push("typesafe/jev-latest");
-				if (typeof legacyAutoThinkingModel === "string" && legacyAutoThinkingModel !== "online") {
-					judgeCandidates.push(`local/${legacyAutoThinkingModel}`);
-				}
-				if (typeof legacyUnexpectedStopModel === "string" && legacyUnexpectedStopModel !== "online") {
-					judgeCandidates.push(`local/${legacyUnexpectedStopModel}`);
-				}
-				judgeCandidates.push("@tiny", "@smol", "@default");
-				setRoleChain("judge", dedupe(judgeCandidates));
+				const judge =
+					legacyJudgmentProvider !== "llm"
+						? "typesafe/jev-latest"
+						: typeof legacyAutoThinkingModel === "string" && legacyAutoThinkingModel !== "online"
+							? `local/${legacyAutoThinkingModel}`
+							: typeof legacyUnexpectedStopModel === "string" && legacyUnexpectedStopModel !== "online"
+								? `local/${legacyUnexpectedStopModel}`
+								: "@tiny";
+				setRole("judge", judge);
 			}
 
-			const prependLocalRole = (role: "tiny" | "memory", model: unknown): void => {
-				if (typeof model !== "string" || model === "online" || model.length === 0) return;
-				const selector = `local/${model}`;
-				const configured = typeof roles[role] === "string" ? roles[role] : undefined;
-				const patterns = configured
-					? configured
-							.split(",")
-							.map(pattern => pattern.trim())
-							.filter(Boolean)
-					: [];
-				roles[role] = dedupe([selector, ...patterns]).join(",");
-				rolesChanged = true;
+			const setLegacyLocalRole = (role: "tiny" | "memory", model: unknown): void => {
+				if (typeof model === "string" && model !== "online" && model.length > 0) setRole(role, `local/${model}`);
 			};
-			prependLocalRole("tiny", legacy(providerSettings, "tinyModel", "providers.tinyModel"));
-			prependLocalRole("memory", legacy(providerSettings, "memoryModel", "providers.memoryModel"));
+			setLegacyLocalRole("tiny", legacy(providerSettings, "tinyModel", "providers.tinyModel"));
+			setLegacyLocalRole("memory", legacy(providerSettings, "memoryModel", "providers.memoryModel"));
 
 			for (const key of [
 				"webSearch",
@@ -3417,15 +3393,22 @@ export class Settings {
 			removeLegacy(sttSettings, "modelName", "stt.modelName");
 
 			if (rolesChanged) raw.modelRoles = roles;
-			if (fallbackChainsChanged) {
-				retrySettings.fallbackChains = fallbackChains;
-				raw.retry = retrySettings;
-			}
 			if (providerSettings && Object.keys(providerSettings).length === 0) delete raw.providers;
 			if (ttsSettings && Object.keys(ttsSettings).length === 0) delete raw.tts;
 			if (sttSettings && Object.keys(sttSettings).length === 0) delete raw.stt;
 		}
 		migrateKindRoleSettings();
+
+		// The retired cross-model quota actions now continue on the selected model.
+		if (
+			isRecord(raw.retry) &&
+			(raw.retry.usageReservePolicy === "auto" || raw.retry.usageReservePolicy === "confirm")
+		) {
+			raw.retry.usageReservePolicy = "continue";
+		}
+		if (raw["retry.usageReservePolicy"] === "auto" || raw["retry.usageReservePolicy"] === "confirm") {
+			raw["retry.usageReservePolicy"] = "continue";
+		}
 
 		// Consolidate the retired Exa suite toggles onto the sole remaining
 		// provider switch. The old runtime required both `enabled` and
@@ -3855,8 +3838,7 @@ export class Settings {
 	}
 
 	/**
-	 * `overrides` deep-merged over `base`. Keys follow the higher layer's order, then base-only keys:
-	 * record order is meaningful to some consumers (`retry.fallbackChains` is searched in order).
+	 * `overrides` deep-merged over `base`. Keys follow the higher layer's order, then base-only keys.
 	 */
 	#deepMerge(base: RawSettings, overrides: RawSettings): RawSettings {
 		const result: RawSettings = {};

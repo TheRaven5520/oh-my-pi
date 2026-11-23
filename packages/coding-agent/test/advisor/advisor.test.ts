@@ -4343,7 +4343,7 @@ describe("advisor", () => {
 
 		it("holds a recovery-aware catch-up through the failure but releases it on a terminal quota pause", async () => {
 			// Headless shutdown drains wait through a failing turn so disposal cannot
-			// abort the host's fallback switch. A recovery that ends in a quota pause
+			// abort the host's recovery. A recovery that ends in a quota pause
 			// can never drain, so the waiter must be released then — not held to its
 			// (ten-minute, in print mode) deadline.
 			const agent: AdvisorAgent = {
@@ -4378,7 +4378,7 @@ describe("advisor", () => {
 			await recoveryStarted.promise;
 			expect(settled).toBe(false);
 
-			// No fallback available: the runtime latches its quota pause.
+			// No recovery available: the runtime latches its quota pause.
 			const released = performance.now();
 			recoveryResult.resolve(false);
 			expect(await catchup).toBe(false);
@@ -5013,12 +5013,12 @@ describe("advisor", () => {
 			expect(failures).toHaveLength(1);
 		});
 
-		it("asks the host to switch models when a refusal outlives the stripped resend", async () => {
+		it("asks the host to recover when a refusal outlives the stripped resend", async () => {
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const failures: unknown[] = [];
 			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
-			// The first model refuses every time; the host's fallback hook swaps in a
-			// model that answers, exactly as `#recoverAdvisorTurn` does for a session.
+			// The model refuses every time; host recovery (as `#recoverAdvisorTurn` does for a
+			// credential switch) lets it answer.
 			let modelRefuses = true;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
@@ -5079,13 +5079,13 @@ describe("advisor", () => {
 			runtime.onTurnEnd(messages);
 			await settleUntil(() => runtime.backlog === 0);
 
-			// Refuse, strip-and-resend, refuse again, then the swapped model answers.
+			// Refuse, strip-and-resend, refuse again, then the recovered advisor answers.
 			expect(fallbackCalls).toBe(1);
 			expect(promptInputs).toHaveLength(3);
 			expect(failures).toEqual([]);
 		});
 
-		it("starts a fresh fallback cascade after the host declines to switch models", async () => {
+		it("starts a fresh recovery attempt after the host declines a terminal refusal", async () => {
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const failures: unknown[] = [];
 			let fallbackCalls = 0;
@@ -5149,136 +5149,9 @@ describe("advisor", () => {
 			runtime.onTurnEnd(messages);
 			await settleUntil(() => fallbackCalls === 2 && runtime.backlog === 0);
 
-			// The earlier terminal cascade must not suppress fallback for a new batch.
+			// The earlier terminal episode must not suppress recovery for a new batch.
 			expect(promptInputs).toHaveLength(3);
 			expect(fallbackCalls).toBe(2);
-			expect(failures).toHaveLength(1);
-		});
-
-		it("walks the whole fallback chain before reporting a refusal", async () => {
-			// Every model refuses. The cascade must reach the last chain entry, then
-			// stop once the host runs out of candidates.
-			const promptInputs: Array<string | AgentMessage[]> = [];
-			const failures: unknown[] = [];
-			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
-			let identity = "anthropic/claude-fable-5";
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(input);
-					state.error = "Refusal (cyber): blocked under Anthropic's Usage Policy";
-					state.messages.push({
-						role: "assistant",
-						content: [],
-						stopReason: "error",
-						stopDetails: { type: "refusal", category: "cyber" },
-						errorMessage: state.error,
-						timestamp: promptInputs.length + 1,
-					} as unknown as AgentMessage);
-				},
-				abort: () => {},
-				reset: () => {},
-				rollbackTo: count => {
-					state.messages.length = count;
-					state.error = undefined;
-				},
-				state,
-			};
-			const messages = [
-				{
-					role: "assistant",
-					content: [
-						{ type: "thinking", thinking: "private reasoning" },
-						{ type: "text", text: "answer" },
-					],
-					timestamp: 1,
-				} as AgentMessage,
-			];
-			const chain = ["openai-codex/gpt-5.6-sol", "synthetic/hf:moonshotai/Kimi-K3", "fireworks/kimi-k3"];
-			const switched: string[] = [];
-			const runtime = new AdvisorRuntime(
-				agent,
-				{
-					snapshotMessages: () => messages,
-					notifyFailure: error => failures.push(error),
-					getModelIdentity: () => identity,
-					onTurnError: async () => {
-						const next = chain[switched.length];
-						if (!next) return false;
-						switched.push(next);
-						identity = next;
-						return true;
-					},
-				},
-				0,
-			);
-
-			runtime.onTurnEnd(messages);
-			await settleUntil(() => failures.length === 1 && runtime.backlog === 0);
-
-			expect(switched).toEqual(chain);
-			expect(failures).toHaveLength(1);
-		});
-
-		it("stops a refusal walk that a cyclic chain would loop forever", async () => {
-			const promptInputs: Array<string | AgentMessage[]> = [];
-			const failures: unknown[] = [];
-			const state: { messages: AgentMessage[]; error?: string } = { messages: [] };
-			// A chain configured A -> B -> A: the host never runs out of candidates,
-			// so only the per-cascade tried-set can end the walk.
-			const cycle = ["model/b", "model/a"];
-			let identity = "model/a";
-			const agent: AdvisorAgent = {
-				prompt: async input => {
-					promptInputs.push(input);
-					state.error = "Refusal (cyber): blocked under Anthropic's Usage Policy";
-					state.messages.push({
-						role: "assistant",
-						content: [],
-						stopReason: "error",
-						stopDetails: { type: "refusal", category: "cyber" },
-						errorMessage: state.error,
-						timestamp: promptInputs.length + 1,
-					} as unknown as AgentMessage);
-				},
-				abort: () => {},
-				reset: () => {},
-				rollbackTo: count => {
-					state.messages.length = count;
-					state.error = undefined;
-				},
-				state,
-			};
-			const messages = [
-				{
-					role: "assistant",
-					content: [
-						{ type: "thinking", thinking: "private reasoning" },
-						{ type: "text", text: "answer" },
-					],
-					timestamp: 1,
-				} as AgentMessage,
-			];
-			let hops = 0;
-			const runtime = new AdvisorRuntime(
-				agent,
-				{
-					snapshotMessages: () => messages,
-					notifyFailure: error => failures.push(error),
-					getModelIdentity: () => identity,
-					onTurnError: async () => {
-						identity = cycle[hops % cycle.length] ?? "model/a";
-						hops++;
-						return true;
-					},
-				},
-				0,
-			);
-
-			runtime.onTurnEnd(messages);
-			await settleUntil(() => failures.length === 1 && runtime.backlog === 0);
-
-			// a (refuse, strip) -> b (refuse, strip) -> back to a, already tried: stop.
-			expect(hops).toBe(2);
 			expect(failures).toHaveLength(1);
 		});
 

@@ -59,8 +59,6 @@ export interface JobSnapshot {
 	resolvedModelIdentity?: string;
 	/** Explicit thinking metadata, independent of the model identity. */
 	resolvedThinkingLevel?: ConfiguredThinkingLevel;
-	/** The model is a retry fallback (its provider stays visible). */
-	resolvedModelIsFallback?: boolean;
 	/** True when the task progress reports an attached live advisor. */
 	advisor?: boolean;
 	/** The task agent's latest self-estimated completion (0–100); see `AgentProgress.completionPercent`. */
@@ -345,7 +343,6 @@ function jobsRenderResult(
 											FEED_MODEL_BADGE_WIDTH,
 											Math.max(0, rowWidth - visibleWidth(`${rowPrefix}${displayId}${durationSuffix}`) - 1),
 										),
-										job.resolvedModelIsFallback === true,
 									)
 								: "";
 						const modelLead = modelBadge ? `${modelBadge} ` : "";

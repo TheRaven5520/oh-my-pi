@@ -330,7 +330,6 @@ describe("runEvalAgent", () => {
 		expect(firstOptions.taskDepth).toBe(2);
 		expect(firstOptions.signal).not.toBe(abortController.signal);
 		expect(firstOptions.signal?.aborted).toBe(false);
-		expect(firstOptions.parentActiveModelPattern).toBe("p/current");
 		expect(firstOptions.outputSchema).toBe(schema);
 		expect(firstOptions.outputSchemaOverridesAgent).toBe(true);
 		expect(firstOptions.assignment).toBe("hello");

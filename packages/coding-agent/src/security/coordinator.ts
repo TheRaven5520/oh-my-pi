@@ -41,7 +41,7 @@ import {
 import { createSecurityPublicationTool } from "./publication";
 import { SecurityStore, writeSecurityBundleToDirectory } from "./store";
 
-import { cfgRetryFallbackChains, cfgRetryModelFallback, cfgRetryUsageAwareFallback } from "../session/settings";
+import { cfgRetryUsageAwareFallback } from "../session/settings";
 import { cfgSecurityEnabled } from "../tools/settings";
 import { cfgTaskAgentModelOverrides, cfgTaskAgentPrewalk } from "../task/settings";
 
@@ -237,9 +237,7 @@ function initialBundle(
 async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInput): Promise<AgentSession> {
 	const scanSettings = await input.host.settings.cloneForCwd(input.executionRoot);
 	const modelSelector = `${input.model.provider}/${input.model.id}`;
-	cfgRetryModelFallback.override(scanSettings, false);
 	cfgRetryUsageAwareFallback.override(scanSettings, false);
-	cfgRetryFallbackChains.override(scanSettings, {});
 	cfgTaskAgentModelOverrides.override(scanSettings, {
 		...cfgTaskAgentModelOverrides.get(scanSettings),
 		"security-reviewer": modelSelector,

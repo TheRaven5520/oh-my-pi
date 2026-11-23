@@ -79,7 +79,7 @@ describe("settings layout", () => {
 		}
 	});
 
-	it("exposes usage-aware fallback as an opt-in advanced policy", () => {
+	it("exposes account quota checks as an opt-in advanced policy", () => {
 		const defs = getSettingsForTab(createSettingsHost().entries, "model").filter(def =>
 			def.path.startsWith("retry.usage"),
 		);
@@ -87,9 +87,8 @@ describe("settings layout", () => {
 			"retry.usageAwareFallback",
 			"retry.usageReservePct",
 			"retry.usageReservePolicy",
-			"retry.usageLimitFallbackChains",
 		]);
-		expect(defs[0]).toMatchObject({ type: "boolean", label: "Usage-Aware Fallback" });
+		expect(defs[0]).toMatchObject({ type: "boolean", label: "Check Account Quota" });
 		expect(defs[1]?.condition?.()).toBe(false);
 		expect(defs[2]?.condition?.()).toBe(false);
 		cfgRetryUsageAwareFallback.set(Settings.instance, true);

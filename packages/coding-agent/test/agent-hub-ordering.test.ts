@@ -473,7 +473,7 @@ describe("Agent hub row ordering", () => {
 		}
 	});
 
-	it("flags a fallback badge for observer-only rows with no live session", () => {
+	it("reads an observer-only row's model off executor progress", () => {
 		geometry = stubStdoutGeometry(120);
 		const agents = new AgentRegistry();
 		// A collab guest / observer-only row carries no live AgentSession, so the
@@ -487,32 +487,28 @@ describe("Agent hub row ordering", () => {
 			label: "Subagent",
 			status: "active",
 			lastUpdate: Date.now(),
-			progress: {
-				resolvedModel: "openai/gpt-4o",
-				resolvedModelIsFallback: true,
-			} as never,
+			progress: { resolvedModel: "openai/gpt-4o" } as never,
 		});
 
 		const hub = makeHub(agents, { observers });
 
 		try {
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback → openai/gpt-4o");
+			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
+			expect(rendered.toLowerCase()).toContain("gpt-4o");
+			expect(rendered).not.toContain("fallback →");
 		} finally {
 			hub.dispose();
 		}
 	});
 
-	it("reads a live row's model off the session's served attribution, not its current pointer", () => {
+	it("reads a live row's model off the session's current model", () => {
 		geometry = stubStdoutGeometry(120);
 		const agents = new AgentRegistry();
 		// The main session has no executor progress and no persisted history, so
-		// its row comes straight off the live session. With a fallback armed but
-		// unproven, `model` already points at the candidate that has produced
-		// nothing — reporting it credits the run to a model that never spoke.
+		// its row comes straight off the live session.
 		const session = {
 			model: { id: "gpt-5.6-sol", thinking: true },
 			thinkingLevel: "high",
-			servingModel: { selector: "anthropic/claude-sonnet-5", isFallback: false },
 		} as unknown as AgentSession;
 		agents.register({ id: "MainAgent", displayName: "Main Agent", kind: "sub", session });
 
@@ -520,65 +516,8 @@ describe("Agent hub row ordering", () => {
 
 		try {
 			const rendered = Bun.stripANSI(hub.render(120).join("\n"));
-			expect(rendered).toContain("Sonnet 5");
-			expect(rendered).not.toContain("GPT-5.6 Sol");
+			expect(rendered).toContain("GPT-5.6 Sol");
 			expect(rendered).not.toContain("fallback →");
-		} finally {
-			hub.dispose();
-		}
-	});
-
-	it("marks an armed fallback that has served nothing yet", () => {
-		geometry = stubStdoutGeometry(120);
-		const agents = new AgentRegistry();
-		// Nothing has served in this session, so there is no earlier work to
-		// miscredit — but the row must still say the model was reached by a
-		// fallback rather than presenting it as the plain configured model.
-		const session = {
-			model: { id: "gpt-5.6-sol", thinking: true },
-			thinkingLevel: "high",
-			// Nothing served, so the session names what it currently points at —
-			// still flagged as fallback-routed.
-			servingModel: { selector: "openai-codex/gpt-5.6-sol", isFallback: true },
-		} as unknown as AgentSession;
-		agents.register({ id: "UnprovenAgent", displayName: "Unproven Agent", kind: "sub", session });
-
-		const hub = makeHub(agents, { observers: new SessionObserverRegistry() });
-
-		try {
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback → openai-codex/gpt-5.6-sol");
-		} finally {
-			hub.dispose();
-		}
-	});
-
-	it("flags a fallback badge for a live row whose fallback armed no session retry state", () => {
-		geometry = stubStdoutGeometry(120);
-		const agents = new AgentRegistry();
-		// Live session with a resolved model but no served fallback — the
-		// Fireworks Fast → base degrade emits `retry_fallback_applied` without
-		// arming `#activeRetryFallback`, so the badge must fall back to the
-		// executor-reported progress flag.
-		const session = { model: { id: "kimi-k2" }, servingModel: undefined } as unknown as AgentSession;
-		agents.register({ id: "FastAgent", displayName: "Fast Agent", kind: "sub", session });
-
-		const observers = new SessionObserverRegistry();
-		vi.spyOn(observers, "getSession").mockReturnValue({
-			id: "FastAgent",
-			kind: "subagent",
-			label: "Subagent",
-			status: "active",
-			lastUpdate: Date.now(),
-			progress: {
-				resolvedModel: "fireworks/kimi-k2",
-				resolvedModelIsFallback: true,
-			} as never,
-		});
-
-		const hub = makeHub(agents, { observers });
-
-		try {
-			expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("fallback → fireworks/kimi-k2");
 		} finally {
 			hub.dispose();
 		}

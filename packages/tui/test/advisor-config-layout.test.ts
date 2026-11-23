@@ -19,7 +19,6 @@ describe("AdvisorConfigOverlayComponent", () => {
 			modelPerf: new Map(),
 			getModelRole: () => undefined,
 			getRoleInfo: role => ({ name: role, section: "chat", accepts: () => true }),
-			defaultRoleChain: () => [],
 			resolveRoleValue: () => ({ model: undefined, explicitThinkingLevel: false }),
 		},
 		defaultToolNames: new Set(["read", "grep", "glob"]),

@@ -93,11 +93,19 @@ describe("Factory Droid native request parity", () => {
 		expect(captures.map(({ model, upstream, effort }) => ({ model, upstream, effort }))).toEqual([...NATIVE_CASES]);
 	});
 
+	// The recorded capture is raw native traffic, so it goes through the same
+	// projection as our request: client-owned differences (e.g. the native
+	// refusal `fallbacks` chain and its betas) drop from both sides.
+	// Recorded bodies already carry `<tool-keys>` and masked session values,
+	// which the projection passes through unchanged.
+	const recorded = (request: NativeRequest): NativeRequest =>
+		projectNativeRequest(request.path, request.headers, request.body);
+
 	it.each(captures.map(capture => [`${capture.model}@${capture.upstream} ${capture.effort}`, capture] as const))(
 		"%s matches the native dialect on both turns",
 		async (_label, capture) => {
-			expect(await encode(capture, 0)).toEqual(capture.requests[0]);
-			expect(await encode(capture, 1)).toEqual(capture.requests[1]);
+			expect(await encode(capture, 0)).toEqual(recorded(capture.requests[0]));
+			expect(await encode(capture, 1)).toEqual(recorded(capture.requests[1]));
 		},
 	);
 });

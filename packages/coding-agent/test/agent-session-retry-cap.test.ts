@@ -64,7 +64,7 @@ function resolveInitialApiKey(apiKey: ApiKey | undefined): string {
 
 /**
  * Contract: when the provider asks us to wait longer than `retry.maxDelayMs`
- * and we have no credential/model fallback to switch to, the auto-retry
+ * and we have no sibling credential to switch to, the auto-retry
  * loop MUST fail fast — preserving the terminal error message in agent
  * state and skipping the long sleep entirely.
  *
@@ -105,7 +105,6 @@ describe("AgentSession retry delay cap", () => {
 			authStorage.keys.removeRuntime(provider);
 		}
 		authStorage.keys.setRuntime("anthropic", "anthropic-test-key");
-		modelRegistry.clearSuppressedSelectors();
 	});
 
 	afterEach(async () => {
@@ -234,7 +233,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 100,
 			"retry.maxRetries": 2,
-			"retry.modelFallback": false,
 			"retry.waitForUsageReset": true,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
@@ -304,7 +302,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 100,
 			"retry.maxRetries": 2,
-			"retry.modelFallback": false,
 			"retry.waitForUsageReset": true,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
@@ -340,7 +337,7 @@ describe("AgentSession retry delay cap", () => {
 
 	it("still fails fast on a long usage-limit reset when retry.waitForUsageReset is off", async () => {
 		// Contract: the default is unchanged — a multi-hour usage-limit wait
-		// without the opt-in (or a sibling/fallback) MUST fail fast.
+		// without the opt-in (or a sibling credential) MUST fail fast.
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) {
 			throw new Error("Expected bundled Anthropic test model to exist");
@@ -369,7 +366,6 @@ describe("AgentSession retry delay cap", () => {
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 100,
-			"retry.modelFallback": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 
@@ -502,7 +498,6 @@ describe("AgentSession retry delay cap", () => {
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 100,
-			"retry.modelFallback": false,
 			"retry.waitForUsageReset": true,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
@@ -575,7 +570,6 @@ describe("AgentSession retry delay cap", () => {
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 100,
-			"retry.modelFallback": false,
 			"retry.waitForUsageReset": true,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
@@ -648,7 +642,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 100,
 			"retry.maxRetries": 2,
-			"retry.modelFallback": false,
 			"retry.waitForUsageReset": true,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
@@ -769,7 +762,6 @@ describe("AgentSession retry delay cap", () => {
 				"retry.baseDelayMs": 5,
 				"retry.maxDelayMs": 100,
 				"retry.maxRetries": 2,
-				"retry.modelFallback": false,
 				"retry.waitForUsageReset": true,
 			});
 			settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
@@ -853,7 +845,6 @@ describe("AgentSession retry delay cap", () => {
 				"retry.baseDelayMs": 5,
 				"retry.maxDelayMs": 100,
 				"retry.maxRetries": 2,
-				"retry.modelFallback": false,
 				"retry.waitForUsageReset": true,
 			});
 			settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
@@ -935,7 +926,6 @@ describe("AgentSession retry delay cap", () => {
 				"retry.baseDelayMs": 5,
 				"retry.maxDelayMs": 100,
 				"retry.maxRetries": 2,
-				"retry.modelFallback": false,
 				"retry.waitForUsageReset": true,
 			});
 			settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
@@ -1033,7 +1023,6 @@ describe("AgentSession retry delay cap", () => {
 				"retry.baseDelayMs": 5,
 				"retry.maxDelayMs": 100,
 				"retry.maxRetries": 2,
-				"retry.modelFallback": false,
 				"retry.waitForUsageReset": true,
 			});
 			settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
@@ -1128,7 +1117,6 @@ describe("AgentSession retry delay cap", () => {
 				"retry.baseDelayMs": 5,
 				"retry.maxDelayMs": 100,
 				"retry.maxRetries": 2,
-				"retry.modelFallback": false,
 				"retry.waitForUsageReset": true,
 			});
 			settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
@@ -1220,7 +1208,6 @@ describe("AgentSession retry delay cap", () => {
 				"retry.baseDelayMs": 5,
 				"retry.maxDelayMs": 100,
 				"retry.maxRetries": 2,
-				"retry.modelFallback": false,
 				"retry.waitForUsageReset": true,
 			});
 			settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
@@ -1340,7 +1327,6 @@ describe("AgentSession retry delay cap", () => {
 				"retry.baseDelayMs": 5,
 				"retry.maxDelayMs": 100,
 				"retry.maxRetries": 2,
-				"retry.modelFallback": false,
 				"retry.waitForUsageReset": true,
 			});
 			settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
@@ -1421,7 +1407,6 @@ describe("AgentSession retry delay cap", () => {
 				"compaction.enabled": false,
 				"retry.baseDelayMs": 5,
 				"retry.maxDelayMs": 100,
-				"retry.modelFallback": false,
 				"retry.waitForUsageReset": true,
 			});
 			settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
@@ -1461,117 +1446,16 @@ describe("AgentSession retry delay cap", () => {
 		}
 	});
 
-	it("switches a long OpenCode Go usage limit to an earlier cross-provider fallback", async () => {
-		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
-		const alternateOpenCodeModel = getBundledModel("opencode-go", "deepseek-v4-pro");
+	it("waits for a short OpenCode Go sibling credential", async () => {
 		const exhaustedModel = getBundledModel("opencode-go", "deepseek-v4-flash");
-		const fallbackModel = getBundledModel("openai", "gpt-5.5");
-		if (!primaryModel || !alternateOpenCodeModel || !exhaustedModel || !fallbackModel) {
-			throw new Error("Expected bundled primary, OpenCode Go, and cross-provider fallback test models to exist");
-		}
-
-		authStorage.keys.setRuntime("opencode-go", "opencode-go-test-key");
-		authStorage.keys.setRuntime("openai", "openai-test-key");
-
-		const mock = createMockModel({
-			responses: [
-				{ throw: "503 service unavailable: overloaded_error retry-after-ms=60000" },
-				{
-					content: [{ type: "thinking", thinking: "Classifier refusal." }],
-					errorMessage: "Refusal (cyber): Declined.",
-					stopDetails: { type: "refusal", category: "cyber", explanation: "Declined." },
-					stopReason: "error",
-				},
-				{
-					content: [{ type: "thinking", thinking: "Classifier refusal." }],
-					errorMessage: "Refusal (cyber): Declined.",
-					stopDetails: { type: "refusal", category: "cyber", explanation: "Declined." },
-					stopReason: "error",
-				},
-				{
-					throw: "429 Weekly usage limit reached. Resets in 55min. type=GoUsageLimitError retry-after-ms=3242000",
-				},
-				{ content: ["recovered on cross-provider fallback"], stopReason: "stop" },
-			],
-		});
-		const requestedModels: string[] = [];
-		const agent = new Agent({
-			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
-			initialState: {
-				model: primaryModel,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-			streamFn: (requestedModel, context, options) => {
-				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
-				return mock.stream(requestedModel, context, options);
-			},
-		});
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"retry.maxDelayMs": 300_000,
-			"retry.maxRetries": 3,
-			"retry.modelFallback": true,
-			"retry.fallbackChains": {
-				default: [
-					`${alternateOpenCodeModel.provider}/${alternateOpenCodeModel.id}`,
-					`${fallbackModel.provider}/${fallbackModel.id}`,
-					`${exhaustedModel.provider}/${exhaustedModel.id}`,
-				],
-			},
-		});
-		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
-
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-		const waitSpy = mockSchedulerWaitWithClock();
-		const fallbackEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
-		session.subscribe(event => {
-			if (event.type === "retry_fallback_applied") fallbackEvents.push(event);
-		});
-
-		await session.prompt("Trigger the long OpenCode Go weekly usage limit");
-		await session.waitForIdle();
-
-		expect(requestedModels).toEqual([
-			`${primaryModel.provider}/${primaryModel.id}`,
-			`${alternateOpenCodeModel.provider}/${alternateOpenCodeModel.id}`,
-			`${fallbackModel.provider}/${fallbackModel.id}`,
-			`${exhaustedModel.provider}/${exhaustedModel.id}`,
-			`${fallbackModel.provider}/${fallbackModel.id}`,
-		]);
-		expect(fallbackEvents).toContainEqual({
-			type: "retry_fallback_applied",
-			from: `${exhaustedModel.provider}/${exhaustedModel.id}`,
-			to: `${fallbackModel.provider}/${fallbackModel.id}`,
-			role: "default",
-			reason: expect.stringContaining("429 Weekly usage limit reached"),
-		});
-		for (const call of waitSpy.mock.calls) {
-			expect(call[0]).toBeLessThan(300_000);
-		}
-		expect(lastAssistant(session).content).toContainEqual({
-			type: "text",
-			text: "recovered on cross-provider fallback",
-		});
-	});
-	it("waits for a short OpenCode Go sibling credential before model fallback", async () => {
-		const exhaustedModel = getBundledModel("opencode-go", "deepseek-v4-flash");
-		const fallbackModel = getBundledModel("openai", "gpt-5.5");
-		if (!exhaustedModel || !fallbackModel) {
-			throw new Error("Expected bundled OpenCode Go and fallback test models to exist");
+		if (!exhaustedModel) {
+			throw new Error("Expected bundled OpenCode Go test model to exist");
 		}
 
 		await authStorage.credentials.set("opencode-go", [
 			{ type: "api_key", key: "opencode-go-key-1" },
 			{ type: "api_key", key: "opencode-go-key-2" },
 		]);
-		authStorage.keys.setRuntime("openai", "openai-test-key");
 		await modelRegistry.getApiKeyForProvider("opencode-go", "other-session");
 		const blocked = await authStorage.limits.markReached("opencode-go", "other-session", {
 			retryAfterMs: 2_000,
@@ -1605,8 +1489,6 @@ describe("AgentSession retry delay cap", () => {
 			"compaction.enabled": false,
 			"retry.maxDelayMs": 300_000,
 			"retry.maxRetries": 2,
-			"retry.modelFallback": true,
-			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
 		});
 		settings.setModelRole("default", `${exhaustedModel.provider}/${exhaustedModel.id}`);
 
@@ -1617,10 +1499,6 @@ describe("AgentSession retry delay cap", () => {
 			modelRegistry,
 		});
 		const waitSpy = mockSchedulerWaitWithClock();
-		const fallbackEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
-		session.subscribe(event => {
-			if (event.type === "retry_fallback_applied") fallbackEvents.push(event);
-		});
 
 		await session.prompt("Trigger the long OpenCode Go limit while a sibling is briefly blocked");
 		await session.waitForIdle();
@@ -1633,7 +1511,6 @@ describe("AgentSession retry delay cap", () => {
 			`${exhaustedModel.provider}/${exhaustedModel.id}`,
 			`${exhaustedModel.provider}/${exhaustedModel.id}`,
 		]);
-		expect(fallbackEvents).toEqual([]);
 		expect(waitSpy.mock.calls.some(call => call[0] >= 1_000 && call[0] <= 3_000)).toBe(true);
 		expect(lastAssistant(session).content).toContainEqual({
 			type: "text",
@@ -1668,7 +1545,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 60_000,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 
@@ -1724,7 +1600,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 5_000,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 
@@ -1784,7 +1659,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 5_000,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 
@@ -1844,7 +1718,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 5_000,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 
@@ -1883,15 +1756,13 @@ describe("AgentSession retry delay cap", () => {
 
 	it("rolls through four sibling credentials inside one AgentSession prompt before delay-cap retry", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
-		const fallbackModel = getBundledModel("openai", "gpt-5");
-		if (!model || !fallbackModel) {
-			throw new Error("Expected bundled primary and fallback test models to exist");
+		if (!model) {
+			throw new Error("Expected bundled primary test model to exist");
 		}
 		const providerSessionId = "retry-four-credential-session-3";
 
 		registerMockApi(RETRY_CAP_MOCK_API_SOURCE);
 		authStorage.keys.removeRuntime("anthropic");
-		authStorage.keys.setRuntime("openai", "openai-fallback-key");
 		await authStorage.credentials.set("anthropic", [
 			{ type: "api_key", key: "anthropic-key-A" },
 			{ type: "api_key", key: "anthropic-key-B" },
@@ -1940,10 +1811,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 1,
 			"retry.maxDelayMs": 1,
 			"retry.maxRetries": 0,
-			"retry.modelFallback": true,
-			"retry.fallbackChains": {
-				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
-			},
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 
@@ -1987,15 +1854,13 @@ describe("AgentSession retry delay cap", () => {
 		expect(last.content).toContainEqual({ type: "text", text: "recovered on fourth credential" });
 	});
 
-	it("switches same-provider credentials before model fallback on ChatGPT usage limits", async () => {
+	it("switches same-provider credentials on ChatGPT usage limits", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
-		const fallbackModel = getBundledModel("openai", "gpt-5.5");
-		if (!primaryModel || !fallbackModel) {
-			throw new Error("Expected bundled primary and fallback test models to exist");
+		if (!primaryModel) {
+			throw new Error("Expected bundled primary test model to exist");
 		}
 
 		authStorage.keys.removeRuntime("anthropic");
-		authStorage.keys.setRuntime("openai", "openai-fallback-key");
 		await authStorage.credentials.set("anthropic", [
 			{ type: "api_key", key: "anthropic-key-1" },
 			{ type: "api_key", key: "anthropic-key-2" },
@@ -2031,10 +1896,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 100,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": true,
-			"retry.fallbackChains": {
-				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
-			},
 		});
 		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
 
@@ -2059,16 +1920,14 @@ describe("AgentSession retry delay cap", () => {
 		expect(last.content).toContainEqual({ type: "text", text: "recovered after sibling account" });
 	});
 
-	it("tries every Codex account before the configured model fallback on cyber-policy denials", async () => {
+	it("tries every Codex account on cyber-policy denials", async () => {
 		const primaryModel = getBundledModel("openai-codex", "gpt-5.6-sol");
-		const fallbackModel = getBundledModel("openai", "gpt-5.5");
-		if (!primaryModel || !fallbackModel) {
-			throw new Error("Expected bundled primary and fallback test models to exist");
+		if (!primaryModel) {
+			throw new Error("Expected bundled primary test model to exist");
 		}
 		const providerSessionId = "cyber-policy-account-rotation";
 
 		registerMockApi(RETRY_CAP_MOCK_API_SOURCE);
-		authStorage.keys.setRuntime("openai", "openai-fallback-key");
 		await authStorage.credentials.set("openai-codex", [
 			{ type: "api_key", key: "codex-key-A" },
 			{ type: "api_key", key: "codex-key-B" },
@@ -2108,10 +1967,6 @@ describe("AgentSession retry delay cap", () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"retry.maxRetries": 0,
-			"retry.modelFallback": true,
-			"retry.fallbackChains": {
-				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
-			},
 		});
 		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
 
@@ -2121,11 +1976,6 @@ describe("AgentSession retry delay cap", () => {
 			settings,
 			modelRegistry,
 			providerSessionId,
-		});
-
-		const fallbackEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
-		session.subscribe(event => {
-			if (event.type === "retry_fallback_applied") fallbackEvents.push(event);
 		});
 
 		await session.prompt("Continue authorized security work");
@@ -2139,7 +1989,6 @@ describe("AgentSession retry delay cap", () => {
 		]);
 		expect(requestedKeys).toHaveLength(4);
 		expect([...requestedKeys].sort()).toEqual(["codex-key-A", "codex-key-B", "codex-key-C", "codex-key-D"]);
-		expect(fallbackEvents).toEqual([]);
 		expect(session.model?.provider).toBe(primaryModel.provider);
 		expect(session.model?.id).toBe(primaryModel.id);
 		expect(lastAssistant(session).content).toContainEqual({
@@ -2148,16 +1997,14 @@ describe("AgentSession retry delay cap", () => {
 		});
 	});
 
-	it("tries sibling Codex accounts before advisor model fallback on cyber-policy denials", async () => {
+	it("tries sibling Codex accounts for the advisor on cyber-policy denials", async () => {
 		const mainModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const advisorModel = getBundledModel("openai-codex", "gpt-5.6-sol");
-		const fallbackModel = getBundledModel("openai", "gpt-5.5");
-		if (!mainModel || !advisorModel || !fallbackModel) {
-			throw new Error("Expected bundled main, advisor, and fallback test models to exist");
+		if (!mainModel || !advisorModel) {
+			throw new Error("Expected bundled main and advisor test models to exist");
 		}
 
 		registerMockApi(RETRY_CAP_MOCK_API_SOURCE);
-		authStorage.keys.setRuntime("openai", "openai-fallback-key");
 		await authStorage.credentials.set("openai-codex", [
 			{ type: "api_key", key: "advisor-codex-key-A" },
 			{ type: "api_key", key: "advisor-codex-key-B" },
@@ -2181,7 +2028,6 @@ describe("AgentSession retry delay cap", () => {
 		});
 		const requestedAdvisorModels: string[] = [];
 		const advisorSelector = `${advisorModel.provider}/${advisorModel.id}`;
-		const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 		const agent = new Agent({
 			getApiKey: model => `${model.provider}-test-key`,
 			initialState: {
@@ -2197,10 +2043,6 @@ describe("AgentSession retry delay cap", () => {
 			"advisor.syncBacklog": "1",
 			"compaction.enabled": false,
 			"retry.maxRetries": 0,
-			"retry.modelFallback": true,
-			"retry.fallbackChains": {
-				[advisorSelector]: [fallbackSelector],
-			},
 		});
 		settings.setModelRole("default", `${mainModel.provider}/${mainModel.id}`);
 		settings.setModelRole("advisor", advisorSelector);
@@ -2218,11 +2060,6 @@ describe("AgentSession retry delay cap", () => {
 			},
 		});
 
-		const fallbackEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
-		session.subscribe(event => {
-			if (event.type === "retry_fallback_applied") fallbackEvents.push(event);
-		});
-
 		expect(session.setAdvisorEnabled(true)).toBe(true);
 		await session.prompt("Complete one primary turn");
 		await advisorRecovered.promise;
@@ -2234,7 +2071,6 @@ describe("AgentSession retry delay cap", () => {
 			"advisor-codex-key-B",
 			"advisor-codex-key-C",
 		]);
-		expect(fallbackEvents).toEqual([]);
 		expect(session.getAdvisorAgent()?.state.model).toMatchObject({
 			provider: advisorModel.provider,
 			id: advisorModel.id,
@@ -3253,7 +3089,6 @@ describe("AgentSession retry delay cap", () => {
 				"retry.baseDelayMs": 5,
 				"retry.maxDelayMs": 5_000,
 				"retry.maxRetries": 1,
-				"retry.modelFallback": false,
 			});
 			settings.setModelRole("default", `${model.provider}/${model.id}`);
 
@@ -3444,7 +3279,6 @@ describe("AgentSession retry delay cap", () => {
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 5_000,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": true,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 
@@ -3458,11 +3292,9 @@ describe("AgentSession retry delay cap", () => {
 		mockSchedulerWaitWithClock();
 		const retryStartEvents: AutoRetryStartEvent[] = [];
 		const retryEndEvents: AutoRetryEndEvent[] = [];
-		const fallbackEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
 		session.subscribe(event => {
 			if (event.type === "auto_retry_start") retryStartEvents.push(event);
 			if (event.type === "auto_retry_end") retryEndEvents.push(event);
-			if (event.type === "retry_fallback_applied") fallbackEvents.push(event);
 		});
 
 		await session.prompt("Trigger empty aborted turn");
@@ -3471,7 +3303,6 @@ describe("AgentSession retry delay cap", () => {
 		expect(retryStartEvents).toHaveLength(1);
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
-		expect(fallbackEvents).toHaveLength(0);
 		const last = lastAssistant(session);
 		expect(last.stopReason).toBe("stop");
 		expect(last.content).toContainEqual({ type: "text", text: "recovered after empty reasonless abort" });
@@ -3714,7 +3545,6 @@ describe("AgentSession retry delay cap", () => {
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 10,
-			"retry.modelFallback": false,
 		});
 		settings.setModelRole("default", `${options.model.provider}/${options.model.id}`);
 		session = new AgentSession({

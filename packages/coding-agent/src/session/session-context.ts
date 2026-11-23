@@ -133,24 +133,22 @@ export interface SessionContext {
 	toolStartedAt?: ReadonlyMap<string, number>;
 }
 
-/** Lists session model strings to try when restoring, in fallback order. */
-export function getRestorableSessionModels(
+/**
+ * The session model string to restore: the last-changed role's model, else the default
+ * model. Never a different model than the one the session last used.
+ */
+export function getRestorableSessionModel(
 	models: Readonly<Record<string, string>>,
 	lastModelChangeRole: string | undefined,
-): string[] {
-	const defaultModel = models.default;
+): string | undefined {
 	if (
 		!lastModelChangeRole ||
 		lastModelChangeRole === "default" ||
 		lastModelChangeRole === EPHEMERAL_MODEL_CHANGE_ROLE
 	) {
-		return defaultModel ? [defaultModel] : [];
+		return models.default;
 	}
-
-	const roleModel = models[lastModelChangeRole];
-	if (!roleModel) return defaultModel ? [defaultModel] : [];
-	if (!defaultModel || roleModel === defaultModel) return [roleModel];
-	return [roleModel, defaultModel];
+	return models[lastModelChangeRole] || models.default;
 }
 
 export function getLatestCompactionEntry(entries: SessionEntry[]): CompactionEntry | null {

@@ -75,7 +75,6 @@ describe("ModelSearchSession", () => {
 		expect(changes).toBeGreaterThan(0);
 	});
 
-
 	test("a slow answer for an older query is dropped and its request aborted", async () => {
 		const pending = new Map<string, { resolve: (hits: ModelSearchHit[]) => void; signal: AbortSignal }>();
 		const session = new ModelSearchSession(
@@ -109,7 +108,6 @@ describe("model hub search scope", () => {
 		return {
 			revision: 0,
 			disabledProviders: [],
-			fallbackChains: {},
 			modelRoleStorage: "global",
 			cycleOrder: [],
 			getProjectModelRole: () => undefined,
@@ -122,7 +120,6 @@ describe("model hub search scope", () => {
 			modelPerf: new Map(),
 			getModelRole: () => undefined,
 			getRoleInfo: role => ({ name: role, section: "chat", accepts: () => true }),
-			defaultRoleChain: () => [],
 			resolveRoleValue: () => ({ model: undefined, explicitThinkingLevel: false }),
 		};
 	}

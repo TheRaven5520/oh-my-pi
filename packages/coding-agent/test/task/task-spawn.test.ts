@@ -449,7 +449,7 @@ describe("task spawn routing", () => {
 		}
 	});
 
-	it("clears stale model metadata and fallback state from detached progress", async () => {
+	it("clears stale model metadata from detached progress", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
 		const gate = deferred();
 		let publishProgress: ((metadata: Partial<AgentProgress>) => void) | undefined;
@@ -464,7 +464,6 @@ describe("task spawn routing", () => {
 				resolvedModel: "custom/coding-router:max:high",
 				resolvedModelIdentity: "custom/coding-router:max",
 				resolvedThinkingLevel: ThinkingLevel.High,
-				resolvedModelIsFallback: true,
 			};
 			options.onProgress?.(progress);
 			publishProgress = metadata => options.onProgress?.({ ...progress, ...metadata });
@@ -482,34 +481,21 @@ describe("task spawn routing", () => {
 					publishProgress !== undefined &&
 					snapshotJobs(session, [job])[0]?.resolvedThinkingLevel === ThinkingLevel.High,
 			);
-			expect(getJobProgress(job)?.resolvedModelIsFallback).toBe(true);
 			publishProgress!({
 				resolvedModel: undefined,
 				resolvedModelIdentity: undefined,
 				resolvedThinkingLevel: undefined,
-				resolvedModelIsFallback: true,
 			});
 			await pollUntil(() => snapshotJobs(session, [job])[0]?.resolvedModel === undefined);
-			expect(getJobProgress(job)?.resolvedModelIsFallback).toBeUndefined();
-
-			publishProgress!({});
-			await pollUntil(() => getJobProgress(job)?.resolvedModelIsFallback === true);
 			publishProgress!({
 				resolvedModel: "custom/legacy:low",
 				resolvedModelIdentity: undefined,
 				resolvedThinkingLevel: undefined,
-				resolvedModelIsFallback: undefined,
 			});
 			await pollUntil(() => snapshotJobs(session, [job])[0]?.resolvedModel === "custom/legacy:low");
 			const legacy = snapshotJobs(session, [job])[0];
 			expect(legacy?.resolvedModelIdentity).toBeUndefined();
 			expect(legacy?.resolvedThinkingLevel).toBeUndefined();
-			expect(getJobProgress(job)?.resolvedModelIsFallback).toBeUndefined();
-
-			publishProgress!({ resolvedModelIsFallback: false });
-			await pollUntil(() => getJobProgress(job)?.resolvedModelIsFallback === false);
-			publishProgress!({});
-			await pollUntil(() => getJobProgress(job)?.resolvedModelIsFallback === true);
 		} finally {
 			gate.resolve();
 			await job.promise;
@@ -519,53 +505,7 @@ describe("task spawn routing", () => {
 		expect(settled?.resolvedModel).toBeUndefined();
 		expect(settled?.resolvedModelIdentity).toBeUndefined();
 		expect(settled?.resolvedThinkingLevel).toBeUndefined();
-		expect(getJobProgress(job)?.resolvedModelIsFallback).toBeUndefined();
 	});
-
-	it.each([undefined, false, true])(
-		"uses the settled model's authoritative fallback state (%s), not the previous model's",
-		async settledFallback => {
-			vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [taskAgent], projectAgentsDir: null });
-			const gate = deferred();
-			vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
-				options.onProgress?.({
-					...makeResult(options.id ?? "?"),
-					status: "running",
-					recentTools: [],
-					recentOutput: [],
-					toolCount: 0,
-					cost: 0,
-					resolvedModel: "custom/previous",
-					resolvedModelIdentity: "custom/previous",
-					resolvedModelIsFallback: settledFallback !== true,
-				});
-				await gate.promise;
-				return makeResult(options.id ?? "?", {
-					resolvedModel: "custom/settled",
-					resolvedModelIdentity: "custom/settled",
-					resolvedModelIsFallback: settledFallback,
-				});
-			});
-			const manager = createManager();
-			const tool = await TaskTool.create(createSession({ manager }));
-			const result = await tool.execute("tc-fallback", {
-				agent: "task",
-				name: "Fallback",
-				task: "work",
-			} as TaskParams);
-			const job = manager.getJob(result.details!.async!.jobId)!;
-			try {
-				await pollUntil(() => getJobProgress(job)?.resolvedModel === "custom/previous");
-				expect(getJobProgress(job)?.resolvedModelIsFallback).toBe(settledFallback !== true);
-			} finally {
-				gate.resolve();
-				await job.promise;
-			}
-			expect(job.status).toBe("completed");
-			expect(getJobProgress(job)?.resolvedModel).toBe("custom/settled");
-			expect(getJobProgress(job)?.resolvedModelIsFallback).toBe(settledFallback);
-		},
-	);
 
 	it("retains the temporary artifacts directory for a completed async spawn (in-memory session)", async () => {
 		// Regression: with no session file (in-memory session), leaseArtifacts()

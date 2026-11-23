@@ -47,8 +47,6 @@ export interface AgentHistorySummary {
 	agent?: string;
 	modelRole?: string;
 	resolvedModel?: string;
-	/** Whether the last resolved model was selected by retry fallback routing. */
-	resolvedModelIsFallback?: boolean;
 	metrics?: AgentMetricsSummary;
 	readOnly?: boolean;
 	/** Durable task output artifact, when the executor wrote one. */

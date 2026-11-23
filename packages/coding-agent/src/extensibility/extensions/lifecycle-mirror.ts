@@ -13,7 +13,7 @@
  * for mirrored host events, so neither side can drift from the other.
  *
  * Session-only event types that never travel on the collab wire
- * (`retry_fallback_*`, `ttsr_triggered`, `todo_reminder`, `goal_updated`, …)
+ * (`ttsr_triggered`, `todo_reminder`, `goal_updated`, …)
  * are mapped here too, so the session's copy stays complete; the guest
  * simply never sees those events (see `WIRE_AGENT_EVENT_TYPES` in
  * `collab/host.ts`).
@@ -38,8 +38,6 @@ import type {
 	MessageEndEvent,
 	MessageStartEvent,
 	MessageUpdateEvent,
-	RetryFallbackAppliedEvent,
-	RetryFallbackSucceededEvent,
 	TodoReminderEvent,
 	ToolExecutionEndEvent,
 	ToolExecutionStartEvent,
@@ -96,8 +94,6 @@ export type MappedExtensionEvent =
 	| AutoCompactionEndEvent
 	| AutoRetryStartEvent
 	| AutoRetryEndEvent
-	| RetryFallbackAppliedEvent
-	| RetryFallbackSucceededEvent
 	| TtsrTriggeredEvent
 	| TodoReminderEvent
 	| GoalUpdatedEvent;
@@ -209,16 +205,6 @@ export function extensionEventFromSessionEvent(
 				finalError: event.finalError,
 				retryErrors: event.retryErrors,
 			};
-		case "retry_fallback_applied":
-			return {
-				type: "retry_fallback_applied",
-				from: event.from,
-				to: event.to,
-				role: event.role,
-				reason: event.reason,
-			};
-		case "retry_fallback_succeeded":
-			return { type: "retry_fallback_succeeded", model: event.model, role: event.role };
 		case "ttsr_triggered":
 			return { type: "ttsr_triggered", rules: event.rules };
 		case "todo_reminder":

@@ -770,7 +770,7 @@ async function callPerplexityAsk(
 	// false + always_search_override) always returns web_results, so a
 	// source-less anonymous response is almost always the wall. Either way an
 	// unsourced answer is useless, so classify it as a provider failure and let
-	// the fallback chain advance, matching the DuckDuckGo/Startpage/Google/SearXNG
+	// it surface as the search error, matching the DuckDuckGo/Startpage/Google/SearXNG
 	// wall paths. The check is locale-independent (no text match).
 	if (auth.type === "anonymous" && sourcesByUrl.size === 0) {
 		throw new SearchProviderError(

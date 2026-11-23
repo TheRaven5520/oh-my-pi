@@ -1061,7 +1061,6 @@ describe("AgentSession advisor toggle", () => {
 			"retry.baseDelayMs": 0,
 			"retry.maxDelayMs": 100,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
 		});
 		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
 		const quotaSession = new AgentSession({

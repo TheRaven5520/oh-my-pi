@@ -339,7 +339,7 @@ async function runPrintModeCore(
 
 	// A turn-fatal exit cannot hold automation for the full normal drain budget.
 	if (!strictMCPFailure) {
-		// Print mode's drain budget covers a fallback-chain switch; the reviewer's
+		// Print mode's drain budget covers advisor retry recovery; the reviewer's
 		// verdict is the point of a headless advisor run, so wait through recovery,
 		// and wait on `strict` reviewers past the budget like every primary boundary.
 		await session.waitForAdvisorCatchup(

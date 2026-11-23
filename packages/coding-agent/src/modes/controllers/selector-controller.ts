@@ -127,7 +127,7 @@ import type { SessionObserverRegistry } from "@oh-my-pi/pi-tui/overlays/session-
 import { cfgAdvisorSyncBacklog } from "../../advisor/settings";
 import { cfgBranchSummaryEnabled } from "../../session/context-settings";
 import { cfgCycleOrder, cfgDisabledProviders, cfgModelRoleStorage } from "../../config/model-settings";
-import { cfgDefaultThinkingLevel, cfgRetryFallbackChains } from "../../session/settings";
+import { cfgDefaultThinkingLevel } from "../../session/settings";
 import {
 	cfgStatusLineCompactThinkingLevel,
 	cfgStatusLineContextLine,
@@ -1003,20 +1003,6 @@ export class SelectorController {
 						hub?.refreshAfterExternalMutation();
 					}
 				},
-				onFallbackChainChange: (role, chain) => {
-					try {
-						cfgRetryFallbackChains.setEntry(this.ctx.settings, role, chain.length > 0 ? chain : undefined);
-						const roleInfo = getRoleInfo(role, settings);
-						this.ctx.showStatus(
-							chain.length > 0
-								? `${roleInfo?.tag ?? roleInfo?.name ?? role} fallbacks: ${chain.join(" → ")}`
-								: `${roleInfo?.tag ?? roleInfo?.name ?? role} fallbacks cleared`,
-						);
-					} catch (error) {
-						this.ctx.showError(error instanceof Error ? error.message : String(error));
-					}
-				},
-
 				onLoginRequest: providerId => {
 					done();
 					void this.#loginThenReopenModelHub(providerId);

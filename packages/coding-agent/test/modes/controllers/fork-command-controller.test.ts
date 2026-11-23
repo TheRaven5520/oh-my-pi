@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { Effort, type Model } from "@oh-my-pi/pi-ai";
-import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -69,7 +68,6 @@ function createHarness() {
 		model,
 		sessionId: "parent-session",
 		configuredThinkingLevel: vi.fn(() => undefined),
-		retryFallbackPrimary: vi.fn(() => undefined),
 		systemPrompt: ["system prompt"],
 		getEnabledToolNames: vi.fn(() => ["read", "edit", "hub"]),
 		modelRegistry: { authStorage: {} },
@@ -245,7 +243,6 @@ describe("ForkCommandController", () => {
 		expect(forkIds()).toEqual([]);
 		expect(h.fork.session.dispose).toHaveBeenCalled();
 	});
-
 });
 
 describe("ForkCommandController with a real child session", () => {
@@ -277,8 +274,6 @@ describe("ForkCommandController with a real child session", () => {
 	async function forkFromLiveParent(
 		settingsTier: "none" | "priority",
 		switchLive: (parent: AgentSession, liveModel: Model) => Promise<void>,
-		extraSettings: Parameters<typeof Settings.isolated>[0] = {},
-		probeChild?: (child: AgentSession) => Promise<string>,
 	) {
 		using tempDir = TempDir.createSync("@omp-fork-inheritance-");
 		const cwd = tempDir.path();
@@ -296,7 +291,6 @@ describe("ForkCommandController with a real child session", () => {
 			"tier.anthropic": settingsTier,
 			"task.enableLsp": false,
 			"compaction.enabled": false,
-			...extraSettings,
 		});
 		settings.setModelRole("default", `${defaultRoleModel.provider}/${defaultRoleModel.id}`);
 		const sessionManager = SessionManager.create(cwd, tempDir.join("sessions"));
@@ -344,7 +338,6 @@ describe("ForkCommandController with a real child session", () => {
 				configuredThinkingLevel: child.configuredThinkingLevel(),
 				thinkingLevel: child.thinkingLevel,
 				serviceTierByFamily: { ...child.serviceTierByFamily },
-				probe: await probeChild?.(child),
 			};
 		} finally {
 			await controller.dispose();
@@ -376,54 +369,5 @@ describe("ForkCommandController with a real child session", () => {
 
 		expect(child.model).toBe(child.liveModel);
 		expect(child.serviceTierByFamily).toEqual({});
-	}, 30_000);
-
-	/** Make `session`'s first request to `modelId` fail with a retryable rate limit; everything else answers. */
-	function rateLimitFirstRequest(session: AgentSession, modelId: string): void {
-		const mock = createMockModel();
-		let rateLimited = false;
-		session.agent.streamFn = (model, context, options) => {
-			if (!rateLimited && model.id === modelId) {
-				rateLimited = true;
-				mock.push({ throw: "rate limit exceeded retry-after-ms=60000" });
-			} else {
-				mock.push({ content: ["ok"] });
-			}
-			return mock.stream(model, context, options);
-		};
-	}
-
-	it("starts on the main chat's primary model and effort while the main chat rides a retry fallback", async () => {
-		const fallbackModel = bundled("claude-haiku-4-5");
-		const child = await forkFromLiveParent(
-			"none",
-			async (parent, liveModel) => {
-				await parent.setModel(liveModel);
-				parent.setThinkingLevel(Effort.High);
-				rateLimitFirstRequest(parent, liveModel.id);
-				await parent.prompt("hello");
-				await parent.waitForIdle();
-				expect(parent.model?.id).toBe(fallbackModel.id);
-				expect(parent.configuredThinkingLevel()).toBe(Effort.Low);
-			},
-			{
-				"retry.baseDelayMs": 5,
-				// Keyed by the live model, so the role-primary hop of the default chain is skipped.
-				"retry.fallbackChains": {
-					"anthropic/claude-opus-4-5": [`${fallbackModel.provider}/${fallbackModel.id}:low`],
-				},
-			},
-			// The clone keeps the parent's fallback chain: its own rate-limited primary hops to haiku.
-			async clone => {
-				rateLimitFirstRequest(clone, "claude-opus-4-5");
-				await clone.prompt("hello from the fork");
-				await clone.waitForIdle();
-				return `${clone.model?.provider}/${clone.model?.id}`;
-			},
-		);
-
-		expect(child.model).toBe(child.liveModel);
-		expect(child.configuredThinkingLevel).toBe(Effort.High);
-		expect(child.probe).toBe(`${fallbackModel.provider}/${fallbackModel.id}`);
 	}, 30_000);
 });

@@ -302,7 +302,6 @@ export const modelDefs = {
 			"headers?": "Record<string, string>",
 			"premiumMultiplier?": "number",
 			"preferWebsockets?": "boolean",
-			"contextPromotionTarget?": "string",
 			"priority?": "number.integer",
 			"thinking?": "ThinkingConfig",
 			"compat?": JSON_OBJECT,

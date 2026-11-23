@@ -118,7 +118,6 @@ describe("AgentSession mid-run threshold compaction", () => {
 			"compaction.midTurnEnabled": true,
 			"compaction.thresholdTokens": 1000,
 			"compaction.thresholdPercent": -1,
-			"contextPromotion.enabled": false,
 			"todo.enabled": false,
 			"todo.reminders": false,
 			...settingsOverride,

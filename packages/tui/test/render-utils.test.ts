@@ -164,14 +164,6 @@ describe("feed model badges", () => {
 		);
 	});
 
-	it("keeps the serving provider on a retry fallback", () => {
-		expect(
-			Bun.stripANSI(
-				formatFeedModelBadge("personal-anthropic/claude-opus-5-5", ThinkingLevel.Low, false, uiTheme, 60, true),
-			),
-		).toBe("Opus 5.5 (low) · personal-anthropic");
-	});
-
 	it("ignores unknown runtime thinking levels without changing the model identity", () => {
 		for (const level of ["future-level", "toString"]) {
 			expect(Bun.stripANSI(formatFeedModelBadge("custom:model:max", level as ThinkingLevel, true, uiTheme))).toBe(

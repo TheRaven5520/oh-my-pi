@@ -1041,23 +1041,17 @@ function retargetCollapsedModelReferences<TSpec extends VariantSpecLike>(specs: 
 	for (let index = 0; index < specs.length; index++) {
 		const spec = specs[index];
 		if (!spec) continue;
-		const contextPromotionTarget = resolveCollapsedModelReference(
-			spec.contextPromotionTarget,
-			spec.provider,
-			liveIdsByProvider,
-		);
 		const compactionModel = resolveCollapsedModelReference(spec.compactionModel, spec.provider, liveIdsByProvider);
 		const webSearchModel = resolveCollapsedModelReference(spec.webSearchModel, spec.provider, liveIdsByProvider);
 		const imageModel = resolveCollapsedModelReference(spec.imageModel, spec.provider, liveIdsByProvider);
 		if (
-			contextPromotionTarget === spec.contextPromotionTarget &&
 			compactionModel === spec.compactionModel &&
 			webSearchModel === spec.webSearchModel &&
 			imageModel === spec.imageModel
 		) {
 			continue;
 		}
-		specs[index] = { ...spec, contextPromotionTarget, compactionModel, webSearchModel, imageModel };
+		specs[index] = { ...spec, compactionModel, webSearchModel, imageModel };
 	}
 }
 

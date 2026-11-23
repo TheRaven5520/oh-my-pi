@@ -171,13 +171,6 @@ export interface EffectiveSubagentPolicy {
 	serviceTierOverride?: ServiceTierInheritSettingValue;
 	/** Exact-name entry normalized to both child compaction threshold fields. */
 	compactionThresholdOverride?: CompactionThresholdPair;
-	/**
-	 * Parent model the child falls back to when its own candidates have no
-	 * working credentials. Absent for an explicit per-call `model` (other than
-	 * `@default`): a requested model that cannot run fails instead of being
-	 * replaced by the parent's.
-	 */
-	parentActiveModelPattern?: string;
 	/** The selected patterns carry the parent's live effort, which the agent's own `thinking-level` outranks. */
 	modelInheritsLiveThinkingLevel?: boolean;
 	schema: StructuredSubagentSchemaResolution;
@@ -394,18 +387,16 @@ export async function resolveEffectiveSubagentPolicy(
 	const compactionThresholdOverride = Object.hasOwn(compactionThresholdOverrides, agentName)
 		? compactionThresholdOverrides[agentName]
 		: undefined;
-	const parentActiveModelPattern = request.session.getActiveModelString?.();
 	const modelResolution = {
 		requestModel: request.model,
 		settingsOverride: agentModelOverrides[agentName],
 		agentModel: effectiveAgent.model,
 		settings: request.session.settings,
-		activeModelPattern: parentActiveModelPattern,
+		activeModelPattern: request.session.getActiveModelString?.(),
 		fallbackModelPattern: request.session.getModelString?.(),
 	};
 	// Role identity and patterns come from one call so they cannot be derived
-	// from different sources: the expansion below discards the alias, and the
-	// child's inherited retry-fallback chain is keyed off the role.
+	// from different sources: the expansion below discards the alias.
 	const {
 		patterns: modelOverride,
 		role: modelRole,
@@ -486,10 +477,6 @@ export async function resolveEffectiveSubagentPolicy(
 		modelRole,
 		serviceTierOverride,
 		compactionThresholdOverride,
-		parentActiveModelPattern:
-			requestPatterns.length > 0 && !modelSelectionInheritsSessionModel(request.model)
-				? undefined
-				: parentActiveModelPattern,
 		modelInheritsLiveThinkingLevel,
 		schema,
 		planMode,
@@ -631,7 +618,6 @@ function buildExecutorOptions(
 		modelRoute: policy.modelRoute,
 		serviceTierOverride: policy.serviceTierOverride,
 		compactionThresholdOverride: policy.compactionThresholdOverride,
-		parentActiveModelPattern: policy.parentActiveModelPattern,
 		modelInheritsLiveThinkingLevel: policy.modelInheritsLiveThinkingLevel,
 		thinkingLevel: policy.effectiveAgent.thinkingLevel,
 		effort: request.effort,

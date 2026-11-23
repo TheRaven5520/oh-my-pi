@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import { selectorCandidates } from "@oh-my-pi/pi-coding-agent/cli/auth-gateway-stdio";
+import { selectorModel } from "@oh-my-pi/pi-coding-agent/cli/auth-gateway-stdio";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
 const fast = getBundledModel("google", "gemini-2.5-flash")!;
@@ -11,18 +11,17 @@ const registry = { getAll: () => models, getAvailable: () => models };
 const key = (model: typeof fast) => `${model.provider}/${model.id}`;
 
 describe("auth-gateway stdio model selectors", () => {
-	it("skips comma entries that resolve to nothing and follows the chosen role's fallback chain", () => {
-		const settings = Settings.isolated({ "retry.fallbackChains": { smol: [key(vertex), key(fast)] } });
+	it("skips comma entries that resolve to nothing and resolves the chosen role", () => {
+		const settings = Settings.isolated({});
 		settings.setModelRole("smol", key(fast));
-		expect(selectorCandidates("@commit,@smol", settings, registry)).toEqual([fast, vertex]);
+		expect(selectorModel("@commit,@smol", settings, registry)).toEqual(fast);
 	});
 
-	it("follows a concrete model's own chain and stops at the first resolvable entry", () => {
-		const settings = Settings.isolated({ "retry.fallbackChains": { [key(mini)]: [key(vertex)] } });
-		expect(selectorCandidates(`${key(mini)},${key(fast)}`, settings, registry)).toEqual([mini, vertex]);
+	it("stops at the first resolvable entry", () => {
+		expect(selectorModel(`${key(mini)},${key(fast)}`, Settings.isolated({}), registry)).toEqual(mini);
 	});
 
 	it("offers nothing when no entry resolves", () => {
-		expect(selectorCandidates("@commit", Settings.isolated({}), registry)).toEqual([]);
+		expect(selectorModel("@commit", Settings.isolated({}), registry)).toBeUndefined();
 	});
 });

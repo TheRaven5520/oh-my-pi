@@ -4,7 +4,7 @@ import type { Api, Model } from "@oh-my-pi/pi-catalog/types";
 import { AudioCapture } from "@oh-my-pi/pi-natives";
 import type { ModelBrowserRegistry } from "@oh-my-pi/pi-tui/overlays/model-browser";
 import { logger } from "@oh-my-pi/pi-utils";
-import { resolveRoleChain } from "../config/model-resolver";
+import { resolveRoleModel } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
 import { type Settings, settings } from "../config/settings";
 import { type SttStreamHandle, sttClient } from "./asr-client";
@@ -150,7 +150,7 @@ export class STTController {
 	#resolveModel(): Model<Api> | undefined {
 		if (!this.#registry) return undefined;
 		const pool = roleCandidatePool("dictation", this.#settings, this.#registry);
-		return resolveRoleChain("dictation", this.#settings, pool)[0]?.model;
+		return resolveRoleModel("dictation", this.#settings, pool)?.model;
 	}
 
 	#resolveModelKey(model = this.#resolveModel()): SttModelKey {

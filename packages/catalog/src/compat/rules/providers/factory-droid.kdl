@@ -1098,12 +1098,6 @@ provider "factory-droid" {
 	models "claude-opus-5-5-fast" "claude-opus-5-fast" "claude-opus-4-8-fast" {
 		fast-mode #true
 	}
-	// Refusals retry server-side only on the first-party Anthropic upstream.
-	models "claude-fable-5" "claude-fable-5.1" {
-		on-upstream "anthropic" {
-			server-side-fallback-models "claude-opus-5"
-		}
-	}
 	// With tools, Anthropic and Vertex stream tool input eagerly and advertise
 	// fine-grained tool streaming; Bedrock takes the beta alone.
 	on-upstream "anthropic" "vertex_anthropic" {

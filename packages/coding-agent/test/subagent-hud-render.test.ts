@@ -838,20 +838,19 @@ describe("subagent dock lines", () => {
 		expect(paint(false, "ActiveLast")).not.toContain("ActiveFirst");
 	});
 
-	it("marks the actual fallback model in compact rows instead of the configured role", () => {
+	it("names the actual model in compact rows instead of the configured role", () => {
 		const out = renderDock([
 			makeSession({
-				id: "FallbackWorker",
+				id: "ActualModelWorker",
 				progress: makeProgress({
-					id: "FallbackWorker",
+					id: "ActualModelWorker",
 					modelRole: "task",
 					resolvedModelIdentity: "openai/gpt-5",
 					resolvedThinkingLevel: ThinkingLevel.High,
-					resolvedModelIsFallback: true,
 				}),
 			}),
 		]);
-		expect(out).toContain("FallbackWorker · fallback → GPT-5 (high) · openai");
+		expect(out).toContain("ActualModelWorker · GPT-5 (high)");
 		expect(out).not.toContain(" · task");
 		expect(out.split("\n")).toHaveLength(4);
 	});
@@ -1027,12 +1026,8 @@ describe("subagent dock lines", () => {
 	it("names the live model of registry-only agents in compact and expanded rows (/tan, /fork)", () => {
 		const registry = AgentRegistry.global();
 		const live: Record<string, Record<string, unknown>> = {
-			"Tan-served": {
-				thinkingLevel: "high",
-				servingModel: { selector: "sprilicred-anthropic/claude-opus-5-5:high", isFallback: false },
-			},
+			"Tan-served": { model: { id: "claude-opus-5-5", thinking: {} }, thinkingLevel: "high" },
 			"Fork-fresh": { model: { id: "claude-opus-5-5", thinking: {} }, thinkingLevel: "low" },
-			"Tan-fallback": { servingModel: { selector: "sprilicred-openai/gpt-6.1-sol", isFallback: true } },
 		};
 		for (const [id, session] of Object.entries(live)) {
 			registry.register({ id, displayName: "tan", kind: "sub", session: session as unknown as AgentSession });
@@ -1050,7 +1045,6 @@ describe("subagent dock lines", () => {
 				);
 				expect(rows).toContain("Tan-served · Opus 5.5 (high)");
 				expect(rows).toContain("Fork-fresh · Opus 5.5 (low)");
-				expect(rows).toContain("Tan-fallback · fallback → sprilicred-openai/gpt-6.1-sol");
 				if (expanded) expect(rows).toContain(" · 3 tool uses · 12k tokens");
 				else expect(rows).not.toContain("tool uses");
 			}
@@ -1562,7 +1556,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		const messages: unknown[] = [];
 		const live = {
 			thinkingLevel: "high",
-			servingModel: undefined as { selector: string; isFallback: boolean } | undefined,
+			model: undefined as { id: string; thinking: object } | undefined,
 			agent: { state: { messages } },
 			getSessionStats: () => ({
 				tokens: { input: 0, output: 0, cacheWrite: 0 },
@@ -1580,7 +1574,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 			expect(dock()).toContain("Tan-live");
 			expect(dock()).not.toContain("tool use");
 			// It starts serving and calls tools without any registry or observer event.
-			live.servingModel = { selector: "sprilicred-anthropic/claude-opus-5-5:high", isFallback: false };
+			live.model = { id: "claude-opus-5-5", thinking: {} };
 			messages.push({
 				role: "assistant",
 				content: [{ type: "toolCall" }, { type: "toolCall" }],

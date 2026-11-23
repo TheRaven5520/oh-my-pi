@@ -63,7 +63,7 @@ describe("AgentSession advisor context maintenance", () => {
 		await tempDir.remove();
 	});
 
-	function createHarness(contextPromotionTarget?: string, contextPromotionEnabled = false): MaintenanceHarness {
+	function createHarness(): MaintenanceHarness {
 		const primaryMock = createMockModel({
 			provider: "anthropic",
 			responses: [{ content: ["primary complete"] }],
@@ -73,13 +73,11 @@ describe("AgentSession advisor context maintenance", () => {
 			contextWindow: CONTEXT_WINDOW,
 			responses: [{ content: ["advisor reviewed current update"] }],
 		});
-		Object.assign(advisorMock, { contextPromotionTarget });
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 		const settings = Settings.isolated({
 			"advisor.syncBacklog": "1",
 			"compaction.enabled": true,
 			"compaction.methodOrder": ["soft"],
-			"contextPromotion.enabled": contextPromotionEnabled,
 			modelRoles: { advisor: "anthropic/claude-sonnet-4-5" },
 		});
 		const agent = new Agent({
@@ -160,11 +158,7 @@ describe("AgentSession advisor context maintenance", () => {
 		};
 	}
 
-	function createAdvisorFallbackHarness(options?: {
-		sameProviderNativeEnabled?: boolean;
-		contextPromotionEnabled?: boolean;
-		remoteEnabled?: boolean;
-	}) {
+	function createAdvisorFallbackHarness(options?: { sameProviderNativeEnabled?: boolean; remoteEnabled?: boolean }) {
 		const primaryMock = createMockModel({
 			provider: "anthropic",
 			responses: [{ content: ["primary complete"] }],
@@ -190,7 +184,6 @@ describe("AgentSession advisor context maintenance", () => {
 			"advisor.syncBacklog": "1",
 			"compaction.enabled": true,
 			"compaction.methodOrder": options?.remoteEnabled === false ? ["soft"] : ["remote", "soft"],
-			"contextPromotion.enabled": options?.contextPromotionEnabled ?? false,
 		});
 		settings.setModelRole("advisor", `${nativeModel.provider}/${nativeModel.id}`);
 		settings.setModelRole("smol", `${sameProviderModel.provider}/${sameProviderModel.id}`);
@@ -253,42 +246,6 @@ describe("AgentSession advisor context maintenance", () => {
 		expect(JSON.stringify(advisorCall.context.messages)).toContain("small current update");
 		expect(JSON.stringify(advisor.state.messages)).not.toContain("prior advisor output");
 		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
-	});
-
-	it("ignores late context-promotion credentials after a session transition", async () => {
-		const promotion = createMockModel({
-			id: "advisor-promotion-target",
-			provider: "anthropic",
-			contextWindow: CONTEXT_WINDOW + 1,
-		});
-		const { advisor, advisorMock, modelRegistry } = createHarness(`${promotion.provider}/${promotion.id}`, true);
-		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([advisor.state.model, promotion]);
-		const credentialStarted = Promise.withResolvers<void>();
-		const releaseCredential = Promise.withResolvers<void>();
-		const credentialReturned = Promise.withResolvers<void>();
-		let credentialSignal: AbortSignal | undefined;
-		vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async (model, _sessionId, options) => {
-			if (model === promotion) {
-				credentialSignal = options?.signal;
-				credentialStarted.resolve();
-				await releaseCredential.promise;
-				credentialReturned.resolve();
-			}
-			return "test-key";
-		});
-		advisor.emitExternalEvent({
-			type: "message_end",
-			message: usageAnchor(advisorMock, Date.now() - 1_000),
-		});
-
-		const prompt = session.prompt("trigger advisor context promotion");
-		await credentialStarted.promise;
-		await session.newSession();
-		releaseCredential.resolve();
-		await credentialReturned.promise;
-		await prompt;
-		expect(credentialSignal?.aborted).toBe(true);
-		expect(session.getAdvisorAgent()?.state.model.id).toBe(advisorMock.id);
 	});
 
 	it("includes advisor system prompt and tool schemas in the local maintenance floor", async () => {
@@ -395,7 +352,6 @@ describe("AgentSession advisor context maintenance", () => {
 			"advisor.syncBacklog": "1",
 			"compaction.enabled": true,
 			"compaction.methodOrder": ["soft"],
-			"contextPromotion.enabled": false,
 			modelRoles: { advisor: "anthropic/claude-sonnet-4-5" },
 		});
 		const agent = new Agent({
@@ -600,100 +556,6 @@ describe("AgentSession advisor context maintenance", () => {
 		},
 	);
 
-	it("chooses compaction for the effective model after a promotion still overflows", async () => {
-		registerMockApi();
-		const { advisor, advisorMock, nativeModel, crossProviderModel, settings, apiKeySpy } =
-			createAdvisorFallbackHarness({ contextPromotionEnabled: true });
-		const summarizer = createMockModel({
-			id: "promoted-model-summarizer",
-			provider: "openai",
-			handler: () => ({ content: ["portable promoted-model summary"] }),
-		});
-		Object.assign(summarizer, { remoteCompaction: { enabled: true, v2StreamingEnabled: false } });
-		const promoted = {
-			...crossProviderModel,
-			contextWindow: 200_000,
-			compactionModel: `${summarizer.provider}/${summarizer.id}`,
-		};
-		const active = {
-			...nativeModel,
-			contextWindow: 100_000,
-			contextPromotionTarget: `${promoted.provider}/${promoted.id}`,
-			remoteCompaction: { ...nativeModel.remoteCompaction, v2StreamingEnabled: false },
-		};
-		advisor.setModel(active);
-		cfgCompactionKeepRecentTokens.set(settings, 1);
-		apiKeySpy.mockResolvedValue("test-key");
-		vi.spyOn(session.modelRegistry, "getAvailable").mockReturnValue([active, promoted, summarizer]);
-		advisor.state.messages.push({ role: "user", content: "post-promotion-retained-tail", timestamp: Date.now() });
-		vi.spyOn(globalThis, "fetch").mockImplementation(
-			asGlobalFetch(async () =>
-				Response.json({ output: [{ type: "compaction", encrypted_content: "stale-model" }] }),
-			),
-		);
-
-		await session.prompt("promote and compact the advisor");
-
-		expect(advisor.state.model.id).toBe(promoted.id);
-		const wire = JSON.stringify(convertAnthropicMessages(advisorMock.calls[0].context.messages, promoted, false));
-		expect(wire).toContain("portable promoted-model summary");
-		expect(wire.match(/post-promotion-retained-tail/g)).toHaveLength(1);
-	});
-
-	it.each(["foreign", "enabled", "remote-disabled", "model-disabled"])(
-		"preserves native replay across a context promotion with %s compaction",
-		async policy => {
-			const compatible = policy !== "foreign";
-			const { advisor, advisorMock, nativeModel, crossProviderModel, sameProviderModel } =
-				createAdvisorFallbackHarness({
-					contextPromotionEnabled: true,
-					remoteEnabled: policy !== "remote-disabled",
-					sameProviderNativeEnabled: policy !== "model-disabled",
-				});
-			const target = { ...(compatible ? sameProviderModel : crossProviderModel), contextWindow: 1_000_000 };
-			const active = {
-				...nativeModel,
-				contextPromotionTarget: `${target.provider}/${target.id}`,
-				remoteCompaction: { ...nativeModel.remoteCompaction, v2StreamingEnabled: false },
-				compactionModel: `${target.provider}/${target.id}`,
-			};
-			advisor.setModel(active);
-			advisor.replaceMessages([
-				nativeSummary(nativeModel.provider),
-				usageAnchor(advisorMock, Date.now() - 1_000),
-				usageAnchor(advisorMock, Date.now()),
-			]);
-			vi.spyOn(session.modelRegistry, "getAvailable").mockReturnValue([active, target]);
-			const compactionRequests: string[] = [];
-			vi.spyOn(globalThis, "fetch").mockImplementation(
-				asGlobalFetch(async (_url, init) => {
-					compactionRequests.push(String(init?.body));
-					return Response.json({ output: nativeSummary(nativeModel.provider).providerPayload.items });
-				}),
-			);
-
-			await session.prompt("review after native context promotion");
-
-			expect(advisor.state.model.id).toBe(compatible ? target.id : active.id);
-			const wire = JSON.stringify(
-				buildParams(
-					advisor.state.model as Model<"openai-responses">,
-					advisorMock.calls[0].context,
-					undefined,
-					undefined,
-				).params.input,
-			);
-			expect(wire.match(/native-retained-decision/g)).toHaveLength(1);
-			expect(wire.match(/advisor-native-state/g)).toHaveLength(1);
-			if (!compatible) {
-				expect(compactionRequests).toHaveLength(1);
-				expect(compactionRequests[0].match(/advisor-native-state/g)).toHaveLength(1);
-			} else {
-				expect(compactionRequests).toHaveLength(0);
-			}
-		},
-	);
-
 	it("keeps native history when only an incompatible summarizer has credentials", async () => {
 		const { advisor, advisorMock, nativeModel, crossProviderModel, settings, apiKeySpy } =
 			createAdvisorFallbackHarness();
@@ -793,98 +655,6 @@ describe("AgentSession advisor context maintenance", () => {
 		expect(wire).not.toContain("unusable replacement");
 	});
 
-	it("continues same-provider advisor candidates but stops before crossing providers on non-auth failure", async () => {
-		const { advisor, crossProviderModel, nativeModel, sameProviderModel } = createAdvisorFallbackHarness();
-		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async (preparation, model) => {
-			if (model.provider === nativeModel.provider || model.provider === sameProviderModel.provider) {
-				throw new compactionModule.NativeCompactionError(new Error("V2 native compaction transport failed"));
-			}
-			if (model.provider !== crossProviderModel.provider || model.id !== crossProviderModel.id) {
-				throw new Error(`Unexpected compaction model ${model.provider}/${model.id}`);
-			}
-			return {
-				summary: "cross-provider summary",
-				shortSummary: "cross-provider",
-				firstKeptEntryId: preparation.firstKeptEntryId,
-				tokensBefore: 42,
-			};
-		});
-
-		await session.prompt("small current update");
-
-		expect(compactSpy.mock.calls.map(([, model]) => `${model.provider}/${model.id}`)).toEqual([
-			`${nativeModel.provider}/${nativeModel.id}`,
-			`${sameProviderModel.provider}/${sameProviderModel.id}`,
-		]);
-		expect(JSON.stringify(advisor.state.messages)).toContain("prior advisor output");
-	});
-
-	it("applies a successful same-provider native advisor fallback", async () => {
-		const { advisor, crossProviderModel, nativeModel, sameProviderModel } = createAdvisorFallbackHarness();
-		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async (preparation, model) => {
-			if (model.provider === nativeModel.provider && model.id === nativeModel.id) {
-				throw new compactionModule.NativeCompactionError(new Error("V2 native compaction transport failed"));
-			}
-			if (model.provider === sameProviderModel.provider && model.id === sameProviderModel.id) {
-				return {
-					summary: "same-provider native summary",
-					shortSummary: "same-provider native",
-					firstKeptEntryId: preparation.firstKeptEntryId,
-					tokensBefore: 42,
-				};
-			}
-			throw new Error(
-				`Unexpected cross-provider compaction ${crossProviderModel.provider}/${crossProviderModel.id}`,
-			);
-		});
-
-		await session.prompt("small current update");
-
-		expect(compactSpy.mock.calls.map(([, model]) => `${model.provider}/${model.id}`)).toEqual([
-			`${nativeModel.provider}/${nativeModel.id}`,
-			`${sameProviderModel.provider}/${sameProviderModel.id}`,
-		]);
-		// Provider-native compaction re-issues the advisor's own request, so
-		// every candidate receives the advisor's live system prompt.
-		expect(advisor.state.systemPrompt.length).toBeGreaterThan(0);
-		for (const call of compactSpy.mock.calls) {
-			expect(call[5]?.remoteSystemPrompt).toEqual(advisor.state.systemPrompt);
-		}
-		expect(JSON.stringify(advisor.state.messages)).toContain("same-provider native summary");
-	});
-
-	it("skips unauthenticated advisor candidates before enforcing the native boundary", async () => {
-		const { advisor, apiKeySpy, crossProviderModel, nativeModel, sameProviderModel, settings } =
-			createAdvisorFallbackHarness();
-		settings.setModelRole("smol", `${crossProviderModel.provider}/${crossProviderModel.id}`);
-		settings.setModelRole("slow", `${sameProviderModel.provider}/${sameProviderModel.id}`);
-		apiKeySpy.mockImplementation(async model =>
-			model.provider === crossProviderModel.provider && model.id === crossProviderModel.id ? undefined : "test-key",
-		);
-		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async (preparation, model) => {
-			if (model.provider === nativeModel.provider && model.id === nativeModel.id) {
-				throw new compactionModule.NativeCompactionError(new Error("V2 native compaction transport failed"));
-			}
-			if (model.provider === sameProviderModel.provider && model.id === sameProviderModel.id) {
-				return {
-					summary: "authenticated same-provider advisor summary",
-					shortSummary: "authenticated same-provider advisor",
-					firstKeptEntryId: preparation.firstKeptEntryId,
-					tokensBefore: 42,
-				};
-			}
-			throw new Error(`Unexpected advisor compaction model ${model.provider}/${model.id}`);
-		});
-
-		await session.prompt("small current update");
-
-		expect(compactSpy.mock.calls.map(([, model]) => `${model.provider}/${model.id}`)).toEqual([
-			`${nativeModel.provider}/${nativeModel.id}`,
-			`${sameProviderModel.provider}/${sameProviderModel.id}`,
-		]);
-		expect(JSON.stringify(advisor.state.messages)).toContain("authenticated same-provider advisor summary");
-	});
-
 	it("stops before a same-provider advisor candidate with native compaction disabled", async () => {
 		const { advisor, nativeModel, sameProviderModel } = createAdvisorFallbackHarness({
 			sameProviderNativeEnabled: false,
@@ -910,35 +680,6 @@ describe("AgentSession advisor context maintenance", () => {
 		expect(sameProviderModel.remoteCompaction?.enabled).toBe(false);
 	});
 
-	it("allows advisor compaction to cross providers after auth-classified native failures", async () => {
-		const { advisor, crossProviderModel, nativeModel, sameProviderModel } = createAdvisorFallbackHarness();
-		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async (preparation, model) => {
-			if (model.provider === nativeModel.provider || model.provider === sameProviderModel.provider) {
-				throw new compactionModule.NativeCompactionError(
-					Object.assign(new Error("native compaction authentication failed"), { status: 401 }),
-				);
-			}
-			if (model.provider !== crossProviderModel.provider || model.id !== crossProviderModel.id) {
-				throw new Error(`Unexpected compaction model ${model.provider}/${model.id}`);
-			}
-			return {
-				summary: "authenticated fallback summary",
-				shortSummary: "authenticated fallback",
-				firstKeptEntryId: preparation.firstKeptEntryId,
-				tokensBefore: 42,
-			};
-		});
-
-		await session.prompt("small current update");
-
-		expect(compactSpy.mock.calls.map(([, model]) => `${model.provider}/${model.id}`)).toEqual([
-			`${nativeModel.provider}/${nativeModel.id}`,
-			`${sameProviderModel.provider}/${sameProviderModel.id}`,
-			`${crossProviderModel.provider}/${crossProviderModel.id}`,
-		]);
-		expect(JSON.stringify(advisor.state.messages)).toContain("authenticated fallback summary");
-	});
-
 	it("preserves native compaction state across advisor compactions", async () => {
 		const opus46 = getBundledModel("anthropic", "claude-opus-4-6");
 		if (!opus46) throw new Error("Expected bundled opus model");
@@ -960,7 +701,6 @@ describe("AgentSession advisor context maintenance", () => {
 			"advisor.syncBacklog": "1",
 			"compaction.enabled": true,
 			"compaction.methodOrder": ["soft"],
-			"contextPromotion.enabled": false,
 		});
 		settings.setModelRole("advisor", `${opus46.provider}/${opus46.id}`);
 		const agent = new Agent({

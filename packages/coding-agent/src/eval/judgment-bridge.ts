@@ -4,7 +4,7 @@
  * Cell code awaits `judge(state, questions)`; the prelude forwards
  * `{ state, questions }` through {@link EVAL_JUDGMENT_BRIDGE_NAME} and this
  * module answers every question with the session's resolved {@link Judge}
- * role chain (see `../judgment`), returning the typed answers directly. Bulk
+ * `judge` role model (see `../judgment`), returning the typed answers directly. Bulk
  * classification goes through `judge_batch()` (`./judgment-batch-bridge`),
  * which reuses the parsers and answer shaping exported here.
  *
@@ -167,7 +167,7 @@ export function toEvalJudgmentResult(result: JudgmentResult<Questions>): EvalJud
 }
 
 /**
- * Resolve the judge role chain for a bridge call's session; `purpose` labels its
+ * Resolve the judge for a bridge call's session; `purpose` labels its
  * cost on the session ledger. `onUsage` additionally observes every attempt
  * (retries and failures included) alongside the ledger.
  */

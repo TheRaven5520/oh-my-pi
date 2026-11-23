@@ -39,7 +39,7 @@
  */
 import type { ModelBrowserRegistry } from "@oh-my-pi/pi-tui/overlays/model-browser";
 import { logger } from "@oh-my-pi/pi-utils";
-import { resolveRoleChain } from "../config/model-resolver";
+import { resolveRoleModel } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
 import { type Settings, settings } from "../config/settings";
 import { DEFAULT_TTS_VOICE, TTS_LOCAL_MODELS } from "./models";
@@ -62,13 +62,11 @@ export interface VocalizerModelSource {
 	registry: ModelBrowserRegistry;
 }
 
-/** Resolve the first speech-role candidate that the local streaming worker can run. */
+/** Resolve the speech-role model when the local streaming worker can run it; otherwise the default local model. */
 export function resolveLocalSpeechModelId(source: VocalizerModelSource): string {
 	const pool = roleCandidatePool("speech", source.settings, source.registry);
-	const local = resolveRoleChain("speech", source.settings, pool).find(
-		candidate => candidate.model.api === "local-inference",
-	);
-	return local?.model.id ?? TTS_LOCAL_MODELS[0].key;
+	const selected = resolveRoleModel("speech", source.settings, pool);
+	return selected?.model.api === "local-inference" ? selected.model.id : TTS_LOCAL_MODELS[0].key;
 }
 
 export interface VocalizerPlayer {

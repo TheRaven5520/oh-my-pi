@@ -10,7 +10,7 @@ import type { DiagnosticSummary } from "@oh-my-pi/pi-mnemopi/diagnose";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { roleCandidatePool } from "../config/model-roles";
-import { resolveRoleChain } from "../config/model-resolver";
+import { resolveRoleModel } from "../config/model-resolver";
 import { type JudgmentUsageLedger, journalJudgmentUsage } from "../judgment";
 import type {
 	MemoryBackend,
@@ -570,9 +570,8 @@ async function resolveMnemopiProviderOptions(
 	}
 
 	try {
-		const candidates = resolveRoleChain("memory", settings, roleCandidatePool("memory", settings, modelRegistry));
-		const primary = candidates[0]?.model;
-		if (!primary) {
+		const model = resolveRoleModel("memory", settings, roleCandidatePool("memory", settings, modelRegistry))?.model;
+		if (!model) {
 			logger.warn("Mnemopi: llmMode=smol but no memory model resolved; continuing without LLM.");
 			return base;
 		}
@@ -588,91 +587,82 @@ async function resolveMnemopiProviderOptions(
 					? AbortSignal.timeout(opts.timeout)
 					: undefined;
 
-			for (const { model } of candidates) {
-				if (signal?.aborted) return null;
-				try {
-					if (model.api === "local-inference") {
-						const result = await tinyModelClient.complete(model.id, request.prompt, {
-							maxTokens: opts?.maxTokens,
-							systemPrompt: request.systemPrompt,
-							signal,
-						});
-						if (result !== null) return result;
-						if (signal?.aborted) return null;
-						logger.warn("Mnemopi: local memory completion failed; trying the next configured fallback.", {
-							provider: model.provider,
-							model: model.id,
-						});
-						continue;
-					}
-
-					const hasApiKey = await modelRegistry.getApiKey(model, sessionId);
-					if (!hasApiKey) {
-						logger.warn("Mnemopi: memory completion model has no current API key; trying the next fallback.", {
-							provider: model.provider,
-							model: model.id,
-						});
-						continue;
-					}
-					const requestOptions = await privateSideCall(
-						model,
-						{
-							apiKey: modelRegistry.resolver(model, sessionId),
-							sessionId,
-							maxTokens: opts?.maxTokens,
-							temperature: opts?.temperature,
-							signal,
-							onAttempt: (message: AssistantMessage) =>
-								onUsage?.({
-									purpose: "memory",
-									role: "memory",
-									api: model.api,
-									provider: model.provider,
-									model: model.id,
-									usage: message.usage,
-									stopReason: message.stopReason,
-									errorMessage: message.errorMessage,
-								}),
-						},
-						"memory",
-					);
-					const message = await retryTransientCompletion(
-						() =>
-							completeSimple(
-								model,
-								{
-									...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
-									messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
-								},
-								requestOptions,
-							),
-						{ provider: model.provider, signal },
-					);
-					if (message.stopReason === "aborted" || signal?.aborted) return null;
-					if (message.stopReason === "error") {
-						logger.warn("Mnemopi: memory completion model failed; trying the next configured fallback.", {
-							provider: model.provider,
-							model: model.id,
-							error: message.errorMessage,
-						});
-						continue;
-					}
-					return message.content
-						.filter(
-							(block): block is Extract<(typeof message.content)[number], { type: "text" }> =>
-								block.type === "text",
-						)
-						.map(block => block.text)
-						.join("\n")
-						.trim();
-				} catch (error) {
-					if (signal?.aborted) return null;
-					logger.warn("Mnemopi: memory completion model threw; trying the next configured fallback.", {
-						provider: model.provider,
-						model: model.id,
-						error: error instanceof Error ? error.message : String(error),
+			if (signal?.aborted) return null;
+			try {
+				if (model.api === "local-inference") {
+					return await tinyModelClient.complete(model.id, request.prompt, {
+						maxTokens: opts?.maxTokens,
+						systemPrompt: request.systemPrompt,
+						signal,
 					});
 				}
+
+				const hasApiKey = await modelRegistry.getApiKey(model, sessionId);
+				if (!hasApiKey) {
+					logger.warn("Mnemopi: memory model has no available API key.", {
+						provider: model.provider,
+						model: model.id,
+					});
+					return null;
+				}
+				const requestOptions = await privateSideCall(
+					model,
+					{
+						apiKey: modelRegistry.resolver(model, sessionId),
+						sessionId,
+						maxTokens: opts?.maxTokens,
+						temperature: opts?.temperature,
+						signal,
+						onAttempt: (message: AssistantMessage) =>
+							onUsage?.({
+								purpose: "memory",
+								role: "memory",
+								api: model.api,
+								provider: model.provider,
+								model: model.id,
+								usage: message.usage,
+								stopReason: message.stopReason,
+								errorMessage: message.errorMessage,
+							}),
+					},
+					"memory",
+				);
+				const message = await retryTransientCompletion(
+					() =>
+						completeSimple(
+							model,
+							{
+								...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
+								messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
+							},
+							requestOptions,
+						),
+					{ provider: model.provider, signal },
+				);
+				if (message.stopReason === "aborted" || signal?.aborted) return null;
+				if (message.stopReason === "error") {
+					logger.warn("Mnemopi: memory completion failed.", {
+						provider: model.provider,
+						model: model.id,
+						error: message.errorMessage,
+					});
+					return null;
+				}
+				return message.content
+					.filter(
+						(block): block is Extract<(typeof message.content)[number], { type: "text" }> =>
+							block.type === "text",
+					)
+					.map(block => block.text)
+					.join("\n")
+					.trim();
+			} catch (error) {
+				if (signal?.aborted) return null;
+				logger.warn("Mnemopi: memory completion threw.", {
+					provider: model.provider,
+					model: model.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 			return null;
 		};
@@ -680,7 +670,7 @@ async function resolveMnemopiProviderOptions(
 		return {
 			...base,
 			llm:
-				primary.api === "local-inference"
+				model.api === "local-inference"
 					? {
 							complete,
 							// No `extractionPrompt`: resolveMemoryCompletionInput supplies the

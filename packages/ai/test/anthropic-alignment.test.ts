@@ -219,7 +219,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		]);
 		expect(headers["X-Claude-Code-Session-Id"]).toBe(sessionId);
 		expect(headers["anthropic-beta"]).toBe(
-			"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01",
+			"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
 		);
 		expect(headers["x-client-request-id"]).toBeUndefined();
 	});
@@ -274,7 +274,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 
 		expect(options.defaultHeaders["anthropic-beta"]).toBe(
-			"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01",
+			"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
 		);
 		expect(options.defaultHeaders["anthropic-beta"]).not.toContain("context-1m-2025-08-07");
 	});
@@ -735,11 +735,6 @@ describe("Anthropic request fingerprint alignment", () => {
 		let capturedBody:
 			| {
 					output_config?: { effort?: unknown };
-					fallbacks?: Array<{
-						model: string;
-						max_tokens?: number;
-						output_config?: { effort?: unknown };
-					}>;
 			  }
 			| undefined;
 		const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -753,7 +748,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		// Claude on Vertex uses api "anthropic-messages" and the rawPredict adapter,
 		// which rejects any `anthropic-beta` HTTP header value it doesn't understand.
 		// The effort beta must ride the body (`anthropic_beta`) instead — since this
-		// path can't deliver it there, primary and fallback effort fields are dropped.
+		// path can't deliver it there, the effort field is dropped.
 		const vertexModel: Model<"anthropic-messages"> = buildModel({
 			...ANTHROPIC_MODEL_SPEC,
 			id: "claude-haiku-4-5@20260101",
@@ -775,19 +770,11 @@ describe("Anthropic request fingerprint alignment", () => {
 				thinkingEnabled: true,
 				effort: "high",
 				fetch: fetchMock,
-				fallbacks: [
-					{
-						model: "claude-sonnet-4-6@20260101",
-						max_tokens: 4_096,
-						output_config: { effort: "high" },
-					},
-				],
 			},
 		).result();
 
 		expect(capturedBeta ?? "").not.toContain("effort-2025-11-24");
 		expect(capturedBody?.output_config?.effort).toBeUndefined();
-		expect(capturedBody?.fallbacks).toEqual([{ model: "claude-sonnet-4-6@20260101", max_tokens: 4_096 }]);
 	});
 
 	it("adds the context-management beta to API-key thinking requests", async () => {

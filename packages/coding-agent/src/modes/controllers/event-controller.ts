@@ -36,7 +36,7 @@ import {
 	resolveAbortLabel,
 } from "../../session/messages";
 import { resolveApproval } from "../../tools/approval";
-import { previewLine, PREVIEW_LIMITS, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
+import { previewLine, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { writeDeviceDispatch } from "../../tools/resolve";
 import { nextActionableTask } from "../../tools/todo";
@@ -358,8 +358,6 @@ export class EventController {
 			auto_retry_end: e => this.#handleAutoRetryEnd(e),
 			cache_warming_start: async () => {},
 			cache_warming_end: async () => {},
-			retry_fallback_applied: e => this.#handleRetryFallbackApplied(e),
-			retry_fallback_succeeded: e => this.#handleRetryFallbackSucceeded(e),
 			ttsr_triggered: e => this.#handleTtsrTriggered(e),
 			todo_reminder: e => this.#handleTodoReminder(e),
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
@@ -2685,21 +2683,6 @@ export class EventController {
 		}
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.ctx.ui.requestRender();
-	}
-
-	async #handleRetryFallbackApplied(
-		event: Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>,
-	): Promise<void> {
-		const reason = event.reason
-			? `\n${previewLine(sanitizeText(event.reason), TRUNCATE_LENGTHS.LINE * PREVIEW_LIMITS.COLLAPSED_LINES)}`
-			: "";
-		this.ctx.showWarning(`Fallback: ${event.from} -> ${event.to}${reason}`);
-	}
-
-	async #handleRetryFallbackSucceeded(
-		event: Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>,
-	): Promise<void> {
-		this.ctx.showStatus(`Fallback succeeded on ${event.model}`);
 	}
 
 	async #handleTtsrTriggered(event: Extract<AgentSessionEvent, { type: "ttsr_triggered" }>): Promise<void> {

@@ -20,7 +20,6 @@ export interface AgentMetricsSummary {
 export interface AgentHubSession {
 	readonly thinkingLevel: ThinkingLevel | undefined;
 	readonly model: Model | undefined;
-	readonly servingModel?: { selector: string; isFallback: boolean };
 	readonly serviceTierByFamily?: ServiceTierByFamily;
 	readonly agent?: { state: { messages: AgentMessage[] } };
 	getSessionStats(): {
@@ -48,7 +47,6 @@ export interface AgentRecordLike {
 		agent?: string;
 		modelRole?: string;
 		resolvedModel?: string;
-		resolvedModelIsFallback?: boolean;
 		metrics?: AgentMetricsSummary;
 		readOnly?: boolean;
 		outputPath?: string;

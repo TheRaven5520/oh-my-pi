@@ -17,7 +17,6 @@ import {
 	type ModelPreset,
 } from "../config/model-settings";
 import type { Settings } from "../config/settings";
-import { cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains } from "../session/settings";
 import { promptLine } from "./oauth-terminal";
 
 const DEFAULT_URL = "https://sprilicred.taila2d385.ts.net";
@@ -755,35 +754,6 @@ function migrateScopes(
 }
 
 /**
- * Migrates fallback-chain keys and entries (`retry.fallbackChains`, `retry.usageLimitFallbackChains`):
- * withdrawn references go, and so does a chain whose key or every entry went. A chain whose key
- * moved never replaces one the person already keeps under the new key.
- */
-function migrateChains(
-	setting: string,
-	chains: Record<string, string[]>,
-	migration: Migration,
-	removed: string[],
-): Record<string, string[]> | undefined {
-	let changed = false;
-	const next: Record<string, string[]> = {};
-	const movedKeys: [string, string[]][] = [];
-	for (const [key, chain] of Object.entries(chains)) {
-		const migratedKey = migrateSettingRef(key, migration);
-		const migrated = migrateScopes(`${setting}.${key}`, chain, migration, removed);
-		if (migratedKey !== key || !Bun.deepEquals(migrated, chain)) changed = true;
-		if (migratedKey === undefined) removed.push(`${setting}=${key}`);
-		else if (migrated.length === 0) continue;
-		else if (migratedKey === key) next[key] = migrated;
-		else movedKeys.push([migratedKey, migrated]);
-	}
-	for (const [key, chain] of movedKeys) {
-		if (!Object.hasOwn(next, key)) next[key] = chain;
-	}
-	return changed ? next : undefined;
-}
-
-/**
  * Migrates the role maps of the presets saved in the global config (`modelPresets.<name>.modelRoles`);
  * project presets are never copied into the global file. Other preset fields stay as they are.
  */
@@ -892,13 +862,6 @@ async function writeOwnedSettings(
 		true,
 	);
 	writeList(cfgModelProviderOrder, settings, currentOrder, nextOrder);
-	for (const [name, chains] of [
-		["retry.fallbackChains", cfgRetryFallbackChains],
-		["retry.usageLimitFallbackChains", cfgRetryUsageLimitFallbackChains],
-	] as const) {
-		const next = migrateChains(name, chains.get(settings), migration, removed);
-		if (next) chains.set(settings, next);
-	}
 	migratePresets(settings, migration, removed);
 
 	const currentRoles = cfgModelRoles.get(settings);
@@ -963,7 +926,7 @@ export async function runSprilicredLogin(
 	await prepareBroker(settings, key, paths);
 	const models = await writeModels(catalogs, openrouter, paths);
 	const { removed, moved } = await writeOwnedSettings(settings, models, paths);
-	// Roles, chains or presets on Muse now name the OpenRouter model: give it its entry.
+	// Roles or presets on Muse now name the OpenRouter model: give it its entry.
 	const { providers } = models.document;
 	if (
 		models.migration.museMoved &&

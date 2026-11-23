@@ -37,7 +37,7 @@ describe("commit role thinking selection", () => {
 			expect(primary.model.id).toBe(commitModel.id);
 			expect(primary.thinkingLevel).toBe(Effort.Low);
 
-			const smol = await resolveSmolModel(settings, registry, commitModel, "fallback-key");
+			const smol = await resolveSmolModel(settings, registry, primary);
 			expect(smol.model.id).toBe(defaultModel.id);
 			expect(smol.thinkingLevel).toBe(Effort.Minimal);
 		} finally {

@@ -962,7 +962,7 @@ Provider-specific overrides in `packages/catalog/src/compat/rules/providers/gith
 ### Catalog model handling
 - **Provider entry (`github-copilot`)**: `packages/catalog/src/compat/rules/providers/github-copilot.kdl` declares default model `gpt-5.5`. Environment keys: `COPILOT_GITHUB_TOKEN`.
 - **Dynamic Model Discovery**: `fetchDynamicModels` in `packages/catalog/src/provider-models/openai-compat.ts` fetches `/models` using `COPILOT_API_HEADERS`. Parses window/token limits from `entry.capabilities.limits` (`maxContextWindowTokens`, `maxPromptTokens`, `maxOutputTokens`), infers wire API (`inferCopilotApi`), and configures vision support (`extractCopilotSupportsVision`).
-- **Long-Context Variant Synthesis**: Models advertising long-context pricing in `billing.token_prices.long_context` trigger `createCopilotLongContextVariant` to synthesize opt-in `-1m` catalog models (e.g., `claude-opus-4.7-1m` with `requestModelId: "claude-opus-4.7"`). The base model receives a `contextPromotionTarget` pointing to its long-context sibling.
+- **Long-Context Variant Synthesis**: Models advertising long-context pricing in `billing.token_prices.long_context` trigger `createCopilotLongContextVariant` to synthesize opt-in `-1m` catalog models (e.g., `claude-opus-4.7-1m` with `requestModelId: "claude-opus-4.7"`).
 - **Premium Request Multipliers**: Model-specific request multipliers are mapped in `COPILOT_PREMIUM_MULTIPLIERS` (`packages/catalog/scripts/generate-models.ts`), assigning values such as `gpt-4o: 0`, `grok-code-fast-1: 0.25`, `claude-haiku-4.5: 0.33`, `gpt-5.4-mini: 0.33`, and `claude-opus-4.6: 3`.
 
 ## GitLab Duo Non-Agentic (`gitlab-duo`)

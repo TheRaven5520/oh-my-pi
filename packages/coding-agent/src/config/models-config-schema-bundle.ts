@@ -220,7 +220,6 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"preferWebsockets?": "boolean",
 		"headers?": { "[string]": "string" },
 		"compat?": ApiCompatSchema,
-		"contextPromotionTarget?": "string",
 		"compactionModel?": "string",
 		"remoteCompaction?": RemoteCompactionSchema,
 	}).narrow((value, ctx) => {
@@ -233,13 +232,6 @@ export const getModelsConfigSchemaBundle = once(() => {
 		}
 		if (value.baseUrl !== undefined && typeof value.baseUrl === "string" && value.baseUrl.length === 0) {
 			return ctx.mustBe("baseUrl a non-empty string");
-		}
-		if (
-			value.contextPromotionTarget !== undefined &&
-			typeof value.contextPromotionTarget === "string" &&
-			value.contextPromotionTarget.length === 0
-		) {
-			return ctx.mustBe("contextPromotionTarget a non-empty string");
 		}
 		if (
 			value.compactionModel !== undefined &&
@@ -277,19 +269,11 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"preferWebsockets?": "boolean",
 		"headers?": { "[string]": "string" },
 		"compat?": ApiCompatSchema,
-		"contextPromotionTarget?": "string",
 		"compactionModel?": "string",
 		"remoteCompaction?": RemoteCompactionSchema,
 	}).narrow((value, ctx) => {
 		if (value.name !== undefined && typeof value.name === "string" && value.name.length === 0) {
 			return ctx.mustBe("name a non-empty string");
-		}
-		if (
-			value.contextPromotionTarget !== undefined &&
-			typeof value.contextPromotionTarget === "string" &&
-			value.contextPromotionTarget.length === 0
-		) {
-			return ctx.mustBe("contextPromotionTarget a non-empty string");
 		}
 		if (
 			value.compactionModel !== undefined &&

@@ -9,7 +9,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import { formatKeyHint } from "@oh-my-pi/pi-tui/key-hint-format";
 import { Settings } from "../config/settings";
 import { ModelRegistry } from "../config/model-registry";
-import { resolveRoleChain } from "../config/model-resolver";
+import { resolveRoleModel } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { discoverAuthStorage } from "../sdk";
@@ -167,10 +167,8 @@ interface SpeechComponent {
 }
 
 function resolveLocalSpeechModelId(role: "speech" | "dictation", settings: Settings, registry: ModelRegistry): string {
-	const candidate = resolveRoleChain(role, settings, roleCandidatePool(role, settings, registry)).find(
-		entry => entry.model.provider === "local",
-	);
-	if (!candidate) throw new Error(`No local model is available for the ${role} role.`);
+	const candidate = resolveRoleModel(role, settings, roleCandidatePool(role, settings, registry));
+	if (candidate?.model.provider !== "local") throw new Error(`The ${role} role does not select a local model.`);
 	return candidate.model.id;
 }
 

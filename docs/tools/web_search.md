@@ -1,12 +1,12 @@
 # web_search
 
-> Run one web query through the configured search chain and return the first usable answer/sources, with optional citations.
+> Run one web query through the selected search model and return its answer/sources, with optional citations.
 
 ## Source
 - Entry: `packages/coding-agent/src/web/search/index.ts`
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/web-search.md`
 - Key collaborators:
-  - `packages/coding-agent/src/web/search/provider.ts` — lazy provider registry; availability chain.
+  - `packages/coding-agent/src/web/search/provider.ts` — lazy provider registry; availability checks.
   - `packages/coding-agent/src/web/search/types.ts` — unified `SearchResponse` / `SearchProviderError` types.
   - `packages/tui/src/tools/web-search.ts` / `web-search-types.ts` — transcript rendering and shared response/provider types.
   - `packages/coding-agent/src/web/search/providers/base.ts` — provider interface and shared params contract.
@@ -78,21 +78,21 @@ The tool returns a single text content block plus structured `details`.
 Failure output is not thrown at the tool boundary when providers are unavailable or provider attempts fail. Instead the tool returns:
 
 - `content[0].text = "Error: ..."`
-- `details.response.provider = <last attempted provider> | "none"`
+- `details.response.provider = <attempted provider> | "none"`
 - `details.error = ...`
 
-Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `executeSearch()`, and `executeSearch()` passes it to providers. If the signal is aborted during fallback handling, `throwIfAborted(signal)` rethrows the cancellation instead of returning an `"Error: ..."` text result.
+Streaming: none. `WebSearchTool.execute()` forwards its `AbortSignal` into `executeSearch()`, and `executeSearch()` passes it to providers. If the signal is aborted during the search, `throwIfAborted(signal)` rethrows the cancellation instead of returning an `"Error: ..."` text result.
 
-Each provider search transport receives a hard timeout from `providers.webSearchTimeoutSeconds` (default `60`, maximum `300`). When that transport exceeds the ceiling, the automatic chain records the provider failure and advances to the next candidate. The setting is not a whole-chain deadline, and providers may impose shorter upstream, retry, or aggregate limits. Set a positive number of seconds, for example `omp config set providers.webSearchTimeoutSeconds 180` for slower model-backed search.
+The search transport receives a hard timeout from `providers.webSearchTimeoutSeconds` (default `60`, maximum `300`). When that transport exceeds the ceiling, the search fails with that provider's error; it does not try another search provider. Providers may impose shorter upstream, retry, or aggregate limits. Set a positive number of seconds, for example `omp config set providers.webSearchTimeoutSeconds 180` for slower model-backed search.
 
 ## Flow
 1. `WebSearchTool.execute()` in `packages/coding-agent/src/web/search/index.ts` delegates directly to `executeSearch()`.
-2. `executeSearch()` builds the candidate pool with `roleCandidatePool("web", …)`: available models the `web` role accepts, i.e. `web/*` search-engine catalog models (kind `search`) and chat models that declare a `webSearch` grounding. It then orders candidates:
+2. `executeSearch()` builds the candidate pool with `roleCandidatePool("web", …)`: available models the `web` role accepts, i.e. `web/*` search-engine catalog models (kind `search`) and chat models that declare a `webSearch` grounding. It then selects one candidate:
    - if `params.model` is set (not in the model-facing schema; `omp q --model <selector>` sets it), that selector resolves to at most one candidate, marked explicit;
-   - otherwise `resolveRoleChain("web", …)` (`packages/coding-agent/src/config/model-resolver.ts`) yields the `web` role chain described under [Provider selection](#modes--variants).
-3. `web/hosted` expands to the active model's same-provider `webSearchModel` swap when available, then the active model itself, retaining only models with grounding. A failed swap falls through to the active model. An unexpandable placeholder is skipped automatically or fails explicitly. Each remaining candidate lazily loads its search engine or grounding backend (`gemini`, `anthropic`, `codex`, `openai`, `xai`, `openrouter`). Explicit candidates use `isExplicitlyAvailable()`, automatic ones use `isAvailable()`; unavailable explicit candidates record a failure while automatic ones are skipped.
+   - otherwise the `web` role resolves to its first available candidate as described under [Provider selection](#modes--variants).
+3. `web/hosted` expands to the active model's same-provider `webSearchModel` swap when available, otherwise the active model itself, retaining only models with grounding. An unexpandable placeholder is skipped automatically or fails explicitly. The selected candidate lazily loads its search engine or grounding backend (`gemini`, `anthropic`, `codex`, `openai`, `xai`, `openrouter`). Explicit candidates use `isExplicitlyAvailable()`, automatic ones use `isAvailable()`; an unavailable explicit candidate records a failure while an automatic one is skipped during selection.
 4. If no candidate was available and none failed, `executeSearch()` returns `Error: No web search model configured.` (or `No web search model matches selector "<model>".` when `params.model` was given) with `details.response.provider = "none"`.
-5. For each provider in order, `executeSearch()` calls `provider.search()` with:
+5. `executeSearch()` calls `provider.search()` on the selected candidate with:
    - `query`,
    - `limit`, `recency`, `temperature`, `maxOutputTokens`, `numSearchResults`,
    - `timeoutMs`, derived from `providers.webSearchTimeoutSeconds`,
@@ -100,23 +100,22 @@ Each provider search transport receives a hard timeout from `providers.webSearch
    - the parsed structured query, including recognized directives and date/domain/title/URL/filetype constraints.
 6. After a provider responds, `applyQueryConstraints()` leniently post-filters its sources for constraints not guaranteed upstream. It applies each filterable dimension in turn; any dimension that would eliminate every remaining result is relaxed and a leading `Note: no results matched ...` is emitted. Answer/citation text is not rewritten.
 7. Grounded chat responses must contain sources or citations; answer-only completions are rejected with status `204`. Any response with no renderable content is also rejected. The first acceptable response is formatted into one text block.
-8. If a provider throws, `executeSearch()` records the error and tries the next provider. There is no provider-level parallel fan-out; fallback is sequential.
-9. After all candidates fail, `formatSearchProviderFailure()` normalizes each error:
+8. If the provider throws, `executeSearch()` records the error and returns it. There is no provider-level fan-out and no fallthrough to another provider.
+9. On failure, `formatSearchProviderFailure()` normalizes the error:
    - Anthropic `404` becomes `Anthropic web search returned 404 (model or endpoint not found).`
    - `401`/`403` become `<Provider> authorization failed ...` except Z.AI, which preserves its raw message.
    - other `SearchProviderError`s surface `error.message`.
-10. If more than one provider failed, the final message is `All web search providers failed: <provider/error>; ...`; otherwise it is just the normalized last error.
+10. The final message is the normalized error.
 
 ## Modes / Variants
 - **Provider selection**
   - Provider choice is the `web` model role. A candidate is a catalog model: `web/<engine>` for a search engine (for example `web/brave`, `web/duckduckgo`), or a chat model whose catalog entry declares a `webSearch` grounding (for example `anthropic/claude-haiku-4-5`, bundled `openai/gpt-6-luna`, or `openai/gpt-5.6-luna`), in which case that model runs the grounded search.
-  - **Primary**: `modelRoles.web`. If it is set, its first selector pattern that matches an available model becomes the first candidate and is explicit. If it is unset, the role resolves through the built-in `web` priority list.
-  - **Fallbacks**: `retry.fallbackChains.web`. If it is set (even as an empty list), exactly those selectors follow the primary and are explicit. If it is unset, every entry of the built-in `web` priority list that matches an available model follows as a non-explicit candidate. Duplicate models are dropped, and a model listed by any explicit selector stays explicit.
+  - **Selection**: `modelRoles.web`. If it is set, its first selector pattern that matches an available model is the candidate and is explicit. If it is unset, the role resolves through the built-in `web` priority list, taking the first entry that matches an available model (non-explicit). This is initial discovery only; a failing search does not move to the next entry.
   - **Explicit vs automatic**: explicit candidates use `isExplicitlyAvailable()`, so Perplexity and Public Web can run their unauthenticated paths when you select them. Parallel, Exa, and Firecrawl run their keyless paths in either mode. Automatic candidates use `isAvailable()` and are skipped when their credentials are missing.
-  - **Per-request selector**: `SearchQueryParams.model` (`omp q --model web/duckduckgo "…"`) replaces the whole chain with that single explicit candidate.
-  - **Default chain** (`packages/coding-agent/src/priority.json`): `web/parallel`, `web/hosted`, `web/exa`, `web/firecrawl`, `web/searxng`, `web/startpage`, `web/duckduckgo`, `web/ecosia`, `web/google`, `web/mojeek`, `web/public`. Parallel/Exa/Firecrawl offer keyless paths but use configured credentials when available; hosted search uses the session provider's credential. The chain is not a guarantee of zero billing. Other paid engines/chat providers require explicit role/fallback configuration. Public Web is explicit-only and never runs automatically.
-  - **Legacy settings**: on load, `packages/coding-agent/src/config/settings.ts` migrates `providers.webSearch`, `providers.webSearchOrder`, `providers.webSearchExclude`, and `providers.webSearchGeminiModel` into `modelRoles.web` plus `retry.fallbackChains.web`, then deletes the old keys. The migration never overwrites a role or chain that is already set. The migrated chain is the listed providers followed by the default chain, with excluded providers removed; `providers.webSearchGeminiModel` only shapes a listed `gemini` entry.
-- **Provider timeout**: `providers.webSearchTimeoutSeconds` supplies the hard ceiling for each provider's search transport before the automatic chain advances. It defaults to `60`; invalid non-positive values fall back to that default and values above `300` are capped, while provider-specific upstream or aggregate limits may still be shorter.
+  - **Per-request selector**: `SearchQueryParams.model` (`omp q --model web/duckduckgo "…"`) selects that single explicit candidate instead of the `web` role.
+  - **Default priority list** (`packages/coding-agent/src/priority.json`): `web/parallel`, `web/hosted`, `web/exa`, `web/firecrawl`, `web/searxng`, `web/startpage`, `web/duckduckgo`, `web/ecosia`, `web/google`, `web/mojeek`, `web/public`. Parallel/Exa/Firecrawl offer keyless paths but use configured credentials when available; hosted search uses the session provider's credential. The list is not a guarantee of zero billing. Other paid engines/chat providers require explicit role configuration. Public Web is explicit-only and never runs automatically.
+  - **Legacy settings**: on load, `packages/coding-agent/src/config/settings.ts` migrates `providers.webSearch`, `providers.webSearchOrder`, `providers.webSearchExclude`, and `providers.webSearchGeminiModel` into `modelRoles.web`, then deletes the old keys. The migration never overwrites a role that is already set.
+- **Provider timeout**: `providers.webSearchTimeoutSeconds` supplies the hard ceiling for the search transport. It defaults to `60`; invalid non-positive values fall back to that default and values above `300` are capped, while provider-specific upstream or aggregate limits may still be shorter.
 - **Provider adapters**
   - **Perplexity** — `packages/coding-agent/src/web/search/providers/perplexity.ts`
     - Availability: tries cookies, stored OAuth, then direct API credentials. Anonymous search is admitted only when no credential method resolves and the candidate is explicit; failed authenticated methods do not append an anonymous attempt. Automatic admission requires direct Perplexity auth. OpenRouter keys are never borrowed; select an `openrouter/perplexity/…` model for OpenRouter grounding.
@@ -216,7 +215,7 @@ Each provider search transport receives a hard timeout from `providers.webSearch
     - `limit` / `num_search_results`: `params.numSearchResults ?? params.limit`, clamped to `1..20`, default `10`.
     - Output: `sources`, `requestId`.
   - **Parallel** — `packages/coding-agent/src/web/search/providers/parallel.ts`, `packages/coding-agent/src/web/parallel.ts`
-    - Availability: always available and first in the automatic chain, using authenticated search when configured and the credential-free MCP otherwise.
+    - Availability: always available and first in the default priority list, using authenticated search when configured and the credential-free MCP otherwise.
     - Querying: authenticated requests POST `https://api.parallel.ai/v1beta/search` with `objective`, one search query, `mode:"fast"`, `excerpts.max_chars_per_result:10000`, and beta header `search-extract-2025-10-10`. Domain filters and `after:`/recency map to `source_policy`; explicit `after:` wins. Keyless requests call `web_search` at `https://search.parallel.ai/mcp`, retaining query operators and a recency-derived date hint. They include session id and the selected search candidate's model id when at most 100 characters, and identify the client as `omp/<version>`.
     - There is no provider fan-out here despite the name; the current adapter always sends a one-element `search_queries` array.
     - `limit` and `num_search_results` are collapsed together before dispatch, clamped to `1..40`, default `10`.
@@ -245,10 +244,10 @@ Each provider search transport receives a hard timeout from `providers.webSearch
     - Querying: POST the no-JS HTML frontend `https://html.duckduckgo.com/html/` with `q`, locale `kl` (default `us-en`; recognized `lang:` locales override it), and optional recency `df=d|w|m|y`; unwraps DuckDuckGo redirect URLs. This path does not escalate to Chromium.
     - `recency` maps to `df`; values outside `day|week|month|year` are ignored.
     - `limit` / `num_search_results`: collapsed and clamped to `1..20`, default `10`; output exposes `sources` only (DuckDuckGo's HTML page does not return a standalone abstract).
-    - DuckDuckGo serves a bot-detection challenge (HTTP 200/202 with an `anomaly-modal` body) when it throttles datacenter or shared-egress IPs. The adapter detects this and raises a `SearchProviderError` so the orchestrator can fall through to the next configured provider with a clear cause.
+    - DuckDuckGo serves a bot-detection challenge (HTTP 200/202 with an `anomaly-modal` body) when it throttles datacenter or shared-egress IPs. The adapter detects this and raises a `SearchProviderError` so the failure has a clear cause.
   - **Startpage** — `packages/coding-agent/src/web/search/providers/startpage.ts`
     - Availability: always available; no API key. It proxies Google's index, GETs the homepage to obtain the `sc` anti-bot form token, then POSTs `/sp/search` (with a tokenless GET fallback). `recency` maps to `with_date=d|w|m|y`.
-    - Bot/challenge or consent pages raise a provider-tagged `SearchProviderError` (429) so the chain advances.
+    - Bot/challenge or consent pages raise a provider-tagged `SearchProviderError` (429), which fails the search.
   - **Google / Ecosia / Mojeek** — `providers/google.ts`, `providers/ecosia.ts`, `providers/mojeek.ts`
     - Availability: always available; no API key. `browserFetch` (`providers/browser-page.ts`) tries a browser-profiled plain fetch first and escalates fetch failures, non-2xx statuses, and challenge bodies to the shared stealth headless browser (`acquireBrowser`); an injected `params.fetch` (tests) never escalates.
     - Google: seeds cookies via the homepage, then loads the rendered SERP; `recency` maps to `tbs=qdr:*`. Ecosia sits behind Cloudflare (hence the browser); its organic results are Google-backed; `recency` is a server-side no-op and silently ignored. Mojeek fronts an ALTCHA proof-of-work wall that the browser path auto-solves; `recency` maps to `since=day|week|month|year`.
@@ -269,10 +268,10 @@ Each provider search transport receives a hard timeout from `providers.webSearch
   - Uses a module-global provider-instance cache in `packages/coding-agent/src/web/search/provider.ts`.
   - `packages/coding-agent/src/tools/index.ts` gates tool availability behind `cfgWebSearchEnabled.get(session.settings)` (`web_search.enabled`, defined in `packages/coding-agent/src/tools/settings.ts`).
 - Background work / cancellation
-  - Many provider adapters accept `AbortSignal`; `WebSearchTool.execute()` passes the tool call signal into `executeSearch()`, which forwards it as `params.signal` to providers and rethrows cancellation during fallback.
+  - Many provider adapters accept `AbortSignal`; `WebSearchTool.execute()` passes the tool call signal into `executeSearch()`, which forwards it as `params.signal` to providers and rethrows cancellation.
 
 ## Limits & Caps
-- Default chain length: 11 selectors (the `web` list in `packages/coding-agent/src/priority.json`).
+- Default priority list length: 11 selectors (the `web` list in `packages/coding-agent/src/priority.json`).
 - `formatForLLM()` truncates source snippets and citation text to 240 chars (`packages/coding-agent/src/web/search/index.ts`).
 - `formatForLLM()` emits at most 3 search queries, each truncated to 120 chars (`packages/coding-agent/src/web/search/index.ts`).
 - Brave result count: default `10`, max `20` (`DEFAULT_NUM_RESULTS`, `MAX_NUM_RESULTS` in `packages/coding-agent/src/web/search/providers/brave.ts`).
@@ -308,9 +307,9 @@ Each provider search transport receives a hard timeout from `providers.webSearch
 
 ## Notes
 - The model-facing schema does not expose a provider or model; CLI/internal callers can pin one through `SearchQueryParams.model`.
-- `executeSearch()` loads provider modules lazily as the chain reaches them. Provider instances are cached per id (`packages/coding-agent/src/web/search/provider.ts`), and asking for labels via `getSearchProviderLabel()` does not trigger imports.
+- `executeSearch()` loads provider modules lazily when the selected candidate needs them. Provider instances are cached per id (`packages/coding-agent/src/web/search/provider.ts`), and asking for labels via `getSearchProviderLabel()` does not trigger imports.
 - Most providers treat `limit` and `num_search_results` as the same number because adapters pass `params.numSearchResults ?? params.limit`. Perplexity preserves both concepts. TinyFish uses the collapsed value as a local cap, serializes `num_results` per page, and paginates when more results are needed. xAI uses it only to cap parsed sources/citations (`10` default, `30` max).
 - `recency` has native or engine-query mappings in Brave, Perplexity, Parallel, Tavily, SearXNG, Kagi, TinyFish, Firecrawl, DuckDuckGo, Startpage, Google, and Mojeek. xAI retains absolute query dates as hints but ignores the separate recency field; Ecosia ignores it. Public Web forwards the request to its engines.
 - `SEARCH_PROVIDER_LABELS` in `packages/tui/src/tools/web-search-types.ts` is the id→label registry for every search implementation (engines and groundings); provider ids, `SearchResponse`, and the transcript renderer all derive from it. Selection itself lives only in the `web` model role.
-- The credential-free scrapers close the auto chain: Startpage and DuckDuckGo precede the browser-backed Ecosia, Google, and Mojeek paths; `public` is listed last and never auto-selected.
+- The credential-free scrapers close the default priority list: Startpage and DuckDuckGo precede the browser-backed Ecosia, Google, and Mojeek paths; `public` is listed last and never auto-selected.
 - `/login exa` stores the pasted key in AuthStorage; Exa resolves stored or environment credentials before the unauthenticated `https://mcp.exa.ai/mcp` fallback.

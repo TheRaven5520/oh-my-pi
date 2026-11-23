@@ -71,7 +71,7 @@ export interface SearchParams {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Provider/model transport settings used by native search endpoints. */
 	modelRegistry: ModelRegistry;
-	/** Whether the selected model came from an explicit role-chain entry. */
+	/** Whether the selected model came from an explicit selection (configured role or per-call model). */
 	explicit?: boolean;
 	/**
 	 * Optional session id used as the round-robin / sticky key when selecting
@@ -92,7 +92,7 @@ export abstract class SearchProvider {
 	 * service a request right now. Implementations consult the passed
 	 * {@link AuthStorage} — never a sibling store.
 	 *
-	 * Drives role-chain admission: providers that return `false` are skipped.
+	 * Drives default selection: providers that return `false` are skipped.
 	 * Explicit selection uses {@link isExplicitlyAvailable} instead. The model
 	 * is supplied for providers whose authentication depends on its transport.
 	 */

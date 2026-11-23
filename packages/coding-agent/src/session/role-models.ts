@@ -49,14 +49,6 @@ export function resolveConfiguredModelTarget(
 	return availableModels.find(model => model.provider === currentModel.provider && model.id === trimmedTarget);
 }
 
-/** Resolves a model's configured context-promotion target. */
-export function resolveContextPromotionConfiguredTarget(
-	currentModel: Model,
-	availableModels: Model[],
-): Model | undefined {
-	return resolveConfiguredModelTarget(currentModel.contextPromotionTarget, currentModel, availableModels);
-}
-
 /** Resolves a model's configured compaction target. */
 export function resolveCompactionConfiguredTarget(currentModel: Model, availableModels: Model[]): Model | undefined {
 	return resolveConfiguredModelTarget(currentModel.compactionModel, currentModel, availableModels);

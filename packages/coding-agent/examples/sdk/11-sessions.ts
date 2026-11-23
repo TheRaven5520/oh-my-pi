@@ -18,10 +18,10 @@ const { session: newSession } = await createAgentSession({
 console.log("New session file:", newSession.sessionFile);
 
 // Continue most recent session (or create new if none)
-const { session: continued, modelFallbackMessage } = await createAgentSession({
+const { session: continued, modelSelectionError } = await createAgentSession({
 	sessionManager: await SessionManager.continueRecent(process.cwd()),
 });
-if (modelFallbackMessage) console.log("Note:", modelFallbackMessage);
+if (modelSelectionError) console.log("Model not selected:", modelSelectionError);
 console.log("Continued session:", continued.sessionFile);
 
 // List and open specific session

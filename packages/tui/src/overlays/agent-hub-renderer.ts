@@ -159,28 +159,22 @@ export function roleBadgeSpan(role: string, info: AgentRoleDisplay): TspSpan {
 	return span(sanitizeDisplaySingleLine(info.tag ?? info.name ?? role), info.color ?? "muted");
 }
 
-/** Model label and reasoning level a hub row reports; `fallback` marks a fallback model serving. */
+/** Model label and reasoning level a hub row reports. */
 interface ResolvedModelBadge {
 	model: string;
 	level: ThinkingLevel | undefined;
-	fallback: boolean;
 }
 
-/** Resolve a selector, preserving provider identity when requested. */
-function resolveSelectorBadge(
-	resolved: string,
-	fallback: boolean,
-	preserveProvider: boolean,
-	fallbackLevel: ThinkingLevel | undefined,
-): ResolvedModelBadge {
+/** Resolve a selector to its display label and explicit thinking level. */
+function resolveSelectorBadge(resolved: string, fallbackLevel: ThinkingLevel | undefined): ResolvedModelBadge {
 	const cleanResolved = sanitizeDisplaySingleLine(resolved);
 	// Model ids may themselves contain colons (`qwen3:14b`), so only treat the
 	// suffix as a thinking level when it parses as one.
 	const colon = cleanResolved.lastIndexOf(":");
 	const explicitLevel = colon >= 0 ? parseThinkingLevel(cleanResolved.slice(colon + 1)) : undefined;
 	const selector = explicitLevel !== undefined ? cleanResolved.slice(0, colon) : cleanResolved;
-	const label = preserveProvider ? selector : formatModelName(selector.slice(selector.indexOf("/") + 1));
-	return { model: label, level: explicitLevel ?? fallbackLevel, fallback };
+	const label = formatModelName(selector.slice(selector.indexOf("/") + 1));
+	return { model: label, level: explicitLevel ?? fallbackLevel };
 }
 
 /** Keep the effective task service tier beside its model in both dock presentations. */
@@ -201,9 +195,8 @@ function modelTierLabel(ref: AgentRecordLike, observed: ObservableSession | unde
  * fallback for agents without an observer snapshot — the main session has no
  * snapshot at all, so its row is read straight off the live session.
  *
- * Every source reports the model that produced the row's work, never the one
- * the session merely points at: an armed fallback that has not served yet stays
- * attributed to whichever model last actually spoke.
+ * Executor progress and persisted history report the model that produced the
+ * row's work; a live session reports its current model.
  */
 function resolveModelBadge(
 	ref: AgentRecordLike,
@@ -211,24 +204,17 @@ function resolveModelBadge(
 ): ResolvedModelBadge | undefined {
 	const progress = observed?.progress;
 	const liveThinkingLevel = ref.session?.thinkingLevel;
-	const serving = ref.session?.servingModel;
-	const fallbackSelector =
-		(serving?.isFallback ? serving.selector : undefined) ??
-		(progress?.resolvedModelIsFallback ? progress.resolvedModel : undefined) ??
-		(ref.history?.resolvedModelIsFallback ? ref.history.resolvedModel : undefined);
-	if (fallbackSelector) return resolveSelectorBadge(fallbackSelector, true, true, liveThinkingLevel);
-	const resolvedModel = progress?.resolvedModel ?? ref.history?.resolvedModel ?? serving?.selector;
-	if (resolvedModel) return resolveSelectorBadge(resolvedModel, false, false, liveThinkingLevel);
+	const resolvedModel = progress?.resolvedModel ?? ref.history?.resolvedModel;
+	if (resolvedModel) return resolveSelectorBadge(resolvedModel, liveThinkingLevel);
 	const model = ref.session?.model;
 	if (!model) return undefined;
-	return { model: formatModelName(model.id), level: model.thinking ? liveThinkingLevel : undefined, fallback: false };
+	return { model: formatModelName(model.id), level: model.thinking ? liveThinkingLevel : undefined };
 }
 
 export function modelBadge(ref: AgentRecordLike, observed: ObservableSession | undefined): string | undefined {
 	const badge = resolveModelBadge(ref, observed);
 	if (!badge) return undefined;
-	const text = formatModelBadge(modelTierLabel(ref, observed, badge.model), badge.level);
-	return badge.fallback ? `${theme.fg("warning", "fallback →")} ${text}` : text;
+	return formatModelBadge(modelTierLabel(ref, observed, badge.model), badge.level);
 }
 
 /** A picker chip for the model that produced a row's work: label plus thinking-level colour token. */
@@ -238,7 +224,6 @@ export interface ModelChip {
 	level?: string;
 	/** Theme token of {@link level}. */
 	dot?: string;
-	fallback: boolean;
 }
 
 /** Structured {@link modelBadge} for picker chips. */
@@ -249,7 +234,6 @@ export function modelChip(ref: AgentRecordLike, observed: ObservableSession | un
 		text: sanitizeDisplaySingleLine(modelTierLabel(ref, observed, badge.model)),
 		level: showsThinkingLevel(badge.level) ? badge.level : undefined,
 		dot: showsThinkingLevel(badge.level) ? thinkingToken(badge.level) : undefined,
-		fallback: badge.fallback,
 	};
 }
 
@@ -258,7 +242,6 @@ export function modelBadgeSpans(ref: AgentRecordLike, observed: ObservableSessio
 	const badge = resolveModelBadge(ref, observed);
 	if (!badge) return undefined;
 	const spans: TspSpan[] = [];
-	if (badge.fallback) spans.push(span("fallback → ", "warning"));
 	spans.push(span(sanitizeDisplaySingleLine(badge.model), "muted"));
 	if (showsThinkingLevel(badge.level)) {
 		spans.push(span(` (${badge.level})`, thinkingToken(badge.level)));

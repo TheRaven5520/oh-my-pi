@@ -178,8 +178,6 @@ interface ResolvedRoute {
 	policy: RequestPolicy;
 	/** Model rebuilt for the shared transport's API; absent on the native Gemini client. */
 	inner?: Model<SharedWire>;
-	/** Server-side refusal fallback targets resolved for the route's upstream. */
-	serverSideFallbackModels?: readonly string[];
 }
 
 /**
@@ -206,7 +204,6 @@ function resolveRoute(
 		route = { policy: resolveModelPolicy(model, { upstream }).request };
 	} else {
 		const resolved = resolveModelPolicy({ ...model, api: wire }, { upstream });
-		const fallbackModels = resolved.catalog.serverSideFallbackModels;
 		route = {
 			policy: resolved.request,
 			inner: buildModel({
@@ -216,9 +213,6 @@ function resolveRoute(
 				compat: resolved.compat,
 				thinking: resolved.thinking,
 			} as ModelSpec<SharedWire>),
-			serverSideFallbackModels: Array.isArray(fallbackModels)
-				? fallbackModels.filter((entry): entry is string => typeof entry === "string")
-				: undefined,
 		};
 	}
 	routes.set(key, route);
@@ -408,8 +402,6 @@ function streamMessagesWire(a: Attempt, inner: Model<"anthropic-messages">): Ass
 			: !adaptive && (effort === "xhigh" || effort === "max")
 				? "high"
 				: effort;
-	const fallbackModels = a.route.serverSideFallbackModels;
-	const refusalFallbacks = fallbackModels?.length ? fallbackModels.map(model => ({ model })) : undefined;
 	return streamAnthropic(inner, a.context, {
 		...a.forwarded,
 		// The non-OAuth client keeps Factory's system channel intact and sends
@@ -420,7 +412,6 @@ function streamMessagesWire(a: Attempt, inner: Model<"anthropic-messages">): Ass
 		userProfileId: options?.userProfileId,
 		metadata: options?.metadata,
 		taskBudget: options?.taskBudget,
-		fallbackCreditRedemption: options?.fallbackCreditRedemption,
 		anthropicSlowMode: options?.anthropicSlowMode,
 		thinkingEnabled: !a.disabled,
 		effort: outputEffort as AnthropicOptions["effort"],
@@ -434,15 +425,8 @@ function streamMessagesWire(a: Attempt, inner: Model<"anthropic-messages">): Ass
 		// Headers are built before params, so the strip condition is mirrored.
 		interleavedThinking:
 			style === "budget-interleaved" && effort !== undefined && !shouldStripThinkingHistory(a.context.messages),
-		// Native refusal fallbacks send the chain and the fallback-credit beta
-		// even without a credit token; the transport adds server-side-fallback.
-		...(refusalFallbacks ? { fallbacks: refusalFallbacks } : {}),
-		betas: [
-			...(policy.anthropicToolStreamingBeta && a.context.tools?.length
-				? ["fine-grained-tool-streaming-2025-05-14"]
-				: []),
-			...(refusalFallbacks ? ["fallback-credit-2026-06-01"] : []),
-		],
+		betas:
+			policy.anthropicToolStreamingBeta && a.context.tools?.length ? ["fine-grained-tool-streaming-2025-05-14"] : [],
 		temperature: options?.temperature,
 		stopSequences: options?.stopSequences,
 		serviceTier: options?.serviceTier,

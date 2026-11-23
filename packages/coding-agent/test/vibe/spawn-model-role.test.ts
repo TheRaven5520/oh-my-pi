@@ -4,9 +4,9 @@
  * `#resolveWorker` expands the bundled worker's role alias (`good` -> `task` ->
  * `@task`, `fast` -> `sonic` -> `@smol`) into concrete patterns, so the role
  * survives only as a separate field forwarded across `ResolvedVibeWorker` ->
- * `VibeRecord` -> `#buildSpawnOptions` -> `runSubprocess`. The executor keys the
- * child's inherited `retry.fallbackChains` entry off it; drop any link in that
- * chain and vibe children silently retry on the `default` role's chain.
+ * `VibeRecord` -> `#buildSpawnOptions` -> `runSubprocess`. The executor records
+ * it for the child's progress display and persisted session init; drop any link
+ * in that chain and vibe children lose their explicit role identity.
  */
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";

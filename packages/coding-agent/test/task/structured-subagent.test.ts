@@ -33,7 +33,7 @@ import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
-import { cfgRetryModelFallback, cfgTierOpenai } from "@oh-my-pi/pi-coding-agent/session/settings";
+import { cfgTierOpenai } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cfgTaskAgentModelOverrides, cfgTaskEnableEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
 
 const AGENT: AgentDefinition = {
@@ -253,10 +253,7 @@ describe("structured subagent primitive", () => {
 		const projectDir = path.join(root, "project");
 		const agentDir = path.join(root, "agent");
 		await fs.mkdir(projectDir, { recursive: true });
-		await Bun.write(
-			path.join(agentDir, "config.yml"),
-			"task:\n  enableEffort: true\nretry:\n  modelFallback: true\n",
-		);
+		await Bun.write(path.join(agentDir, "config.yml"), "task:\n  enableEffort: true\n");
 		const liveSettings = await Settings.loadIsolated({ cwd: projectDir, agentDir });
 		const liveSession = {
 			...session(),
@@ -267,7 +264,7 @@ describe("structured subagent primitive", () => {
 		try {
 			await Bun.write(
 				path.join(projectDir, ".omp", "config.yml"),
-				"task:\n  agentModelOverrides:\n    hot-worker: xai-oauth/grok-4.6:medium\n  enableEffort: false\nretry:\n  modelFallback: false\n",
+				"task:\n  agentModelOverrides:\n    hot-worker: xai-oauth/grok-4.6:medium\n  enableEffort: false\n",
 			);
 			await Bun.write(
 				path.join(projectDir, ".omp", "agents", "hot-worker.md"),
@@ -278,7 +275,6 @@ describe("structured subagent primitive", () => {
 
 			expect(policy.modelOverride).toEqual(["xai-oauth/grok-4.6:medium"]);
 			expect(cfgTaskEnableEffort.get(liveSettings)).toBe(false);
-			expect(cfgRetryModelFallback.get(liveSettings)).toBe(false);
 		} finally {
 			liveSettings.cancelPendingSaves();
 			// `Settings.loadIsolated` opened `<agentDir>/agent.db`; Windows cannot delete it while open.
@@ -549,7 +545,7 @@ describe("structured subagent primitive", () => {
 		expect(policy.modelRole).toBeUndefined();
 	});
 
-	it("withholds the parent credential fallback from an explicit per-call model and marks inherited effort", async () => {
+	it("marks inherited live effort only for selections that inherit the parent's model", async () => {
 		mockDiscovery();
 		const parent = "anthropic/claude-sonnet-4-5:high";
 		const childSession = { ...session(), getActiveModelString: () => parent } as ToolSession;
@@ -569,17 +565,14 @@ describe("structured subagent primitive", () => {
 			await runStructuredSubagent(request({ session: childSession, model }));
 		}
 
-		expect(
-			dispatched.map(options => [options.parentActiveModelPattern, options.modelInheritsLiveThinkingLevel ?? false]),
-		).toEqual([
-			// A requested model that cannot authenticate fails rather than running on the parent's.
-			[undefined, false],
-			[undefined, false],
+		expect(dispatched.map(options => options.modelInheritsLiveThinkingLevel ?? false)).toEqual([
+			false,
+			false,
 			// `@default` names the parent; its live `:high` is inherited, not requested.
-			[parent, true],
-			[parent, false],
-			// No selector: the agent inherits the session model and the #985 fallback stays.
-			[parent, true],
+			true,
+			false,
+			// No selector: the agent inherits the session model and its live effort.
+			true,
 		]);
 	});
 

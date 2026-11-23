@@ -79,9 +79,8 @@ describe("bundled agent parsing", () => {
 	});
 
 	// The alias is expanded before it reaches the executor, so the role identity
-	// only survives as the `role` half of the selection. A subagent's inherited
-	// `retry.fallbackChains` entry is keyed off it — lose it and every bundled
-	// agent silently retries on the `default` role's chain.
+	// only survives as the `role` half of the selection. The executor's progress
+	// display and the persisted session init record it.
 	it("keeps the role identity of every alias-routed bundled agent through expansion", () => {
 		const settings = Settings.isolated({
 			modelRoles: {

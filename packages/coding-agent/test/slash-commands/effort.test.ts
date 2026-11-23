@@ -50,7 +50,6 @@ function harness(options: { reasoning?: boolean; efforts?: readonly Effort[]; ce
 			promptGeneration: () => 0,
 			sessionManager: { appendThinkingLevelChange: () => Promise.resolve() },
 			clearInheritedProviderPromptCacheKey: () => {},
-			clearActiveRetryFallback: () => {},
 			emit: () => {},
 			emitNotice: () => {},
 		} as unknown as ModelControlsHost,

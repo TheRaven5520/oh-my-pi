@@ -3237,7 +3237,6 @@ describe("ModelRegistry runtime discovery", () => {
 				fetch: () => Promise.withResolvers<Response>().promise,
 			});
 			expect(registry.find("litellm", "not-yet-discovered")).toBeUndefined();
-			expect(registry.isProviderDiscoveryPending("litellm")).toBe(true);
 
 			const refresh = registry.refreshProvider("litellm", "online");
 			for (let turn = 0; turn < 10; turn++) await Promise.resolve();
@@ -3250,7 +3249,6 @@ describe("ModelRegistry runtime discovery", () => {
 				models: [],
 				error: `model discovery timed out after ${RUNTIME_DYNAMIC_MODEL_FETCH_TIMEOUT_MS}ms`,
 			});
-			expect(registry.isProviderDiscoveryPending("litellm")).toBe(false);
 		} finally {
 			vi.useRealTimers();
 		}

@@ -1,16 +1,9 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, ApiKey, Model } from "@oh-my-pi/pi-ai";
 import type { ApiKeyResolverRegistry } from "../config/api-key-resolver";
-import {
-	getModelMatchPreferences,
-	type ModelLookupRegistry,
-	parseModelPattern,
-	resolveModelRoleValue,
-	resolveRoleSelection,
-} from "../config/model-resolver";
+import { getModelMatchPreferences, type ModelLookupRegistry, resolveModelRoleValue } from "../config/model-resolver";
 import { CHAT_MODEL_ROLE_IDS } from "../config/model-roles";
 import type { Settings } from "../config/settings";
-import MODEL_PRIO from "../priority.json" with { type: "json" };
 import { concreteThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 export interface ResolvedCommitModel {
@@ -39,11 +32,12 @@ export async function resolvePrimaryModel(
 	settings: Settings,
 	modelRegistry: CommitModelRegistry,
 ): Promise<ResolvedCommitModel> {
-	const available = modelRegistry.getAvailable();
-	const matchPreferences = getModelMatchPreferences(settings);
-	const resolved = override
-		? resolveModelRoleValue(override, available, { settings, matchPreferences })
-		: resolveRoleSelection(["commit", "smol", ...CHAT_MODEL_ROLE_IDS], settings, available);
+	const selector =
+		override ?? ["commit", "smol", ...CHAT_MODEL_ROLE_IDS].map(role => settings.getModelRole(role)).find(Boolean);
+	const resolved = resolveModelRoleValue(selector, modelRegistry.getAvailable(), {
+		settings,
+		matchPreferences: getModelMatchPreferences(settings),
+	});
 	const model = resolved?.model;
 	if (!model) {
 		throw new Error("No model available for commit generation");
@@ -62,34 +56,19 @@ export async function resolvePrimaryModel(
 export async function resolveSmolModel(
 	settings: Settings,
 	modelRegistry: CommitModelRegistry,
-	fallbackModel: Model<Api>,
-	fallbackApiKey: ApiKey,
+	primary: ResolvedCommitModel,
 ): Promise<ResolvedCommitModel> {
-	const available = modelRegistry.getAvailable();
-	const resolvedSmol = resolveRoleSelection(["smol"], settings, available);
-	if (resolvedSmol?.model) {
-		const apiKey = await modelRegistry.getApiKey(resolvedSmol.model);
-		if (apiKey) {
-			return {
-				model: resolvedSmol.model,
-				apiKey: modelRegistry.resolver(resolvedSmol.model),
-				thinkingLevel: concreteThinkingLevel(resolvedSmol.thinkingLevel),
-			};
-		}
+	const resolved = resolveModelRoleValue("@smol", modelRegistry.getAvailable(), { settings });
+	if (!resolved.model) {
+		if (!settings.getModelRole("smol")) return primary;
+		throw new Error("Configured smol model is unavailable for commit generation");
 	}
-
-	const matchPreferences = getModelMatchPreferences(settings);
-	for (const pattern of MODEL_PRIO.smol) {
-		const candidate = parseModelPattern(pattern, available, matchPreferences).model;
-		if (!candidate) continue;
-		const apiKey = await modelRegistry.getApiKey(candidate);
-		if (apiKey) {
-			return {
-				model: candidate,
-				apiKey: modelRegistry.resolver(candidate),
-			};
-		}
+	if (!(await modelRegistry.getApiKey(resolved.model))) {
+		throw new Error(`No API key available for model ${resolved.model.provider}/${resolved.model.id}`);
 	}
-
-	return { model: fallbackModel, apiKey: fallbackApiKey };
+	return {
+		model: resolved.model,
+		apiKey: modelRegistry.resolver(resolved.model),
+		thinkingLevel: concreteThinkingLevel(resolved.thinkingLevel),
+	};
 }

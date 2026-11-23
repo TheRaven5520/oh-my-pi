@@ -396,7 +396,7 @@ describe("title generator", () => {
 		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("treats a declined title as final instead of asking the next fallback model", async () => {
+	it("treats a declined title as final", async () => {
 		const tinyModel = getModelOrThrow("claude-haiku-4-5");
 		const smolModel = getModelOrThrow("claude-sonnet-4-5");
 		const settings = Settings.isolated({
@@ -422,7 +422,7 @@ describe("title generator", () => {
 		}
 	});
 
-	it("still falls back to the next model after an unusable reply", async () => {
+	it("does not ask another model after an unusable reply", async () => {
 		const tinyModel = getModelOrThrow("claude-haiku-4-5");
 		const smolModel = getModelOrThrow("claude-sonnet-4-5");
 		const settings = Settings.isolated({
@@ -441,8 +441,8 @@ describe("title generator", () => {
 
 		expect(
 			await generateSessionTitle("fix the parser", createRegistry(tinyModel, [tinyModel, smolModel]), settings),
-		).toBe("Fix Parser");
-		expect(completeSimpleMock).toHaveBeenCalledTimes(2);
+		).toBeNull();
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("logs and returns null when title credentials are missing", async () => {
@@ -512,9 +512,9 @@ describe("title generator", () => {
 		);
 	});
 
-	it("stops title fallback traversal after cancellation", async () => {
+	it("stops title generation after cancellation", async () => {
 		const primary = getModelOrThrow("claude-haiku-4-5");
-		const fallback = getModelOrThrow("claude-sonnet-4-5");
+		const other = getModelOrThrow("claude-sonnet-4-5");
 		const controller = new AbortController();
 		let apiKeyCalls = 0;
 		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockImplementation(async () => {
@@ -529,7 +529,7 @@ describe("title generator", () => {
 		const title = await generateSessionTitle(
 			"Investigate the resolver",
 			{
-				getAvailable: () => [primary, fallback],
+				getAvailable: () => [primary, other],
 				getApiKey: async () => {
 					apiKeyCalls += 1;
 					return "test-key";
@@ -541,11 +541,7 @@ describe("title generator", () => {
 			Settings.isolated({
 				modelRoles: {
 					tiny: `${primary.provider}/${primary.id}`,
-					smol: `${fallback.provider}/${fallback.id}`,
-				},
-				"retry.modelFallback": true,
-				"retry.fallbackChains": {
-					[`${primary.provider}/${primary.id}`]: [`${fallback.provider}/${fallback.id}`],
+					smol: `${other.provider}/${other.id}`,
 				},
 			}),
 			"session-abort",
@@ -779,20 +775,13 @@ describe("title generator", () => {
 		expect(completeSimpleMock).not.toHaveBeenCalled();
 	});
 
-	it("preserves routed current-model title fallback for distinct @upstream routes", async () => {
+	it("keeps the routed tiny model when its upstream route fails, without trying the current model", async () => {
 		const base = getModelFor("openrouter", "google/gemini-2.5-flash");
 		const registryLookup = { getAvailable: () => [base] };
-		const cerebras = resolveModelOverride(
-			["openrouter/google/gemini-2.5-flash@cerebras"],
-			registryLookup as never,
-		).model!;
 		const openaiRouted = resolveModelOverride(
 			["openrouter/google/gemini-2.5-flash@openai"],
 			registryLookup as never,
 		).model!;
-		expect(formatModelStringWithRouting(cerebras)).toBe("openrouter/google/gemini-2.5-flash@cerebras");
-		expect(formatModelStringWithRouting(openaiRouted)).toBe("openrouter/google/gemini-2.5-flash@openai");
-
 		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockImplementation(async model => {
 			if (formatModelStringWithRouting(model) === "openrouter/google/gemini-2.5-flash@cerebras") {
 				return {
@@ -809,7 +798,6 @@ describe("title generator", () => {
 		});
 		const settings = Settings.isolated({
 			modelRoles: { tiny: "openrouter/google/gemini-2.5-flash@cerebras" },
-			"retry.modelFallback": true,
 		});
 		const registry = {
 			getAvailable: () => [base],
@@ -820,59 +808,14 @@ describe("title generator", () => {
 		} as never;
 
 		const title = await generateSessionTitle("Investigate routing", registry, settings, undefined, openaiRouted);
-		expect(title).toBe("Routed Recovery");
+		expect(title).toBeNull();
 		const attempted = completeSimpleMock.mock.calls.map(call => formatModelStringWithRouting(call[0] as Model<Api>));
-		expect(attempted).toEqual([
-			"openrouter/google/gemini-2.5-flash@cerebras",
-			"openrouter/google/gemini-2.5-flash@openai",
-		]);
+		expect(attempted).toEqual(["openrouter/google/gemini-2.5-flash@cerebras"]);
 	});
 
-	it("expands appended currentModel fallbackChains without merging role chains", async () => {
-		const current = getModelOrThrow("claude-opus-4-8");
-		const currentFallback = getModelOrThrow("claude-sonnet-4-5");
-		const roleOnly = getModelFor("openai", "gpt-4o-mini");
-		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockImplementation(async model => {
-			if (model.id === current.id) {
-				return {
-					stopReason: "error",
-					errorStatus: 400,
-					errorMessage: "Model is not available in the active live catalog",
-					content: [],
-				} as never;
-			}
-			return {
-				stopReason: "stop",
-				content: [{ type: "text", text: `<title>From ${model.id}</title>` }],
-			} as never;
-		});
-		const settings = Settings.isolated({
-			"retry.modelFallback": true,
-			"retry.fallbackChains": {
-				[`${current.provider}/${current.id}`]: [`${currentFallback.provider}/${currentFallback.id}`],
-				// Role/default chains must not be merged onto the appended current model.
-				tiny: [`${roleOnly.provider}/${roleOnly.id}`],
-				default: [`${roleOnly.provider}/${roleOnly.id}`],
-			},
-		});
-		const registry = {
-			getAvailable: () => [current, currentFallback, roleOnly],
-			getApiKey: async () => "test-key",
-			getApiKeyForProvider: async () => "test-key",
-			authStorage: { rotateSessionCredential: async () => false },
-			resolver: () => async () => "test-key",
-		} as never;
-
-		const title = await generateSessionTitle("Investigate the resolver", registry, settings, undefined, current);
-		expect(title).toBe(`From ${currentFallback.id}`);
-		const attempted = completeSimpleMock.mock.calls.map(call => (call[0] as Model<Api>).id);
-		expect(attempted).toEqual([current.id, currentFallback.id]);
-		expect(attempted).not.toContain(roleOnly.id);
-	});
-
-	it.each([true, false])("honors modelFallback=%s when the title model returns a provider error", async enabled => {
+	it("does not switch models when the title model returns a provider error", async () => {
 		const smolModel = getModelOrThrow("claude-opus-4-8");
-		const fallbackModel = getModelOrThrow("claude-sonnet-4-5");
+		const otherModel = getModelOrThrow("claude-sonnet-4-5");
 		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockImplementation(async model => {
 			if (model.id === smolModel.id) {
 				return {
@@ -889,36 +832,19 @@ describe("title generator", () => {
 		});
 		const settings = Settings.isolated({
 			modelRoles: { smol: `${smolModel.provider}/${smolModel.id}` },
-			"retry.fallbackChains": {
-				[`${smolModel.provider}/${smolModel.id}`]: [`${fallbackModel.provider}/${fallbackModel.id}`],
-			},
-			"retry.modelFallback": enabled,
 		});
 		const registry = {
-			getAvailable: () => [smolModel, fallbackModel],
+			getAvailable: () => [smolModel, otherModel],
 			getApiKey: async () => "test-key",
 			getApiKeyForProvider: async () => "test-key",
 			authStorage: { rotateSessionCredential: async () => false },
 			resolver: () => async () => "test-key",
 		} as never;
 
-		const title = await generateSessionTitle(
-			"Investigate the resolver",
-			registry,
-			settings,
-			undefined,
-			fallbackModel,
-		);
-		if (!enabled) {
-			expect(title).toBeNull();
-			expect(completeSimpleMock).toHaveBeenCalledTimes(1);
-			expect(completeSimpleMock.mock.calls[0]?.[0]).toBe(smolModel);
-			return;
-		}
-		expect(title).toBe("Recovered Title");
-		expect(completeSimpleMock).toHaveBeenCalledTimes(2);
+		const title = await generateSessionTitle("Investigate the resolver", registry, settings, undefined, otherModel);
+		expect(title).toBeNull();
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
 		expect(completeSimpleMock.mock.calls[0]?.[0]).toBe(smolModel);
-		expect(completeSimpleMock.mock.calls[1]?.[0]).toBe(fallbackModel);
 	});
 });
 

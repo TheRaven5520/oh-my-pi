@@ -6,6 +6,10 @@
 
 - Added the Responses compat flag `explicitNonStrictTools` (also settable in `models.yml`): send `strict: false` on every function tool omp does not send strict, even where `supportsStrictMode` resolves `false`, for endpoints that read an omitted `strict` as `true`. It defaults on for SpriliCred (`sprilicred-*`) providers, matched by provider id, and never turns `strict: true` on.
 
+### Removed
+
+- Removed the `server-side-fallback-models` and `fallback-credit-targets` catalog axes, their rules for Fable/Mythos and Factory Droid, and the `compat/server-side-fallback` and `compat/fallback-credit` modules.
+
 ## [18.6.0] - 2026-10-03
 
 ### Fixed

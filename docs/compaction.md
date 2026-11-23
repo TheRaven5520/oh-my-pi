@@ -117,25 +117,23 @@ The automatic paths are intentionally different:
 - **Overflow recovery**
    - Trigger: current-model assistant error is detected as context overflow and the error is not older than the latest compaction.
    - The failing assistant error message is removed from active agent state before retry.
-   - Context promotion is tried first; if a configured larger model is available, the agent switches model and retries without compacting.
-   - If promotion is unavailable and compaction is enabled, automatic maintenance walks `compaction.methodOrder` with `reason: "overflow"` and `willRetry: true`; handoff is skipped because its request would reuse the overflowing input.
+   - If compaction is enabled, automatic maintenance walks `compaction.methodOrder` with `reason: "overflow"` and `willRetry: true`; handoff is skipped because its request would reuse the overflowing input. The session never switches to a larger-context model on its own; use `/model` to choose one.
    - On success, `agent.continue()` is scheduled to retry the turn.
 
 - **Incomplete-output recovery**
    - Trigger: same-model assistant message ends with `stopReason === "length"` and the message is not older than the latest compaction.
    - When the window is below the compaction threshold and the turn delivered text or a tool call, the truncated turn is retained and an output-limit warning is shown; compaction cannot raise the output cap.
-   - Otherwise the incomplete assistant is removed from active state, and context promotion is tried first.
+   - Otherwise the incomplete assistant is removed from active state.
    - With maintenance enabled, no-output turns below threshold retry without compaction; a reasoning-only output-cap stop also receives a developer reminder to act in smaller steps.
    - Above threshold (or with an unknown window), auto maintenance walks `compaction.methodOrder` with `reason: "incomplete"` and `willRetry: true`. Unlike overflow, a reachable `handoff` may run because the input remains usable.
    - Consecutive recoveries without text or a tool call are capped at three; new user input or actionable output resets the counter. The terminal cap blocks automatic continuation and reports an actionable failure.
    - Successful recovery schedules continuation.
 
 - **Threshold maintenance**
-   - Trigger: successful, non-error assistant message whose adjusted context tokens exceed `resolveThresholdTokens(...)`. The measured count comes from `calculateContextTokens(...)`, which subtracts provider-side orchestration tokens (billable, but never replayed into the conversation prefix) so auto-compaction and context-promotion thresholds are not inflated by them.
+   - Trigger: successful, non-error assistant message whose adjusted context tokens exceed `resolveThresholdTokens(...)`. The measured count comes from `calculateContextTokens(...)`, which subtracts provider-side orchestration tokens (billable, but never replayed into the conversation prefix) so auto-compaction thresholds are not inflated by them.
    - Mid-turn maintenance also checks safe tool-loop boundaries before the next provider request when `compaction.midTurnEnabled !== false`.
    - The initial trigger uses adjusted provider usage floored by the stored-conversation estimate; pruning does not retroactively reduce the just-billed prompt. Reclaimed tokens affect the subsequent maintenance target. Usage predating the latest compaction is ignored in favor of the live stored estimate.
-   - Context promotion is tried before post-turn compaction.
-   - If promotion is unavailable, auto maintenance walks `compaction.methodOrder` with `reason: "threshold"` and `willRetry: false`.
+   - Auto maintenance walks `compaction.methodOrder` with `reason: "threshold"` and `willRetry: false`.
    - Every method, `handoff` included, runs inline: post-turn maintenance generates the handoff document and commits it as a compaction entry before the run's `agent_end` settles, so the settle's `willContinue`/`yielded` reflects whether a continuation was actually scheduled.
    - On success, if `compaction.autoContinue !== false`, post-turn maintenance schedules an agent-authored developer auto-continue prompt from `prompts/system/auto-continue.md`; mid-turn maintenance never schedules a separate continuation because the core loop already owns the next provider request.
 
@@ -495,8 +493,8 @@ Post-navigation event exposing new/old leaf and optional summary entry.
 - Manual compaction aborts current agent operation first. If that abort cut a turn in flight, the compaction resumes it once the summary is committed — or immediately when it rejects as a no-op (session too small / already compacted), since that pass makes no history change — using a queued steer/follow-up first, otherwise the auto-continue prompt. A hook cancel or summarizer failure does not resume. The resume is skipped when `compaction.autoContinue` is `false` or the caller passed `suppressContinuation` (plan-mode approval dispatches its own execution turn). A manual compaction issued while idle never starts a turn. A prompt submitted while the compaction runs waits for it and, if it starts or queues a turn, replaces the resume; a locally handled extension/custom command hands the resume back — unless a turn it triggered (`pi.sendMessage(..., { triggerTurn: true })`, `pi.sendUserMessage()`), a later prompt, or any other turn starts first. A second manual compaction started while such a resume is still withheld takes it over.
 - `abortCompaction()` cancels manual compaction, auto-compaction, and handoff generation controllers.
 - Auto compaction emits start/end session events for UI/state updates.
-- Auto compaction can try multiple model candidates and retry transient failures; long retry delays prefer the next candidate when one is available.
-- Overflow errors are excluded from generic retry path because they are handled by context promotion/compaction.
+- Auto compaction retries transient failures on the same model; it does not move on to a different model.
+- Overflow errors are excluded from the generic retry path because they are handled by compaction.
 - If auto-compaction fails:
    - overflow path emits `Context overflow recovery failed: ...`
    - incomplete-output path emits `Incomplete response recovery failed: ...`

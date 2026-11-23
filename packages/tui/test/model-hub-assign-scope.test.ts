@@ -47,7 +47,6 @@ function createSource(): ModelHubSource {
 	return {
 		revision: 0,
 		disabledProviders: [],
-		fallbackChains: {},
 		modelRoleStorage: "global",
 		cycleOrder: [],
 		getProjectModelRole: () => undefined,
@@ -63,7 +62,6 @@ function createSource(): ModelHubSource {
 			role === "web"
 				? { tag: "web", name: "Web search", section: "chat", accepts: m => m.provider === "google" }
 				: { name: role, section: "chat", accepts: () => true },
-		defaultRoleChain: () => [],
 		resolveRoleValue: () => ({ model: undefined, explicitThinkingLevel: false }),
 	};
 }

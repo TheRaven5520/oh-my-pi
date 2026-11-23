@@ -373,7 +373,7 @@ The catalog below highlights common settings; it is not the complete schema. `om
 
 ### Models
 
-`modelRoles` assigns the primary selector for each workload. `retry.fallbackChains` supplies its ordered fallbacks; keep provider/backend choice out of service-specific settings. Chat selectors may carry a thinking suffix (`:off`, `:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, `:max`, `:auto`, or `:inherit`). Non-chat runners do not use chat thinking budgets. Role values can also contain ordered comma-separated selectors or role aliases such as `@smol`; the role's fallback chain is configured separately.
+`modelRoles` assigns the selector for each workload. Chat selectors may carry a thinking suffix (`:off`, `:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, `:max`, `:auto`, or `:inherit`). Non-chat runners do not use chat thinking budgets. Role values can also contain ordered comma-separated selectors or role aliases such as `@smol`; the first candidate that resolves to an available model with working credentials is used when the role is resolved. OMP never switches to a different model on its own after a request fails: it reports the error and keeps the selected model. Use `/model` to pick another one.
 
 ```yaml
 modelRoles:
@@ -395,24 +395,6 @@ modelRoles:
   dictation: local/parakeet-tdt-0.6b-v3
   judge: typesafe/jev-latest
 
-retry:
-  fallbackChains:
-    tiny: [] # explicit empty chain: do not fall back
-    memory:
-      - openai/gpt-4.1-mini
-    web:
-      - web/parallel
-      - web/perplexity
-      - web/exa
-      - web/firecrawl
-    speech: []
-    dictation: []
-    judge:
-      - typesafe/jev-preview
-      - "@tiny"
-      - "@smol"
-      - "@default"
-
 cycleOrder:
   - smol
   - default
@@ -426,17 +408,17 @@ enabledModels:
   - claude-sonnet-4-5
 ```
 
-Built-in chat roles are `default`, `smol`, `slow`, `vision`, `plan`, `commit`, `tiny`, `memory`, `task`, and `advisor`. The `tiny` and `memory` roles accept both `tiny` catalog models and ordinary chat models. Built-in model-kind roles are `image`, `web`, `speech`, `dictation`, and `judge`; they select image, search/grounded-chat, TTS, STT, and judgment runners respectively. `judge` also accepts tiny and chat models, which is why aliases such as `@tiny` are valid fallbacks. Catalog kinds are `chat`, `tiny`, `image`, `tts`, `stt`, `search`, and `judge`; a custom model with no `kind` remains a chat model.
+Built-in chat roles are `default`, `smol`, `slow`, `vision`, `plan`, `commit`, `tiny`, `memory`, `task`, and `advisor`. The `tiny` and `memory` roles accept both `tiny` catalog models and ordinary chat models. Built-in model-kind roles are `image`, `web`, `speech`, `dictation`, and `judge`; they select image, search/grounded-chat, TTS, STT, and judgment runners respectively. `judge` also accepts tiny and chat models, so aliases such as `@tiny` are valid selectors. Catalog kinds are `chat`, `tiny`, `image`, `tts`, `stt`, `search`, and `judge`; a custom model with no `kind` remains a chat model.
 
-Open `/model` and enter the **Roles** view to assign roles and edit their fallback rows. Chat roles and model-kind roles appear in separate capability sections, and the picker filters assignments to models accepted by the selected role. List the same catalog directly with `omp models --kind chat`, `omp models --kind tiny`, `omp models --kind image`, `omp models --kind tts`, `omp models --kind stt`, `omp models --kind search`, or `omp models --kind judge`; use `--kind all` for everything.
+Open `/model` and enter the **Roles** view to assign roles. Chat roles and model-kind roles appear in separate capability sections, and the picker filters assignments to models accepted by the selected role. List the same catalog directly with `omp models --kind chat`, `omp models --kind tiny`, `omp models --kind image`, `omp models --kind tts`, `omp models --kind stt`, `omp models --kind search`, or `omp models --kind judge`; use `--kind all` for everything.
 
-For a role, `modelRoles.<role>` is the primary and `retry.fallbackChains.<role>` is the fallback list. For model-kind roles, an unset chain uses that role's built-in priority list; `[]` explicitly means **no fallbacks**. The `retry.fallbackChains.default` chain is for chat-role/session fallback and never replaces a model-kind role's own chain. Explicit search entries such as `web/parallel`, `web/perplexity`, `web/exa`, and `web/firecrawl` are attempted as configured candidates, including their supported anonymous modes; missing required credentials still produce an availability error for that explicit entry.
+For a model-kind role, `modelRoles.<role>` selects the model; when it is unset, the role's built-in priority list picks the first candidate that is available at resolution time. That is initial discovery only: once resolved, a failing runner reports its error rather than trying the next candidate. Explicit search entries such as `web/parallel`, `web/perplexity`, `web/exa`, and `web/firecrawl` are used as configured, including their supported anonymous modes; missing required credentials still produce an availability error for that explicit entry.
 
-For one-shot searches, `omp search`, `omp q`, and `omp web-search` accept a catalog selector through `--model`, for example `omp web-search --model web/duckduckgo "current Bun release"`. The in-session `web_search` tool has no per-call model override: it follows `modelRoles.web` and `retry.fallbackChains.web`.
+For one-shot searches, `omp search`, `omp q`, and `omp web-search` accept a catalog selector through `--model`, for example `omp web-search --model web/duckduckgo "current Bun release"`. The in-session `web_search` tool has no per-call model override: it follows `modelRoles.web`.
 
-Image selection likewise uses full catalog model selectors, not provider names: set `modelRoles.image`, its fallback chain, or the `generate_image` request's optional `model`. OpenRouter image models run through OpenRouter's native images API.
+Image selection likewise uses full catalog model selectors, not provider names: set `modelRoles.image` or the `generate_image` request's optional `model`. OpenRouter image models run through OpenRouter's native images API.
 
-Existing configs are migrated automatically when loaded. Retired backend selectors under `providers` (`webSearch`, `webSearchOrder`, `webSearchExclude`, `webSearchGeminiModel`, `image`, `imageOrder`, `tts`, `judgmentProvider`, `autoThinkingModel`, `unexpectedStopModel`, `tinyModel`, and `memoryModel`) are translated where applicable into `modelRoles` and `retry.fallbackChains`, then removed. The retired `tts.localModel` key is removed (Kokoro is the canonical local TTS model), and `stt.modelName` values are migrated to a canonical `modelRoles.dictation` selector before removal. Other service controls—devices, dtypes, voices, timeouts, and `live.*` behavior—remain ordinary settings.
+Existing configs are migrated automatically when loaded. Retired backend selectors under `providers` (`webSearch`, `webSearchOrder`, `webSearchExclude`, `webSearchGeminiModel`, `image`, `imageOrder`, `tts`, `judgmentProvider`, `autoThinkingModel`, `unexpectedStopModel`, `tinyModel`, and `memoryModel`) are translated where applicable into `modelRoles`, then removed. The retired `tts.localModel` key is removed (Kokoro is the canonical local TTS model), and `stt.modelName` values are migrated to a canonical `modelRoles.dictation` selector before removal. Other service controls—devices, dtypes, voices, timeouts, and `live.*` behavior—remain ordinary settings.
 
 | Key                    | Type    | Default                     | Notes                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ---------------------- | ------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -524,7 +506,7 @@ For the numeric sampling settings, a negative value (normally `-1`) means "use t
 
 Task service tiers resolve in this order: per-task `serviceTier`, agent frontmatter `serviceTier`, exact-name `task.agentServiceTierOverrides`, `tier.subagent`, then the parent's live tier (`inherit`). The task field excludes `inherit`; frontmatter and settings accept it. `none` explicitly omits the tier. The Agents dock shows the effective tier beside the child's model.
 
-### Retry and fallback
+### Retry
 
 ```yaml
 retry:
@@ -532,65 +514,22 @@ retry:
   maxRetries: 10
   baseDelayMs: 500
   maxDelayMs: 300000
-  modelFallback: true
-  fallbackRevertPolicy: cooldown-expiry
-  fallbackChains:
-    # Chat roles without their own chain may inherit "default". Model-kind
-    # roles use their own built-in defaults instead.
-    default:
-      - anthropic/claude-opus-4-5
-      - openai/gpt-5.5
-      - google/gemini-3-pro
-    # Per-role chains override inherited or built-in fallbacks. An explicit
-    # [] disables fallback for that role. Chat selectors accept an optional
-    # thinking suffix, e.g. openai/gpt-5.5:low.
-    smol:
-      - openai/gpt-5.5-mini
-      - anthropic/claude-haiku-4-5
-    web: []
-    # Model-selector keys (any key containing "/") attach the chain to the
-    # model itself: it applies whenever that model is active, no matter
-    # which role it is assigned to, and survives role reassignment.
-    google/gemini-3-pro:
-      - google-vertex/gemini-3-pro
-    # A `provider/*` KEY covers every model of a provider — current or
-    # future. A `provider/*` ENTRY keeps the failing model's id and swaps
-    # the provider: google-antigravity/x -> google/x -> google-vertex/x.
-    # Ids missing on the target provider are skipped (near-miss ids resolve
-    # fuzzily); exact model keys override the wildcard for a specific model.
-    google-antigravity/*:
-      - google/*
-      - google-vertex/*
-
-providers:
-  anthropic:
-    serverSideFallback: false
 ```
 
-| Key                                      | Type    | Default           | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ---------------------------------------- | ------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `retry.enabled`                          | boolean | `true`            | Retry transient provider errors.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `retry.maxRetries`                       | number  | `10`              | Max retries per request.                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `retry.baseDelayMs`                      | number  | `500`             | Initial backoff.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `retry.maxDelayMs`                       | number  | `300000`          | Backoff ceiling (5 min). Provider-stated waits longer than this fail fast when no credential or model fallback succeeds, unless `retry.waitForUsageReset` admits an authoritative quota-reset wait. `0` disables the cap.                                                                                                                                                                                                                                                                                                                  |
-| `retry.modelFallback`                    | boolean | `true`            | Fall back to another chat model when one is unavailable. Role-driven helpers that honor this switch, including online session-title generation, stop after their first resolvable candidate when it is `false`.                                                                                                                                                                                                                                                                                                                                  |
-| `retry.fallbackChains`                   | record  | `{}`              | Maps roles, model selectors, or `provider/*` wildcards to ordered fallback selectors. Keys containing `/` are model-oriented and win over roles: `provider/model-id` matches that exact model, `provider/*` matches every model of the provider. A `provider/*` _entry_ keeps the failing model's id and swaps the provider. Model-kind roles use their built-in chain when unset and no fallbacks when set to `[]`; the `default` chain never applies to them. Unknown models/providers or malformed chains are reported as config warnings at startup. |
-| `retry.usageLimitFallbackChains` | record | `{}` | Same format as `retry.fallbackChains`, consulted for usage limits before ordinary chains. With `retry.fallbackAfterMs` set, the session also consults them after a rate-limit/overload retry window. Startup, roles and titles do not use these chains. |
-| `retry.fallbackRevertPolicy`             | enum    | `cooldown-expiry` | `cooldown-expiry` returns to the primary model once its suppression window ends; `never` stays on the fallback until switched manually.                                                                                                                                                                                                                                                                                                                                                     |
+| Key                                      | Type    | Default           | Notes |
+| ---------------------------------------- | ------- | ----------------- | ----- |
+| `retry.enabled`                          | boolean | `true`            | Retry transient provider errors on the same model. |
+| `retry.maxRetries`                       | number  | `10`              | Max retries per request. |
+| `retry.baseDelayMs`                      | number  | `500`             | Initial backoff. |
+| `retry.maxDelayMs`                       | number  | `300000`          | Backoff ceiling (5 min). Provider-stated waits longer than this fail fast when no credential switch succeeds, unless `retry.waitForUsageReset` admits an authoritative quota-reset wait. `0` disables the cap. |
 | `retry.waitForUsageReset` | boolean | `false` | Allow provider-stated usage-limit waits past `retry.maxDelayMs` when a reset hint or complete usage report supplies authoritative timing. Waits are abortable but can also hold subagents. |
-| `retry.fallbackAfterMs` | number | `0` | Opt-in elapsed-time window for retrying the primary on usage limits, rate limits and overloads before fallback. `120000` gives two minutes, independently of `maxRetries`. Retry-After paces primary requests; if it extends beyond the deadline, wait until the deadline and switch without another primary request. |
-| `retry.fallbackMinHoldMs` | number | `0` | Minimum primary suppression after fallback; `10800000` holds for three hours. Longer provider deadlines remain authoritative. Cooldowns are session-local; restarting starts a new primary attempt. If both primary and fallback are suppressed, surface the fallback's refusal without another request. |
-| `retry.compactForFallback` | boolean | `false` | If no configured fallback fits, attempt bounded compaction for the first otherwise eligible candidate. Never send an oversized chat request. Failure restores the prior model and surfaces the original error without another retry. Requires enabled compaction. |
-| `retry.usageAwareFallback` | boolean | `false` | Before a turn, use reliable coding-plan quota reports to prefer healthy same-provider accounts and then configured fallback models. Unknown usage keeps the current model; ordinary API keys are excluded. |
-| `retry.usageReservePct` | number | `10` | Remaining quota percentage protected by usage-aware fallback. |
-| `retry.usageReservePolicy` | enum | `confirm` | `confirm`, `auto`, `fail-closed`. At reserve, `confirm` asks when an interactive confirmer is available and otherwise auto-falls back; exhausted quota can fall back without confirmation. `fail-closed` blocks known reserve/depleted quota rather than spending it. |
-| `providers.anthropic.serverSideFallback` | boolean | `false`           | Opt in to Anthropic's `server-side-fallback-2026-06-01` beta for eligible direct Claude Fable/Mythos requests. The catalog-owned server-side chain currently targets `claude-opus-5`, not `claude-opus-5-5`; unsupported models and hosts have no chain.                                                                                                                                          |
+| `retry.usageAwareFallback` | boolean | `false` | Before a turn, use reliable coding-plan quota reports to prefer healthy same-provider accounts and to apply `retry.usageReservePolicy`. Never selects a different model. Unknown usage keeps the current model; ordinary API keys are excluded. |
+| `retry.usageReservePct` | number | `10` | Remaining quota percentage protected by the usage-aware preflight. |
+| `retry.usageReservePolicy` | enum | `continue` | `continue` or `fail-closed`. At or below the reserve, `continue` keeps using the current model and account; `fail-closed` blocks the request on known reserve/depleted quota rather than spending it. |
 | `providers.openai-codex.codeMode`           | enum    | `off`             | Codex Code Mode for `code_mode_only` models, mirroring codex-rs: the direct tool surface collapses to `eval`/`ask`/`todo` and every other session tool is invoked from `eval` cells via its `tool.<name>()` bridge, collapsing multi-step tool work into one model round trip. `auto` follows the model catalog's `tool_mode` flag; `on` forces it for any Codex model; `off` (default) leaves the full direct surface. The turn metadata carries codex-rs's `tool_namespaces_info` exposure snapshot while active. |
 | `providers.openai-codex.codeModeDirectTools` | array   | `[]`              | Extra tool names to keep directly callable alongside `eval`/`ask`/`todo` when Codex Code Mode is active; entries that are not enabled in the session are ignored. |
 
-When the active chat model keeps failing (429s, quota walls, provider outages) and `retry.modelFallback` is on, the session picks the chain that owns the failing model, by specificity: an exact `provider/model-id` key, then a `provider/*` wildcard, then the current role's chain, then `default` — which also owns a live model that belongs to no role (`/model` switch, ephemeral hop). The effective chain is the owning role's primary followed by its configured entries, and a live selector that appears nowhere in it is offered the whole chain. If several roles assign the same model, yaml key order does not decide: the live session role wins, and `default` wins over other matching chat roles when the session is not on those roles. It skips chat candidates whose selectors are still cooling down and switches for the rest of the turn. Model-kind runners resolve their named role chain separately and never consume `default`. Subagents get their own per-spawn chains when their agent definition lists multiple model patterns — the first resolvable pattern is primary and the rest become its fallbacks; there is no `agent:<name>` key in `fallbackChains`.
-
-A prefixed wildcard such as `openrouter/google/*` can be used as a chain key or entry: it matches ids under that prefix or prepends the prefix to the failing model's bare id when changing providers. Bare fallback entries inherit the failing turn's thinking level; an explicit suffix can replace it. When a chain is exhausted, recovery can consult the current fallback model's own chain as well, and each hop still consumes a retry attempt. See [Retry policy](./non-compaction-retry-policy.md) for recovery ordering and quota behavior.
+OMP does not change models automatically. When retries are exhausted, or the error is not retryable (a quota wall, an unavailable model), the turn ends with the provider error and the session stays on the active model. Run `/model` to choose another model, then send a new prompt to continue. Credential rotation across accounts of the same provider and same-model retries are unaffected. See [Retry policy](./non-compaction-retry-policy.md) for recovery ordering and quota behavior.
 
 ### Tools and approvals
 
@@ -753,9 +692,6 @@ Compaction headroom is separate from this opt-in. With the default 15% reserve, 
 ```yaml
 extendedContext: false
 
-contextPromotion:
-  enabled: false
-
 compaction:
   enabled: true
   methodOrder: [remote, snapcompact, handoff, shake, soft]
@@ -770,7 +706,6 @@ memory:
 | ----------------------------- | ------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `extendedContext` | boolean | `false` | Opt in to larger model windows; `/extended-context on`, `off`, or `status`. |
 | `workspace.additionalDirectories` | array | `[]` | Additional workspace roots added to every session; relative paths resolve from cwd. `/add-dir` and `/remove-dir` manage them live. |
-| `contextPromotion.enabled`    | boolean | `false`                                  | Promote to the active model's explicit `contextPromotionTarget` on context overflow.                                                                                                                                                      |
 | `compaction.enabled`          | boolean | `true`                                   | Automatic conversation compaction.                                                                                                                                                                                                        |
 | `compaction.asyncEnabled`     | boolean | `true`                                   | Speculatively summarize in the background as context nears the compaction threshold, then splice the ready result in when the threshold is crossed.                                                                                        |
 | `compaction.midTurnEnabled`   | boolean | `true`                                   | Check thresholds at safe mid-turn tool-loop boundaries before the next provider request. Setting it to `false` affects only the session it is configured on; subagents always check, since their whole assignment is one turn.                |
@@ -862,7 +797,7 @@ Task creation cards show the requested agent count and a short per-agent roster 
 
 Agent dock rows distinguish `active`, `waiting` (an explicit wait or question), and `inactive` (for example, a fork awaiting input). Their timer measures the current phase, not the whole run, and keeps ticking without new output. Quiet model or tool execution remains active; concurrent non-wait tools also keep the agent active. Output and metadata refreshes do not reset the phase timer.
 
-Compact agent rows also show the actual resolved model, including fallback routing; expanding adds usage details. Successful file reads keep source-line counts inline (`Read file.ts · 3 lines`); additional rows are reserved for grouped targets, real output, errors and actionable notices.
+Compact agent rows also show the actual resolved model; expanding adds usage details. Successful file reads keep source-line counts inline (`Read file.ts · 3 lines`); additional rows are reserved for grouped targets, real output, errors and actionable notices.
 
 The matching Kitty companion renders a slightly transparent Ravens watermark behind text in the top-right, without an inline image or reserved row. OMP publishes only a lifecycle identity (`omp_watermark_instance` user variable directly, `@omp-watermark-owner` pane option inside tmux). The `tmux/omp-watermark.py` helper follows the active OMP pane and hides the watermark for other active panes. Shutdown, suspend, and external-editor handoff clear ownership; resume restores it. Install the matching companion and restart/resume OMP; no remote-control permission changes are required.
 
@@ -914,7 +849,7 @@ With `ask.continueAfter` set (e.g. `300` for five minutes), a question the agent
 
 ### Providers and services
 
-Model/backend ordering for image generation, web search, speech, dictation, and judgments is configured through the corresponding `modelRoles` and `retry.fallbackChains` entries in [Models](#models). This section contains transport and service behavior that remains independent of model selection.
+Model/backend selection for image generation, web search, speech, dictation, and judgments is configured through the corresponding `modelRoles` entries in [Models](#models). This section contains transport and service behavior that remains independent of model selection.
 
 ```yaml
 providers:
@@ -956,7 +891,7 @@ searxng:
 
 | Key                                 | Type    | Default   | Values / notes                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------------------------------- | ------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `providers.webSearchTimeoutSeconds` | number  | `60`      | Per-candidate web-search transport timeout. Values above `300` are capped at five minutes. This is not a whole-chain deadline; the `web` role advances to its next candidate after a timeout.                                                                                                                                                                                                                                                                                                         |
+| `providers.webSearchTimeoutSeconds` | number  | `60`      | Web-search transport timeout. Values above `300` are capped at five minutes. A timeout fails the search; it does not try another search provider.                                                                                                                                                                                                                                                                                                         |
 | `providers.fetch`                   | enum    | `auto`    | `auto`, `native`, `trafilatura`, `lynx`, `parallel`, `firecrawl`, `jina`.                                                                                                                                                                                                                                                                                                                                                              |
 | `providers.tinyModelDevice`         | enum    | `default` | ONNX execution provider, or `mlx` (Apple silicon, via mlx-lm), for local tiny models. Overridden by `PI_TINY_DEVICE`.                                                                                                                                                                                                                                                                                                                                                         |
 | `providers.maxInFlightRequests`     | record  | `{}`      | Positive per-provider concurrency limits for LLM HTTP requests, shared across local `omp` processes using the same config root. Omitted providers are unlimited. `omp config set` rejects non-positive or non-numeric values.                                                                                                                                                                                                          |
@@ -1043,7 +978,7 @@ Selected migrations applied whenever raw settings are loaded (global, project, o
 | `advisor.subagents` | `task.agentAdvisor.task` (`on` / `off`) |
 | `dev.autoqa.consent` / `todo.reminders.max` | `dev.autoqaConsent` / `todo.remindersMax` |
 | `providers.parallelFetch` | removed; use `providers.fetch` |
-| `providers` model/backend selectors, `tts.localModel`, `stt.modelName` | role/chain migrations described in [Models](#models); retired keys removed |
+| `providers` model/backend selectors, `tts.localModel`, `stt.modelName` | role migrations described in [Models](#models); retired keys removed |
 | `exa.enableSearch` / `exa.enableResearcher` / `exa.enableWebsets` | search enablement folded into `exa.enabled`; researcher/websets toggles removed |
 | `computer.backend`, `tools.discoveryMode`, `tools.essentialOverride`, `mcp.discoveryMode`, `mcp.discoveryDefaultServers` | removed |
 

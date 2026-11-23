@@ -59,7 +59,6 @@ import {
 	type CustomModelOverlay,
 	finalizeCustomModel,
 	mergeAuthHeaderSources,
-	normalizeSuppressedSelector,
 	resolveModelOverrideWithAliases,
 } from "./custom-models";
 import {
@@ -299,7 +298,6 @@ export class ModelRegistry {
 	#registeredProviderSources: Set<string> = new Set();
 	#providerDiscoveryStates: Map<string, ProviderDiscoveryState> = new Map();
 	#cacheDbPath?: string;
-	#suppressedSelectors: Map<string, number> = new Map();
 	#backgroundRefresh?: Promise<void>;
 	#catalogRefresh?: Promise<boolean>;
 	#autoRefreshTimer?: Timer;
@@ -484,7 +482,6 @@ export class ModelRegistry {
 		// as a background reconcile, and must not spawn `!command` helpers.
 		this.#reloadStaticModelsForRefresh(options);
 		await this.#reloadAccountModels();
-		this.#suppressedSelectors.clear();
 		await this.#refreshRuntimeDiscoveries(strategy);
 	}
 
@@ -703,11 +700,6 @@ export class ModelRegistry {
 		// other explicit callers) pass refreshCommandCredentials to re-mint
 		// `!command` keys and headers for this provider.
 		this.#reloadStaticModelsForRefresh(options, providerId);
-		for (const selector of this.#suppressedSelectors.keys()) {
-			if (selector.startsWith(`${providerId}/`)) {
-				this.#suppressedSelectors.delete(selector);
-			}
-		}
 		await this.#refreshRuntimeDiscoveries(strategy, new Set([providerId]));
 		// #reloadStaticModels above may have rebuilt #models from static sources,
 		// dropping models previously discovered by OTHER runtime providers (their
@@ -3011,21 +3003,10 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Whether a config-declared discovery provider has not yet produced a
-	 * catalog in this process. A cold discovery cache (e.g. after `omp update`
-	 * bumps the cache namespace) leaves the provider in its initial `idle`
-	 * state with no models, so a selector the provider will supply looks
-	 * unknown until background discovery lands (#10048).
-	 */
-	isProviderDiscoveryPending(provider: string): boolean {
-		return this.#providerDiscoveryStates.get(provider)?.status === "idle";
-	}
-
-	/**
 	 * Find a model by provider and ID. A provider disabled in settings has no
 	 * models to find: every caller that falls back to a literal lookup when
-	 * availability-filtered resolution misses (retry fallback candidates,
-	 * advisors, restored and CLI models) would otherwise reach it anyway.
+	 * availability-filtered resolution misses (advisors, restored and CLI
+	 * models) would otherwise reach it anyway.
 	 */
 	find(provider: string, modelId: string): Model<Api> | undefined {
 		if (this.#isProviderDisabled(provider)) return undefined;
@@ -3547,50 +3528,6 @@ export class ModelRegistry {
 			this.#invalidateProviderModelCache(providerName);
 		}
 	}
-
-	/**
-	 * Suppress a specific model selector (e.g., "provider/id") until a specific timestamp.
-	 */
-	suppressSelector(selector: string, untilMs: number): void {
-		this.#suppressedSelectors.set(
-			normalizeSuppressedSelector(selector, (provider, id) => this.find(provider, id) !== undefined),
-			untilMs,
-		);
-	}
-
-	/**
-	 * Check if a model selector is currently suppressed due to rate limits.
-	 */
-	isSelectorSuppressed(selector: string): boolean {
-		const normalizedSelector = normalizeSuppressedSelector(
-			selector,
-			(provider, id) => this.find(provider, id) !== undefined,
-		);
-		const suppressedUntil = this.#suppressedSelectors.get(normalizedSelector);
-		if (!suppressedUntil) return false;
-		if (suppressedUntil <= Date.now()) {
-			this.#suppressedSelectors.delete(normalizedSelector);
-			return false;
-		}
-		return true;
-	}
-
-	/**
-	 * Clear the cooldown suppression for one selector after an explicit user selection.
-	 */
-	clearSuppressedSelector(selector: string): void {
-		this.#suppressedSelectors.delete(
-			normalizeSuppressedSelector(selector, (provider, id) => this.find(provider, id) !== undefined),
-		);
-	}
-
-	/**
-	 * Clear all cooldown suppressions recorded via {@link suppressSelector}.
-	 * Used to reset retry-fallback cooldown state without a full {@link refresh}.
-	 */
-	clearSuppressedSelectors(): void {
-		this.#suppressedSelectors.clear();
-	}
 }
 
 /**
@@ -3642,7 +3579,6 @@ export interface ProviderConfigInput {
 		preferWebsockets?: boolean;
 		headers?: Record<string, string>;
 		compat?: ModelSpec<Api>["compat"];
-		contextPromotionTarget?: string;
 		compactionModel?: string;
 		remoteCompaction?: RemoteCompactionConfig<Api>;
 		premiumMultiplier?: number;

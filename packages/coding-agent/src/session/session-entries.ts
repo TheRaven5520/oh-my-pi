@@ -9,7 +9,6 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import type { CompactionMethod } from "./compaction-methods";
-import type { RetryFallbackRole } from "./retry-fallback-chains";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -111,8 +110,6 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	model: string;
 	/** Role: "default", "smol", "slow", etc. Undefined treated as "default" */
 	role?: string;
-	/** True when this transition selected a retry-fallback model rather than the configured model. */
-	resolvedModelIsFallback?: boolean;
 }
 
 export interface ServiceTierChangeEntry extends SessionEntryBase {
@@ -248,8 +245,6 @@ export interface SessionInitEntry extends SessionEntryBase {
 	modelRole?: string;
 	/** Initially resolved provider/model selector for historical display. */
 	resolvedModel?: string;
-	/** Subagent's `subagent:<id>` retry fallback role as installed at spawn; cold revival reinstalls it. Absent when none was installed or on older files. */
-	retryFallback?: RetryFallbackRole;
 	/** Whether the agent definition is read-only, allowing an exact zero-LoC attribution. */
 	readOnly?: boolean;
 	/** Output schema if structured output was requested. */

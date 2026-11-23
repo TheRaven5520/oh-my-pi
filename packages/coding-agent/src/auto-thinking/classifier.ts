@@ -5,7 +5,7 @@
  * task-spawned turns, about the delegator's `solutionSpace` description alone —
  * and maps the chosen level to a concrete {@link Effort}, clamped into the active model's
  * supported range (never below {@link Effort.Low}). The judge comes from the
- * live `judge` role chain. A local on-device candidate gets the coarser
+ * live `judge` role model. A local on-device model gets the coarser
  * `trivial|moderate|hard` question (3-class is more reliable
  * than 4-way ordinal on sub-2B models), mapped to `low|high|xhigh`.
  *

@@ -27,7 +27,7 @@ export interface SessionCloneIdentity {
  * transcripts while the clone lives, so nothing here reads the parent lazily.
  */
 export interface SessionCloneParent {
-	/** The parent's configured primary: a retry fallback the parent is riding is not inherited. */
+	/** The parent's model. */
 	readonly model: NonNullable<AgentSession["model"]>;
 	readonly parentSessionId: string;
 	readonly ownerId: string;
@@ -52,13 +52,8 @@ export function captureSessionCloneParent(
 	// (the parent being itself a fork/tan). Mirror exactly what the parent
 	// populated the cache under — same rule as advisor and handoff calls.
 	const parentPromptCacheKey = session.agent.promptCacheKey ?? parentSessionId;
-	// A parent on an active retry fallback (e.g. its primary 429'd) is running
-	// on a temporary substitute it returns from on a later turn. A clone outlives
-	// that window, so it starts on the configured primary and level; it keeps the
-	// same fallback chains and falls back itself if the primary still fails.
-	const primary = session.retryFallbackPrimary();
-	const model = primary?.model ?? parentModel;
-	const thinkingLevel = primary ? primary.thinkingLevel : session.configuredThinkingLevel();
+	const model = parentModel;
+	const thinkingLevel = session.configuredThinkingLevel();
 	const systemPrompt = [...session.systemPrompt];
 	const toolNames = session.getEnabledToolNames();
 	const modelRegistry = session.modelRegistry;

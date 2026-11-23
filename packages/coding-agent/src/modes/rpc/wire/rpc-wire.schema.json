@@ -2038,9 +2038,6 @@
 				"preferWebsockets": {
 					"type": "boolean"
 				},
-				"contextPromotionTarget": {
-					"type": "string"
-				},
 				"priority": {
 					"type": "integer"
 				},
@@ -3575,51 +3572,6 @@
 			],
 			"description": "Outcome of the refresh announced by the matching `cache_warming_start`."
 		},
-		"RetryFallbackAppliedEvent": {
-			"type": "object",
-			"properties": {
-				"type": {
-					"const": "retry_fallback_applied"
-				},
-				"from": {
-					"type": "string"
-				},
-				"to": {
-					"type": "string"
-				},
-				"role": {
-					"type": "string"
-				},
-				"reason": {
-					"type": "string"
-				}
-			},
-			"required": [
-				"type",
-				"from",
-				"to",
-				"role"
-			]
-		},
-		"RetryFallbackSucceededEvent": {
-			"type": "object",
-			"properties": {
-				"type": {
-					"const": "retry_fallback_succeeded"
-				},
-				"model": {
-					"type": "string"
-				},
-				"role": {
-					"type": "string"
-				}
-			},
-			"required": [
-				"type",
-				"model",
-				"role"
-			]
-		},
 		"ModelChangedEvent": {
 			"type": "object",
 			"properties": {
@@ -3888,12 +3840,6 @@
 				},
 				{
 					"$ref": "#/$defs/CacheWarmingEndEvent"
-				},
-				{
-					"$ref": "#/$defs/RetryFallbackAppliedEvent"
-				},
-				{
-					"$ref": "#/$defs/RetryFallbackSucceededEvent"
 				},
 				{
 					"$ref": "#/$defs/ModelChangedEvent"

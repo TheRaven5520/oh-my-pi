@@ -6,7 +6,7 @@
  *
  * The fix has two halves: a hard-timeout safety net wrapped around every
  * provider's outbound fetch (via the shared `withHardTimeout` helper), and
- * an abort re-throw in the provider-fallback loop so the session sees a real
+ * an abort re-throw in the search error handler so the session sees a real
  * cancellation instead of "all providers failed". The provider wiring is
  * spot-checked on anthropic (LLM-backed) and brave (pure search API); the
  * helper itself is exercised directly.
@@ -26,10 +26,7 @@ import { SearchProviderError } from "@oh-my-pi/pi-coding-agent/web/search/types"
 import { type SearchProviderId, type SearchResponse } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { createInMemoryAuthStorage } from "../../helpers/agent-session-setup";
 
-import {
-	cfgProvidersWebSearchTimeoutSeconds,
-	cfgRetryFallbackChains,
-} from "@oh-my-pi/pi-coding-agent/session/settings";
+import { cfgProvidersWebSearchTimeoutSeconds } from "@oh-my-pi/pi-coding-agent/session/settings";
 
 const openAuthStorages: AuthStorage[] = [];
 
@@ -171,7 +168,6 @@ describe("executeSearch abort propagation", () => {
 		if (!primary) throw new Error("Provider chain must contain a primary candidate");
 		const config = await Settings.init({ inMemory: true });
 		config.setModelRole("web", `web/${primary.id}`);
-		cfgRetryFallbackChains.set(config, { web: providers.slice(1).map(candidate => `web/${candidate.id}`) });
 		const authStorage = createInMemoryAuthStorage();
 		openAuthStorages.push(authStorage);
 		const modelRegistry = new ModelRegistry(authStorage, undefined, { settings: config });
@@ -196,7 +192,6 @@ describe("executeSearch abort propagation", () => {
 		]);
 		const config = await Settings.init({ inMemory: true });
 		config.setModelRole("web", "web/brave");
-		cfgRetryFallbackChains.set(config, { web: [] });
 		cfgProvidersWebSearchTimeoutSeconds.set(config, 180);
 
 		const result = await runSearchQuery({ query: "anything" }, context);
@@ -218,7 +213,6 @@ describe("executeSearch abort propagation", () => {
 		]);
 		const config = await Settings.init({ inMemory: true });
 		config.setModelRole("web", "web/brave");
-		cfgRetryFallbackChains.set(config, { web: [] });
 		cfgProvidersWebSearchTimeoutSeconds.set(config, 600);
 
 		await runSearchQuery({ query: "anything" }, context);
@@ -239,7 +233,6 @@ describe("executeSearch abort propagation", () => {
 		]);
 		const config = await Settings.init({ inMemory: true });
 		config.setModelRole("web", "web/brave");
-		cfgRetryFallbackChains.set(config, { web: [] });
 		cfgProvidersWebSearchTimeoutSeconds.set(config, 0);
 
 		await runSearchQuery({ query: "anything" }, context);
@@ -247,7 +240,7 @@ describe("executeSearch abort propagation", () => {
 		expect(timeoutMs).toBe(60_000);
 	});
 
-	it("surfaces caller cancellation instead of falling through to the next role candidate", async () => {
+	it("surfaces caller cancellation instead of trying another provider", async () => {
 		const fallbackSearch = vi.fn();
 		const context = await configureProviderChain([
 			fakeProvider("brave", async () => {
@@ -277,26 +270,25 @@ describe("executeSearch abort propagation", () => {
 		expect(result.details.error).toContain("upstream 500");
 	});
 
-	it("falls through when the configured role candidate returns no renderable content", async () => {
+	it("reports empty content from the configured provider without trying another", async () => {
 		const emptySearch = vi.fn(async (): Promise<SearchResponse> => ({ provider: "searxng", sources: [] }));
-		const fallbackSearch = vi.fn(async (): Promise<SearchResponse> => ({
+		const otherSearch = vi.fn(async (): Promise<SearchResponse> => ({
 			provider: "brave",
-			sources: [{ title: "Fallback result", url: "https://example.com/fallback", snippet: "fallback body" }],
+			sources: [{ title: "Other result", url: "https://example.com/other", snippet: "other body" }],
 		}));
 		const context = await configureProviderChain([
 			fakeProvider("searxng", emptySearch),
-			fakeProvider("brave", fallbackSearch),
+			fakeProvider("brave", otherSearch),
 		]);
 
 		const result = await runSearchQuery({ query: "anything" }, context);
 
 		expect(emptySearch).toHaveBeenCalledTimes(1);
-		expect(fallbackSearch).toHaveBeenCalledTimes(1);
-		expect(result.content[0]?.text).toContain("Fallback result");
-		expect(result.details.response.provider).toBe("brave");
+		expect(otherSearch).not.toHaveBeenCalled();
+		expect(result.details.error).toContain("no renderable search content");
 	});
 
-	it("stops loading the role chain after the preferred candidate succeeds", async () => {
+	it("loads only the configured provider", async () => {
 		const fallbackSearch = vi.fn();
 		const context = await configureProviderChain([
 			fakeProvider("exa", async () => ({
@@ -314,23 +306,23 @@ describe("executeSearch abort propagation", () => {
 		expect(fallbackSearch).not.toHaveBeenCalled();
 	});
 
-	it("advances through retry.fallbackChains.web after the preferred candidate fails", async () => {
-		const fallbackSearch = vi.fn(async (): Promise<SearchResponse> => ({
+	it("reports the configured provider's failure without advancing to another provider", async () => {
+		const otherSearch = vi.fn(async (): Promise<SearchResponse> => ({
 			provider: "brave",
-			sources: [{ title: "Fallback result", url: "https://example.com/fallback" }],
+			sources: [{ title: "Other result", url: "https://example.com/other" }],
 		}));
 		const context = await configureProviderChain([
 			fakeProvider("exa", async () => {
 				throw new SearchProviderError("exa", "Preferred provider failed.", 500);
 			}),
-			fakeProvider("brave", fallbackSearch),
+			fakeProvider("brave", otherSearch),
 		]);
 
 		const result = await runSearchQuery({ query: "anything" }, context);
 
-		expect(result.details.response.provider).toBe("brave");
-		expect(context.getProvider).toHaveBeenCalledTimes(2);
-		expect(fallbackSearch).toHaveBeenCalledTimes(1);
+		expect(result.details.error).toContain("Preferred provider failed.");
+		expect(context.getProvider).toHaveBeenCalledTimes(1);
+		expect(otherSearch).not.toHaveBeenCalled();
 	});
 
 	it("treats a request model override as a single explicit candidate", async () => {

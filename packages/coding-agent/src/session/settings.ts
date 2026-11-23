@@ -30,7 +30,6 @@ import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMeta
 
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_NUMBER_RECORD: Record<string, number> = {};
-const EMPTY_STRING_ARRAYS_RECORD: Record<string, string[]> = {};
 const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["wait"];
 
 // Power assertions: macOS IOKit, Linux login1/ScreenSaver, Windows execution state.
@@ -671,7 +670,7 @@ export const cfgRetryMaxRetries = register({
 	default: 10,
 	ui: {
 		tab: "model",
-		group: "Retry & Fallback",
+		group: "Retry",
 		label: "Retry Attempts",
 		description: "Maximum retry attempts on API errors",
 		options: [
@@ -692,10 +691,10 @@ export const cfgRetryMaxDelayMs = register({
 	default: 5 * 60 * 1000,
 	ui: {
 		tab: "model",
-		group: "Retry & Fallback",
+		group: "Retry",
 		label: "Max Retry Delay",
 		description:
-			"Maximum wait between retries, in ms. When the provider asks us to wait longer than this and no credential or model fallback succeeds, the request fails fast instead of sleeping (e.g. 3-hour Anthropic rate-limit windows). 0 disables the ceiling — to let the session auto-resume through provider-stated quota resets.",
+			"Maximum wait between retries, in ms. If the provider requests a longer wait and no other credential is usable for this model, the request fails instead of sleeping. 0 disables the ceiling.",
 	},
 });
 
@@ -705,23 +704,11 @@ export const cfgRetryWaitForUsageReset = register({
 	default: false,
 	ui: {
 		tab: "model",
-		group: "Retry & Fallback",
+		group: "Retry",
 		label: "Wait For Usage Reset",
 		get description() {
 			return `When a provider reports usage-limit exhaustion with a reset time (5-hour or weekly quota windows on any provider), sleep until the reset instead of failing fast past retry.maxDelayMs. Waits are abortable (${formatKeyHint("escape")}) but also hold subagents, so leave off for unattended runs.`;
 		},
-	},
-});
-
-export const cfgRetryModelFallback = register({
-	id: "retry.modelFallback",
-	type: "boolean",
-	default: true,
-	ui: {
-		tab: "model",
-		group: "Retry & Fallback",
-		label: "Retry Model Fallback",
-		description: "Allow retry recovery to switch to configured fallback models",
 	},
 });
 
@@ -731,10 +718,9 @@ export const cfgRetryUsageAwareFallback = register({
 	default: false,
 	ui: {
 		tab: "model",
-		group: "Retry & Fallback",
-		label: "Usage-Aware Fallback",
-		description:
-			"Use reliable coding-plan quota reports to prefer same-provider accounts, then configured fallback models, before a hard usage limit. Ordinary configured API keys are excluded.",
+		group: "Retry",
+		label: "Check Account Quota",
+		description: "Check coding-plan quota and prefer healthy accounts for the selected model.",
 	},
 });
 
@@ -744,10 +730,9 @@ export const cfgRetryUsageReservePct = register({
 	default: DEFAULT_USAGE_RESERVE_PCT,
 	ui: {
 		tab: "model",
-		group: "Retry & Fallback",
+		group: "Retry",
 		label: "Reserve Margin",
-		description:
-			"Treat a coding-plan model as near its limit below this remaining percentage. Unknown or unmapped usage keeps the primary model.",
+		description: "Treat a coding-plan account as near its limit below this remaining percentage.",
 		condition: "usageAwareFallbackEnabled",
 		options: [
 			{ value: "5", label: "5%", description: "Act only when nearly exhausted" },
@@ -762,128 +747,28 @@ export const cfgRetryUsageReservePct = register({
 export const cfgRetryUsageReservePolicy = register({
 	id: "retry.usageReservePolicy",
 	type: "enum",
-	values: ["confirm", "auto", "fail-closed"] as const,
-	default: "confirm",
+	values: ["continue", "fail-closed"] as const,
+	default: "continue",
 	ui: {
 		tab: "model",
-		group: "Retry & Fallback",
+		group: "Retry",
 		label: "Reserve Policy",
 		description: "What to do when every same-provider coding-plan account is inside the reserve margin.",
 		condition: "usageAwareFallbackEnabled",
 		options: [
-			{
-				value: "confirm",
-				label: "Confirm interactively",
-				description: "Keep interactive sessions on the primary until confirmed; background agents auto-fallback",
-			},
-			{
-				value: "auto",
-				label: "Auto-fallback",
-				description: "Always select the next eligible configured fallback",
-			},
-			{
-				value: "fail-closed",
-				label: "Fail closed",
-				description: "Do not spend reserve quota or select a fallback",
-			},
+			{ value: "continue", label: "Continue", description: "Continue using the selected model" },
+			{ value: "fail-closed", label: "Fail closed", description: "Do not spend reserve quota" },
 		],
 	},
 });
 
-export const cfgRetryFallbackChains = register({
-	id: "retry.fallbackChains",
-	type: "record",
-	default: EMPTY_STRING_ARRAYS_RECORD,
-	ui: {
-		tab: "model",
-		group: "Retry & Fallback",
-		label: "Retry Fallback Chains",
-		description:
-			'JSON object mapping model roles, model selectors ("provider/model-id"), or provider wildcards ("provider/*") to ordered fallback selectors, e.g. {"default":["openai/gpt-4o-mini"],"google-antigravity/*":["google/*","google-vertex/*"]}. Model-oriented keys apply whenever that model/provider is active, regardless of role; a "provider/*" entry keeps the failing model\'s id and swaps the provider. An id-prefixed wildcard ("openrouter/google/*") re-prefixes the failing model\'s bare id (google-antigravity/gemini-x -> openrouter/google/gemini-x) and, used as a key, matches only that provider\'s ids under the prefix. A fallback entry may carry an explicit thinking suffix ("provider/model:low", ":high", ":max", ":off"); a bare entry inherits the failing turn\'s effort, and "provider/*" entries always inherit.',
-	},
-});
-
-export const cfgRetryUsageLimitFallbackChains = register({
-	id: "retry.usageLimitFallbackChains",
-	type: "record",
-	default: EMPTY_STRING_ARRAYS_RECORD,
-	ui: {
-		tab: "model",
-		group: "Retry & Fallback",
-		label: "Usage-Limit Fallback Chains",
-		description:
-			'Same format as retry.fallbackChains, e.g. {"sprilicred-anthropic/*":["sprilicred-openai/gpt-6-astra"]}, but consulted only when a turn fails on a usage limit (quota reached, pool exhausted), before retry.fallbackChains — or, when retry.fallbackAfterMs is set, when the primary is still rate-limited or overloaded after that window. Other transient errors, startup model resolution, roles, subagent inheritance, and title models never use these chains, so a reserve account is spent only when the primary has run out.',
-	},
-});
-
-export const cfgRetryFallbackRevertPolicy = register({
-	id: "retry.fallbackRevertPolicy",
-	type: "enum",
-	values: ["cooldown-expiry", "never"] as const,
-	default: "cooldown-expiry",
-	ui: {
-		tab: "model",
-		group: "Retry & Fallback",
-		label: "Fallback Revert Policy",
-		description: "When to return to the primary model after a fallback",
-		options: [
-			{
-				value: "cooldown-expiry",
-				label: "Cooldown expiry",
-				description: "Return to the primary model after its suppression window ends",
-			},
-			{ value: "never", label: "Never", description: "Stay on the fallback model until manually changed" },
-		],
-	},
-});
-
-export const cfgRetryFallbackAfterMs = register({
-	id: "retry.fallbackAfterMs",
-	type: "number",
-	default: 0,
-	ui: {
-		tab: "model",
-		group: "Retry & Fallback",
-		label: "Retry Primary Before Fallback",
-		description:
-			"How long (ms) to keep retrying the primary model, honoring the provider's Retry-After, once it starts failing on a usage limit, rate limit or overload, before switching to a fallback chain. When the window ends the usage-limit chains also cover rate limits and overloads. 0 switches on the first failure.",
-	},
-});
-
-export const cfgRetryFallbackMinHoldMs = register({
-	id: "retry.fallbackMinHoldMs",
-	type: "number",
-	default: 0,
-	ui: {
-		tab: "model",
-		group: "Retry & Fallback",
-		label: "Minimum Fallback Hold",
-		description:
-			"After the primary fails over, stay on the fallback at least this long (ms) before a turn tries the primary again. Provider waits longer than this still apply. If both models are unavailable the turn stops instead of resending to the blocked fallback. Session-local; 0 returns as soon as the primary's cooldown ends.",
-	},
-});
-
-export const cfgRetryCompactForFallback = register({
-	id: "retry.compactForFallback",
-	type: "boolean",
-	default: false,
-	ui: {
-		tab: "model",
-		group: "Retry & Fallback",
-		label: "Compact To Fit Fallback",
-		description:
-			"When no fallback model's window can hold the context, compact the context to fit the first configured fallback and switch to it instead of skipping it. If compaction cannot make it fit, the turn stops with the original error.",
-	},
-});
-
-/** Retry/backoff and usage-aware fallback policy (`retry.*` except fallback chains/revert policy). */
+/** Same-model retry/backoff and account quota policy. */
 export const cfgRetry = combine({
 	enabled: cfgRetryEnabled,
 	maxRetries: cfgRetryMaxRetries,
 	baseDelayMs: cfgRetryBaseDelayMs,
 	maxDelayMs: cfgRetryMaxDelayMs,
 	waitForUsageReset: cfgRetryWaitForUsageReset,
-	modelFallback: cfgRetryModelFallback,
 	usageAwareFallback: cfgRetryUsageAwareFallback,
 	usageReservePct: cfgRetryUsageReservePct,
 	usageReservePolicy: cfgRetryUsageReservePolicy,
@@ -891,19 +776,6 @@ export const cfgRetry = combine({
 
 /** Retry/backoff policy ({@link cfgRetry}). */
 export type RetrySettings = SettingValueOf<typeof cfgRetry>;
-
-export const cfgProvidersAnthropicServerSideFallback = register({
-	id: "providers.anthropic.serverSideFallback",
-	type: "boolean",
-	default: false,
-	ui: {
-		tab: "model",
-		group: "Retry & Fallback",
-		label: "Anthropic Server-Side Fallback (Fable 5)",
-		description:
-			"When a Claude Fable 5 / Mythos 5 request is blocked by Anthropic's safety classifier, retry it on Claude Opus 5 server-side (Anthropic `server-side-fallback-2026-06-01` beta). Opt-in — leaving this off preserves the pre-fallback behavior for every request.",
-	},
-});
 
 /**
  * Anthropic subscription slow mode (`off` | `auto`). Deliberately has no
@@ -940,7 +812,7 @@ export const cfgProvidersWebSearchTimeoutSeconds = register({
 		tab: "providers",
 		group: "Services",
 		label: "Web Search Timeout",
-		description: `Hard timeout for each provider's search transport before web_search advances to the next fallback, in seconds (maximum ${MAX_WEB_SEARCH_TIMEOUT_SECONDS})`,
+		description: `Hard timeout for each provider's search transport in seconds (maximum ${MAX_WEB_SEARCH_TIMEOUT_SECONDS})`,
 		options: [
 			{ value: "30", label: "30 seconds" },
 			{ value: "60", label: "1 minute" },

@@ -38,7 +38,6 @@ function makeSession(opts: { typesafe?: boolean } = {}): ToolSession {
 		"async.enabled": false,
 		"task.isolation.enabled": false,
 		modelRoles: { judge: opts.typesafe ? "typesafe/jev-preview" : "p/smol" },
-		"retry.fallbackChains": { judge: ["p/smol"] },
 	});
 	const authStorage = createInMemoryAuthStorage();
 	authStorage.keys.setRuntime("p", "test-key");

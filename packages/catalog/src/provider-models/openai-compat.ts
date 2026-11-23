@@ -6281,7 +6281,6 @@ function createCopilotLongContextVariant(
 		// Long-context tier has its own token prices (Gemini/GPT bill ~2x above
 		// the default boundary). cacheWrite is not reported per tier; inherit.
 		...(longCost && { cost: { ...longCost, cacheWrite: base.cost.cacheWrite } }),
-		contextPromotionTarget: undefined,
 	};
 }
 
@@ -6485,9 +6484,6 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 						);
 						if (variant) {
 							longContextVariants.push(variant);
-							// Overflowing the default tier promotes into the 1M sibling
-							// unless the reference already pins a target.
-							base.contextPromotionTarget ??= `github-copilot/${variant.id}`;
 						}
 						return base;
 					},

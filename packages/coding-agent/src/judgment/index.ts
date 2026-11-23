@@ -1,8 +1,8 @@
 /**
  * Resolves the {@link Judge} that answers typed judgments through the `judge`
- * model role. The chain is re-resolved at most every {@link CANDIDATE_TTL_MS}
- * so live catalog discovery, role edits, credential changes, and session
- * fallback all take effect without recreating feature consumers, while bulk
+ * model role. The model is re-resolved at most every {@link MODEL_TTL_MS}
+ * so live catalog discovery, role edits, and credential changes
+ * take effect without recreating feature consumers, while bulk
  * callers (`judge_batch`) do not re-scan the whole catalog per item.
  *
  * Every provider attempt is attributed exactly once: native System One
@@ -41,7 +41,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { formatModelStringWithRouting, resolveRoleChain, type RoleChainCandidate } from "../config/model-resolver";
+import { resolveRoleModel } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import type { SessionManager } from "../session/session-manager";
@@ -69,7 +69,7 @@ export interface JudgmentUsage {
 export interface JudgeDeps {
 	settings: Settings;
 	registry: ModelRegistry;
-	/** The session's active model, appended when the judge role does not already route to it. */
+	/** The session's active model, used when the judge role resolves to no model. */
 	sessionModel?: Model;
 	sessionId?: string;
 	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
@@ -130,73 +130,37 @@ const LOCAL_ANSWER_MAX_TOKENS = 16;
 const LOCAL_REASONING_MAX_TOKENS = 1024;
 
 /**
- * How long a candidate stays skipped after its account rejected a judgment
- * outright (401/403 credential, 402 billing cap). Every judgment rebuilds the
- * chain, so without this each call re-pays the rejected request plus a
- * credential-rotation round trip before reaching the next candidate.
- */
-const CANDIDATE_REJECTION_COOLDOWN_MS = 5 * 60 * 1000;
-/**
- * How long a resolved role chain is reused. Resolution filters the full
+ * How long a resolved judge model is reused. Resolution filters the full
  * catalog (thousands of models) synchronously — milliseconds per call, which a
- * concurrent fan-out turns into sustained event-loop stalls. The chain is
+ * concurrent fan-out turns into sustained event-loop stalls. The model is
  * shared by every judge built over the same settings and registry, since
  * per-call consumers (auto-thinking, subagent starts) resolve a fresh judge.
  */
-const CANDIDATE_TTL_MS = 1_000;
-/** Skip-until timestamps keyed by routed model identity, carried by the registry that produced the rejection. */
-const kRejections = Symbol("judgment.rejections");
-/** Last resolved judge role chain, carried by the registry it was drawn from. */
-const kRoleChain = Symbol("judgment.roleChain");
-interface RegistryWithRejections extends ModelRegistry {
-	[kRejections]?: Map<string, number>;
-	[kRoleChain]?: { settings: Settings; list: RoleChainCandidate[]; expiresAt: number };
+const MODEL_TTL_MS = 1_000;
+/** Last resolved judge model, carried by the registry it was drawn from. */
+const kJudgeModel = Symbol("judgment.judgeModel");
+interface RegistryWithJudgeModel extends ModelRegistry {
+	[kJudgeModel]?: { settings: Settings; model: Model | undefined; expiresAt: number };
 }
 
-/** {@link judgeRoleChain}, reused for {@link CANDIDATE_TTL_MS} across judges over the same settings and registry. */
-function cachedJudgeRoleChain(settings: Settings, registry: RegistryWithRejections): RoleChainCandidate[] {
+/** The `judge` role's model, reused for {@link MODEL_TTL_MS} across judges over the same settings and registry. */
+function cachedJudgeModel(settings: Settings, registry: RegistryWithJudgeModel): Model | undefined {
 	const now = Date.now();
-	const cached = registry[kRoleChain];
-	if (cached && cached.settings === settings && now < cached.expiresAt) return cached.list;
-	const list = judgeRoleChain(settings, registry);
-	registry[kRoleChain] = { settings, list, expiresAt: now + CANDIDATE_TTL_MS };
-	return list;
+	const cached = registry[kJudgeModel];
+	if (cached && cached.settings === settings && now < cached.expiresAt) return cached.model;
+	const model = resolveRoleModel("judge", settings, roleCandidatePool("judge", settings, registry))?.model;
+	registry[kJudgeModel] = { settings, model, expiresAt: now + MODEL_TTL_MS };
+	return model;
 }
 
-/** Append the session model when no candidate is native and the chain does not already route to it. */
-function withSessionFallback(candidates: RoleChainCandidate[], sessionModel: Model | undefined): RoleChainCandidate[] {
-	if (!sessionModel || candidates.some(candidate => kindOf(candidate) === "native")) return candidates;
-	const sessionIdentity = formatModelStringWithRouting(sessionModel);
-	if (candidates.some(candidate => formatModelStringWithRouting(candidate.model) === sessionIdentity)) {
-		return candidates;
-	}
-	return [...candidates, { model: sessionModel, explicit: false }];
-}
-
-/** Which backend a judge-role candidate routes to: native System One decisions, on-device keywords, or a chat model. */
+/** Which backend a judge-role model routes to: native System One decisions, on-device keywords, or a chat model. */
 export type JudgeKind = "native" | "local" | "online";
 
-/** Classify a role candidate by model API, never by provider identity. */
-export function kindOf(candidate: RoleChainCandidate): JudgeKind;
-export function kindOf(model: Model): JudgeKind;
-export function kindOf(value: RoleChainCandidate | Model): JudgeKind {
-	const model = "model" in value ? value.model : value;
+/** Classify a role model by API, never by provider identity. */
+export function kindOf(model: Model): JudgeKind {
 	if (isJudgmentApi(model.api)) return "native";
 	if (model.api === "local-inference") return "local";
 	return "online";
-}
-
-/**
- * The `judge` role's candidates in attempt order, drawn from credentialed
- * judge-capable models. From the first native candidate on, only native
- * candidates remain: a prompted model never stands in for a failed native
- * judgment, whose calibrated probabilities it cannot reproduce.
- */
-function judgeRoleChain(settings: Settings, registry: ModelRegistry): RoleChainCandidate[] {
-	const chain = resolveRoleChain("judge", settings, roleCandidatePool("judge", settings, registry));
-	const firstNative = chain.findIndex(candidate => kindOf(candidate) === "native");
-	if (firstNative < 0) return chain;
-	return chain.filter((candidate, index) => index < firstNative || kindOf(candidate) === "native");
 }
 
 /**
@@ -206,25 +170,24 @@ function judgeRoleChain(settings: Settings, registry: ModelRegistry): RoleChainC
  * tool under `find.enabled: auto`.
  */
 export function hasNativeJudge(settings: Settings, registry: ModelRegistry): boolean {
-	const [primary] = judgeRoleChain(settings, registry);
-	return primary !== undefined && kindOf(primary) === "native";
+	const model = cachedJudgeModel(settings, registry);
+	return model !== undefined && kindOf(model) === "native";
 }
 
-/** Resolve a live judge-role chain. Candidates resolve lazily and are reused for {@link CANDIDATE_TTL_MS}. */
+/** Resolve a live judge for the `judge` role. The model resolves lazily and is reused for {@link MODEL_TTL_MS}. */
 export function resolveJudge(deps: JudgeDeps): ChainJudge {
 	return new ChainJudge(deps);
 }
 
 /**
- * Judge facade that falls through the live `judge` role chain. `withCandidate`
- * lets a caller choose candidate-specific questions while retaining the exact
+ * Judge facade over the model assigned to the `judge` role. `withCandidate`
+ * lets a caller choose model-specific questions while retaining the exact
  * same credential, failure, timeout, and abort semantics as ordinary `judge`.
  */
 export class ChainJudge implements Judge {
-	readonly label = "judge role chain";
+	readonly label = "judge role";
 	readonly #deps: JudgeDeps;
 	readonly #telemetry: AgentTelemetry | undefined;
-	#candidates: { chain: RoleChainCandidate[]; list: RoleChainCandidate[] } | undefined;
 
 	constructor(deps: JudgeDeps) {
 		this.#deps = deps;
@@ -239,58 +202,28 @@ export class ChainJudge implements Judge {
 	}
 
 	/**
-	 * Model of the first judge-role candidate, i.e. the one a judgment routes to
-	 * when it is credentialed and healthy. Used to price work before running it;
-	 * undefined when no candidate resolves.
+	 * The model assigned to the `judge` role. An unconfigured role may use the session model
+	 * when no built-in default is available. Used to price work before running it.
 	 */
 	primaryModel(): Model | undefined {
-		return this.#resolveCandidates()[0]?.model;
+		return this.#resolveModel();
 	}
 
 	async withCandidate<T>(run: (judge: Judge, kind: JudgeKind) => Promise<T>, options: JudgeOptions = {}): Promise<T> {
 		const signal = options.signal;
-		let lastFailure: string | undefined;
-		let lastUnavailable: string | undefined;
-		const candidates = this.#resolveCandidates();
-		const rejections = this.#rejections();
-		for (const candidate of candidates) {
-			if (signal?.aborted) {
-				throw signal.reason instanceof Error ? signal.reason : new AIError.AbortError("judgment aborted");
-			}
-			const identity = formatModelStringWithRouting(candidate.model);
-			const skippedUntil = rejections.get(identity);
-			if (skippedUntil !== undefined) {
-				if (skippedUntil > Date.now()) {
-					lastUnavailable = `${identity} rejected the account recently`;
-					continue;
-				}
-				rejections.delete(identity);
-			}
-			try {
-				const judge = await this.#createJudge(candidate, signal);
-				if (!judge) {
-					lastUnavailable = `no API key for ${candidate.model.provider}/${candidate.model.id}`;
-					continue;
-				}
-				return await run(judge, kindOf(candidate));
-			} catch (error) {
-				if (signal?.aborted) {
-					throw signal.reason instanceof Error ? signal.reason : new AIError.AbortError("judgment aborted");
-				}
-				if (isAbortOrTimeout(error)) throw error;
-				const rejected = isAccountRejection(error);
-				if (rejected) rejections.set(identity, Date.now() + CANDIDATE_REJECTION_COOLDOWN_MS);
-				lastFailure = error instanceof Error ? error.message : String(error);
-				logger.warn("judgment candidate failed", {
-					candidate: identity,
-					status: AIError.status(error),
-					error: lastFailure,
-					skippedForMs: rejected ? CANDIDATE_REJECTION_COOLDOWN_MS : undefined,
-				});
-			}
+		const model = this.#resolveModel();
+		if (!model) throw new Error("judgment: no judge model available");
+		const abortError = () =>
+			signal?.reason instanceof Error ? signal.reason : new AIError.AbortError("judgment aborted");
+		if (signal?.aborted) throw abortError();
+		try {
+			const judge = await this.#createJudge(model, signal);
+			if (!judge) throw new Error(`judgment: no API key for ${model.provider}/${model.id}`);
+			return await run(judge, kindOf(model));
+		} catch (error) {
+			if (signal?.aborted) throw abortError();
+			throw error;
 		}
-		if (candidates.length === 0) throw new Error("judgment: no judge model available");
-		throw new Error(`judgment: every judge candidate failed: ${lastFailure ?? lastUnavailable ?? "unknown error"}`);
 	}
 
 	/** Attribute one attempt: the ledger unless answered wholly from cache, and one telemetry span. */
@@ -312,22 +245,12 @@ export class ChainJudge implements Judge {
 		}).catch(error => logger.warn("judgment telemetry failed", { error: String(error) }));
 	}
 
-	#rejections(): Map<string, number> {
-		const registry: RegistryWithRejections = this.#deps.registry;
-		return (registry[kRejections] ??= new Map());
-	}
-
-	#resolveCandidates(): RoleChainCandidate[] {
+	#resolveModel(): Model | undefined {
 		const { settings, registry, sessionModel } = this.#deps;
-		const candidates = cachedJudgeRoleChain(settings, registry);
-		if (candidates === this.#candidates?.chain) return this.#candidates.list;
-		const list = withSessionFallback(candidates, sessionModel);
-		this.#candidates = { chain: candidates, list };
-		return list;
+		return cachedJudgeModel(settings, registry) ?? (settings.getModelRole("judge") ? undefined : sessionModel);
 	}
 
-	async #createJudge(candidate: RoleChainCandidate, signal: AbortSignal | undefined): Promise<Judge | undefined> {
-		const model = candidate.model;
+	async #createJudge(model: Model, signal: AbortSignal | undefined): Promise<Judge | undefined> {
 		if (model.api === "local-inference") return new TextJudge(new LocalTextBackend(model.id));
 		if (!(await this.#deps.registry.getApiKey(model, this.#deps.sessionId, { signal }))) return undefined;
 		const apiKey = this.#deps.registry.resolver(model, this.#deps.sessionId);
@@ -472,12 +395,6 @@ function nativeJudge(
 			};
 		},
 	};
-}
-
-/** Credential or billing rejection: the account cannot serve this candidate until something changes out of band. */
-function isAccountRejection(error: unknown): boolean {
-	const status = AIError.status(error);
-	return status === 401 || status === 402 || status === 403;
 }
 
 function isAbortOrTimeout(error: unknown): boolean {

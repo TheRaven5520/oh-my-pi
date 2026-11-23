@@ -155,7 +155,6 @@ describe("AgentSession idle compaction async-job deferral", () => {
 				"compaction.enabled": true,
 				"compaction.autoContinue": true,
 				"compaction.keepRecentTokens": 1,
-				"contextPromotion.enabled": false,
 				"todo.enabled": false,
 				"todo.reminders": false,
 			}),

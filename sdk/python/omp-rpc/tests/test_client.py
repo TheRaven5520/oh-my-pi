@@ -275,8 +275,6 @@ FAKE_SERVER = textwrap.dedent(
                 flush=True,
             )
             print(json.dumps({"type": "auto_retry_end", "success": True, "attempt": 1}), flush=True)
-            print(json.dumps({"type": "retry_fallback_applied", "from": "a", "to": "b", "role": "primary"}), flush=True)
-            print(json.dumps({"type": "retry_fallback_succeeded", "model": "b", "role": "primary"}), flush=True)
             print(json.dumps({"type": "ttsr_triggered", "rules": [{"id": "rule-1"}]}), flush=True)
             print(
                 json.dumps(
@@ -1877,8 +1875,6 @@ class RpcClientTests(unittest.TestCase):
             client.on_auto_compaction_end(lambda event: seen.append(event.type))
             client.on_auto_retry_start(lambda event: seen.append(event.type))
             client.on_auto_retry_end(lambda event: seen.append(event.type))
-            client.on_retry_fallback_applied(lambda event: seen.append(event.type))
-            client.on_retry_fallback_succeeded(lambda event: seen.append(event.type))
             client.on_ttsr_triggered(lambda event: seen.append(event.type))
             client.on_todo_reminder(lambda event: seen.append(event.type))
             client.on_todo_auto_clear(lambda event: seen.append(event.type))
@@ -1898,8 +1894,6 @@ class RpcClientTests(unittest.TestCase):
             "auto_compaction_end",
             "auto_retry_start",
             "auto_retry_end",
-            "retry_fallback_applied",
-            "retry_fallback_succeeded",
             "ttsr_triggered",
             "todo_reminder",
             "todo_auto_clear",

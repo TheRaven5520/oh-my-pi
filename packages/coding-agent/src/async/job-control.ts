@@ -173,7 +173,6 @@ export function snapshotJobs(
 		let resolvedModelIdentity: string | undefined;
 		let resolvedThinkingLevel: JobSnapshot["resolvedThinkingLevel"];
 		let advisor = false;
-		let resolvedModelIsFallback = false;
 		let completionPercent: number | undefined;
 		if (latest.type === "task") {
 			const progressValue = latest.latestDetails?.progress;
@@ -203,7 +202,6 @@ export function snapshotJobs(
 					resolvedThinkingLevel = parseConfiguredThinkingLevel(thinkingValue);
 				}
 				advisor = progressRecord?.advisor === true;
-				resolvedModelIsFallback = progressRecord?.resolvedModelIsFallback === true;
 				const completionValue = progressRecord?.completionPercent;
 				if (typeof completionValue === "number" && Number.isFinite(completionValue)) {
 					completionPercent = completionValue;
@@ -221,7 +219,6 @@ export function snapshotJobs(
 			...(resolvedModelIdentity ? { resolvedModelIdentity } : {}),
 			...(resolvedThinkingLevel !== undefined ? { resolvedThinkingLevel } : {}),
 			...(advisor ? { advisor: true } : {}),
-			...(resolvedModelIsFallback ? { resolvedModelIsFallback: true } : {}),
 			...(completionPercent !== undefined && latest.status === "running" ? { completionPercent } : {}),
 			...(!resultConsumed && options.includeResults !== false && latest.resultText
 				? { resultText: latest.resultText }

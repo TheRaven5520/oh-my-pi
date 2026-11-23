@@ -30,7 +30,7 @@ function assistant(
 	});
 }
 
-function modelChange(id: string, parentId: string, model: string, role: string, isFallback: boolean): string {
+function modelChange(id: string, parentId: string, model: string, role: string): string {
 	return JSON.stringify({
 		type: "model_change",
 		id,
@@ -38,7 +38,6 @@ function modelChange(id: string, parentId: string, model: string, role: string, 
 		timestamp: "2026-08-07T11:00:00.000Z",
 		model,
 		role,
-		resolvedModelIsFallback: isFallback,
 	});
 }
 
@@ -46,7 +45,7 @@ function modelChange(id: string, parentId: string, model: string, role: string, 
 function transcriptHead(): string[] {
 	return [
 		JSON.stringify({ type: "session", id: "s0", parentId: null, timestamp: "2026-08-07T10:34:37.300Z" }),
-		modelChange("m1", "s0", "anthropic/claude-sonnet-5", "task", false),
+		modelChange("m1", "s0", "anthropic/claude-sonnet-5", "task"),
 		JSON.stringify({
 			type: "session_init",
 			id: "si",
@@ -68,21 +67,20 @@ async function historyFor(dir: string, id: string, records: string[]): Promise<A
 }
 
 describe("persisted agent model attribution", () => {
-	it("reports the model that produced output, not a fallback that never served", async () => {
+	it("reports the model that produced output, not a later transition that never served", async () => {
 		using tempDir = TempDir.createSync("@omp-attribution-incident-");
-		// The incident: sonnet does the work, a chain candidate errors instantly.
+		// sonnet does the work, a later candidate errors instantly.
 		const registry = await historyFor(tempDir.path(), "BuildThing", [
 			...transcriptHead(),
 			assistant("a1", "si", SONNET, "toolUse", [{ type: "toolCall", id: "t1", name: "read" }]),
 			assistant("e1", "a1", SONNET, "error", []),
-			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback", true),
+			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback"),
 			assistant("e2", "m2", SOL, "error", []),
 		]);
 
 		const history = registry.get("BuildThing")?.history;
 		expect(history?.resolvedModel).toBe("anthropic/claude-sonnet-5");
-		expect(history?.resolvedModelIsFallback).toBe(false);
-		// The role label survives the ephemeral fallback transition on top of it.
+		// The role label survives the ephemeral transition on top of it.
 		expect(history?.modelRole).toBe("task");
 		// Every assistant turn still counts toward the row's telemetry.
 		expect(history?.metrics?.requests).toBe(3);
@@ -96,13 +94,12 @@ describe("persisted agent model attribution", () => {
 			...transcriptHead(),
 			assistant("a1", "si", SONNET, "stop", [{ type: "text", text: "sonnet did the work" }]),
 			assistant("e1", "a1", SONNET, "error", []),
-			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback", true),
+			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback"),
 			assistant("e2", "m2", SOL, "aborted", [{ type: "toolCall", id: "t2", name: "read" }]),
 		]);
 
 		const history = registry.get("Stalled")?.history;
 		expect(history?.resolvedModel).toBe("anthropic/claude-sonnet-5");
-		expect(history?.resolvedModelIsFallback).toBe(false);
 	});
 
 	it("treats a substantively empty stop as unserved despite a non-empty content array", async () => {
@@ -114,7 +111,7 @@ describe("persisted agent model attribution", () => {
 			...transcriptHead(),
 			assistant("a1", "si", SONNET, "stop", [{ type: "text", text: "sonnet did the work" }]),
 			assistant("e1", "a1", SONNET, "error", []),
-			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback", true),
+			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback"),
 			assistant("e2", "m2", SOL, "stop", [
 				{ type: "thinking", thinking: "   ", thinkingSignature: "" },
 				{ type: "text", text: "  " },
@@ -123,7 +120,6 @@ describe("persisted agent model attribution", () => {
 
 		const history = registry.get("EmptyStop")?.history;
 		expect(history?.resolvedModel).toBe("anthropic/claude-sonnet-5");
-		expect(history?.resolvedModelIsFallback).toBe(false);
 	});
 
 	it("credits a turn whose only output is an image", async () => {
@@ -135,13 +131,12 @@ describe("persisted agent model attribution", () => {
 			...transcriptHead(),
 			assistant("a1", "si", SONNET, "stop", [{ type: "text", text: "sonnet did the work" }]),
 			assistant("e1", "a1", SONNET, "error", []),
-			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback", true),
+			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback"),
 			assistant("a2", "m2", SOL, "stop", [{ type: "image", data: "aGk=", mimeType: "image/png" }]),
 		]);
 
 		const history = registry.get("Painter")?.history;
 		expect(history?.resolvedModel).toBe("openai-codex/gpt-5.6-sol");
-		expect(history?.resolvedModelIsFallback).toBe(true);
 	});
 
 	it("treats a budget-exhausted length stop with nothing usable as unserved", async () => {
@@ -153,13 +148,12 @@ describe("persisted agent model attribution", () => {
 			...transcriptHead(),
 			assistant("a1", "si", SONNET, "stop", [{ type: "text", text: "sonnet did the work" }]),
 			assistant("e1", "a1", SONNET, "error", []),
-			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback", true),
+			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback"),
 			assistant("e2", "m2", SOL, "length", [{ type: "thinking", thinking: "spent it all", thinkingSignature: "" }]),
 		]);
 
 		const history = registry.get("OutOfBudget")?.history;
 		expect(history?.resolvedModel).toBe("anthropic/claude-sonnet-5");
-		expect(history?.resolvedModelIsFallback).toBe(false);
 	});
 
 	it("summarizes a transcript carrying malformed content blocks", async () => {
@@ -180,48 +174,45 @@ describe("persisted agent model attribution", () => {
 
 	it("labels the row with the newest role a transition assigned, skipping ephemeral ones", async () => {
 		using tempDir = TempDir.createSync("@omp-attribution-role-");
-		// Two real role transitions plus an ephemeral fallback on top: the label
+		// Two real role transitions plus an ephemeral one on top: the label
 		// must be the latest deliberate role, not the first one nor the fallback.
 		const registry = await historyFor(tempDir.path(), "Rerolled", [
 			...transcriptHead(),
 			assistant("a1", "si", SONNET, "stop", [{ type: "text", text: "first role" }]),
-			modelChange("m2", "a1", "openai-codex/gpt-5.6-sol", "slow", false),
+			modelChange("m2", "a1", "openai-codex/gpt-5.6-sol", "slow"),
 			assistant("a2", "m2", SOL, "stop", [{ type: "text", text: "second role" }]),
-			modelChange("m3", "a2", "openai-codex/gpt-5.6-sol", "fallback", true),
+			modelChange("m3", "a2", "openai-codex/gpt-5.6-sol", "fallback"),
 		]);
 
 		const history = registry.get("Rerolled")?.history;
 		expect(history?.modelRole).toBe("slow");
 	});
 
-	it("reports the fallback once it has served a turn", async () => {
+	it("reports a switched model once it has served a turn", async () => {
 		using tempDir = TempDir.createSync("@omp-attribution-served-");
 		const registry = await historyFor(tempDir.path(), "Worker", [
 			...transcriptHead(),
 			assistant("e1", "si", SONNET, "error", []),
-			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback", true),
+			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol", "fallback"),
 			assistant("a1", "m2", SOL, "toolUse", [{ type: "toolCall", id: "t1", name: "read" }]),
 		]);
 
 		const history = registry.get("Worker")?.history;
 		expect(history?.resolvedModel).toBe("openai-codex/gpt-5.6-sol");
-		expect(history?.resolvedModelIsFallback).toBe(true);
 	});
 
 	it("matches a served model to a transition carrying a gateway route", async () => {
 		using tempDir = TempDir.createSync("@omp-attribution-routed-");
 		// Writers record the selector through `formatModelStringWithRouting`, which
 		// appends an `@upstream` gateway route the raw message never carries.
-		// Failing to match drops the fallback flag.
 		const registry = await historyFor(tempDir.path(), "Routed", [
 			...transcriptHead(),
 			assistant("e1", "si", SONNET, "error", []),
-			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol@vercel-gw", "fallback", true),
+			modelChange("m2", "e1", "openai-codex/gpt-5.6-sol@vercel-gw", "fallback"),
 			assistant("a1", "m2", SOL, "stop", [{ type: "text", text: "served via the gateway" }]),
 		]);
 
 		const history = registry.get("Routed")?.history;
 		expect(history?.resolvedModel).toBe("openai-codex/gpt-5.6-sol@vercel-gw");
-		expect(history?.resolvedModelIsFallback).toBe(true);
 	});
 });

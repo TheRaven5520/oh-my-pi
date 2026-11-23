@@ -41,7 +41,7 @@ advisor:
   enabled: true
 ```
 
-Model selectors use normal role/model resolution, including provider-prefixed ids, canonical ids, fallback lists, and optional thinking suffixes.
+Model selectors use normal role/model resolution, including provider-prefixed ids, canonical ids, ordered comma-separated candidate lists, and optional thinking suffixes.
 
 A configured `modelRoles.advisor` wins without silently falling back when it is invalid. When unset, advisor-role resolution uses a configured `slow` role, then the built-in slow priority chain; it does not simply inherit the primary model.
 
@@ -55,22 +55,9 @@ While a primary tool runs, Overseer gets a wall-clock update (tool name, elapsed
 
 A `WATCHDOG.yml` entry named `overseer` replaces the built-in model and settings. With `advisor.overseer: false`, the built-in Overseer and its wall-clock updates go away; a user entry named `overseer` keeps running as an ordinary advisor.
 
-### Backup reviewer
+### Model failures and service tier
 
-When the advisor's model fails (outage, rate limit, unreachable endpoint), the advisor switches to the next model in its `retry.fallbackChains` entry and retries the same review. Key the chain on the `advisor` role, or on the advisor's exact model selector:
-
-```yaml
-modelRoles:
-  advisor: openai/gpt-5.5:medium
-
-retry:
-  fallbackChains:
-    advisor:
-      - anthropic/claude-sonnet-4-5:medium
-      - google-vertex/gemini-3-pro
-```
-
-This follows the same rules as the primary's fallback: `retry.enabled` and `retry.modelFallback` must be on, candidates still cooling down, without credentials, or incompatible with native advisor history are skipped, and `retry.fallbackRevertPolicy: cooldown-expiry` returns the advisor to its primary model once the cooldown ends. Credential rotation is attempted before switching models. Short usage-limit blocks can instead be waited out within `retry.maxDelayMs` and the retry budget; longer/exhausted blocks pause the advisor.
+When the advisor's model fails (outage, rate limit, unreachable endpoint), the advisor never switches to another model. Same-model retries and credential rotation apply as for the primary, and short usage-limit blocks can be waited out within `retry.maxDelayMs` and the retry budget; longer/exhausted blocks pause the advisor. Reassign `modelRoles.advisor` to move it to another model.
 
 `tier.advisor` controls service tier for all advisors. It defaults to `none` (standard processing); `inherit` follows the primary's live per-family tier, including `/fast` changes. Concrete values (`auto`, `default`, `flex`, `scale`, `priority`, `ultrafast`) are applied only when the advisor model's provider family supports them.
 
@@ -98,7 +85,7 @@ persisting `advisor.enabled`:
 omp -p --advisor "Review this task."
 ```
 
-While a primary prompt is running, eligible advisor notes can steer that run. After the final prompt settles, print mode preserves late advisor notes without starting hidden primary turns, sends updates the review cadence skipped (so an `agent-end` or interval reviewer still reviews the final answer), then waits up to ten minutes for final reviews before disposing the session. That wait covers a failing advisor's retries and [backup reviewer](#backup-reviewer) switch, so a review that fails on the advisor's model finishes on its fallback instead of being abandoned. Error exits use a 30-second drain budget so failed automation can terminate. An advisor whose catch-up policy is `strict` is waited on without either budget; aborts, halts, and quota pauses still end its wait. If a budget expires, or the advisor stops for good (halted or quota-paused), OMP logs the reviews that disposal will abandon; completed reviews retain their transcript and token/cost usage.
+While a primary prompt is running, eligible advisor notes can steer that run. After the final prompt settles, print mode preserves late advisor notes without starting hidden primary turns, sends updates the review cadence skipped (so an `agent-end` or interval reviewer still reviews the final answer), then waits up to ten minutes for final reviews before disposing the session. That wait covers a failing advisor's retries, so a review still being retried finishes instead of being abandoned. Error exits use a 30-second drain budget so failed automation can terminate. An advisor whose catch-up policy is `strict` is waited on without either budget; aborts, halts, and quota pauses still end its wait. If a budget expires, or the advisor stops for good (halted or quota-paused), OMP logs the reviews that disposal will abandon; completed reviews retain their transcript and token/cost usage.
 
 Slash commands:
 
@@ -242,9 +229,9 @@ advisors:
     syncBacklog: strict
 ```
 
-Advisor failures do not permanently stall the primary. The host first attempts its credential/fallback recovery. Retriable failures are attempted up to three times before that backlog is dropped; three dropped-backlog cycles halt the runtime until an explicit reset, and a permanent request rejection can halt it after one cycle. A quota/usage-limit failure that cannot recover through credential rotation, model fallback, or a bounded cooldown wait pauses the advisor with its batch retained until `/advisor` rebuilds it, configuration is reloaded, a new session starts, or the process restarts. The primary's catch-up waiters (`advisor.syncBacklog`) are released as soon as an advisor is failing; only the headless shutdown drain waits through recovery.
+Advisor failures do not permanently stall the primary. The host first attempts its credential recovery. Retriable failures are attempted up to three times before that backlog is dropped; three dropped-backlog cycles halt the runtime until an explicit reset, and a permanent request rejection can halt it after one cycle. A quota/usage-limit failure that cannot recover through credential rotation or a bounded cooldown wait pauses the advisor with its batch retained until `/advisor` rebuilds it, configuration is reloaded, a new session starts, or the process restarts. The primary's catch-up waiters (`advisor.syncBacklog`) are released as soon as an advisor is failing; only the headless shutdown drain waits through recovery.
 
-The advisor also uses `model.toolCallLoopGuard.*` to bound repeated identical tool calls. One detected loop injects a corrective; if the same bound trips again during that review, the review is aborted without treating the stop as a provider failure or starting fallback recovery. The detector resets at the next review/context boundary.
+The advisor also uses `model.toolCallLoopGuard.*` to bound repeated identical tool calls. One detected loop injects a corrective; if the same bound trips again during that review, the review is aborted without treating the stop as a provider failure or starting retry recovery. The detector resets at the next review/context boundary.
 
 Unsafe Advisor output follows a separate quarantine path rather than that
 three-attempt request-retry policy. Calls to tools not granted to the advisor receive `Tool <name> not found`
@@ -404,15 +391,14 @@ On prefix-bound thinking models, that eviction also drops signed reasoning after
 
 The advisor has its own append-only context. Before each advisor prompt, `AgentSession` estimates incoming tokens and may maintain advisor context:
 
-1. try model-level context promotion when enabled and a larger compatible model is available
-2. if promotion cannot fit enough context, compact the advisor's own message history
-3. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
+1. compact the advisor's own message history
+2. for readable history, re-prime from the current bounded primary transcript if compaction has no candidates or still cannot fit
 
-Native compaction replaces advisor history only when the active model can replay its provider and Responses API format. A foreign native-enabled summarizer uses portable text summarization for readable history instead. Once the advisor holds native history, incompatible summarizers, retry fallbacks, cooldown restorations, and context promotions are skipped. Maintenance failure preserves that history rather than re-priming it away; normal advisor request-failure handling still applies.
+Native compaction replaces advisor history only when the active model can replay its provider and Responses API format. A foreign native-enabled summarizer uses portable text summarization for readable history instead. Once the advisor holds native history, incompatible summarizers are skipped. Maintenance failure preserves that history rather than re-priming it away; normal advisor request-failure handling still applies.
 
-Replay compatibility does not require new native compaction to be enabled. Same-provider Responses models can receive existing native history during fallback, cooldown restoration, or promotion even when their own compaction endpoint is disabled. Creating a new native result still requires `remote` in `compaction.methodOrder` and an eligible writer; a separate compatible writer can maintain a reader whose native endpoint is disabled.
+Replay compatibility does not require new native compaction to be enabled. Creating a new native result still requires `remote` in `compaction.methodOrder` and an eligible writer; a separate compatible writer can maintain a reader whose native endpoint is disabled.
 
-The advisor's live context is in-memory and append-only; it is retained while the session runs so `/advisor dump` can inspect it, and is independently promoted/compacted/re-primed (above). It is not a replacement for the primary persisted transcript.
+The advisor's live context is in-memory and append-only; it is retained while the session runs so `/advisor dump` can inspect it, and is independently compacted/re-primed (above). It is not a replacement for the primary persisted transcript.
 
 ## Transcript persistence and observability
 

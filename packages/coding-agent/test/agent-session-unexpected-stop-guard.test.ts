@@ -83,7 +83,6 @@ async function createHarness(
 		"todo.reminders": false,
 		...settingsOverrides,
 		modelRoles: { default: modelSelector, judge: modelSelector },
-		"retry.fallbackChains": { judge: [] },
 	});
 
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5") ?? mock;

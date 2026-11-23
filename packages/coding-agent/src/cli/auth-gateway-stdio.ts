@@ -6,50 +6,35 @@
  * Unlike `serve` it runs on this omp's own credentials (the broker when one is
  * configured, else the local store), models (`models.yml` and extension
  * providers included) and settings. A request's `model` is an omp model
- * selector, as `--model` takes it ({@link selectorCandidates}); an attempt
- * that fails before its reply starts moves on to the next candidate. Serving
- * ends when stdin does.
+ * selector, as `--model` takes it ({@link selectorModel}). Serving ends when
+ * stdin does.
  */
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { createAuthGatewayRouter, serveAuthGatewayStdio } from "@oh-my-pi/pi-ai/auth-gateway";
-import { getProjectDir, isRecord, logger, postmortem, VERSION } from "@oh-my-pi/pi-utils";
+import { getProjectDir, isRecord, postmortem, VERSION } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { formatModelStringWithRouting, normalizeModelPatternList, resolveCliModel } from "../config/model-resolver";
 import { Settings } from "../config/settings";
 import { claimRpcInput } from "../modes/rpc/rpc-input";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
-import { collectOnlineTinyCandidates, expandOnlineTinyModelFallbacks } from "../tiny/online-candidates";
 
 /** Names the caller in the gateway's logs. */
 const STDIO_PEER = "stdio";
 
 /**
- * The models a request naming `selector` may run on, in order: the model
- * `--model` would pick (the first entry of a comma list that resolves), then
- * that model's `retry.fallbackChains` (its role's chain when the entry named a
- * role). Empty when no entry resolves.
+ * The model a request naming `selector` runs on: the model `--model` would pick
+ * (the first entry of a comma list that resolves). Undefined when no entry resolves.
  */
-export function selectorCandidates(
+export function selectorModel(
 	selector: string,
 	settings: Settings,
 	registry: Pick<ModelRegistry, "getAll" | "getAvailable">,
-): Model<Api>[] {
-	const available = registry.getAvailable();
+): Model<Api> | undefined {
 	for (const pattern of normalizeModelPatternList(selector)) {
-		const { model, configuredRole } = resolveCliModel({ cliModel: pattern, modelRegistry: registry, settings });
-		if (!model) continue;
-		const chain = configuredRole
-			? collectOnlineTinyCandidates([configuredRole], settings, available).map(candidate => candidate.model)
-			: expandOnlineTinyModelFallbacks(model, settings, available);
-		const seen = new Set<string>();
-		return [model, ...chain].filter(candidate => {
-			const key = formatModelStringWithRouting(candidate);
-			if (seen.has(key)) return false;
-			seen.add(key);
-			return true;
-		});
+		const { model } = resolveCliModel({ cliModel: pattern, modelRegistry: registry, settings });
+		if (model) return model;
 	}
-	return [];
+	return undefined;
 }
 
 /** Serves the gateway on stdin/stdout until stdin ends, then exits. */
@@ -81,25 +66,21 @@ export async function runAuthGatewayStdio(): Promise<void> {
 			: undefined;
 		if (!isRecord(body) || typeof body.model !== "string") return router.route(req, STDIO_PEER);
 		const selector = body.model;
-		const candidates = selectorCandidates(selector, settings, registry);
-		let response = Response.json(
-			{ error: { message: `No available model matches "${selector}"`, type: "invalid_request_error" } },
-			{ status: 404 },
-		);
-		for (const model of candidates) {
-			const key = formatModelStringWithRouting(model);
-			routed.set(key, model);
-			const attempt = new Request(req.url, {
-				method: req.method,
-				headers: req.headers,
-				body: JSON.stringify({ ...body, model: key }),
-			});
-			response = await router.route(attempt, STDIO_PEER);
-			// 400 is the request's own fault and 499 its caller's: another model would fare no better.
-			if (response.status <= 400 || response.status === 499) return response;
-			logger.warn("auth-gateway stdio attempt failed", { selector, model: key, status: response.status });
+		const model = selectorModel(selector, settings, registry);
+		if (!model) {
+			return Response.json(
+				{ error: { message: `No available model matches "${selector}"`, type: "invalid_request_error" } },
+				{ status: 404 },
+			);
 		}
-		return response;
+		const key = formatModelStringWithRouting(model);
+		routed.set(key, model);
+		const attempt = new Request(req.url, {
+			method: req.method,
+			headers: req.headers,
+			body: JSON.stringify({ ...body, model: key }),
+		});
+		return router.route(attempt, STDIO_PEER);
 	};
 
 	try {

@@ -651,8 +651,6 @@ export function shouldEnterPlanModeOnStartup(
 export interface InteractiveModeOptions {
 	/** Providers that were migrated during startup */
 	migratedProviders?: string[];
-	/** Warning message if model fallback occurred */
-	modelFallbackMessage?: string;
 	/** Initial message to send */
 	initialMessage?: string;
 	/** Initial images to include with the message */
@@ -1177,7 +1175,6 @@ export function renderSubagentHudLines(
 							session.progress?.advisor,
 							theme,
 							Math.min(FEED_MODEL_BADGE_WIDTH, Math.max(0, titleBudget - 1)),
-							session.progress?.resolvedModelIsFallback === true,
 						)
 					: "";
 				const modelLead = modelBadge ? `${modelBadge} ` : "";
@@ -1303,8 +1300,7 @@ export function registryModelLabel(session: ObservableSession): string | undefin
 	const ref = AgentRegistry.global().get(session.id);
 	const chip = ref ? modelChip(ref, session) : undefined;
 	if (!chip) return undefined;
-	const label = chip.level ? `${chip.text} (${chip.level})` : chip.text;
-	return chip.fallback ? `fallback → ${label}` : label;
+	return chip.level ? `${chip.text} (${chip.level})` : chip.text;
 }
 
 /** Registry phases include concurrent tools; observer phases cover progress-only producers. */
@@ -1428,12 +1424,10 @@ export function renderSubagentDockLines(
 			// Reserve identity and phase first, then the actual model before activity.
 			const detailWidth = Math.max(0, rowWidth - visibleWidth(prefix) - visibleWidth(elapsed));
 			const identity = progress?.resolvedModelIdentity ?? progress?.resolvedModel;
-			const fallbackProvider =
-				progress?.resolvedModelIsFallback && identity?.includes("/")
-					? ` · ${identity.slice(0, identity.indexOf("/"))}`
-					: "";
 			const model = identity
-				? `${progress?.resolvedModelIsFallback ? "fallback → " : ""}${formatModelLabel(identity, progress?.resolvedThinkingLevel, { ref: progress?.resolvedModelIdentity !== undefined ? "identity" : "selector" })}${fallbackProvider}`
+				? formatModelLabel(identity, progress?.resolvedThinkingLevel, {
+						ref: progress?.resolvedModelIdentity !== undefined ? "identity" : "selector",
+					})
 				: options.modelFor?.(session);
 			const modelBudget = detailWidth - 3;
 			let metadata =

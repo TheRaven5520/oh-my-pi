@@ -9,7 +9,7 @@ import type { SearchParams } from "@oh-my-pi/pi-coding-agent/web/search/provider
 import type { SearchResponse } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { createInMemoryAuthStorage } from "../../helpers/agent-session-setup";
 
-/** Records each attempted `provider/id` and fails so the chain keeps walking. */
+/** Records each attempted `provider/id` and fails so a test can observe exactly which engines were tried. */
 class RecordingProvider extends SearchProvider {
 	readonly id = "openai";
 	readonly label = "Recording";
@@ -28,7 +28,7 @@ class RecordingProvider extends SearchProvider {
 	}
 }
 
-describe("default web chain", () => {
+describe("default web selection", () => {
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;
 	let attempted: string[];
@@ -43,8 +43,19 @@ describe("default web chain", () => {
 		modelRegistry = new ModelRegistry(authStorage, undefined, { settings });
 		attempted = [];
 		const recorder = new RecordingProvider(attempted);
+		const unavailable: provider.SearchProvider = {
+			id: "parallel",
+			label: "Parallel",
+			isAvailable: () => false,
+			isExplicitlyAvailable: () => false,
+			search: async () => {
+				throw new Error("unavailable engines are never searched");
+			},
+		};
 		vi.spyOn(provider, "getGroundedSearchProvider").mockResolvedValue(recorder);
-		vi.spyOn(provider, "getSearchProvider").mockResolvedValue(recorder);
+		vi.spyOn(provider, "getSearchProvider").mockImplementation(async id =>
+			id === "parallel" ? unavailable : recorder,
+		);
 	});
 
 	afterEach(() => {
@@ -65,16 +76,9 @@ describe("default web chain", () => {
 			{ authStorage, modelRegistry, sessionModel: sessionModel("anthropic", "claude-sonnet-4-5") },
 		);
 
-		// The cheaper same-provider swap runs first; its failure falls back to the session model as-is.
-		expect(attempted.slice(0, 3)).toEqual([
-			"web/parallel",
-			"anthropic/claude-haiku-4-5",
-			"anthropic/claude-sonnet-4-5",
-		]);
-		expect(attempted.filter(selector => !selector.startsWith("web/"))).toEqual([
-			"anthropic/claude-haiku-4-5",
-			"anthropic/claude-sonnet-4-5",
-		]);
+		// The unavailable default is skipped by availability, and web/hosted resolves to the
+		// cheaper same-provider swap; its failure is reported, not routed onward.
+		expect(attempted).toEqual(["anthropic/claude-haiku-4-5"]);
 		for (const paid of ["web/perplexity", "web/tavily", "web/kagi", "web/brave", "web/zai"]) {
 			expect(attempted).not.toContain(paid);
 		}
@@ -97,8 +101,9 @@ describe("default web chain", () => {
 
 		await runSearchQuery({ query: "anything" }, { authStorage, modelRegistry, sessionModel: realtime });
 
-		expect(attempted.every(selector => selector.startsWith("web/"))).toBe(true);
-		expect(attempted).not.toContain("web/hosted");
+		// The unavailable default and the ungrounded hosted placeholder are skipped by
+		// availability; exactly one engine then serves the request.
+		expect(attempted).toEqual(["web/exa"]);
 	});
 
 	it("rejects a grounded answer without sources so a tool-dropping host cannot pass off a plain reply", async () => {

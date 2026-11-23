@@ -156,18 +156,6 @@ export type RedactedThinkingBlockParam = {
 	data: string;
 };
 
-/**
- * Server-side fallback beta boundary marker (server-side-fallback-2026-06-01).
- * Emitted by the API mid-stream when a classifier block on the requested
- * model is retried on a fallback model. Only the official Anthropic
- * endpoint accepts this block on replay — cross-provider hops MUST strip it.
- */
-export type FallbackBlockParam = {
-	type: "fallback";
-	from: { model: string };
-	to: { model: string };
-};
-
 /** Beta enabling on-demand compaction requests and signed block replay. */
 export const COMPACTION_BETA = "compact-2026-09-04";
 /** Legacy threshold compaction beta, required only to replay persisted encrypted blocks. */
@@ -197,7 +185,6 @@ export type ContentBlockParam =
 	| ToolRemovalBlockParam
 	| ThinkingBlockParam
 	| RedactedThinkingBlockParam
-	| FallbackBlockParam
 	| CompactionBlockParam;
 
 /**
@@ -294,19 +281,6 @@ export type OutputConfig = {
 	task_budget?: TokenTaskBudget | null;
 };
 
-/**
- * Per-attempt override entry in `MessageCreateParams.fallbacks`
- * (server-side-fallback-2026-06-01 beta). Every field except `model`
- * mirrors a top-level control the beta allows re-specifying per attempt.
- */
-export type FallbackParam = {
-	model: string;
-	max_tokens?: number;
-	thinking?: ThinkingConfigParam;
-	output_config?: OutputConfig;
-	speed?: "fast";
-};
-
 /** Legacy threshold compaction edit, used only when replaying persisted encrypted blocks. */
 export type CompactionEdit = {
 	type: "compact_20260112";
@@ -347,14 +321,6 @@ export type MessageCreateParams = {
 	compaction?: OnDemandCompaction;
 	/** Google Cloud rawPredict carries Anthropic beta names in the body. */
 	anthropic_beta?: string[];
-	/**
-	 * Server-side fallback beta chain — up to three fallback models the API
-	 * retries when a classifier blocks the primary. Required companion beta
-	 * header: `server-side-fallback-2026-06-01`.
-	 */
-	fallbacks?: FallbackParam[];
-	/** Fallback credit token redeemed from a prior refusal (`fallback-credit-2026-06-01` / `fallback-credit-2026-07-01`). */
-	fallback_credit_token?: string;
 };
 
 export type MessageCreateParamsStreaming = MessageCreateParams & { stream: true };
@@ -384,12 +350,11 @@ export type ServerToolUsage = {
 
 /**
  * Per-attempt token accounting inside a multi-run turn
- * (server-side-fallback-2026-06-01, compact-2026-09-04). Populated whenever
- * a fallback chain ran, including sticky-served turns with no `fallback`
- * content block, and whenever on-demand compaction ran. A
- * `fallback_message` entry is the definitive "served by fallback" signal; a
- * `compaction` entry is the summarization sampling the top-level usage
- * excludes.
+ * (compact-2026-09-04, or a server-initiated model handoff). Populated
+ * whenever on-demand compaction ran or the server served the turn on another
+ * model. A `fallback_message` entry is the definitive "served by fallback"
+ * signal; a `compaction` entry is the summarization sampling the top-level
+ * usage excludes.
  */
 export type UsageIteration = {
 	type?: "message" | "fallback_message" | "compaction" | string;
@@ -465,8 +430,6 @@ export type StopDetails = {
 	type: string;
 	category?: string | null;
 	explanation?: string | null;
-	fallback_credit_token?: string | null;
-	fallback_has_prefill_claim?: boolean | null;
 };
 
 export type MessageDelta = {

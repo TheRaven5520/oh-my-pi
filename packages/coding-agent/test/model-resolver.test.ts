@@ -24,7 +24,7 @@ import {
 	resolveModelOverride,
 	resolveModelRoleValue,
 	resolveModelScope,
-	resolveRoleChain,
+	resolveRoleModel,
 	rolePriorityDefaults,
 	resolveProviderModelReference,
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
@@ -847,7 +847,7 @@ describe("parseModelPattern", () => {
 	});
 });
 
-describe("role priorities and chains", () => {
+describe("role priorities and selection", () => {
 	test("role priority defaults accept arbitrary role names safely", () => {
 		expect(rolePriorityDefaults("not-a-built-in-role")).toEqual([]);
 		expect(rolePriorityDefaults("__proto__")).toEqual([]);
@@ -868,31 +868,29 @@ describe("role priorities and chains", () => {
 		).toBe("o4-mini");
 	});
 
-	test("appends non-explicit web defaults after a configured primary", () => {
+	test("resolves a configured role to its model alone, without appending defaults", () => {
 		const exa = roleChainModel("web", "exa");
 		const parallel = roleChainModel("web", "parallel");
 		const duckduckgo = roleChainModel("web", "duckduckgo");
 		const settings = Settings.isolated({ modelRoles: { web: "web/exa" } });
 
-		const chain = resolveRoleChain("web", settings, [exa, parallel, duckduckgo]);
+		const selection = resolveRoleModel("web", settings, [exa, parallel, duckduckgo]);
 
-		expect(chain.map(candidate => [formatModelStringWithRouting(candidate.model), candidate.explicit])).toEqual([
-			["web/exa", true],
-			["web/parallel", false],
-			["web/duckduckgo", false],
+		expect(selection && [formatModelStringWithRouting(selection.model), selection.explicit]).toEqual([
+			"web/exa",
+			true,
 		]);
 	});
 
-	test("upgrades a default primary when a configured fallback resolves the same route", () => {
+	test("resolves an unconfigured role through built-in defaults as non-explicit", () => {
 		const parallel = roleChainModel("web", "parallel");
-		const settings = Settings.isolated({
-			"retry.fallbackChains": { web: ["web/parallel"] },
-		});
+		const settings = Settings.isolated({});
 
-		const chain = resolveRoleChain("web", settings, [parallel]);
+		const selection = resolveRoleModel("web", settings, [parallel]);
 
-		expect(chain.map(candidate => [formatModelStringWithRouting(candidate.model), candidate.explicit])).toEqual([
-			["web/parallel", true],
+		expect(selection && [formatModelStringWithRouting(selection.model), selection.explicit]).toEqual([
+			"web/parallel",
+			false,
 		]);
 	});
 
@@ -900,38 +898,29 @@ describe("role priorities and chains", () => {
 		const parallel = roleChainModel("web", "parallel");
 		const settings = Settings.isolated({ modelRoles: { web: "" } });
 
-		const chain = resolveRoleChain("web", settings, [parallel]);
+		const selection = resolveRoleModel("web", settings, [parallel]);
 
-		expect(chain.map(candidate => [formatModelStringWithRouting(candidate.model), candidate.explicit])).toEqual([
-			["web/parallel", true],
+		expect(selection && [formatModelStringWithRouting(selection.model), selection.explicit]).toEqual([
+			"web/parallel",
+			true,
 		]);
 	});
 
-	test("an explicitly empty retry chain disables role-default fallbacks", () => {
-		const exa = roleChainModel("web", "exa");
+	test("an unavailable configured role model never falls back to role defaults", () => {
 		const parallel = roleChainModel("web", "parallel");
-		const settings = Settings.isolated({
-			modelRoles: { web: "web/exa" },
-			"retry.fallbackChains": { web: [] },
-		});
+		const settings = Settings.isolated({ modelRoles: { web: "web/exa" } });
 
-		expect(resolveRoleChain("web", settings, [exa, parallel]).map(candidate => candidate.model.id)).toEqual(["exa"]);
+		expect(resolveRoleModel("web", settings, [parallel])).toBeUndefined();
 	});
 
-	test("deduplicates by routed identity while retaining distinct upstream routes", () => {
+	test("retains the configured upstream route", () => {
 		const settings = Settings.isolated({
 			modelRoles: { routed: "openrouter/z-ai/glm-4.7@cerebras" },
-			"retry.fallbackChains": {
-				routed: ["openrouter/z-ai/glm-4.7@openai", "openrouter/z-ai/glm-4.7@cerebras"],
-			},
 		});
 
-		const chain = resolveRoleChain("routed", settings, mockOpenRouterModels);
-		expect(chain.map(candidate => formatModelStringWithRouting(candidate.model))).toEqual([
-			"openrouter/z-ai/glm-4.7@cerebras",
-			"openrouter/z-ai/glm-4.7@openai",
-		]);
-		expect(chain.every(candidate => candidate.explicit)).toBe(true);
+		const selection = resolveRoleModel("routed", settings, mockOpenRouterModels);
+		expect(selection && formatModelStringWithRouting(selection.model)).toBe("openrouter/z-ai/glm-4.7@cerebras");
+		expect(selection?.explicit).toBe(true);
 	});
 
 	test("ignores configured kind roles during default chat-model resolution", () => {
@@ -953,8 +942,8 @@ describe("role priorities and chains", () => {
 			},
 		});
 
-		expect(resolveRoleChain("memory", settings, [defaultModel, tiny])[0]?.model.id).toBe("tiny-model");
-		expect(resolveRoleChain("image", settings, [defaultModel, image])[0]?.model.id).toBe("gpt-image-2");
+		expect(resolveRoleModel("memory", settings, [defaultModel, tiny])?.model.id).toBe("tiny-model");
+		expect(resolveRoleModel("image", settings, [defaultModel, image])?.model.id).toBe("gpt-image-2");
 	});
 });
 
@@ -997,8 +986,7 @@ describe("resolveModelRoleValue", () => {
 	test("resolves a custom role that references another custom role (#10853)", () => {
 		// modelRoles.fast_worker = "@task" must expand through the referenced
 		// role to its concrete model at the pure resolution layer, without
-		// relying on the retry model-fallback path (which retry.modelFallback:
-		// false disables).
+		// relying on any model-fallback path.
 		const settings = Settings.isolated({
 			modelRoles: {
 				task: "openrouter/qwen/qwen3-coder:exacto",

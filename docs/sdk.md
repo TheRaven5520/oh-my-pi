@@ -39,11 +39,7 @@ The narrower `@oh-my-pi/pi-coding-agent/sdk` subpath exports `createAgentSession
 ```ts
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent";
 
-const { session, modelFallbackMessage } = await createAgentSession();
-
-if (modelFallbackMessage) {
-  process.stderr.write(`${modelFallbackMessage}\n`);
-}
+const { session } = await createAgentSession();
 
 const unsubscribe = session.subscribe((event) => {
   if (
@@ -181,13 +177,7 @@ const { session } = await createAgentSession({
 
 ### Selection order when `model` is omitted
 
-When no explicit `model`/`modelPattern` is provided:
-
-1. restore model from existing session (if restorable + key available)
-2. settings default model role (`default`)
-3. an authenticated provider-default model in availability order (falling back to the first authenticated available model when no provider default is present)
-
-If restore fails, `modelFallbackMessage` explains fallback.
+With no explicit `model` or `modelPattern`, an existing session keeps its saved model. A new session uses its configured `default` role, or an authenticated provider default when no role is configured. An unavailable selection is reported rather than silently replaced.
 
 ### Auth priority
 
@@ -226,7 +216,6 @@ const unsubscribe = session.subscribe((event) => {
 
 - `auto_compaction_start` / `auto_compaction_end`
 - `auto_retry_start` / `auto_retry_end`
-- `retry_fallback_applied` / `retry_fallback_succeeded`
 - `model_changed`
 - `thinking_level_changed`
 - `ttsr_triggered`
@@ -406,7 +395,7 @@ type CreateAgentSessionResult = {
   extensionsResult: LoadExtensionsResult;
   setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
   mcpManager?: MCPManager;
-  modelFallbackMessage?: string;
+  modelSelectionError?: string;
   lspServers?: Array<{
     name: string;
     status: "connecting" | "ready" | "error" | "available";
@@ -420,6 +409,8 @@ type CreateAgentSessionResult = {
 ```
 
 Use `setToolUIContext(...)` only if your embedder provides UI capabilities that tools/extensions should call into.
+
+`modelSelectionError` is set when no model could be selected: an explicit `model`/`modelPattern` was not found, the session's saved model could not be restored, the configured `default` role is unavailable, or nothing usable exists. The session still starts with `session.model` undefined so the embedder can show the error and let the user choose a model (`/model`). A model the caller, the session, or the settings named is never replaced by a different one; only a first-time session with no configured default picks the provider default.
 
 `subagentEventBus` carries `task:subagent:*` observability frames across the session tree. UI hosts can call `startBackgroundModelDiscovery()` after their first paint to start cache-aware online model discovery.
 

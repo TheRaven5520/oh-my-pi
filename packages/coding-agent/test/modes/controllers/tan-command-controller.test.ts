@@ -132,7 +132,6 @@ function createContext(overrides?: {
 		asyncJobManager: { register },
 		sessionId: "parent-session",
 		configuredThinkingLevel: vi.fn(() => undefined),
-		retryFallbackPrimary: vi.fn(() => undefined),
 		systemPrompt: ["system prompt"],
 		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
 		getEnabledToolNames: vi.fn(() => overrides?.enabledToolNames ?? overrides?.activeToolNames ?? ["read", "bash"]),

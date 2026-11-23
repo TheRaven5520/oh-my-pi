@@ -156,7 +156,6 @@ describe("AgentSession thinking-loop retry", () => {
 			"retry.baseDelayMs": 0,
 			"retry.maxDelayMs": 5_000,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
 			"todo.enabled": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
@@ -214,7 +213,6 @@ describe("AgentSession thinking-loop retry", () => {
 			"retry.baseDelayMs": 0,
 			"retry.maxDelayMs": 5_000,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
 			"todo.enabled": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
@@ -268,7 +266,6 @@ describe("AgentSession thinking-loop retry", () => {
 			"retry.baseDelayMs": 0,
 			"retry.maxDelayMs": 5_000,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
 			"todo.enabled": false,
 			"model.loopGuard.enabled": true,
 		});
@@ -335,7 +332,6 @@ describe("AgentSession thinking-loop retry", () => {
 			"retry.baseDelayMs": 0,
 			"retry.maxDelayMs": 5_000,
 			"retry.maxRetries": 2,
-			"retry.modelFallback": false,
 			"todo.enabled": false,
 			"model.loopGuard.enabled": true,
 		});

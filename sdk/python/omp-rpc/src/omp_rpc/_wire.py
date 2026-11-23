@@ -528,7 +528,6 @@ class ModelInfo:
     headers: dict[str, str] | None = None
     premium_multiplier: float | None = None
     prefer_websockets: bool | None = None
-    context_promotion_target: str | None = None
     priority: int | None = None
     thinking: ThinkingConfig | None = None
     compat: JsonObject | None = None
@@ -1005,22 +1004,6 @@ class CacheWarmingEndEvent:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
-class RetryFallbackAppliedEvent:
-    type: Literal["retry_fallback_applied"] = "retry_fallback_applied"
-    from_model: str
-    to_model: str
-    role: str
-    reason: str | None = None
-
-
-@dataclass(slots=True, frozen=True, kw_only=True)
-class RetryFallbackSucceededEvent:
-    type: Literal["retry_fallback_succeeded"] = "retry_fallback_succeeded"
-    model: str
-    role: str
-
-
-@dataclass(slots=True, frozen=True, kw_only=True)
 class ModelChangedEvent:
     type: Literal["model_changed"] = "model_changed"
 
@@ -1480,7 +1463,7 @@ AssistantMessageEvent: TypeAlias = AssistantStartEvent | AssistantTextStartEvent
 """Streaming update for one assistant message, discriminated by `type`."""
 
 
-RpcAgentEvent: TypeAlias = AgentStartEvent | RequestAcceptedEvent | AgentEndEvent | TurnStartEvent | TurnEndEvent | MessageStartEvent | MessageUpdateEvent | MessageEndEvent | ToolExecutionStartEvent | ToolExecutionUpdateEvent | ToolStreamUpdateEvent | ToolExecutionEndEvent | AutoCompactionStartEvent | AutoCompactionEndEvent | AutoRetryStartEvent | AutoRetryEndEvent | CacheWarmingStartEvent | CacheWarmingEndEvent | RetryFallbackAppliedEvent | RetryFallbackSucceededEvent | ModelChangedEvent | ConfigWarningsChangedEvent | AdvisorCostChangedEvent | AdvisorYieldedEvent | TtsrTriggeredEvent | TodoReminderEvent | TodoAutoClearEvent | IrcMessageEvent | NoticeEvent | ThinkingLevelChangedEvent | GoalUpdatedEvent | QueueUpdateEvent
+RpcAgentEvent: TypeAlias = AgentStartEvent | RequestAcceptedEvent | AgentEndEvent | TurnStartEvent | TurnEndEvent | MessageStartEvent | MessageUpdateEvent | MessageEndEvent | ToolExecutionStartEvent | ToolExecutionUpdateEvent | ToolStreamUpdateEvent | ToolExecutionEndEvent | AutoCompactionStartEvent | AutoCompactionEndEvent | AutoRetryStartEvent | AutoRetryEndEvent | CacheWarmingStartEvent | CacheWarmingEndEvent | ModelChangedEvent | ConfigWarningsChangedEvent | AdvisorCostChangedEvent | AdvisorYieldedEvent | TtsrTriggeredEvent | TodoReminderEvent | TodoAutoClearEvent | IrcMessageEvent | NoticeEvent | ThinkingLevelChangedEvent | GoalUpdatedEvent | QueueUpdateEvent
 """A session event, discriminated by `type`; `set_event_filter` selects which are sent."""
 
 
@@ -1690,7 +1673,6 @@ def parse_model_info(value: object, path: str = "ModelInfo") -> ModelInfo:
         headers=optional(payload, "headers", record(decode_str), path),
         premium_multiplier=optional(payload, "premiumMultiplier", decode_float, path),
         prefer_websockets=optional(payload, "preferWebsockets", decode_bool, path),
-        context_promotion_target=optional(payload, "contextPromotionTarget", decode_str, path),
         priority=optional(payload, "priority", decode_int, path),
         thinking=optional(payload, "thinking", parse_thinking_config, path),
         compat=optional(payload, "compat", decode_json_object, path),
@@ -2235,26 +2217,6 @@ def parse_cache_warming_end_event(value: object, path: str = "CacheWarmingEndEve
         outcome=required(payload, "outcome", _decode_cache_warming_outcome, path),
         usage=optional(payload, "usage", parse_usage, path),
         warming_stop_reason=optional(payload, "warmingStopReason", decode_str, path),
-    )
-
-
-def parse_retry_fallback_applied_event(value: object, path: str = "RetryFallbackAppliedEvent") -> RetryFallbackAppliedEvent:
-    payload = expect_object(value, path)
-    required(payload, "type", cast('Decoder[Literal["retry_fallback_applied"]]', literal(frozenset({"retry_fallback_applied"}))), path)
-    return RetryFallbackAppliedEvent(
-        from_model=required(payload, "from", decode_str, path),
-        to_model=required(payload, "to", decode_str, path),
-        role=required(payload, "role", decode_str, path),
-        reason=optional(payload, "reason", decode_str, path),
-    )
-
-
-def parse_retry_fallback_succeeded_event(value: object, path: str = "RetryFallbackSucceededEvent") -> RetryFallbackSucceededEvent:
-    payload = expect_object(value, path)
-    required(payload, "type", cast('Decoder[Literal["retry_fallback_succeeded"]]', literal(frozenset({"retry_fallback_succeeded"}))), path)
-    return RetryFallbackSucceededEvent(
-        model=required(payload, "model", decode_str, path),
-        role=required(payload, "role", decode_str, path),
     )
 
 
@@ -2806,8 +2768,6 @@ _RPC_AGENT_EVENT_CASES: Final[dict[str, Decoder[RpcAgentEvent]]] = {
         "auto_retry_end": parse_auto_retry_end_event,
         "cache_warming_start": parse_cache_warming_start_event,
         "cache_warming_end": parse_cache_warming_end_event,
-        "retry_fallback_applied": parse_retry_fallback_applied_event,
-        "retry_fallback_succeeded": parse_retry_fallback_succeeded_event,
         "model_changed": parse_model_changed_event,
         "config_warnings_changed": parse_config_warnings_changed_event,
         "advisor_cost_changed": parse_advisor_cost_changed_event,
@@ -2859,8 +2819,6 @@ _RPC_NOTIFICATION_CASES: Final[dict[str, Decoder[RpcNotification]]] = {
         "auto_retry_end": parse_rpc_agent_event,
         "cache_warming_start": parse_rpc_agent_event,
         "cache_warming_end": parse_rpc_agent_event,
-        "retry_fallback_applied": parse_rpc_agent_event,
-        "retry_fallback_succeeded": parse_rpc_agent_event,
         "model_changed": parse_rpc_agent_event,
         "config_warnings_changed": parse_rpc_agent_event,
         "advisor_cost_changed": parse_rpc_agent_event,
@@ -3365,14 +3323,6 @@ class WireClient:
         """Subscribe to `cache_warming_end`: Outcome of the refresh announced by the matching `cache_warming_start`."""
         return self._listen("cache_warming_end", listener)
 
-    def on_retry_fallback_applied(self, listener: Callable[[RetryFallbackAppliedEvent], None]) -> Callable[[], None]:
-        """Subscribe to `retry_fallback_applied` frames."""
-        return self._listen("retry_fallback_applied", listener)
-
-    def on_retry_fallback_succeeded(self, listener: Callable[[RetryFallbackSucceededEvent], None]) -> Callable[[], None]:
-        """Subscribe to `retry_fallback_succeeded` frames."""
-        return self._listen("retry_fallback_succeeded", listener)
-
     def on_model_changed(self, listener: Callable[[ModelChangedEvent], None]) -> Callable[[], None]:
         """Subscribe to `model_changed` frames."""
         return self._listen("model_changed", listener)
@@ -3541,8 +3491,6 @@ __all__ = [
     "RedactedThinkingContent",
     "RemoveQueuedMessageResult",
     "RequestAcceptedEvent",
-    "RetryFallbackAppliedEvent",
-    "RetryFallbackSucceededEvent",
     "RpcAgentEvent",
     "RpcFrameErrorEvent",
     "RpcNotification",
@@ -3701,8 +3649,6 @@ __all__ = [
     "parse_redacted_thinking_content",
     "parse_remove_queued_message_result",
     "parse_request_accepted_event",
-    "parse_retry_fallback_applied_event",
-    "parse_retry_fallback_succeeded_event",
     "parse_rpc_agent_event",
     "parse_rpc_frame_error_event",
     "parse_select_option_detail",

@@ -724,7 +724,6 @@ Common event types:
 - `auto_compaction_start`, `auto_compaction_end`
 - `auto_retry_start`, `auto_retry_end`
 - `cache_warming_start`, `cache_warming_end`
-- `retry_fallback_applied`, `retry_fallback_succeeded`
 - `model_changed`, `thinking_level_changed`, `config_warnings_changed`
 - `advisor_cost_changed`, `advisor_yielded`
 - `ttsr_triggered`
@@ -859,7 +858,7 @@ broader `source` enum, no Pi `sourceInfo`) is not wire-compatible with it.
 The commands and reconciliation semantics below are Pi-compatible, but the
 returned `SessionEntry` payload union is OMP-native, not wire-identical to
 Pi. Concretely: Pi `model_change` carries `provider` + `modelId` while OMP
-carries a combined `model` plus role/fallback metadata; Pi uses a `usage`
+carries a combined `model` plus role metadata; Pi uses a `usage`
 entry where OMP uses `model_usage`; and OMP has additional entry types (for
 example service-tier, title, mode, credential, and reset records). A
 permissive client that consumes the common structural subset

@@ -15,7 +15,6 @@ import {
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runSprilicredLogin } from "@oh-my-pi/pi-coding-agent/cli/sprilicred-login";
 import { getModelPreset } from "@oh-my-pi/pi-coding-agent/config/model-presets";
-import { cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 
 describe("SpriliCred login", () => {
 	let root: string;
@@ -175,7 +174,6 @@ describe("SpriliCred login", () => {
 		expect((await fs.readFile(tokenPath, "utf8")).trim()).toBe("test-key");
 	});
 
-
 	test("renames names an older login wrote as ' via Sprilicred' and keeps names the person chose", async () => {
 		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
 		const paths = { home: root, agentDir, tokenPath };
@@ -244,14 +242,6 @@ describe("SpriliCred login", () => {
 		cfgModelRoles.setEntry(settings, "plan", "sprilicred-openai/muse-wonder");
 		cfgModelRoles.setEntry(settings, "commit", "sprilicred-glm/abliterated-model-large-v2");
 		cfgModelRoles.setEntry(settings, "task", "sprilicred-openai/abliterated-model-large-v2:high");
-		cfgRetryFallbackChains.set(settings, {
-			"sprilicred-muse/muse-wonder": ["sprilicred-muse/muse-wonder:low", "other/keep"],
-			"sprilicred-glm/my-glm": ["other/keep"],
-			"other/keep": ["sprilicred-glm/abliterated-model-large-v2"],
-		});
-		cfgRetryUsageLimitFallbackChains.set(settings, {
-			"sprilicred-anthropic/claude-sonnet-5-5": ["sprilicred-muse/muse-wonder"],
-		});
 		await settings.flush();
 		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
 
@@ -298,10 +288,6 @@ describe("SpriliCred login", () => {
 		expect(cfgModelRoles.get(settings).plan).toBe(MUSE);
 		expect(cfgModelRoles.get(settings).commit).toBeUndefined();
 		expect(cfgModelRoles.get(settings).task).toBeUndefined();
-		expect(cfgRetryFallbackChains.get(settings)).toEqual({ [MUSE]: [`${MUSE}:low`, "other/keep"] });
-		expect(cfgRetryUsageLimitFallbackChains.get(settings)).toEqual({
-			"sprilicred-anthropic/claude-sonnet-5-5": [MUSE],
-		});
 
 		// A later login respects a narrower list the person chose.
 		cfgEnabledModels.set(settings, ["sprilicred-openai/*", "mine/*"]);
@@ -551,11 +537,6 @@ describe("SpriliCred login", () => {
 			cfgModelRoles.setEntry(settings, "commit", "sprilicred-openrouter/openai/gpt-5");
 			cfgModelRoles.setEntry(settings, "task", "sprilicred-openai/deepseek-v4.1-flash");
 			cfgModelRoles.setEntry(settings, "slow", "sprilicred-deepseek/deepseek-v4.1-flash");
-			cfgRetryFallbackChains.set(settings, {
-				"sprilicred-anthropic/claude-sonnet-5-5": ["sprilicred-deepseek/my-deepseek", "other/keep"],
-				"sprilicred-openrouter/openai/gpt-5": ["other/keep"],
-				"other/keep": ["sprilicred-openrouter/meta/muse-wonder"],
-			});
 			await settings.flush();
 			dedicated.openrouter = refusal;
 			dedicated.deepseek = refusal;
@@ -581,9 +562,6 @@ describe("SpriliCred login", () => {
 			expect(roles.task).toBeUndefined();
 			// Owned by the last login: re-pinned rather than removed.
 			expect(roles.slow).toBe("sprilicred-openai/gpt-6-astra");
-			expect(cfgRetryFallbackChains.get(settings)).toEqual({
-				"sprilicred-anthropic/claude-sonnet-5-5": ["other/keep"],
-			});
 			const text = output.join("");
 			expect(text).toContain("Your default model sprilicred-muse/muse-wonder is no longer offered to you");
 			expect(text).toContain("modelRoles.commit=sprilicred-openrouter/openai/gpt-5");
@@ -778,9 +756,8 @@ describe("SpriliCred login", () => {
 			plan: "sprilicred-anthropic/claude-haiku-4-5:low",
 			commit: "other/claude-sonnet-5",
 		});
-		// connect.py moves only the default and roles: cycles and fallback chains stay as written.
+		// connect.py moves only the default and roles: cycles stay as written.
 		cfgCycleModels.set(settings, ["sprilicred-anthropic/claude-sonnet-5", "other/keep"]);
-		cfgRetryFallbackChains.set(settings, { "sprilicred-anthropic/claude-sonnet-5": ["other/keep"] });
 		await settings.flush();
 		const output: string[] = [];
 		const write = process.stdout.write;
@@ -808,9 +785,6 @@ describe("SpriliCred login", () => {
 		expect(ours.plan).toBeUndefined();
 		expect(ours.smol).toBe("sprilicred-anthropic/claude-haiku-5-5");
 		expect(cfgCycleModels.get(settings)).toEqual(["sprilicred-anthropic/claude-sonnet-5", "other/keep"]);
-		expect(cfgRetryFallbackChains.get(settings)).toEqual({
-			"sprilicred-anthropic/claude-sonnet-5": ["other/keep"],
-		});
 		const text = output.join("");
 		expect(text).toContain(
 			"Your default model sprilicred-anthropic/claude-sonnet-5:high is no longer offered to you; it is now sprilicred-anthropic/claude-sonnet-5-5:high",
@@ -828,7 +802,12 @@ describe("SpriliCred login", () => {
 			if (!String(input).includes("/anthropic/")) return response;
 			const body = (await response.json()) as { data: unknown[] };
 			// No `reasoning_efforts`: the offline ladder (CLAUDE_EFFORTS) applies.
-			body.data.push({ id: "claude-fable-5-2", context_window: 1000000, max_output_tokens: 128000, supports_reasoning: true });
+			body.data.push({
+				id: "claude-fable-5-2",
+				context_window: 1000000,
+				max_output_tokens: 128000,
+				supports_reasoning: true,
+			});
 			return Response.json(body);
 		}) as typeof fetch;
 		await fs.writeFile(
@@ -846,7 +825,10 @@ describe("SpriliCred login", () => {
 		const fable = written.providers["sprilicred-anthropic"].models.find(
 			(model: { id: string }) => model.id === "claude-fable-5-2",
 		);
-		expect(fable.thinking).toEqual({ mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "xhigh", "max"] });
+		expect(fable.thinking).toEqual({
+			mode: "anthropic-adaptive",
+			efforts: ["low", "medium", "high", "xhigh", "max"],
+		});
 	});
 
 	test("adds OpenRouter to lists the person set without the sprilicred-openai scope, never to a cycle", async () => {
@@ -882,10 +864,6 @@ describe("SpriliCred login", () => {
 		cfgModelRoles.setEntry(settings, "plan", "muse-wonder");
 		cfgModelRoles.setEntry(settings, "commit", "abliterated-model-large-v2:low");
 		cfgModelRoles.setEntry(settings, "task", "deepseek-v4.1-flash");
-		cfgRetryFallbackChains.set(settings, {
-			"muse-wonder:high": ["deepseek-v4.1-flash", "abliterated-model-large-v2"],
-			"abliterated-model-large-v2": ["other/keep"],
-		});
 		await settings.flush();
 		const paths = { home: root, agentDir, tokenPath };
 		await runSprilicredLogin(noPrompt, settings, "test-key", paths);
@@ -895,7 +873,6 @@ describe("SpriliCred login", () => {
 		expect(cfgModelRoles.get(settings).plan).toBe(MUSE);
 		expect(cfgModelRoles.get(settings).commit).toBeUndefined();
 		expect(cfgModelRoles.get(settings).task).toBe("deepseek-v4.1-flash");
-		expect(cfgRetryFallbackChains.get(settings)).toEqual({ [`${MUSE}:high`]: ["deepseek-v4.1-flash"] });
 
 		// Without a grant the bare DeepSeek id goes too, and the default falls back like a qualified one.
 		dedicated.openrouter = [];
@@ -905,22 +882,6 @@ describe("SpriliCred login", () => {
 			"sprilicred-anthropic/claude-sonnet-5-5",
 		);
 		expect(cfgModelRoles.get(settings).task).toBeUndefined();
-		expect(cfgRetryFallbackChains.get(settings)).toEqual({});
-	});
-
-	test("a migrated fallback chain never replaces the one already under its new key", async () => {
-		const settings = await Settings.loadIsolated({ agentDir, cwd: root });
-		for (const chains of [cfgRetryFallbackChains, cfgRetryUsageLimitFallbackChains]) {
-			chains.set(settings, {
-				// The person's own chain comes first, so the legacy one would overwrite it.
-				[MUSE]: ["other/keep"],
-				"sprilicred-muse/muse-wonder": ["sprilicred-openai/gpt-6-astra"],
-			});
-		}
-		await settings.flush();
-		await runSprilicredLogin(noPrompt, settings, "test-key", { home: root, agentDir, tokenPath });
-		expect(cfgRetryFallbackChains.get(settings)).toEqual({ [MUSE]: ["other/keep"] });
-		expect(cfgRetryUsageLimitFallbackChains.get(settings)).toEqual({ [MUSE]: ["other/keep"] });
 	});
 
 	test("migrates the role maps of global model presets and leaves project presets in their file", async () => {
@@ -1006,18 +967,11 @@ describe("SpriliCred login", () => {
 				enabledModels: cfgEnabledModels,
 				modelProviderOrder: cfgModelProviderOrder,
 			};
-			const chains = {
-				"retry.fallbackChains": cfgRetryFallbackChains,
-				"retry.usageLimitFallbackChains": cfgRetryUsageLimitFallbackChains,
-			};
 			const settings = await Settings.loadIsolated({ agentDir, cwd: root });
 			const configBefore = await load("config.before.json");
 			if (configBefore) {
 				for (const [name, setting] of Object.entries(lists)) {
 					if (configBefore[name]?.length) setting.set(settings, configBefore[name]);
-				}
-				for (const [name, setting] of Object.entries(chains)) {
-					if (Object.keys(configBefore[name] ?? {}).length) setting.set(settings, configBefore[name]);
 				}
 				cfgModelRoles.set(settings, configBefore.modelRoles ?? {});
 				cfgModelPresets.set(settings, configBefore.modelPresets ?? {});
@@ -1037,12 +991,14 @@ describe("SpriliCred login", () => {
 
 			const expectedConfig = await load("installer-config.json");
 			delete expectedConfig["auth.broker.token"];
+			// The installer still records its retry chains; omp no longer has those settings.
+			delete expectedConfig["retry.fallbackChains"];
+			delete expectedConfig["retry.usageLimitFallbackChains"];
 			expect({
 				"auth.broker.url": cfgAuthBrokerUrl.get(settings),
 				...Object.fromEntries(Object.entries(lists).map(([name, setting]) => [name, setting.get(settings)])),
 				modelRoles: cfgModelRoles.get(settings),
 				modelPresets: cfgModelPresets.get(settings),
-				...Object.fromEntries(Object.entries(chains).map(([name, setting]) => [name, setting.get(settings)])),
 			}).toEqual(expectedConfig);
 
 			// omp-models.json's defaultModel and providerScopes records are the installer's own

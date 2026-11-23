@@ -7,7 +7,7 @@ It explicitly excludes context-overflow recovery via auto-compaction. Overflow i
 ## Implementation files
 
 - [`../packages/coding-agent/src/session/agent-session.ts`](../packages/coding-agent/src/session/agent-session.ts)
-- [`../packages/coding-agent/src/session/turn-recovery.ts`](../packages/coding-agent/src/session/turn-recovery.ts) — retry classification, backoff, credential rotation, and model fallback
+- [`../packages/coding-agent/src/session/turn-recovery.ts`](../packages/coding-agent/src/session/turn-recovery.ts) — retry classification, backoff, and credential rotation
 - [`../packages/coding-agent/src/session/settings.ts`](../packages/coding-agent/src/session/settings.ts) — `retry.*` setting definitions
 - [`../packages/coding-agent/src/modes/controllers/event-controller.ts`](../packages/coding-agent/src/modes/controllers/event-controller.ts)
 - [`../packages/coding-agent/src/modes/controllers/input-controller.ts`](../packages/coding-agent/src/modes/controllers/input-controller.ts)
@@ -20,7 +20,7 @@ It explicitly excludes context-overflow recovery via auto-compaction. Overflow i
 Retry and compaction are checked from the same `agent_end` path, but they are intentionally separated:
 
 1. `agent_end` inspects the last assistant message.
-2. Terminal-stop recovery, request-body timeout recovery, Fireworks Fast fallback, and `TurnRecovery.isRetryableError(...)` run before the ordinary bottom-of-turn compaction check. Active goal-mode maintenance may check compaction earlier.
+2. Terminal-stop recovery, request-body timeout recovery, and `TurnRecovery.isRetryableError(...)` run before the ordinary bottom-of-turn compaction check. Active goal-mode maintenance may check compaction earlier.
 3. If retry is initiated, compaction checks are skipped for that turn.
 4. Context-overflow errors are excluded from retry classification by `AIError.isContextOverflow(...)`.
 5. Overflow therefore reaches `SessionMaintenance.checkCompaction(...)` instead of the standard retry.
@@ -69,7 +69,7 @@ Beyond `isRetryableError(...)`, empty generic aborts may enter the same retry en
 
 Post-output continuation also covers Anthropic EOF before `message_stop`, unexpected socket closure, and transient SSE `overloaded_error`/`api_error` (Anthropic) or `server_error`/`overloaded_error` (Responses). Text already delivered is retained, never replayed from the original user prompt. Incomplete tool arguments are discarded by the provider adapter; completed tool calls keep their real or synthetic (`executed: false`) results. Anthropic's existing EOF salvage may execute a fully completed tool call once. Non-transient SSE failures and deliberate cancellation remain terminal. Buffered plain-text print mode can instead replay safely before anything is printed; JSON mode and the TUI use committed-output recovery.
 
-Non-retryable hard errors may consult a configured fallback chain when switching models is the recovery; without a successful switch they do not back off and retry the same failing model. Fireworks Fast-to-base degradation is an intrinsic one-shot safety net and can run even when `retry.enabled` is false.
+Non-retryable hard errors do not back off and retry the same failing model. The session never switches to a different model on its own after an error; the user can pick another model with `/model` and continue.
 
 Malformed-function failures that cannot replay their committed text preserve the turn and append a corrective developer reminder, capped at three continuations per prompt. These terminal-stop continuations are separate from the standard retry lifecycle.
 
@@ -81,20 +81,18 @@ Retry state is owned by `TurnRecovery`:
 
 Flow (`#handleRetryableError`):
 
-1. Read the `retry` settings group and stop when retry is disabled (except the intrinsic one-shot Fireworks Fast-to-base fallback).
+1. Read the `retry` settings group and stop when retry is disabled.
 2. Increment the retry attempt and create the shared retry lifecycle promise on the first attempt.
 3. Calculate whether the current model's retry budget is exhausted.
 4. Classify the error, parse retry timing, and compute capped jittered backoff: `min(retry.baseDelayMs * 2^(attempt-1), 8000ms) * (75–100% jitter)`. Stale OpenAI Responses replay errors reset the provider session and use delay `0`.
 5. For usage limits, apply a successful credential switch or banked Claude/Codex reset immediately when the corresponding reset policy permits it; otherwise wait for the earlier of the provider hint and the next temporarily blocked sibling credential.
-6. When allowed, consult configured model fallback chains. A switch uses delay `0`; classifier refusals and account-policy denials only continue when a credential or model switch succeeds. Thinking-loop redirects stay on the same model; a temporarily blocked sibling credential within the wait cap is preferred over model fallback.
-7. If the current model's retry budget is exhausted, stop unless a model switch or confirmed credential reset permits continuation. A fallback model receives a fresh retry budget; credential recovery keeps the cumulative count. Known thinking-only stream-close routes have a one-retry cap rather than the full configured budget.
-8. If the final delay exceeds `retry.maxDelayMs` and no credential/model switch happened, emit final failure without sleeping, except an authoritative usage-reset wait explicitly allowed by `retry.waitForUsageReset`.
+6. Classifier refusals and account-policy denials only continue when a credential switch succeeds. Thinking-loop redirects stay on the same model; a temporarily blocked sibling credential within the wait cap is preferred over failing.
+7. If the current model's retry budget is exhausted, stop unless a confirmed credential reset permits continuation. Credential recovery keeps the cumulative count. Known thinking-only stream-close routes have a one-retry cap rather than the full configured budget.
+8. If the final delay exceeds `retry.maxDelayMs` and no credential switch happened, emit final failure without sleeping, except an authoritative usage-reset wait explicitly allowed by `retry.waitForUsageReset`.
 9. Record the recoverable error, emit `auto_retry_start`, and remove the failed assistant from active context unless preserving a resolved interrupted tool turn or proven-unexecuted tool-call/result pairs.
 10. Sleep with abort support, then schedule `agent.continue()` through the post-prompt task scheduler for the same prompt generation.
 
-With `retry.fallbackAfterMs > 0`, availability failures on a primary covered by a chain first enter a time-bounded retry window, before the count-based flow above. Primary requests honor Retry-After; when that wait exceeds the remaining window, the deadline switches to a fallback without prematurely re-requesting the primary. This window is not granted to a fallback. `retry.fallbackMinHoldMs` floors the primary's suppression deadline; `cooldown-expiry` restores it on a subsequent turn after that deadline. These deadlines are session-local, not a global outage latch. A fallback that is itself usage-limited is suppressed, and subsequent turns fail closed while both routes are unavailable.
-
-`retry.compactForFallback` retains the existing fit check, but if no candidate fits it tries compaction on the first otherwise eligible fallback. The summarizer chunks oversized history to its own input budget. Compaction owns no continuation here: recovery checks the resulting context fits before retrying. If it cannot fit, the prior routing state is restored and the original provider error terminates the turn.
+When retries are exhausted, the turn ends with the provider error. The session stays on the active model; select another with `/model` (or `set_model` over RPC) and send a new prompt to continue.
 
 ### What resets retry counters
 
@@ -104,7 +102,7 @@ With `retry.fallbackAfterMs > 0`, availability failures on a primary covered by 
 - retry cancellation during backoff sleep
 - max retries exceeded path
 - max delay exceeded path
-- classifier refusal or hard error with no fallback model applied
+- classifier refusal or hard error that no credential switch resolves
 - a later error settles without retry or compaction continuation
 
 The retry promise resolves and clears whenever the chain ends.
@@ -135,11 +133,11 @@ Backoff sequence with default settings, before jitter:
 
 The actual local sleep is 75–100% of the nominal value, matching Anthropic-style retry jitter so concurrent sessions do not retry in lockstep.
 
-Delay override inputs can come from parsed retry headers (`retry-after-ms`, `retry-after`, `x-ratelimit-reset-ms`, `x-ratelimit-reset`) or usage-limit backoff. Without provider timing, recognized concurrency/rate-limit reasons can impose their own wait windows. Credential/model fallback switches set delay to `0`; otherwise parsed hints can extend the capped local delay.
+Delay override inputs can come from parsed retry headers (`retry-after-ms`, `retry-after`, `x-ratelimit-reset-ms`, `x-ratelimit-reset`) or usage-limit backoff. Without provider timing, recognized concurrency/rate-limit reasons can impose their own wait windows. Credential switches set delay to `0`; otherwise parsed hints can extend the capped local delay.
 
-On the first consecutive rate-limit/concurrency/overload failure, a provider-stated delay of at most 10 seconds (also within a positive `retry.maxDelayMs`) gets one same-model retry before model fallback. That wait uses the stated delay even if it is below the local backoff. A second failure follows the normal fallback path. Usage/quota exhaustion is excluded, and a spent retry budget does not gain an extra same-model attempt. Busy-body wording such as `retry in 2 s` is also accepted; HTTP headers and in-band Responses frame headers survive error finalization as retry hints.
+On the first consecutive rate-limit/concurrency/overload failure, a provider-stated delay of at most 10 seconds (also within a positive `retry.maxDelayMs`) gets one same-model retry. That wait uses the stated delay even if it is below the local backoff. A second failure follows the normal backoff path. Usage/quota exhaustion is excluded, and a spent retry budget does not gain an extra same-model attempt. Busy-body wording such as `retry in 2 s` is also accepted; HTTP headers and in-band Responses frame headers survive error finalization as retry hints.
 
-If the delay exceeds `retry.maxDelayMs` and no switch succeeds, retry normally fails immediately. `retry.waitForUsageReset: true` permits a longer usage-limit wait only when timing is authoritative (parsed provider reset timing or a complete usage-report future reset), not a guessed exhaustion backoff. Long waits remain abortable and are chunked to avoid timer overflow; they also hold unattended/subagent runs.
+If the delay exceeds `retry.maxDelayMs` and no credential switch succeeds, retry normally fails immediately. `retry.waitForUsageReset: true` permits a longer usage-limit wait only when timing is authoritative (parsed provider reset timing or a complete usage-report future reset), not a guessed exhaustion backoff. Long waits remain abortable and are chunked to avoid timer overflow; they also hold unattended/subagent runs.
 
 ## Abort mechanics
 
@@ -200,13 +198,9 @@ Defined in `packages/coding-agent/src/session/settings.ts`:
 - `retry.baseDelayMs`
 - `retry.maxDelayMs`
 - `retry.waitForUsageReset` (default `false`)
-- `retry.modelFallback` (default `true`; gates configured retry model-fallback switching)
-- `retry.fallbackChains`
-- `retry.usageLimitFallbackChains` (same shape as `retry.fallbackChains`; tried first, and only, when the failure is a usage limit — e.g. a reserve personal account behind a pooled gateway)
-- `retry.fallbackRevertPolicy` (`"cooldown-expiry"` by default; `"never"` disables automatic restoration)
-- `retry.usageAwareFallback` (default `false`; runs a preflight for supported coding-plan usage reports)
+- `retry.usageAwareFallback` (default `false`; runs a same-model preflight for supported coding-plan usage reports: it prefers healthy same-provider accounts and enforces the quota guard below; it never selects another model)
 - `retry.usageReservePct` (default `10`; remaining-quota reserve threshold)
-- `retry.usageReservePolicy` (default `"confirm"`; `"auto"` and `"fail-closed"` are also supported)
+- `retry.usageReservePolicy` (default `"continue"`; `"fail-closed"` is also supported)
 
 Programmatic toggles in session:
 
@@ -232,22 +226,8 @@ Session-level retry events:
 
 - `auto_retry_start { attempt, maxAttempts, delayMs, errorMessage, errorId? }`
 - `auto_retry_end { success, attempt, finalError?, retryErrors? }`
-- `retry_fallback_applied { from, to, role, reason? }`
-- `retry_fallback_succeeded { model, role }`
 
-`from`, `to`, and `role` retain their existing selector semantics.
-The optional `reason` explains the decision using the triggering health snapshot
-or provider error. The TUI displays a sanitized, bounded preview below the
-source-to-target warning; extensions and RPC receive the complete reason.
-Usage preflight notices distinguish plan-ineligible accounts, exhausted or
-blocked accounts, and the configured reserve threshold. They include the time
-until the earliest reported future reset when available,
-and state that no request was sent to the source model for that attempt.
-Startup quota skips use the same explanation in `modelFallbackMessage`.
-Request-failure notices include the provider's error instead of implying a
-preflight skip.
-
-On success, `auto_retry_end` also carries additive `retryErrors`: one `RetryErrorUpdate` (`entryId`, `persistenceKey?`, `note`, `retryRecovery`) per persisted error entry left behind by the retry chain, recording how recovery happened (`recovery`: `plain`/`wait`/`credential`/`model`, plus a human-readable `note` such as `rate-limited; switched account; retried`) and which successful message superseded each error (`supersededBy` with timestamp/provider/model/responseId). Extensions and RPC consumers receive the same fields.
+On success, `auto_retry_end` also carries additive `retryErrors`: one `RetryErrorUpdate` (`entryId`, `persistenceKey?`, `note`, `retryRecovery`) per persisted error entry left behind by the retry chain, recording how recovery happened (`recovery`: `plain`/`wait`/`credential`, plus a human-readable `note` such as `rate-limited; switched account; retried`) and which successful message superseded each error (`supersededBy` with timestamp/provider/model/responseId). Extensions and RPC consumers receive the same fields.
 
 Propagation:
 
@@ -267,11 +247,11 @@ Final failure surfacing:
 
 Retry stops and will not auto-continue when any of these occur:
 
-- `retry.enabled` is false (except intrinsic Fireworks Fast-to-base degradation and independent terminal-stop handling)
-- error is not retry-classified and no eligible hard-error model switch succeeds
+- `retry.enabled` is false (independent terminal-stop handling still applies)
+- error is not retry-classified
 - error is context overflow (delegated to compaction path)
-- max retries are exceeded and no fallback model is available
-- provider-requested delay exceeds `retry.maxDelayMs`, no credential/model switch is available, and the authoritative usage-reset opt-in does not apply
+- max retries are exceeded
+- provider-requested delay exceeds `retry.maxDelayMs`, no credential switch is available, and the authoritative usage-reset opt-in does not apply
 - user cancels retry (`abort_retry` or `Esc` during retry loader)
 - global abort (`abort`) cancels retry first
 
@@ -282,5 +262,4 @@ A new retry chain can still start later on a future retryable error after counte
 - Classification uses normalized `AIError` flags/status plus provider-aware text fallback; it is not limited to structured errors or to regex matching alone.
 - Retry strips the failing assistant error from **runtime context** before re-continue, but session history still keeps that error entry. When the retry chain eventually succeeds, each persisted error entry from the chain is marked with a `retryRecovery` marker (`status: "recovered"`, plus kind/attempt/note and the superseding message; entries whose error was rendered moot carry `status: "superseded"` instead). Marked entries render as a dim, non-error one-line note instead of a red failure (live UI included, via the success event's `retryErrors`), and they are excluded when the LLM context is rebuilt — the display transcript still keeps them visible.
 - `RpcSessionState` currently exposes `autoCompactionEnabled` but not an `autoRetryEnabled` field; RPC callers must track their own toggle state or query settings through other APIs.
-- Model fallback changes append temporary `model_change` entries. With `retry.fallbackRevertPolicy: cooldown-expiry`, each model-request boundary (including a running tool loop) can restore the primary once its cooldown ends, before usage preflight. A live-loop restore requires the current context to fit the primary; pending queued messages not yet committed to session state defer the restore rather than using a stale fit estimate. Otherwise the idle prompt/automatic-continuation path still restores and rechecks compaction. `never` and pinned refusal fallbacks remain unchanged.
-- Usage-aware preflight runs before a provider request when `retry.usageAwareFallback` is enabled. It prefers healthy same-provider coding-plan accounts before configured model fallback; ordinary configured API keys are excluded. Unknown/unmapped usage fails open. `retry.modelFallback` gates model switching, not the preflight's account selection or `"fail-closed"` policy. At the reserve threshold, `"confirm"` asks interactive sessions and keeps the current model when declined; sessions without a confirmation UI automatically apply an eligible fallback. `"auto"` applies an eligible fallback without asking. `"fail-closed"` rejects reserve or depleted usage instead of spending it or selecting a fallback. Depleted usage under the other policies applies an eligible fallback without a reserve confirmation.
+- Usage-aware preflight runs before a provider request when `retry.usageAwareFallback` is enabled. It prefers healthy same-provider coding-plan accounts on the same model; ordinary configured API keys are excluded. Unknown/unmapped usage fails open. At the reserve threshold or when usage is depleted, `"continue"` keeps the current model and sends the request; `"fail-closed"` rejects reserve or depleted usage instead of spending it. The preflight never switches models.

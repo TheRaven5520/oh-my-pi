@@ -40,7 +40,7 @@ import type { ApiKey } from "./auth-retry";
 import type { OAuthRequestIdentity } from "./auth/types";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
-import type { FallbackParam, StopDetails } from "./providers/anthropic-wire";
+import type { StopDetails } from "./providers/anthropic-wire";
 import type { AzureOpenAIResponsesOptions } from "./providers/azure-openai-responses";
 import type { CursorOptions } from "./providers/cursor";
 import type { AppleFoundationModelsOptions } from "./providers/apple-foundation-models";
@@ -696,12 +696,6 @@ export interface StreamOptions {
 	/** Cursor exec/MCP tool handlers (cursor-agent only). */
 	execHandlers?: CursorExecHandlers;
 	/**
-	 * Anthropic fallback credit redemption handle from a prior classifier refusal.
-	 * When present, the Anthropic provider replays the frozen request body and betas with
-	 * the new model and `fallback_credit_token` to redeem prompt cache credit.
-	 */
-	fallbackCreditRedemption?: AnthropicFallbackCreditHandle;
-	/**
 	 * Anthropic subscription usage-limit state machine (wrap-up allowance and
 	 * Claude Code's `/low-priority`). Consulted only for first-party OAuth
 	 * `anthropic` requests: stamps `anthropic-usage-limit: slow` while active,
@@ -821,13 +815,6 @@ export interface SimpleStreamOptions extends Omit<StreamOptions, "apiKey"> {
 	cachedContent?: string;
 	/** Antigravity endpoint routing mode: "auto" (default with failover), "production", "sandbox". */
 	antigravityEndpointMode?: "auto" | "production" | "sandbox";
-	/**
-	 * Anthropic `server-side-fallback-2026-06-01` fallback chain (top-level
-	 * `fallbacks` request field). Opt-in ONLY — leaving this undefined is
-	 * the default and preserves the pre-fallback behavior on every
-	 * provider. Non-Anthropic providers ignore the field.
-	 */
-	fallbacks?: FallbackParam[];
 }
 
 // Generic StreamFunction with typed options
@@ -862,12 +849,11 @@ export interface RedactedThinkingContent {
 }
 
 /**
- * Anthropic server-side-fallback boundary marker persisted on assistant
- * turns whose provider request opted into
- * `AnthropicOptions.fallbacks`. Consumers other than the Anthropic
- * provider MUST ignore it — `transformMessages` strips the block on any
- * cross-provider hop and on non-official Anthropic replays, so downstream
- * converters never see it.
+ * Anthropic server-initiated model handoff boundary marker. The server may
+ * serve a turn on another model on its own; the provider records the marker
+ * in persisted history only. It is never replayed on the wire, and
+ * `transformMessages` strips it on every cross-provider hop and on
+ * non-official Anthropic replays, so downstream converters never see it.
  */
 export interface AnthropicFallbackContent {
 	type: "fallback";
@@ -1263,8 +1249,6 @@ export interface AssistantMessage {
 	requestControls?: AnthropicRequestControls;
 	/** Provider-specific opaque payload used to reconstruct transport-native history. */
 	providerPayload?: ProviderPayload;
-	/** In-memory fallback credit handle attached when a refusal response carries a fallback credit token. */
-	fallbackCreditHandle?: AnthropicFallbackCreditHandle;
 	timestamp: number; // Unix timestamp in milliseconds
 	duration?: number; // Request duration in milliseconds
 	ttft?: number; // Time to first token in milliseconds
@@ -1603,14 +1587,3 @@ export type AssistantMessageEvent =
 			reason: Extract<StopReason, "aborted" | "error">;
 			error: AssistantMessage;
 	  };
-
-export interface AnthropicFallbackCreditHandle {
-	token: string;
-	prefillClaim?: boolean | null;
-	params: unknown;
-	betas?: readonly string[];
-	betaHeader?: string;
-	expiresAt: number;
-	/** The refused response's content, in `AssistantMessage` block form. */
-	refusedContent?: AssistantMessage["content"];
-}

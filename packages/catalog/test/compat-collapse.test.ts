@@ -1291,7 +1291,6 @@ describe("Cursor generic tier routing (issue #9237)", () => {
 
 	it("retargets internal model references whose destination tier collapses", () => {
 		const sourceOverrides = {
-			contextPromotionTarget: "cursor/review-promotion-target-low",
 			compactionModel: "review-promotion-target-high",
 		};
 		const collapsed = collapseVariants([
@@ -1302,7 +1301,6 @@ describe("Cursor generic tier routing (issue #9237)", () => {
 		]);
 		const source = collapsed.find(model => model.id === "review-promotion-source");
 
-		expect(source?.contextPromotionTarget).toBe("cursor/review-promotion-target");
 		expect(source?.compactionModel).toBe("review-promotion-target");
 	});
 
@@ -1315,13 +1313,11 @@ describe("Cursor generic tier routing (issue #9237)", () => {
 			cursorMemberSpec("review-changing-target-low", { contextWindow: 200_000 }),
 			cursorMemberSpec("review-changing-target-high", { contextWindow: 1_000_000 }),
 			cursorMemberSpec("review-changing-source", {
-				contextPromotionTarget: "cursor/review-changing-target-low",
 				compactionModel: "review-changing-target-high",
 			}),
 		]);
 		const source = collapsed.find(model => model.id === "review-changing-source");
 
-		expect(source?.contextPromotionTarget).toBe("cursor/review-changing-target-low");
 		expect(source?.compactionModel).toBe("review-changing-target-high");
 	});
 });

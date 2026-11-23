@@ -27,7 +27,6 @@ import {
 	cfgCompactionSupersedeReads,
 	cfgCompactionThresholdPercent,
 	cfgCompactionThresholdTokens,
-	cfgContextPromotionEnabled,
 } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 
 it("clamps a reserve exceeding the window for small-window threshold recovery bands", () => {
@@ -709,7 +708,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		// Content-less provider rejection turns are live UI only: persisting them
 		// writes an empty assistant turn that replays on reload and re-sends the
 		// rejected context.
-		cfgContextPromotionEnabled.set(session.settings, false);
 		cfgCompactionEnabled.set(session.settings, false);
 
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
@@ -920,7 +918,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 			},
 			timestamp: Date.now(),
 		});
-		cfgContextPromotionEnabled.set(session.settings, false);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		const generateHandoffSpy = vi
@@ -1008,7 +1005,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		beforeEach(() => {
 			cfgCompactionMethodOrder.set(session.settings, ["handoff", "soft"]);
 			cfgCompactionEnabled.set(session.settings, true);
-			cfgContextPromotionEnabled.set(session.settings, false);
 			compactHookEnabled = false;
 		});
 
@@ -1079,7 +1075,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		cfgCompactionMethodOrder.set(session.settings, ["shake"]);
 		cfgCompactionEnabled.set(session.settings, true);
 		cfgCompactionKeepRecentTokens.set(session.settings, 1);
-		cfgContextPromotionEnabled.set(session.settings, false);
 		compactHookEnabled = false;
 		// Each empty turn is below threshold with nothing actionable, so recovery
 		// schedules a plain retry that re-enters Case 3 on the next empty length
@@ -1163,7 +1158,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		cfgCompactionAsyncEnabled.set(session.settings, true);
 		cfgCompactionThresholdTokens.set(session.settings, 150_000);
 		cfgCompactionKeepRecentTokens.set(session.settings, 1);
-		cfgContextPromotionEnabled.set(session.settings, false);
 		compactHookEnabled = false;
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		const handoffStarted = Promise.withResolvers<void>();
@@ -1273,7 +1267,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		cfgCompactionAsyncEnabled.set(session.settings, true);
 		cfgCompactionThresholdTokens.set(session.settings, 150_000);
 		cfgCompactionKeepRecentTokens.set(session.settings, 1);
-		cfgContextPromotionEnabled.set(session.settings, false);
 		compactHookEnabled = false;
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		const handoffStarted = Promise.withResolvers<void>();
@@ -1375,7 +1368,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
 		const currentModel = session.agent.state.model;
 		session.agent.setModel({ ...currentModel, contextWindow: 4096, maxTokens: 1024 });
-		cfgContextPromotionEnabled.set(session.settings, false);
 		cfgCompactionReserveTokens.set(session.settings, 16384);
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
@@ -1430,7 +1422,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
 		const currentModel = session.agent.state.model;
 		session.agent.setModel({ ...currentModel, contextWindow: 16385, maxTokens: 1024 });
-		cfgContextPromotionEnabled.set(session.settings, false);
 		// compaction.reserveTokens stays unset: the DEFAULTED reserve is the
 		// scenario — an explicit 16384 would be honored and leave a 1-token
 		// budget on purpose (see "pauses an overflow retry when it only fits
@@ -1465,7 +1456,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		seedPriorTurns();
 		const currentModel = session.agent.state.model;
 		session.agent.setModel({ ...currentModel, contextWindow: 20000, maxTokens: 1024 });
-		cfgContextPromotionEnabled.set(session.settings, false);
 		cfgCompactionReserveTokens.set(session.settings, 5000);
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
@@ -1497,7 +1487,6 @@ describe("AgentSession auto-compaction progress guard", () => {
 		seedPriorTurns();
 		const currentModel = session.agent.state.model;
 		session.agent.setModel({ ...currentModel, contextWindow: 100000, maxTokens: 1024 });
-		cfgContextPromotionEnabled.set(session.settings, false);
 		cfgCompactionReserveTokens.set(session.settings, 90000);
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
 		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);

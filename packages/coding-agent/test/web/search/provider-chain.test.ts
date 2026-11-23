@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { resolveModelRoleValue, resolveRoleChain } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { resolveModelRoleValue, resolveRoleModel } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { roleCandidatePool } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -71,18 +71,14 @@ describe("web model role resolution", () => {
 		expect(openAiCandidates.some(model => model.id === "gpt-realtime-2.1")).toBe(false);
 	});
 
-	it("marks configured primaries and configured fallbacks explicit", () => {
+	it("marks a configured primary explicit", () => {
 		const { pool, settings } = createRuntime({
 			modelRoles: { web: "web/perplexity" },
-			"retry.fallbackChains": { web: ["web/duckduckgo"] },
 		});
 
-		const candidates = resolveRoleChain("web", settings, pool);
+		const candidate = resolveRoleModel("web", settings, pool);
 
-		expect(candidates.map(candidate => [candidate.model.id, candidate.explicit])).toEqual([
-			["perplexity", true],
-			["duckduckgo", true],
-		]);
+		expect(candidate && [candidate.model.id, candidate.explicit]).toEqual(["perplexity", true]);
 	});
 });
 
@@ -103,7 +99,7 @@ describe("web model candidate availability", () => {
 		delete process.env.PERPLEXITY_API_KEY;
 		delete process.env.PERPLEXITY_COOKIES;
 		const { authStorage, pool, settings } = createRuntime({ modelRoles: { web: "web/perplexity" } });
-		const [candidate] = resolveRoleChain("web", settings, pool);
+		const candidate = resolveRoleModel("web", settings, pool);
 		if (!candidate) throw new Error("Configured Perplexity candidate missing");
 		const provider = await getSearchProvider(candidate.model.id);
 

@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- OMP stays on the selected model after errors or quota exhaustion. To switch, use `/model`; configured fallback chains are ignored.
 - `omp login sprilicred` matches SpriliCred release-140's installer: a default or a role of the person's own on Claude Fable 5.1 (withdrawn, refused by the server) moves to Claude Fable 5.2 with its level kept when the server lists it, and Fable 5.2 carries the low…max effort ladder when a listing names none.
 - Running sessions refresh discovery-backed model catalogs every five minutes and when `/model` opens, without delaying the cached picker. New models join selectors and scoped/open pickers without restarting; a removed model does not replace the session's current model.
 - Pruned fork-owned tests for presentation copy, incidental defaults, mock-only forwarding, duplicate coverage and superseded behavior; retained safety, persistence, routing, migration and exact-copy regression coverage. Upstream-owned tests and disabled GitHub workflows are unchanged.

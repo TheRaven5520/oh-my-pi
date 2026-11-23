@@ -1,5 +1,5 @@
 // Ported from NousResearch/hermes-agent (MIT) — tools/tts_tool.py L167-171, L896-959.
-// Speech backends are catalog models selected through the speech role chain.
+// Speech backends are catalog models selected through the speech role.
 
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
@@ -8,7 +8,7 @@ import { MissingApiKeyError, ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { DEFAULT_XAI_VOICE_ID, synthesizeSpeech, XAI_MAX_TEXT_LENGTH } from "@oh-my-pi/pi-ai/speech";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { resolveRoleChain, type RoleChainCandidate } from "../config/model-resolver";
+import { resolveRoleModel } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
 import { settings, type Settings } from "../config/settings";
 import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
@@ -51,23 +51,10 @@ interface TtsToolDetails {
 	backend: TtsBackend;
 }
 
-/** Resolve speech candidates while preserving every explicitly configured slot. */
-export function resolveSpeechCandidates(
-	settingsInstance: Settings,
-	modelRegistry: ModelRegistry,
-	wantsMp3: boolean,
-): RoleChainCandidate[] {
+/** Resolve the model assigned to the speech role. */
+export function resolveSpeechModel(settingsInstance: Settings, modelRegistry: ModelRegistry): Model | undefined {
 	const pool = roleCandidatePool("speech", settingsInstance, modelRegistry);
-	const candidates = resolveRoleChain("speech", settingsInstance, pool);
-	if (!wantsMp3) return candidates;
-
-	const nonExplicit = candidates.filter(candidate => !candidate.explicit);
-	const cloudFirst = [
-		...nonExplicit.filter(candidate => candidate.model.api !== "local-inference"),
-		...nonExplicit.filter(candidate => candidate.model.api === "local-inference"),
-	];
-	let next = 0;
-	return candidates.map(candidate => (candidate.explicit ? candidate : cloudFirst[next++]!));
+	return resolveRoleModel("speech", settingsInstance, pool)?.model;
 }
 
 /**
@@ -196,37 +183,33 @@ export const ttsTool: CustomTool<typeof ttsSchema, TtsToolDetails> = {
 		const codec: TtsCodec = outputPath.toLowerCase().endsWith(".wav") ? "wav" : "mp3";
 
 		const settingsInstance = ctx.settings ?? settings;
-		const candidates = resolveSpeechCandidates(settingsInstance, ctx.modelRegistry, codec === "mp3");
-		if (candidates.length === 0) {
+		const model = resolveSpeechModel(settingsInstance, ctx.modelRegistry);
+		if (!model) {
 			return {
 				isError: true,
 				content: [{ type: "text", text: "No available speech model matches the speech role." }],
 			};
 		}
 
-		const failures: string[] = [];
-		for (const { model } of candidates) {
-			try {
-				if (model.api === "local-inference") {
-					return await synthesizeLocal(model, params, settingsInstance, cwd, outputPath, signal);
-				}
-				if (model.api === "xai-tts" || model.api === "openai-speech") {
-					return await synthesizeCloud(model, params, ctx, outputPath, displayPath, codec, signal);
-				}
-				throw new Error(`Unsupported speech model API: ${model.api}`);
-			} catch (error) {
-				if (signal?.aborted) throw error;
-				if (error instanceof MissingApiKeyError || error instanceof ProviderHttpError) {
-					failures.push(`${model.provider}/${model.id}: ${error.message}`);
-					continue;
-				}
-				throw error;
+		try {
+			if (model.api === "local-inference") {
+				return await synthesizeLocal(model, params, settingsInstance, cwd, outputPath, signal);
 			}
+			if (model.api === "xai-tts" || model.api === "openai-speech") {
+				return await synthesizeCloud(model, params, ctx, outputPath, displayPath, codec, signal);
+			}
+			throw new Error(`Unsupported speech model API: ${model.api}`);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			if (error instanceof MissingApiKeyError || error instanceof ProviderHttpError) {
+				return {
+					isError: true,
+					content: [
+						{ type: "text", text: `Speech synthesis failed for ${model.provider}/${model.id}: ${error.message}` },
+					],
+				};
+			}
+			throw error;
 		}
-
-		return {
-			isError: true,
-			content: [{ type: "text", text: `Speech synthesis failed for every candidate: ${failures.join("; ")}` }],
-		};
 	},
 };

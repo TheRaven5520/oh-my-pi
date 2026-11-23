@@ -41,7 +41,7 @@ Parsing comes from frontmatter via `parseAgentFields()` (`src/discovery/helpers.
 - `output` is passed through as opaque schema data
 - `read-summarize: false` (normalized to `readSummarize`) disables structural summaries for the subagent's `read` tool — `runSubprocess` applies a `read.summarize.enabled: false` override on the child's isolated settings (`src/task/executor.ts`). `scout` ships with it disabled. When absent, the child inherits the parent's read-summary setting.
 - `model` accepts one selector, CSV, or an array. Entries are tried in order after role aliases are expanded.
-- `thinking-level` / `thinking` selects the agent's configured effort. When `task.enableEffort` (default `false`) exposes it, a task item's coarse `effort` (`lo`, `med`, `hi`) takes precedence at launch. OMP maps that hint to the selected model's lowest, middle, or highest supported effort, then clamps it to `task.maxEffort` (default `max`). The ceiling is carried across retry-fallback model switches. If the selected model has no supported effort at or below the ceiling, the spawn fails; models without a controllable effort surface instead fall back to their normal selector.
+- `thinking-level` / `thinking` selects the agent's configured effort. When `task.enableEffort` (default `false`) exposes it, a task item's coarse `effort` (`lo`, `med`, `hi`) takes precedence at launch. OMP maps that hint to the selected model's lowest, middle, or highest supported effort, then clamps it to `task.maxEffort` (default `max`). If the selected model has no supported effort at or below the ceiling, the spawn fails; models without a controllable effort surface instead fall back to their normal selector.
 - `serviceTier` optionally selects `inherit`, `none`, `auto`, `default`, `flex`, `scale`, `priority`, or `ultrafast`. It is independent of `model` and thinking.
 - `blocking: true` makes the parent wait for that agent even when async task execution is enabled
 - `autoloadSkills` names skills from the parent session to inject before the first child prompt; unknown names are ignored
@@ -248,11 +248,9 @@ spawns, use the main session's thresholds. See [Settings](./settings.md#context-
 Service-tier precedence is independent of model selection: the task call's `serviceTier`, then the definition's
 `serviceTier`, then an exact, case-sensitive `task.agentServiceTierOverrides[agentName]` entry,
 then `tier.subagent`. An explicit `inherit` snapshots the parent session's live per-family tiers (including
-`/fast` changes) for the next spawn. The child session resolves a concrete value against the model
-it finally settles on — after auth fallback and after patterns only the session can resolve, such as
+`/fast` changes) for the next spawn. The child session resolves a concrete value against the model it finally settles on — after patterns only the session can resolve, such as
 extension-registered models — and populates only that model's provider family when the family
-supports the value, so same-family retry fallbacks retain the tier and cross-family fallbacks never
-inherit it. The resolved map is persisted with the child's session, even when it is empty, so a
+supports the value. The resolved map is persisted with the child's session, even when it is empty, so a
 parked agent revived after a restart keeps its per-agent tier instead of re-deriving
 `tier.subagent`. The entry is looked up by task/eval dispatch only; Vibe workers launched through
 the same executor keep `tier.subagent`. Task calls expose `serviceTier`; eval calls use the user

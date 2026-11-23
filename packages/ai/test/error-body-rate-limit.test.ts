@@ -9,7 +9,7 @@
  * the classifier helper. Three contracts are pinned:
  *
  * 1. a recognised throttle yields a real 429/5xx `ProviderHttpError`, so the
- *    `Flag.Transient` lane and `retry.fallbackChains` advance;
+ *    `Flag.Transient` lane can retry it;
  * 2. no status is ever fabricated from prose — a body that merely *mentions*
  *    401/403 keeps `errorStatus` undefined, and `errorStatus` can only be 429
  *    or 5xx, never an auth code;

@@ -9,6 +9,10 @@
 - Added an optional `redeemRequestId` to `AuthStorage.redeemResetCredit`, forwarded to `consumeCodexResetCredit` as the provider idempotency key, so an HTTP caller retrying a redeem cannot spend a second credit
 - Added `compat.supportsFastMode` for `anthropic-messages` models: an Anthropic-compatible gateway that sets it gets `/fast` (the `priority` Anthropic tier) as `speed: "fast"` plus the `fast-mode-2026-02-01` beta, exactly like the direct `anthropic` provider, including the one-shot retry without `speed` when the gateway rejects it and the ⚡ status indicator. Previously `/fast` reported "Fast mode enabled." on such gateways but sent nothing.
 
+### Removed
+
+- Removed client-requested cross-model substitution on Anthropic: `AnthropicOptions.fallbacks` / `SimpleStreamOptions.fallbacks` and the `server-side-fallback-2026-06-01` beta, `StreamOptions.fallbackCreditRedemption`, `AssistantMessage.fallbackCreditHandle`, the `fallback-credit-2026-06-01` beta, the `fallback_credit_token` request field, and Factory Droid's refusal `fallbacks` chain. A model handoff the server performs on its own is still recorded: the `fallback` content block and `usage.iterations` promote the served model and per-iteration pricing, and the block stays in persisted history but is never replayed on the wire.
+
 ### Fixed
 
 - Anthropic hosted web search can honor custom providers' OAuth-style request shaping and configured headers consistently with conversations ([#14919](https://github.com/can1357/oh-my-pi/pull/14919) by [@farnoy](https://github.com/farnoy))

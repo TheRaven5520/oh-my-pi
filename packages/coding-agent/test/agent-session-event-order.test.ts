@@ -97,7 +97,6 @@ describe("AgentSession subscriber event order", () => {
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 

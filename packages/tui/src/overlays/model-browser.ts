@@ -137,7 +137,6 @@ export interface ModelBrowserSource extends ModelRoleLookup {
 	readonly mruOrder: readonly string[];
 	readonly modelPerf: ReadonlyMap<string, ModelBrowserPerf>;
 	getRoleInfo(role: string): ModelBrowserRoleInfo;
-	defaultRoleChain(role: string): string[];
 	resolveRoleValue(value: string | undefined, models: Model[], roleLookup?: ModelRoleLookup): ResolvedModelRoleValue;
 }
 
