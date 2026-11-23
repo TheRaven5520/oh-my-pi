@@ -1754,7 +1754,7 @@ export class AcpAgent implements Agent {
 			},
 		];
 
-		const models = session.getAvailableModels();
+		const models = session.getAvailableModels("manual");
 		const currentModel = session.model;
 		if (models.length > 0) {
 			configOptions.push({
@@ -1807,7 +1807,7 @@ export class AcpAgent implements Agent {
 	}
 
 	async #setModelById(session: AgentSession, modelId: string): Promise<void> {
-		const model = session.getAvailableModels().find(candidate => this.#toModelId(candidate) === modelId);
+		const model = session.getAvailableModels("manual").find(candidate => this.#toModelId(candidate) === modelId);
 		if (!model) {
 			throw new Error(`Unknown ACP model: ${modelId}`);
 		}

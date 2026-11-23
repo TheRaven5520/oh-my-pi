@@ -834,6 +834,10 @@ export class SelectorController {
 			this.ctx.session.modelRegistry,
 			this.ctx.session.scopedModels,
 			{
+				onPickAccount: model => {
+					done();
+					void this.switchSessionModel(model);
+				},
 				onAssign: async (model, role, thinkingLevel, selector, scope?: ModelRoleSelectionScope) => {
 					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;
 					const configuredStorage = cfgModelRoleStorage.get(this.ctx.settings);

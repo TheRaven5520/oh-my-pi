@@ -145,6 +145,7 @@ export interface ModelBrowserSource extends ModelRoleLookup {
 export interface ModelBrowserRegistry {
 	getError(): unknown;
 	getAvailable(kind?: ModelKind | "all"): Model[];
+	getManualAccountModels?(): Model[];
 	getAll(kind?: ModelKind | "all"): Model[];
 }
 
@@ -366,6 +367,7 @@ export interface SessionModelScope {
 /** Catalog inputs a {@link SessionModelScope} is derived from. */
 interface SessionModelScopeInputs {
 	models: ReadonlyArray<Model>;
+	manualModels: ReadonlyArray<Model>;
 	allModels: ReadonlyArray<Model>;
 	error: string | undefined;
 }
@@ -374,7 +376,9 @@ function readSessionModelScopeInputs(
 	registry: ModelBrowserRegistry,
 	scopedModels: ReadonlyArray<Model>,
 ): SessionModelScopeInputs {
-	if (scopedModels.length > 0) return { models: scopedModels, allModels: scopedModels, error: undefined };
+	const manualModels = registry.getManualAccountModels?.() ?? [];
+	if (scopedModels.length > 0)
+		return { models: scopedModels, allModels: scopedModels, manualModels, error: undefined };
 	const loadError = registry.getError();
 	let error = loadError ? String(loadError) : undefined;
 	let models: ReadonlyArray<Model>;
@@ -384,13 +388,15 @@ function readSessionModelScopeInputs(
 		error = cause instanceof Error ? cause.message : String(cause);
 		models = [];
 	}
-	return { models, allModels: registry.getAll("all"), error };
+	return { models, allModels: registry.getAll("all"), manualModels, error };
 }
 
 function scopeFromInputs(settings: ModelBrowserSource, inputs: SessionModelScopeInputs): SessionModelScope {
 	const roles = resolveRoleAssignments(settings, inputs.allModels, inputs.models);
 	const mruOrder = settings.mruOrder;
-	const items = buildBrowserItems(inputs.models);
+	const items = buildBrowserItems(
+		inputs.manualModels.length ? [...inputs.models, ...inputs.manualModels] : inputs.models,
+	);
 	sortModelItems(items, { roles, mruOrder });
 	return { items, roles, mruOrder, error: inputs.error };
 }
@@ -433,6 +439,7 @@ export class SessionModelScopeCache {
 			inputs.error === cachedInputs.error &&
 			sameItems(inputs.models, cachedInputs.models) &&
 			sameItems(inputs.allModels, cachedInputs.allModels) &&
+			sameItems(inputs.manualModels, cachedInputs.manualModels) &&
 			sameItems(this.#settings.mruOrder, cached.mruOrder)
 		) {
 			return cached;

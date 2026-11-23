@@ -50,6 +50,7 @@ import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-
 import { resolveProviderModelReference } from "../config/model-resolver";
 import { generateCodexAttestation } from "../live/attestation";
 import type { AuthStorage } from "../session/auth-storage";
+import { accountDbPath, accountSource, getAccountKey, loadAccountModels } from "./personal-accounts";
 import { type ApiKeyResolverModel, type ApiKeyResolverOptions, createApiKeyResolver } from "./api-key-resolver";
 import type { ConfigError, ConfigFile } from "./config-file";
 import {
@@ -258,6 +259,8 @@ export type ResolvedRequestAuth =
  */
 export class ModelRegistry {
 	#models: Model<Api>[] = [];
+	#accountModels: Model<Api>[] = [];
+	readonly #accountDbPath: string;
 	#unprojectedModels: Model<Api>[] = [];
 	/**
 	 * Full-snapshot input to `#projectBaseModels`: resolved built-in, cached, and
@@ -454,6 +457,7 @@ export class ModelRegistry {
 		},
 	) {
 		this.#ignoreLocalModelConfig = options?.ignoreLocalModelConfig ?? false;
+		this.#accountDbPath = accountDbPath(options?.settings?.getAgentDir());
 		this.#settings = options?.settings;
 		this.#fetch =
 			options?.fetch ??
@@ -479,6 +483,7 @@ export class ModelRegistry {
 		// network for catalogs" — the unscoped model hub opens with that strategy
 		// as a background reconcile, and must not spawn `!command` helpers.
 		this.#reloadStaticModelsForRefresh(options);
+		await this.#reloadAccountModels();
 		this.#suppressedSelectors.clear();
 		await this.#refreshRuntimeDiscoveries(strategy);
 	}
@@ -490,6 +495,7 @@ export class ModelRegistry {
 	 * awaits this local-only, best-effort pass before validating model selectors.
 	 */
 	async hydrateCredentialScopedModelCaches(): Promise<void> {
+		await this.#reloadAccountModels();
 		if (!this.#credentialScopedCacheHydration) {
 			const providerIds = new Set<string>();
 			for (const providerId of STARTUP_MODEL_CACHE_PROVIDER_IDS) {
@@ -2849,6 +2855,18 @@ export class ModelRegistry {
 		return this.getAvailableForProviders(new Set(this.#knownStaticProviders()), kind);
 	}
 
+	/** Manual picker/explicit selectors only. Never mix these into the automatic catalog. */
+	getManualAccountModels(kind: ModelKind | "all" = "chat"): Model<Api>[] {
+		const disabled = getDisabledProviderIdsFromSettings(this.#settings);
+		return this.#accountModels.filter(
+			model => !disabled.has(model.provider) && (kind === "all" || modelKind(model) === kind),
+		);
+	}
+
+	async #reloadAccountModels(): Promise<void> {
+		if (!this.#ignoreLocalModelConfig) this.#accountModels = await loadAccountModels(this.#accountDbPath);
+	}
+
 	/**
 	 * Check whether auth is configured for a model's provider.
 	 *
@@ -2871,6 +2889,7 @@ export class ModelRegistry {
 	 * ignores that alias so SuperGrok is not auto-selected from a paid key.
 	 */
 	hasConfiguredAuth(model: Model<Api>): boolean {
+		if (accountSource(model.provider)) return this.find(model.provider, model.id)?.baseUrl === model.baseUrl;
 		const keyConfig = this.#customProviderApiKeys.get(model.provider);
 		return (
 			keyConfig !== undefined ||
@@ -3010,6 +3029,7 @@ export class ModelRegistry {
 	 */
 	find(provider: string, modelId: string): Model<Api> | undefined {
 		if (this.#isProviderDisabled(provider)) return undefined;
+		if (accountSource(provider)) return this.#accountModels.find(m => m.provider === provider && m.id === modelId);
 		return resolveProviderModelReference(provider, modelId, this.#modelsForProviderLookup(provider));
 	}
 
@@ -3083,6 +3103,12 @@ export class ModelRegistry {
 		// A disabled provider gets no credential, so no request reaches it however
 		// its model was obtained.
 		if (this.#isProviderDisabled(model.provider)) return undefined;
+		if (accountSource(model.provider))
+			return this.getApiKeyForProvider(model.provider, sessionId, {
+				...options,
+				baseUrl: model.baseUrl,
+				modelId: model.id,
+			});
 		if (this.#isKeylessProvider(model.provider)) {
 			return kNoAuth;
 		}
@@ -3129,6 +3155,18 @@ export class ModelRegistry {
 		options?: AuthApiKeyOptions,
 	): Promise<ResolvedApiKey | undefined> {
 		if (this.#isProviderDisabled(provider)) return undefined;
+		if (accountSource(provider)) {
+			if (
+				this.#ignoreLocalModelConfig ||
+				!this.#accountModels.some(
+					model =>
+						model.provider === provider && model.id === options?.modelId && model.baseUrl === options?.baseUrl,
+				)
+			)
+				return undefined;
+			const apiKey = await getAccountKey(this.#accountDbPath, provider, options);
+			return apiKey ? { apiKey } : undefined;
+		}
 		if (options?.forceRefresh) this.#invalidateProviderCommandConfigs(provider);
 		if (this.#isKeylessProvider(provider)) {
 			return { apiKey: kNoAuth };
@@ -3155,6 +3193,19 @@ export class ModelRegistry {
 	resolver(model: ApiKeyResolverModel, sessionId?: string): ApiKeyResolver;
 	resolver(target: string | ApiKeyResolverModel, optionsOrSessionId?: ApiKeyResolverOptions | string): ApiKeyResolver {
 		const options = typeof optionsOrSessionId === "string" ? { sessionId: optionsOrSessionId } : optionsOrSessionId;
+		const provider = typeof target === "string" ? target : target.provider;
+		if (accountSource(provider)) {
+			// No sibling account, and never pass this key to broker rotation/recovery.
+			return ({ lastChance, error, signal }) =>
+				lastChance
+					? undefined
+					: this.getApiKeyForProvider(provider, options?.sessionId, {
+							...options,
+							...(typeof target === "string" ? {} : { baseUrl: target.baseUrl, modelId: target.id }),
+							forceRefresh: error !== undefined,
+							signal,
+						});
+		}
 		if (typeof target === "string") {
 			return createApiKeyResolver(this, target, options);
 		}
@@ -3176,6 +3227,7 @@ export class ModelRegistry {
 	 * Check if a model is using OAuth credentials (subscription).
 	 */
 	isUsingOAuth(model: Model<Api>): boolean {
+		if (accountSource(model.provider)) return this.hasConfiguredAuth(model);
 		return this.authStorage.credentials.hasOAuth(model.provider);
 	}
 

@@ -147,6 +147,8 @@ export interface ScopedModelItem {
 export type ModelRoleSelectionScope = "global" | "project";
 
 export interface ModelHubCallbacks {
+	/** Manually select a personal subscription for this session, never assign it to a role. */
+	onPickAccount?: (model: Model) => void;
 	/** Persist a role assignment. */
 	onAssign: (
 		model: Model,
@@ -349,6 +351,7 @@ export class ModelHubComponent implements Component {
 	#browser: ModelBrowser;
 	#roles: RoleAssignments = {};
 	#availableItems: ModelBrowserItem[] = [];
+	#accountModels = new Set<Model>();
 	#recentItems: ModelBrowserItem[] = [];
 	#candidateItems: ModelBrowserItem[] = [];
 	#modelKindTab: "all" | ModelKind = "all";
@@ -593,6 +596,12 @@ export class ModelHubComponent implements Component {
 
 		this.#reloadRoles(availableModels);
 		this.#buildRolesRows();
+		const accounts = this.#registry.getManualAccountModels?.() ?? [];
+		this.#accountModels = new Set(accounts);
+		if (accounts.length) {
+			availableModels = [...availableModels, ...accounts];
+			allModels = [...allModels, ...accounts];
+		}
 
 		const mruOrder = this.#settings.mruOrder;
 		this.#availableItems = buildBrowserItems(availableModels);
@@ -856,6 +865,7 @@ export class ModelHubComponent implements Component {
 	 */
 	#setCandidateItems(items: ReadonlyArray<ModelBrowserItem>): void {
 		const assigning = this.#assigning;
+		if (assigning && this.#accountModels.size) items = items.filter(item => !this.#accountModels.has(item.model));
 		const scoped =
 			assigning?.kind === "role"
 				? items.filter(item => this.#settings.getRoleInfo(assigning.role).accepts(item.model))
@@ -1250,6 +1260,10 @@ export class ModelHubComponent implements Component {
 	#activateItem(item: ModelBrowserItem): void {
 		// Also reached from the browser's own native list events, which bypass handleInput.
 		this.#nativeVersion++;
+		if (this.#accountModels.has(item.model)) {
+			if (!this.#assigning) this.#callbacks.onPickAccount?.(item.model);
+			return;
+		}
 		const active = this.#activeEntry();
 		if (active.kind === "search" && !this.#assignmentPending) {
 			this.#pickSearchHit(active, item);

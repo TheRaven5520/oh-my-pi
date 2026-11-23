@@ -184,6 +184,7 @@ function boxTable(columns: BoxColumn[], rows: string[][]): string[] {
 export interface ModelsListingSource {
 	/** Return models available for the selected catalog kind, or every kind for `all`. */
 	getAvailable(kind?: ModelKind | "all"): Model<Api>[];
+	getManualAccountModels?(kind?: ModelKind | "all"): Model<Api>[];
 	getError(): ConfigError | undefined;
 }
 
@@ -198,7 +199,9 @@ export function renderProviderModels(
 	json: boolean,
 	kind: ModelKind | "all" = "chat",
 ): void {
-	const available = source.getAvailable(kind);
+	const regular = source.getAvailable(kind);
+	const manual = source.getManualAccountModels?.(kind);
+	const available = manual?.length ? [...regular, ...manual] : regular;
 	const needle = pattern?.toLowerCase();
 	let filtered = available;
 

@@ -6,6 +6,21 @@ A **provider** is the account or backend namespace, such as `anthropic`, `openai
 
 This page covers how providers become available, how credentials are resolved, the provider/environment-variable map, local engines, disabling providers, and custom providers. For endpoint-specific request, reasoning, tool, stream, usage, and retry constraints, see [Provider endpoint constraints](./provider-endpoint-constraints.md). For model selection and the full `models.yml` schema, see [Model and Provider Configuration](./models.md). For config-file locations and merge precedence, see [Settings](./settings.md). For credential storage and login flows in depth, see [Secrets and credentials](./secrets.md). For the complete environment-variable reference, see [Environment variables](./environment-variables.md). For local engine setup, see [Local models](./local-models.md). For context-file discovery providers, see [Context files](./context-files.md).
 
+## Personal Claude and ChatGPT accounts
+
+Use these commands **on the host where you will run omp**:
+
+```sh
+omp account add claude --name Shreyan
+omp account add chatgpt --name Shreyan
+omp account list
+```
+
+Open each printed URL in a browser on any machine. Sign in with your Claude Pro/Max or ChatGPT account and approve the request. Over SSH, the final localhost page may fail to load: copy the **entire final URL** from the address bar and paste it at the omp prompt. If the browser is on the omp host the callback can finish automatically. Omit `--name` to use the account email when available. Anthropic restricts subscription OAuth to its own apps.
+
+Choose a model labelled `via Shreyan` in `/model`, or use an explicit selector such as `/model account-claude-shreyan/claude-opus-5-5`. These logins are manual only, never role defaults or fallback credentials. They live in this profile's local SQLite credential store (`accounts.db`), separate from broker credentials; repeat sign-in on another host rather than copying tokens. To remove one, use `omp account remove account-claude-shreyan` (or a unique label).
+
+
 ## Factory Droid
 
 The `factory-droid` provider uses Factory's Droid subscription gateway directly. No `droid` binary, daemon, or SDK subprocess is needed for login or inference.

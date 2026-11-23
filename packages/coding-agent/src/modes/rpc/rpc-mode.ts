@@ -2090,7 +2090,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// =================================================================
 
 			case "set_model": {
-				let models = session.getAvailableModels();
+				let models = session.getAvailableModels("manual");
 				let model = models.find(m => m.provider === command.provider && m.id === command.modelId);
 				if (!model) {
 					// Model not in the current catalog. Wait for in-flight
@@ -2100,7 +2100,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					// the bundled catalog skip this await entirely so the RPC
 					// queue is not stalled behind unrelated discovery.
 					await session.modelRegistry.awaitBackgroundRefresh();
-					models = session.getAvailableModels();
+					models = session.getAvailableModels("manual");
 					model = models.find(m => m.provider === command.provider && m.id === command.modelId);
 				}
 				if (!model) {
@@ -2120,7 +2120,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 
 			case "get_available_models": {
 				await session.modelRegistry.awaitBackgroundRefresh();
-				const models = session.getAvailableModels();
+				const models = session.getAvailableModels("manual");
 				return success(id, "get_available_models", { models });
 			}
 

@@ -46,6 +46,7 @@ import {
 	resolveThinkingLevelForModel,
 } from "@oh-my-pi/pi-tui/thinking";
 import { isAuthenticated, kNoAuth, type ModelRegistry } from "./model-registry";
+import { accountSource } from "./personal-accounts";
 import {
 	DEFAULT_MODEL_ROLE_ALIAS,
 	formatModelRoleAlias,
@@ -514,7 +515,8 @@ export interface ModelMatchPreferences {
 }
 
 export type ModelLookupRegistry = Pick<ModelRegistry, "getAvailable">;
-type CliModelRegistry = Pick<ModelRegistry, "getAll" | "getAvailable">;
+type CliModelRegistry = Pick<ModelRegistry, "getAll" | "getAvailable"> &
+	Partial<Pick<ModelRegistry, "getManualAccountModels">>;
 type InitialModelRegistry = Pick<ModelRegistry, "getAvailable" | "find" | "hasConcreteAuth">;
 type RestorableModelRegistry = Pick<ModelRegistry, "getAvailable" | "find" | "getApiKey" | "hasConcreteAuth">;
 
@@ -2130,6 +2132,11 @@ export function resolveCliModel(options: CliModelOptions): ResolveCliModelResult
 	}
 
 	const scoped = { ...options, cliModel };
+	const provider = (cliProvider ?? cliModel.trim().split("/", 1)[0]).toLowerCase();
+	if (accountSource(provider)) {
+		const accounts = modelRegistry.getManualAccountModels?.().filter(model => model.provider === provider) ?? [];
+		return resolveCliModelInScope({ ...scoped, cliProvider: provider }, { all: accounts, available: accounts });
+	}
 	const scope: CliModelScope = {
 		all: modelRegistry.getAll(),
 		available: preferredModels ?? modelRegistry.getAvailable(),
@@ -2415,7 +2422,7 @@ export async function findInitialModel(options: {
 	}
 
 	// 3. Try saved default from settings
-	if (defaultProvider && defaultModelId) {
+	if (defaultProvider && defaultModelId && !accountSource(defaultProvider)) {
 		const found = modelRegistry.find(defaultProvider, defaultModelId);
 		if (found) {
 			model = found;

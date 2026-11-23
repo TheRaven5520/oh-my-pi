@@ -17,10 +17,13 @@ import { modelKind } from "@oh-my-pi/pi-catalog/types";
 import { finalizeCustomModel } from "@oh-my-pi/pi-coding-agent/config/custom-models";
 import { applyModelPatch, mergeDiscoveredModel } from "@oh-my-pi/pi-coding-agent/config/model-patch";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { resolveRoleChain } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { resolveCliModel, resolveRoleChain } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { accountDbPath, withAccountStore } from "@oh-my-pi/pi-coding-agent/config/personal-accounts";
 import { roleCandidatePool } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { createModelBrowserSource } from "@oh-my-pi/pi-coding-agent/modes/model-browser-source";
+import { buildSessionModelScope } from "@oh-my-pi/pi-tui/overlays/model-browser";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 import { cfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
@@ -85,6 +88,37 @@ describe("ModelRegistry", () => {
 		if (tempDir && fs.existsSync(tempDir)) {
 			removeSyncWithRetries(tempDir);
 		}
+	});
+
+	test("personal subscription selectors are usable manually but absent from role candidates", async () => {
+		const provider = "account-claude-personal";
+		await withAccountStore(accountDbPath(tempDir), storage =>
+			storage.credentials.set(provider, {
+				type: "oauth",
+				accountLabel: "Personal",
+				access: "fixture-access",
+				refresh: "fixture-refresh",
+				expires: Date.now() + 3600_000,
+			}),
+		);
+		const scope = await Settings.loadReadOnly({ cwd: tempDir, agentDir: tempDir });
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: scope });
+		await registry.hydrateCredentialScopedModelCaches();
+		const model = resolveCliModel({ cliModel: `${provider}/claude-opus-5-5`, modelRegistry: registry }).model;
+		expect(model?.name).toEndWith(" via Personal");
+		expect(model?.provider).toBe(provider);
+		const picker = buildSessionModelScope(createModelBrowserSource(scope), registry, [
+			getBundledModels("anthropic")[0],
+		]);
+		expect(picker.items.find(item => item.selector === `${provider}/claude-opus-5-5`)?.model).toBe(model);
+		expect(Object.values(picker.roles).some(role => role?.model.provider === provider)).toBe(false);
+		expect(await registry.getApiKey(model!)).toBe("fixture-access");
+		expect(await registry.getApiKey({ ...model!, baseUrl: "https://elsewhere.invalid" })).toBeUndefined();
+		expect(await registry.resolver(model!)({ lastChance: true, error: new Error("no quota") })).toBeUndefined();
+		expect(roleCandidatePool("default", scope, registry).some(candidate => candidate.provider === provider)).toBe(
+			false,
+		);
+		expect(authStorage.credentials.has(provider)).toBe(false);
 	});
 
 	beforeAll(async () => {

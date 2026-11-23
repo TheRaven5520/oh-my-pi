@@ -18,6 +18,7 @@ import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
 import { classifyDifficulty } from "../auto-thinking/classifier";
 import type { ModelRegistry } from "../config/model-registry";
+import { accountSource } from "../config/personal-accounts";
 import {
 	filterAvailableModelsByEnabledPatterns,
 	formatModelStringWithRouting,
@@ -258,6 +259,12 @@ export class ModelControls {
 			persist?: boolean;
 		},
 	): Promise<{ switched: boolean }> {
+		if (accountSource(model.provider)) {
+			if (options?.persist || role !== "default")
+				throw new Error("Personal accounts can only be selected for this session.");
+			await this.setModelTemporary(model, options?.thinkingLevel);
+			return { switched: true };
+		}
 		const previousEditMode = this.#host.resolveActiveEditMode();
 		if (!this.#host.modelRegistry.hasConfiguredAuth(model)) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
@@ -591,11 +598,14 @@ export class ModelControls {
 	 * Get all available models with valid API keys, filtered by `enabledModels` when configured.
 	 * See {@link filterAvailableModelsByEnabledPatterns} for supported pattern forms and limitations.
 	 */
-	getAvailableModels(): Model[] {
+	getAvailableModels(mode?: "manual"): Model[] {
 		const all = this.#host.modelRegistry.getAvailable();
 		const patterns = cfgEnabledModels.get(this.#host.settings);
-		if (!patterns || patterns.length === 0) return all;
-		return filterAvailableModelsByEnabledPatterns(all, patterns, this.#host.settings);
+		const available = patterns?.length
+			? filterAvailableModelsByEnabledPatterns(all, patterns, this.#host.settings)
+			: all;
+		const accounts = mode === "manual" ? this.#host.modelRegistry.getManualAccountModels() : undefined;
+		return accounts?.length ? [...available, ...accounts] : available;
 	}
 
 	// =========================================================================

@@ -34,6 +34,8 @@ export type ApiKeyCredential = {
 /** Stored OAuth token and provider account identity. */
 export type OAuthCredential = {
 	type: "oauth";
+	/** Display label for a manually selected, host-local subscription account. */
+	accountLabel?: string;
 } & OAuthCredentials;
 
 /** Stored API-key or OAuth credential in the provider pool. */

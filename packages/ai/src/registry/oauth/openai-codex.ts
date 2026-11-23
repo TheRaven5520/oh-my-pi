@@ -63,7 +63,8 @@ function getTokenProfile(
 	const auth = payload?.[JWT_CLAIM_PATH];
 	const idAuth = idPayload?.[JWT_CLAIM_PATH];
 	const accountId = auth?.chatgpt_account_id ?? idAuth?.chatgpt_account_id;
-	const email = (payload?.[JWT_PROFILE_CLAIM]?.email ?? idPayload?.[JWT_PROFILE_CLAIM]?.email)?.trim().toLowerCase();
+	const claimEmail = payload?.[JWT_PROFILE_CLAIM]?.email ?? idPayload?.[JWT_PROFILE_CLAIM]?.email ?? idPayload?.email;
+	const email = typeof claimEmail === "string" ? claimEmail.trim().toLowerCase() : undefined;
 	const planType = (auth?.chatgpt_plan_type ?? idAuth?.chatgpt_plan_type)?.trim().toLowerCase();
 	return {
 		accountId: typeof accountId === "string" && accountId.length > 0 ? accountId : undefined,

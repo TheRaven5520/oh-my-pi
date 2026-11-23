@@ -42,6 +42,7 @@ import { applyStartupCwd } from "./cli/startup-cwd";
 import { getLatestRelease, installedBinaryMatchesRelease } from "./cli/update-cli";
 import { findConfigFile } from "./config";
 import { ModelRegistry } from "./config/model-registry";
+import { accountSource } from "./config/personal-accounts";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
 	DEFAULT_PREWALK_TARGET,
@@ -1416,12 +1417,14 @@ export async function buildSessionOptions(
 			options.rebindModelAfterDiscovery = true;
 			// The recorded role must carry the effort the session actually starts
 			// at, or the first cycle back into `default` overrides it.
-			activeSettings.overrideModelRoles({
-				default: formatModelSelectorValue(
-					resolved.selector ?? `${resolved.model.provider}/${resolved.model.id}`,
-					parsed.thinking ?? resolved.thinkingLevel,
-				),
-			});
+			if (!accountSource(resolved.model.provider)) {
+				activeSettings.overrideModelRoles({
+					default: formatModelSelectorValue(
+						resolved.selector ?? `${resolved.model.provider}/${resolved.model.id}`,
+						parsed.thinking ?? resolved.thinkingLevel,
+					),
+				});
+			}
 			if (!parsed.thinking && resolved.thinkingLevel) {
 				options.thinkingLevel = resolved.thinkingLevel;
 			}

@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../config/model-registry";
+import { accountSource } from "../config/personal-accounts";
 import { cfgModelRoles } from "../config/model-settings";
 import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import { formatModelString, formatModelStringWithRouting } from "../config/model-resolver";
@@ -103,7 +104,7 @@ export function parseRetryFallbackSelector(
 		allowAutoAlias: true,
 		isLiteralModelId: (provider, id) => modelLookup?.find(provider, id) !== undefined,
 	});
-	if (!parsed) return undefined;
+	if (!parsed || accountSource(parsed.provider)) return undefined;
 	return {
 		raw: trimmed,
 		provider: parsed.provider,
@@ -589,7 +590,7 @@ function getRetryFallbackEffectiveChain(
 	}
 	for (const selector of context.chains[chainKey] ?? []) {
 		const parsed = parseRetryFallbackChainEntry(context, selector, parsedCurrent);
-		if (!parsed || seen.has(parsed.raw)) continue;
+		if (!parsed || accountSource(parsed.provider) || seen.has(parsed.raw)) continue;
 		seen.add(parsed.raw);
 		chain.push(parsed);
 	}

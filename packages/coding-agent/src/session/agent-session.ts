@@ -9881,8 +9881,8 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/** Lists available models after applying the configured enabled-model filter. */
-	getAvailableModels(): Model[] {
-		return this.#models.getAvailableModels();
+	getAvailableModels(mode?: "manual"): Model[] {
+		return this.#models.getAvailableModels(mode);
 	}
 
 	/** Selects the session thinking level and optionally persists it as the default. */
